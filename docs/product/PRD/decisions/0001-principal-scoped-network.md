@@ -76,7 +76,7 @@ Rejected because placement would fragment memory, reputation, policy, and Task l
 ## Required follow-through
 
 - Treat Principal as the owner and relationship root in every schema and UI.
-- Remove same-Principal Connection objects from V0 requirements.
+- Remove same-Principal Connection objects from Local Organization V1.5 requirements.
 - Add Agent exposure and caller-relative AgentCard projection.
 - Keep Task Search Scope separate from Agent exposure.
 - Model every selected Agent-to-Agent edge as a Delegation.

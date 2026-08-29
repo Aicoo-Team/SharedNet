@@ -11,24 +11,77 @@
 SharedNet expands one Candidate World rather than launching disconnected products:
 
 ```text
-V0  Intra-Principal local candidates
+V1  Website Launch with SharedNet official Agents
   ↓
-V1  Connected Principal candidates
+V1.5  Intra-Principal local runtime candidates
   ↓
-V2  Managed SharedNet Cloud execution routes
+V2  Connected Principal candidates
   ↓
-V3  Organization governance and private providers
+V3  Managed SharedNet Cloud execution routes
+  ↓
+V4  Organization governance and private providers
 ```
 
 Every milestone must preserve the same Principal, Agent, AgentCard, Task, Delegation, trace, and authority model.
 
-## 2. V0 — Local Organization
+## 2. V1 — Website Launch
+
+> **Give SharedNet a rough website idea; it asks enough product questions, forms the smallest useful official Agent organization, executes in dependency order, and returns a usable preview plus the work behind it.**
+
+V1 is the implemented outcome-shaped wedge. It makes the coordination model tangible before live local and Cross-Principal runtime bridges are complete.
+
+### 2.1 Required user loop
+
+```text
+1. Describe one website outcome
+2. Answer seven material Product Agent questions
+3. Confirm the Product Brief and acceptance boundary
+4. Inspect the official Agents selected by RAC and why
+5. Run the dependency-aware Mission
+6. Receive an interactive preview, source, architecture, schema, manifests, and verification
+```
+
+### 2.2 Functional requirements
+
+1. **Adaptive requirement discovery** — cover user, outcome, persistent data, access, visual direction, launch target, and observable acceptance.
+2. **Persistent official Agent bench** — Product, Research, Architect, Builder, Neon, Vercel, and Quality AgentCards owned by SharedNet.
+3. **RAC dependency graph** — research, architecture, optional database, build, deployment, independent verification, and handoff become runnable only when dependencies close.
+4. **Truthful demo execution** — the real state machine and artifact generation work without credentials while provider resources remain visibly `SIMULATED`.
+5. **Guarded live connectors** — provider tokens stay server-side; external creation requires explicit approval; ambiguous writes enter reconciliation rather than blind retry.
+6. **Evidence-bearing handoff** — return preview, source, Product Brief, architecture, schema when needed, redacted infrastructure manifest, and verification evidence.
+7. **Restorable Mission UI** — safe Mission state survives refresh without persisting provider credentials.
+
+### 2.3 Acceptance criteria
+
+1. A new user reaches the first material question from a rough outcome in one action.
+2. SharedNet does not form an organization until all seven material decisions are clear.
+3. A data-backed brief recruits `@sharednet/neon`; a non-persistent brief may omit it.
+4. Deployment is never runnable before build, and verification is owned independently of the Builder.
+5. Demo mode makes no provider network call and labels every infrastructure result `SIMULATED`.
+6. Live mode fails closed without credentials or explicit approval and never returns credentials to the browser.
+7. The final preview supports at least one complete interactive loop.
+8. The handoff contains seven inspectable artifacts for the canonical data-backed Mission.
+9. Desktop and narrow-screen layouts retain all critical actions without horizontal page overflow.
+10. Automated tests cover interview readiness, RAC transitions, artifacts, connector safety, and the primary UI flow.
+
+### 2.4 Explicitly out of V1
+
+- claiming that generated demo code is a production-ready business;
+- live Codex or Claude Code session attachment;
+- arbitrary task families beyond the Website Launch archetype;
+- Cross-Principal recruitment;
+- SharedNet Cloud execution;
+- public Agent discovery;
+- learned routing or benchmark superiority claims;
+- billing, enterprise SSO, or VPC deployment.
+
+## 3. V1.5 — Local Organization
 
 > **Give one local Agent a goal; SharedNet organizes eligible persistent Agents and fresh local workers owned by the same Principal into a bounded team and returns one verified, inspectable result.**
 
-V0 is one Principal and one local host. It proves useful coordination, runtime reachability, isolation, durability, and authorization before expanding network radius.
+V1.5 is one Principal and one local host. It replaces deterministic official-Agent execution with real runtime reachability, isolation, durability, and authorization before expanding network radius.
 
-### 2.1 Required user loop
+### 3.1 Required user loop
 
 ```text
 1. Install and start SharedNet locally
@@ -47,7 +100,7 @@ V0 is one Principal and one local host. It proves useful coordination, runtime r
 14. SharedNet renders organization, trace, evidence, and verification
 ```
 
-### 2.2 Functional requirements
+### 3.2 Functional requirements
 
 1. **Durable local host** — persist Principal, Agents, AgentCards, home/Task Environment metadata, Sessions, candidates, Tasks, attempts, messages, events, and results across restart.
 2. **Codex and Claude Code bridges** — attach, report capabilities, deliver, resume/fork/fresh when supported, stream replies, interrupt, and report honest failure.
@@ -62,7 +115,7 @@ V0 is one Principal and one local host. It proves useful coordination, runtime r
 
 Same-Principal Agent pairs do not require durable Connection objects. Principal policy plus per-Agent exposure controls discovery; Delegation remains task-scoped.
 
-### 2.3 Acceptance criteria
+### 3.3 Acceptance criteria
 
 1. A new user attaches two persistent local Agents, or one Agent plus one reusable SpawnTemplate, within ten minutes.
 2. The owner can hide one Agent from autonomous Intra-Principal discovery without deleting or pausing it.
@@ -77,7 +130,7 @@ Same-Principal Agent pairs do not require durable Connection objects. Principal 
 11. A successful Task records one integrated result, verification evidence, execution origins, costs, and complete organization graph.
 12. The benchmark harness compares RAC with best-single-Agent and naive fan-out baselines under matched budgets.
 
-### 2.4 Explicitly out of V0
+### 3.4 Explicitly out of V1.5
 
 - Cross-Principal recruitment and recipient approval;
 - SharedNet Cloud execution;
@@ -88,9 +141,9 @@ Same-Principal Agent pairs do not require durable Connection objects. Principal 
 - billing, enterprise SSO, or VPC deployment;
 - unrestricted shell, browser, package-manager, network, or external side effects from inbound messages.
 
-## 3. V1 — Connected Principals
+## 4. V2 — Connected Principals
 
-V1 expands Candidate World through explicit Principal relationships:
+V2 expands Candidate World through explicit Principal relationships:
 
 - verified Principal handles and Connection requests;
 - directional Connection templates, expiry, suspension, and revocation;
@@ -105,11 +158,11 @@ V1 expands Candidate World through explicit Principal relationships:
 
 **Exit condition:** one real Agent recruits an exposed Agent owned by a connected Principal, receives contract-bounded analysis, continues its own work, conditionally adds review, and returns one verified result without either person sharing runtime credentials or workspaces.
 
-Public discovery is not required for V1.
+Public discovery is not required for V2.
 
-## 4. V2 — SharedNet Cloud
+## 5. V3 — SharedNet Cloud
 
-V2 adds managed execution routes:
+V3 adds managed execution routes:
 
 - persistent isolated Agent home and Task workspace support;
 - task-level runtime plus participant isolation;
@@ -122,7 +175,7 @@ V2 adds managed execution routes:
 
 **Exit condition:** a user detaches an eligible local Task, the same Agent continues through a Cloud route with honest state-transfer semantics, and the verified result returns to the same trace and inbox.
 
-## 5. V3 — Enterprise and private runtime
+## 6. V4 — Enterprise and private runtime
 
 - company or team Principal model;
 - SSO, role administration, governance, retention, and audit export;
@@ -133,13 +186,13 @@ V2 adds managed execution routes:
 
 **Exit condition:** one enterprise Principal operates employee local Agents, SharedNet Cloud Agents, and private VPC Agents in one governed network and trace model.
 
-## 6. Core algorithm hypothesis
+## 7. Core algorithm hypothesis
 
 > For tasks that benefit from decomposition, specialist context, independent verification, or durable recovery, RAC-selected organization should improve verified outcome quality over the best single-Agent baseline and naive fan-out under matched cost or wall-clock budgets.
 
 The hypothesis is task-conditional. SharedNet must also demonstrate that it avoids coordination when one Agent is better.
 
-### 6.1 Benchmark families
+### 7.1 Benchmark families
 
 The evaluation set should include:
 
@@ -152,7 +205,7 @@ The evaluation set should include:
 - tasks where extra Agents introduce harmful duplication or conflict;
 - tasks where no candidate should be admitted and abstention is correct.
 
-### 6.2 Baselines
+### 7.2 Baselines
 
 Compare:
 
@@ -163,7 +216,7 @@ Compare:
 
 Budgets, models, tools, context, and wall-clock or cost ceilings must be matched and reported.
 
-### 6.3 Evaluation measures
+### 7.3 Evaluation measures
 
 - independently verified success and quality;
 - gain over best-single-Agent;
@@ -177,7 +230,7 @@ Budgets, models, tools, context, and wall-clock or cost ceilings must be matched
 - authorization denials and disclosure incidents;
 - calibration of quality, cost, and latency estimates.
 
-## 7. Product metrics
+## 8. Product metrics
 
 North star:
 
@@ -206,7 +259,7 @@ Counter-metrics:
 - retries hide systematic failures;
 - Cloud placement fragments Agent identity or Task state.
 
-## 8. Product non-goals
+## 9. Product non-goals
 
 | SharedNet is not | Boundary |
 | --- | --- |

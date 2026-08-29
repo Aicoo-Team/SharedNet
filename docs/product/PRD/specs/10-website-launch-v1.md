@@ -1,6 +1,6 @@
 # Website Launch V1
 
-> **Status:** Implementation target
+> **Status:** Implemented V1
 >
 > **Normative for:** the first end-to-end SharedNet demo, requirement discovery, official Agent organization, website build, Neon provisioning, Vercel deployment, and handoff
 >

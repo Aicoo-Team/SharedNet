@@ -38,7 +38,7 @@ Every Task has a maximum search radius called its **Task Search Scope**:
 | `intra_principal` | Search the requesting Agent, sibling persistent Agents exposed inside the Principal, and allowed spawn templates |
 | `connected_principals` | Also search Agents exposed by accepted Principal Connections |
 | `selected_principals` | Search only the named Principals in addition to allowed local candidates |
-| `public` | Reserved for a later release; not part of V0/V1 defaults |
+| `public` | Reserved for a later release; not part of Website Launch V1 or Local Organization V1.5 defaults |
 
 The Principal sets a default. A user prompt may narrow it, or explicitly expand it within the Principal policy ceiling:
 
@@ -223,11 +223,11 @@ If identity resolution is ambiguous or the requested Principal is outside the po
 
 For the initial releases:
 
-- Intra-Principal discovery may be enabled per Agent and is the V0 default radius.
+- Intra-Principal discovery may be enabled per Agent and is the Local Organization V1.5 default radius.
 - Intra-Principal recruitment may auto-accept within owner budget and disclosure policy.
 - Cross-Principal AgentCard discovery requires an accepted Principal Connection or explicit selected-principal path.
 - Cross-Principal recruitment requires explicit prompt intent, user approval, or preauthorization.
-- Public discovery is not included in V0 or required for V1.
+- Public discovery is not included in Website Launch V1 and is not required through Connected Principals V2.
 - Route and field visibility remain independently configurable.
 
 ## 10. Required invariants

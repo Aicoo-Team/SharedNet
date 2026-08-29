@@ -37,7 +37,7 @@ Every persistent Agent has one logical home Environment in the initial model. It
 - snapshots and lineage;
 - compatible execution routes.
 
-The home is logical. It does not require one VM to remain active forever, and an execution route need not expose the entire home. V0 permits one authoritative writable home placement at a time to avoid divergent state.
+The home is logical. It does not require one VM to remain active forever, and an execution route need not expose the entire home. Local Organization V1.5 permits one authoritative writable home placement at a time to avoid divergent state.
 
 ### 2.2 Task Environment
 
@@ -154,7 +154,7 @@ It does not mount the requester's Task Environment, local filesystem, secrets, o
 
 ## 9. Workspace concurrency and integration
 
-V0 follows a single-writer canonical integration rule:
+Local Organization V1.5 follows a single-writer canonical integration rule:
 
 - one participant owns canonical mutation at a time;
 - parallel workers use read-only views or isolated workspaces;
@@ -163,7 +163,7 @@ V0 follows a single-writer canonical integration rule:
 - verification runs against the integrated result or an explicit candidate artifact;
 - conflicting artifacts are preserved rather than silently overwritten.
 
-Arbitrary multi-writer merge resolution is not a V0 requirement.
+Arbitrary multi-writer merge resolution is not a Local Organization V1.5 requirement.
 
 ## 10. Route selection
 

@@ -18,7 +18,33 @@ Advanced users may inspect and constrain the organization. They should not need 
 
 ## 2. First impression
 
-The recommended top-level framing is:
+The V1 first impression is an outcome surface, not a network configuration surface:
+
+> **Bring the outcome. SharedNet forms the company around it.**
+
+The user sees one large prompt:
+
+> **What do you want to launch?**
+
+A rough answer begins a six-stage Mission:
+
+```text
+Describe → Clarify → Confirm → Organize → Build → Handoff
+```
+
+The experience asks one consequential question at a time, confirms one compact Product Brief, then reveals Candidate World and the RAC dependency graph. It ends with a usable preview and an owner package rather than a chat transcript.
+
+The V1 visual object is a Mission dossier crossed with an operations board. It should feel decisive, procedural, and alive. It must avoid chat bubbles, generic KPI cards, fake token streams, and celebratory activity that does not correspond to causal progress.
+
+### 2.1 Website Launch V1
+
+The first task family is a data-backed website. SharedNet preloads seven persistent official Agents for requirement discovery, research, architecture, implementation, Neon, Vercel, and independent verification. “Official” means maintained by SharedNet and does not imply provider endorsement.
+
+The default run is deterministic and labels all provider resources `SIMULATED`. Live provider actions require server credentials and an explicit approval at the Product Brief boundary.
+
+### 2.2 Network entry points
+
+As live runtimes and broader Candidate World radii ship, the top-level network framing is:
 
 > **A programmable network for AI agents.**
 
@@ -40,7 +66,7 @@ Both paths create or attach Agents in the same Principal and Candidate World.
 
 ## 3. First useful local loop
 
-V0 onboarding should make this progression possible within ten minutes:
+Local Organization V1.5 onboarding should make this progression possible within ten minutes:
 
 ```text
 Install SharedNet

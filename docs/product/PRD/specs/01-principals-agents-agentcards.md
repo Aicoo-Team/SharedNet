@@ -32,7 +32,7 @@ A Principal is the root boundary for:
 - Environment and runtime registration;
 - user or organization approval policy.
 
-A Principal may represent an individual in V0/V1. Team, company, and nested project models are deferred, but they must preserve the same ownership and policy boundary.
+A Principal may represent an individual before Enterprise V4. Team, company, and nested project models are deferred, but they must preserve the same ownership and policy boundary.
 
 Illustrative identifiers:
 

@@ -1,10 +1,10 @@
 # SharedNet — Product Requirements Document
 
-> **Status:** Draft v0.4 — product source of truth
+> **Status:** Draft v0.5 — Website Launch V1 implemented
 >
 > **Owner:** Xisen Wang
 >
-> **Last updated:** 2026-08-26
+> **Last updated:** 2026-08-29
 >
 > **Composition:** SharedNet = network control plane + Runtime Agent Coordination (RAC) + SharedOS + runtime/session bridges + Environment providers
 
@@ -38,9 +38,11 @@ The governing architectural principle is:
 
 > **SharedNet does not care where an Agent runs. SharedNet Cloud is simply the easiest place to run one.**
 
-The first milestone is deliberately smaller than the complete network:
+The first runnable release is deliberately narrower than the complete network:
 
-> **Give one local Agent a goal; SharedNet forms the smallest useful organization from that Principal's persistent Agents and bounded local workers, then returns one verified and inspectable result.**
+> **Give SharedNet a rough website idea; it resolves the product decisions that matter, forms the smallest useful official Agent organization, and returns an interactive preview with source, infrastructure truth, and independent verification.**
+
+Website Launch V1 proves the outcome-shaped interaction, RAC dependency graph, durable Mission model, official AgentCards, guarded external-action boundary, and evidence-bearing handoff. Its provider resources are simulated by default. It does not yet prove live Codex/Claude session coordination or Cross-Principal recruitment.
 
 ## 2. Product thesis
 
@@ -74,7 +76,25 @@ These are the same mechanism at different Candidate World radii. Local, Cloud, a
 
 The user gives SharedNet a goal in natural language. The user owns the outcome, constraints, authority ceiling, approvals, and acceptance criteria. SharedNet owns the organization inside those bounds.
 
-A signature prompt is:
+The implemented V1 interaction is:
+
+```text
+Rough website outcome
+  ↓
+Product Agent asks seven material questions
+  ↓
+User confirms one Product Brief
+  ↓
+RAC selects official specialist Agents
+  ↓
+Dependency-aware Mission execution
+  ↓
+Interactive preview + source + manifests + independent evidence
+```
+
+This uses SharedNet-owned persistent Agent identities and deterministic execution so the full product contract can be experienced before live runtime bridges are complete.
+
+A later network-native signature prompt is:
 
 > 你先联系一下 Liyi 的 Agent，让它分析 API 设计；拿到回复以后，你自己完成实现。如果有必要，再找 reviewer。
 
@@ -258,7 +278,13 @@ One designated integrator owns canonical mutation. The implementation may use pr
 
 The product is algorithm- and backend-heavy with a deliberately light frontend.
 
-The first public framing is:
+The implemented V1 framing leads with an outcome:
+
+> **Bring the outcome. SharedNet forms the company around it.**
+
+The first task family is Website Launch. A user should not need to understand Candidate World, RAC, local versus Cloud placement, Neon, or Vercel before describing what they want to ship. Those objects appear progressively as SharedNet explains its decisions and returns the work.
+
+The network-level framing remains:
 
 > **A programmable network for AI agents.**
 
@@ -335,19 +361,23 @@ RAC is not the durable Task state machine. SharedOS is not the product identity 
 
 ## 10. Release sequence
 
-### V0 — Local Organization
+### V1 — Website Launch
+
+One outcome-shaped workflow: describe a website, answer an adaptive product interview, let an official Agent bench form a bounded organization, inspect the work and verification trace, interact with the generated preview, and receive a complete handoff. The default path is explicitly simulated; live Neon and Vercel writes remain credentialed, approved, and guarded.
+
+### V1.5 — Local Organization
 
 One Principal, one local host, persistent local Agents plus bounded spawned workers, isolated task workspaces, one RAC organization, one SharedOS authorization path, and one inspectable verified result.
 
-### V1 — Connected Principals
+### V2 — Connected Principals
 
 Principal Connections, caller-relative Agent discovery, Cross-Principal inbox and acceptance, task-scoped Delegation Contracts, and the complete `ask @liyi → wait → SELF implement → optional reviewer` flow.
 
-### V2 — SharedNet Cloud
+### V3 — SharedNet Cloud
 
 Managed persistent execution routes, background wake-up, durable workspaces, snapshots, secret references, scale-to-zero, and honest local-to-Cloud continuation under the same Agent and Task identities.
 
-### V3 — Enterprise and private runtime
+### V4 — Enterprise and private runtime
 
 Organization Principals, SSO, governance, policy, private networking, audit export, data residency, and VPC/on-premises Environment providers in the same SharedNet.
 
@@ -391,6 +421,7 @@ Candidate count, message volume, and graph complexity are not success metrics by
 | [Product Experience](PRD/specs/07-product-experience.md) | Onboarding, CLI/Skills, Console, Candidates, graph, policy UX |
 | [System Boundaries and Architecture](PRD/specs/08-system-boundaries.md) | SharedOS/RAC/SharedNet ownership, data model, dependency direction |
 | [Roadmap and Evaluation](PRD/specs/09-roadmap-evaluation.md) | Milestones, acceptance criteria, benchmark and metrics |
+| [Website Launch V1](PRD/specs/10-website-launch-v1.md) | Runnable wedge, interview, official Agent bench, execution trace, preview, handoff, and provider safety |
 
 Accepted decisions:
 
@@ -414,11 +445,11 @@ Exploratory ideas:
 9. RAC forms the organization; it does not own durable product lifecycle.
 10. SharedOS owns capability authorization and bounded execution.
 11. CC-Direct-style infrastructure is a Session Bridge, not a competing network layer.
-12. V0 proves Local Organization before Connected Principals and SharedNet Cloud.
+12. Website Launch V1 proves the outcome-shaped RAC loop; V1.5 replaces deterministic execution with real local runtimes before Connected Principals and SharedNet Cloud.
 
 ## 15. Deferred questions
 
-The following do not block V0:
+The following do not block the current V1/V1.5 release sequence:
 
 - whether one Principal may contain nested team or project Principals;
 - whether one Agent may eventually own multiple first-class home Environments;
