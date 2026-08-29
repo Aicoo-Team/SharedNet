@@ -1,1 +1,7 @@
 .worktrees/
+node_modules/
+.next/
+coverage/
+.env
+.env.local
+*.tsbuildinfo
