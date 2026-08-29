@@ -1,5 +1,5 @@
-import { SharedNetLaunch } from "@/src/components/sharednet-launch";
+import { redirect } from "next/navigation";
 
 export default function HomePage() {
-  return <SharedNetLaunch />;
+  redirect("/chat");
 }
