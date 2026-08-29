@@ -1,0 +1,116 @@
+"""Shared deterministic selection and plan-construction helpers."""
+
+from __future__ import annotations
+
+from collections.abc import Iterable, Sequence
+
+from ..models import Candidate, CoordinationPlan, CoordinationRequest, GraphEdge, ParticipantPlan
+from ..primitives import candidate_utility
+
+
+def eligibility_trace(request: CoordinationRequest, excluded: frozenset[str]) -> tuple[tuple[Candidate, ...], list[dict[str, str]]]:
+    """Filter before scoring and retain attributable admission decisions."""
+    eligible: list[Candidate] = []
+    trace: list[dict[str, str]] = []
+    for candidate in request.candidates:
+        if not candidate.admitted:
+            trace.append({"event": "candidate_rejected", "candidate_id": candidate.candidate_id, "reason": "not_admitted"})
+        elif candidate.candidate_id in excluded:
+            trace.append({"event": "candidate_rejected", "candidate_id": candidate.candidate_id, "reason": "attempt_excluded"})
+        else:
+            eligible.append(candidate)
+            trace.append({"event": "candidate_considered", "candidate_id": candidate.candidate_id})
+    return tuple(eligible), trace
+
+
+def eligible_candidates(request: CoordinationRequest, excluded: frozenset[str] = frozenset()) -> tuple[Candidate, ...]:
+    """Return only admitted candidates that are not attempt-local exclusions."""
+    return eligibility_trace(request, excluded)[0]
+
+
+def ranked_candidates(candidates: Iterable[Candidate], *, coordination_overhead: float = 0.0) -> tuple[Candidate, ...]:
+    """Rank already-admitted candidates with stable candidate-ID tie breaking."""
+    return tuple(sorted(candidates, key=lambda candidate: (-candidate_utility(candidate, coordination_overhead), candidate.candidate_id)))
+
+
+def required_coverage(candidate: Candidate, required: Sequence[str]) -> tuple[str, ...]:
+    """Keep only task-required capabilities in the candidate's declared order."""
+    required_set = set(required)
+    return tuple(capability for capability in candidate.capabilities if capability in required_set)
+
+
+def contribution_score(candidate: Candidate, uncovered: set[str]) -> float:
+    """Prefer useful candidates whose declared skills reduce remaining uncertainty."""
+    return candidate_utility(candidate) * len(set(candidate.capabilities) & uncovered)
+
+
+def select_parent(candidate: Candidate, selected: Sequence[Candidate]) -> Candidate:
+    """Choose an existing node by capability overlap, utility, then ID."""
+    candidate_capabilities = set(candidate.capabilities)
+    return min(
+        selected,
+        key=lambda parent: (
+            -len(candidate_capabilities & set(parent.capabilities)),
+            -candidate_utility(parent),
+            parent.candidate_id,
+        ),
+    )
+
+
+def participant_depth(candidate_id: str, participants: Sequence[ParticipantPlan]) -> int:
+    """Return the existing dependency depth for a selected participant."""
+    dependencies = {participant.candidate_id: participant.dependencies for participant in participants}
+    parents = dependencies[candidate_id]
+    return 0 if not parents else 1 + max(participant_depth(parent, participants) for parent in parents)
+
+
+def participant(candidate: Candidate, *, role: str, assignment: str, dependencies: tuple[str, ...] = (), reason: str = "selected") -> ParticipantPlan:
+    return ParticipantPlan(
+        candidate_id=candidate.candidate_id,
+        role=role,
+        assignment=assignment,
+        dependencies=dependencies,
+        selection_reason=reason,
+        capabilities=candidate.capabilities,
+    )
+
+
+def add_edge(trace: list[dict[str, str]], edges: list[GraphEdge], source: str, target: str, relation: str) -> None:
+    edges.append(GraphEdge(source, target, relation))
+    trace.append({"event": "edge_added", "source": source, "target": target, "relation": relation})
+
+
+def make_plan(
+    mechanism_id: str,
+    request: CoordinationRequest,
+    excluded: frozenset[str],
+    participants: Sequence[ParticipantPlan],
+    edges: Sequence[GraphEdge],
+    trace: list[dict[str, str]],
+    runtime_instructions: dict[str, str],
+) -> CoordinationPlan:
+    return CoordinationPlan(
+        mechanism_id=mechanism_id,
+        task_id=request.task.task_id,
+        trace_id=request.trace_id,
+        attempt=0,
+        exclusions=excluded,
+        participants=tuple(participants),
+        edges=tuple(edges),
+        decision_trace=tuple(trace),
+        runtime_instructions=runtime_instructions,
+        budget=request.budget,
+    )
+
+
+def abstained_plan(mechanism_id: str, request: CoordinationRequest, excluded: frozenset[str], trace: list[dict[str, str]], reason: str) -> CoordinationPlan:
+    trace.append({"event": "planning_stopped", "reason": reason})
+    return make_plan(
+        mechanism_id,
+        request,
+        excluded,
+        (),
+        (),
+        trace,
+        {"terminal_status": "abstained", "reason": reason},
+    )
