@@ -364,6 +364,7 @@ class CoordinationPlan:
     decision_trace: tuple[Mapping[str, JsonValue], ...]
     runtime_instructions: Mapping[str, JsonValue]
     budget: CoordinationBudget = field(default_factory=CoordinationBudget)
+    terminal_status: TerminalStatus = TerminalStatus.ACCEPTED
 
     def __post_init__(self) -> None:
         for name in ("mechanism_id", "task_id", "trace_id"):
@@ -372,6 +373,11 @@ class CoordinationPlan:
             raise ValueError("attempt must be a nonnegative integer")
         if not isinstance(self.budget, CoordinationBudget):
             raise ValueError("budget must be a CoordinationBudget")
+        if not isinstance(self.terminal_status, TerminalStatus):
+            try:
+                object.__setattr__(self, "terminal_status", TerminalStatus(self.terminal_status))
+            except (TypeError, ValueError) as error:
+                raise ValueError("terminal_status must be a terminal status") from error
         if self.attempt > self.budget.max_retries:
             raise ValueError("attempt exceeds retry budget")
         exclusions = frozenset(_nonempty_string(item, "exclusions") for item in self.exclusions)
@@ -450,6 +456,7 @@ class CoordinationPlan:
             "decision_trace": [_thaw_json(item) for item in self.decision_trace],
             "runtime_instructions": _thaw_json(self.runtime_instructions),
             "budget": self.budget.to_dict(),
+            "terminal_status": self.terminal_status.value,
         }
 
 

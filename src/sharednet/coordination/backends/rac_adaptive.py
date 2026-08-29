@@ -26,9 +26,10 @@ class RacAdaptiveBackend:
         trace.append({"event": "candidate_selected", "candidate_id": root.candidate_id, "reason": "requester_root" if self_candidate else "best_available_root"})
         uncovered = set(request.task.required_capabilities) - set(root.capabilities)
         added = False
+        stop_reason: str | None = None
         for candidate in ranked_candidates(candidate for candidate in eligible if candidate.candidate_id != root.candidate_id):
             if len(selected) >= request.budget.max_participants:
-                trace.append({"event": "planning_stopped", "reason": "participant_limit_reached"})
+                stop_reason = "participant_limit_reached"
                 break
             if not (set(candidate.capabilities) & uncovered):
                 trace.append({"event": "candidate_rejected", "candidate_id": candidate.candidate_id, "reason": "no_new_capability_coverage"})
@@ -49,5 +50,7 @@ class RacAdaptiveBackend:
             added = True
             if not uncovered:
                 break
-        trace.append({"event": "planning_stopped", "reason": "coverage_complete" if not uncovered and added else "no_positive_marginal_utility"})
+        if stop_reason is None:
+            stop_reason = "coverage_complete" if not uncovered and added else "no_positive_marginal_utility"
+        trace.append({"event": "planning_stopped", "reason": stop_reason})
         return make_plan(self.mechanism_id, request, excluded, participants, edges, trace, {"coordination": "marginal-utility"})

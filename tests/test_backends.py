@@ -8,7 +8,7 @@ from sharednet.coordination.backends.discovery_and_use import DiscoveryAndUseBac
 from sharednet.coordination.backends.peer_forum import PeerForumBackend
 from sharednet.coordination.backends.rac_adaptive import RacAdaptiveBackend
 from sharednet.coordination.backends.rac_rge import RacRgeBackend
-from sharednet.coordination.models import Candidate, CandidateMode, CoordinationBudget, CoordinationRequest, TaskSpec
+from sharednet.coordination.models import Candidate, CandidateMode, CoordinationBudget, CoordinationRequest, TaskSpec, TerminalStatus
 from tests.fixtures import four_agent_request, linear_request, specialist_request
 
 
@@ -42,12 +42,43 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(plan.runtime_instructions["coordination"], "append-only-forum")
         self.assertEqual(plan.participants[-1].role, "integrator")
 
+    def test_peer_forum_keeps_admitted_self_as_final_integrator_when_generalist_covers_task(self) -> None:
+        request = CoordinationRequest(
+            TaskSpec("forum-accountability", "Synthesize findings.", ("research", "risk"), (), {}),
+            (
+                Candidate("self", CandidateMode.SELF, ("accountability",), True, "trusted", 0.4, 0.1, 0.1, 0.1),
+                Candidate("generalist", CandidateMode.RECRUIT, ("research", "risk"), True, "trusted", 0.9, 0.1, 0.1, 0.1),
+            ),
+            CoordinationBudget(max_participants=2),
+            "peer-forum",
+            "trace-forum-accountability",
+        )
+
+        plan = PeerForumBackend().plan(request)
+
+        self.assertEqual(plan.participant_ids, ("generalist", "self"))
+        self.assertEqual(plan.participants[-1].role, "integrator")
+
+
     def test_empty_eligible_set_abstains_with_inspectable_reason(self) -> None:
         request = four_agent_request(mechanism="rac-rge", include_denied_superstar=True)
         plan = RacRgeBackend().plan(request, excluded=frozenset(candidate.candidate_id for candidate in request.candidates if candidate.admitted))
         self.assertEqual(plan.participants, ())
-        self.assertEqual(plan.runtime_instructions["terminal_status"], "abstained")
+        self.assertEqual(plan.terminal_status, TerminalStatus.ABSTAINED)
+        self.assertEqual(plan.to_dict()["terminal_status"], "abstained")
         self.assertEqual(plan.stop_reason, "no_eligible_candidates")
+
+    def test_discovery_records_self_as_accountable_integrator_of_specialist_output(self) -> None:
+        plan = DiscoveryAndUseBackend().plan(four_agent_request(mechanism="discovery-and-use"))
+        self_participant = next(item for item in plan.participants if item.candidate_id == "self")
+        self_event = next(
+            event
+            for event in plan.decision_trace
+            if event.get("event") == "candidate_selected" and event.get("candidate_id") == "self"
+        )
+        expected_reason = "accountable_requester_integrator_consumes_specialist_output"
+        self.assertEqual(self_participant.selection_reason, expected_reason)
+        self.assertEqual(self_event["reason"], expected_reason)
 
     def test_decision_trace_records_rejections_before_scoring(self) -> None:
         plan = DiscoveryAndUseBackend().plan(
@@ -99,6 +130,22 @@ class BackendTests(unittest.TestCase):
 
         stop_events = [event for event in plan.decision_trace if event.get("event") == "planning_stopped"]
         self.assertEqual(stop_events, [{"event": "planning_stopped", "reason": "participant_limit_reached"}])
+
+    def test_adaptive_records_one_participant_limit_stop_event(self) -> None:
+        request = linear_request()
+        limited_request = CoordinationRequest(
+            request.task,
+            request.candidates,
+            CoordinationBudget(max_participants=1),
+            request.mechanism,
+            request.trace_id,
+        )
+
+        plan = RacAdaptiveBackend().plan(limited_request)
+
+        stop_events = [event for event in plan.decision_trace if event.get("event") == "planning_stopped"]
+        self.assertEqual(stop_events, [{"event": "planning_stopped", "reason": "participant_limit_reached"}])
+        self.assertEqual(plan.stop_reason, "participant_limit_reached")
 
 
 if __name__ == "__main__":

@@ -17,7 +17,12 @@ class PeerForumBackend:
             return abstained_plan(self.mechanism_id, request, excluded, trace, "no_eligible_candidates")
 
         uncovered = set(request.task.required_capabilities)
-        selected = []
+        self_candidates = [candidate for candidate in eligible if candidate.mode is CandidateMode.SELF]
+        integrator = ranked_candidates(self_candidates)[0] if self_candidates else None
+        selected = [integrator] if integrator is not None else []
+        if integrator is not None:
+            uncovered -= set(integrator.capabilities)
+            trace.append({"event": "candidate_selected", "candidate_id": integrator.candidate_id, "reason": "accountable_requester_integrator"})
         while len(selected) < request.budget.max_participants:
             choices = [candidate for candidate in eligible if candidate not in selected and contribution_score(candidate, uncovered) > 0]
             if not choices:
@@ -29,8 +34,7 @@ class PeerForumBackend:
         if not selected:
             return abstained_plan(self.mechanism_id, request, excluded, trace, "no_positive_information_gain")
 
-        self_candidates = [candidate for candidate in selected if candidate.mode is CandidateMode.SELF]
-        integrator = self_candidates[-1] if self_candidates else ranked_candidates(selected)[0]
+        integrator = integrator or ranked_candidates(selected)[0]
         ordered = [candidate for candidate in selected if candidate.candidate_id != integrator.candidate_id] + [integrator]
         participants: list[ParticipantPlan] = []
         edges: list[GraphEdge] = []

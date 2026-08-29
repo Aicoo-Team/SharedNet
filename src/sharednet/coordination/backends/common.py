@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 
-from ..models import Candidate, CoordinationPlan, CoordinationRequest, GraphEdge, ParticipantPlan
+from ..models import Candidate, CoordinationPlan, CoordinationRequest, GraphEdge, ParticipantPlan, TerminalStatus
 from ..primitives import candidate_utility
 
 
@@ -88,6 +88,7 @@ def make_plan(
     edges: Sequence[GraphEdge],
     trace: list[dict[str, str]],
     runtime_instructions: dict[str, str],
+    terminal_status: TerminalStatus = TerminalStatus.ACCEPTED,
 ) -> CoordinationPlan:
     return CoordinationPlan(
         mechanism_id=mechanism_id,
@@ -100,6 +101,7 @@ def make_plan(
         decision_trace=tuple(trace),
         runtime_instructions=runtime_instructions,
         budget=request.budget,
+        terminal_status=terminal_status,
     )
 
 
@@ -112,5 +114,6 @@ def abstained_plan(mechanism_id: str, request: CoordinationRequest, excluded: fr
         (),
         (),
         trace,
-        {"terminal_status": "abstained", "reason": reason},
+        {"reason": reason},
+        TerminalStatus.ABSTAINED,
     )

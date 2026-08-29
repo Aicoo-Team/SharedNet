@@ -10,6 +10,7 @@ class DiscoveryAndUseBackend:
     """Select one complete-coverage specialist, retaining the requester when needed."""
 
     mechanism_id = "discovery-and-use"
+    _SELF_INTEGRATION_REASON = "accountable_requester_integrator_consumes_specialist_output"
 
     def plan(self, request: CoordinationRequest, *, excluded: frozenset[str] = frozenset()) -> CoordinationPlan:
         eligible, trace = eligibility_trace(request, excluded)
@@ -32,8 +33,15 @@ class DiscoveryAndUseBackend:
         edges: list[GraphEdge] = []
         requester = next((candidate for candidate in eligible if candidate.mode is CandidateMode.SELF), None)
         if requester is not None and requester.candidate_id != selected.candidate_id and request.budget.max_participants > 1:
-            participants.append(participant(requester, role="requester", assignment="provide task context", reason="requester_context"))
-            trace.append({"event": "candidate_selected", "candidate_id": requester.candidate_id, "reason": "requester_context"})
+            participants.append(
+                participant(
+                    requester,
+                    role="requester-integrator",
+                    assignment="retain accountability and integrate recruited specialist output",
+                    reason=self._SELF_INTEGRATION_REASON,
+                )
+            )
+            trace.append({"event": "candidate_selected", "candidate_id": requester.candidate_id, "reason": self._SELF_INTEGRATION_REASON})
             participants.append(participant(selected, role="specialist", assignment="complete the task", dependencies=(requester.candidate_id,), reason="complete_coverage_specialist"))
             add_edge(trace, edges, requester.candidate_id, selected.candidate_id, "delegates")
         else:

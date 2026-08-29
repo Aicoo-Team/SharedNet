@@ -141,6 +141,27 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(plan.stop_reason, "coverage_complete")
         self.assertEqual(plan.to_dict()["exclusions"], ["excluded"])
 
+    def test_plan_has_a_typed_terminal_status_with_json_serialization(self) -> None:
+        accepted_plan = plan_with()
+        self.assertEqual(accepted_plan.terminal_status, TerminalStatus.ACCEPTED)
+        self.assertEqual(accepted_plan.to_dict()["terminal_status"], "accepted")
+
+        abstained_plan = CoordinationPlan(
+            mechanism_id="rac-rge",
+            task_id="task-1",
+            trace_id="trace-1",
+            attempt=0,
+            exclusions=frozenset(),
+            participants=(),
+            edges=(),
+            decision_trace=(),
+            runtime_instructions={},
+            budget=CoordinationBudget(),
+            terminal_status="abstained",
+        )
+        self.assertEqual(abstained_plan.terminal_status, TerminalStatus.ABSTAINED)
+        self.assertEqual(abstained_plan.to_dict()["terminal_status"], "abstained")
+
     def test_plan_rejects_unknown_edge_and_too_many_participants(self) -> None:
         participant = ParticipantPlan("self", "root", "work", (), "best")
         with self.assertRaisesRegex(ValueError, "unknown edge endpoint"):
