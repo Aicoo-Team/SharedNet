@@ -118,22 +118,33 @@ export function createNeonConnector(
         throw new Error(`Neon project creation failed with status ${createResponse.status}.`);
       }
 
-      const createBody = readObject(await createResponse.json());
-      const project = readObject(createBody.project);
-      const projectId = typeof project.id === "string" ? project.id : "";
+      let projectId = "";
+      try {
+        const createBody = readObject(await createResponse.json());
+        const project = readObject(createBody.project);
+        projectId = typeof project.id === "string" ? project.id : "";
+      } catch {
+        return reconciliationResult(plan.slug);
+      }
       if (!projectId) {
         return reconciliationResult(plan.slug);
       }
 
-      const uriResponse = await fetcher(
-        `${NEON_API_BASE}/projects/${encodeURIComponent(projectId)}/connection_uri`,
-        { method: "GET", headers },
-      );
-      if (!uriResponse.ok) {
+      let connectionUri = "";
+      try {
+        const uriResponse = await fetcher(
+          `${NEON_API_BASE}/projects/${encodeURIComponent(projectId)}/connection_uri`,
+          { method: "GET", headers },
+        );
+        if (!uriResponse.ok) {
+          return reconciliationResult(plan.slug);
+        }
+        const uriBody = readObject(await uriResponse.json());
+        connectionUri = typeof uriBody.uri === "string" ? uriBody.uri : "";
+      } catch {
         return reconciliationResult(plan.slug);
       }
-      const uriBody = readObject(await uriResponse.json());
-      const connectionUri = typeof uriBody.uri === "string" ? uriBody.uri : "";
+      if (!connectionUri) return reconciliationResult(plan.slug);
 
       return {
         provider: "neon",

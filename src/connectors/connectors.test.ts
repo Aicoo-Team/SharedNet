@@ -76,6 +76,49 @@ describe("provider connector safety", () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
+  it("requires reconciliation when Neon project creation succeeds but URI lookup is uncertain", async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 201,
+        json: async () => ({ project: { id: "neon-project-1" } }),
+      })
+      .mockRejectedValueOnce(new Error("connection dropped"));
+    const neon = createNeonConnector({ NEON_API_KEY: "server-secret" }, fetcher);
+
+    const result = await neon.execute(
+      await neon.plan({ slug: "signal-board" }),
+      true,
+    );
+
+    expect(result.status).toBe("reconciliation-required");
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it("requires reconciliation when Vercel environment configuration is uncertain", async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 201,
+        json: async () => ({ id: "project-1" }),
+      })
+      .mockRejectedValueOnce(new Error("connection dropped"));
+    const vercel = createVercelConnector({ VERCEL_TOKEN: "server-secret" }, fetcher);
+
+    const result = await vercel.execute(
+      await vercel.plan({
+        slug: "signal-board",
+        context: { databaseUrl: "postgresql://owner:password@example.test/app" },
+      }),
+      true,
+    );
+
+    expect(result.status).toBe("reconciliation-required");
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
   it("reports connector readiness without echoing secrets", () => {
     const status = getConnectorStatus({
       NEON_API_KEY: "neon-secret",
@@ -83,6 +126,7 @@ describe("provider connector safety", () => {
     });
 
     expect(status).toEqual({
+      liveExecutionEnabled: false,
       neon: { mode: "live", available: true, credentialConfigured: true },
       vercel: { mode: "live", available: true, credentialConfigured: true },
     });

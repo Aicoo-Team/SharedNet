@@ -46,4 +46,21 @@ describe("Mission handoff", () => {
     }
     expect(isHandoffComplete(mission)).toBe(true);
   });
+
+  it("encodes user-authored copy as JSX text instead of executable source", () => {
+    const hostileBrief = {
+      ...brief,
+      title: "Board </h1>{globalThis.process}",
+      outcome: "Ship `feedback` without turning copy into code",
+    };
+    const source = createHandoffArtifacts(createMission(hostileBrief)).find(
+      (artifact) => artifact.name === "app/page.tsx",
+    )?.content;
+
+    expect(source).toContain('<h1>{"Board </h1>{globalThis.process}"}</h1>');
+    expect(source).toContain(
+      '<p>{"Ship `feedback` without turning copy into code"}</p>',
+    );
+    expect(source).not.toContain("<h1>Board </h1>{globalThis.process}</h1>");
+  });
 });

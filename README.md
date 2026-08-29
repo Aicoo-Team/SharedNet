@@ -52,13 +52,13 @@ The official V1 bench is maintained by SharedNet:
 
 The default mode is deterministic and needs no provider account. It runs the real interview, RAC state machine, Agent selection, artifact generation, connector contract, and verification model. Neon and Vercel resources are clearly labeled `SIMULATED` and are not created externally.
 
-Live mode is guarded and experimental. Copy `.env.example` to `.env.local`, provide server-side credentials, choose **Connected providers**, and explicitly approve external project creation in the Product Brief. Tokens never enter browser state or downloadable artifacts.
+Live mode is guarded and experimental. Copy `.env.example` to `.env.local`, provide server-side credentials, set `SHAREDNET_ENABLE_LIVE_CONNECTORS=true`, choose **Connected providers**, and explicitly approve external project creation in the Product Brief. Tokens never enter browser state or downloadable artifacts.
 
 ```bash
 cp .env.example .env.local
 ```
 
-Live execution can create billable Neon and Vercel resources. Creation failures with ambiguous provider state stop in `reconciliation-required` rather than retrying blindly.
+Live execution can create billable Neon and Vercel resources. V1 has no multi-tenant authentication, so enable it only in a trusted, access-controlled, single-user instance. Creation failures with ambiguous provider state stop the Mission in `reconciliation-required` rather than retrying blindly.
 
 ## Architecture
 

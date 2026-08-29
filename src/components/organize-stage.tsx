@@ -75,7 +75,7 @@ export function OrganizeStage({
           {mode === "demo"
             ? "Provider actions remain simulated."
             : approved
-              ? "Live provider actions approved."
+              ? "User approval recorded; server-side gates still apply."
               : "Live actions require approval."}
         </p>
         <button className="primary-action" type="button" onClick={onStart}>

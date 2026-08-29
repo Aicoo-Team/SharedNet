@@ -28,7 +28,7 @@ export type LaunchStage =
   | "handoff";
 
 type ConnectorMode = "demo" | "live";
-type LaunchStatus = "idle" | "connecting" | "ready" | "error";
+type LaunchStatus = "idle" | "connecting" | "ready" | "reconciliation" | "error";
 
 export interface LaunchState {
   stage: LaunchStage;
@@ -43,6 +43,14 @@ export interface LaunchState {
 }
 
 const STORAGE_KEY = "sharednet:website-launch:v1";
+const LAUNCH_STAGES: LaunchStage[] = [
+  "describe",
+  "clarify",
+  "confirm",
+  "organize",
+  "build",
+  "handoff",
+];
 
 const INITIAL_STATE: LaunchState = {
   stage: "describe",
@@ -58,10 +66,28 @@ function readStoredState(): LaunchState | undefined {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) return undefined;
     const parsed = JSON.parse(raw) as Partial<LaunchState>;
-    if (typeof parsed.idea !== "string" || typeof parsed.stage !== "string") {
+    if (
+      typeof parsed.idea !== "string" ||
+      typeof parsed.stage !== "string" ||
+      !LAUNCH_STAGES.includes(parsed.stage as LaunchStage)
+    ) {
       return undefined;
     }
-    return { ...INITIAL_STATE, ...parsed } as LaunchState;
+    const stage = parsed.stage as LaunchStage;
+    if (stage === "confirm" && !parsed.brief) return undefined;
+    if (["organize", "build", "handoff"].includes(stage) && !parsed.mission) {
+      return undefined;
+    }
+
+    const restored = { ...INITIAL_STATE, ...parsed, stage } as LaunchState;
+    if (stage === "build" && restored.launchStatus === "connecting") {
+      return {
+        ...restored,
+        launchStatus: "error",
+        launchError: "Connector execution was interrupted. Start over before retrying external work.",
+      };
+    }
+    return restored;
   } catch {
     return undefined;
   }
@@ -195,6 +221,7 @@ export function useMission() {
       const payload = (await response.json()) as {
         error?: string;
         manifests?: unknown[];
+        status?: string;
       };
       if (!response.ok) {
         throw new Error(payload.error ?? "The connector run did not complete.");
@@ -202,6 +229,27 @@ export function useMission() {
       const connectors = (payload.manifests ?? [])
         .map(mapConnectorManifest)
         .filter((value): value is ConnectorManifest => Boolean(value));
+
+      if (payload.status === "reconciliation-required") {
+        setState((current) => ({
+          ...current,
+          launchStatus: "reconciliation",
+          launchError:
+            "Provider state requires reconciliation before this Mission can continue.",
+          mission: current.mission
+            ? {
+                ...current.mission,
+                connectors: connectors.length
+                  ? connectors
+                  : current.mission.connectors,
+              }
+            : current.mission,
+        }));
+        return;
+      }
+      if (!connectors.length) {
+        throw new Error("The connector route returned no infrastructure manifest.");
+      }
 
       setState((current) => ({
         ...current,
@@ -217,7 +265,7 @@ export function useMission() {
         launchError:
           error instanceof Error
             ? error.message
-            : "SharedNet could not reach the connector route. The local Mission can still run.",
+            : "SharedNet could not reach the connector route. The Mission remains paused.",
       }));
     }
   }, [state]);
@@ -231,7 +279,7 @@ export function useMission() {
 
   const finishBuild = useCallback(() => {
     setState((current) => {
-      if (!current.mission) return current;
+      if (!current.mission || current.launchStatus !== "ready") return current;
       let mission = current.mission;
       let guard = 0;
       while (mission.status !== "completed" && guard < 12) {
@@ -244,7 +292,13 @@ export function useMission() {
   }, []);
 
   useEffect(() => {
-    if (state.stage !== "build" || !state.mission) return;
+    if (
+      state.stage !== "build" ||
+      !state.mission ||
+      state.launchStatus !== "ready"
+    ) {
+      return;
+    }
     const mission = state.mission;
     const timer = window.setTimeout(() => {
       if (mission.status === "completed") {
@@ -262,7 +316,7 @@ export function useMission() {
     }, mission.status === "completed" ? 500 : 950);
 
     return () => window.clearTimeout(timer);
-  }, [advanceBuild, state.mission, state.stage]);
+  }, [advanceBuild, state.launchStatus, state.mission, state.stage]);
 
   const resetMission = useCallback(() => {
     window.localStorage.removeItem(STORAGE_KEY);

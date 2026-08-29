@@ -1040,7 +1040,8 @@ button:disabled { cursor: not-allowed; opacity: 0.42; }
 .connector-state small { font-size: var(--text-xs); }
 .connector-state small { max-width: 54ch; color: var(--muted-dark); }
 .connector-ready { color: var(--signal); }
-.connector-error { color: var(--danger); }
+.connector-error,
+.connector-reconciliation { color: var(--danger); }
 .spin { animation: spin 900ms linear infinite; }
 
 .handoff-hero { align-items: center; padding-bottom: var(--space-2xl); border-bottom: 1px solid var(--line); }

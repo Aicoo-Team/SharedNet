@@ -1,6 +1,13 @@
 "use client";
 
-import { Check, Circle, FastForward, LoaderCircle, Radio } from "lucide-react";
+import {
+  AlertTriangle,
+  Check,
+  Circle,
+  FastForward,
+  LoaderCircle,
+  Radio,
+} from "lucide-react";
 import { getOfficialAgent } from "@/src/domain/official-agents";
 import type { Mission } from "@/src/domain/types";
 
@@ -19,7 +26,7 @@ export function BuildStage({
 }: {
   mission: Mission;
   mode: "demo" | "live";
-  launchStatus: "idle" | "connecting" | "ready" | "error";
+  launchStatus: "idle" | "connecting" | "ready" | "reconciliation" | "error";
   launchError?: string;
   onFinish: () => void;
 }) {
@@ -97,6 +104,8 @@ export function BuildStage({
             <LoaderCircle className="spin" size={16} />
           ) : launchStatus === "ready" ? (
             <Check size={16} />
+          ) : launchStatus === "reconciliation" || launchStatus === "error" ? (
+            <AlertTriangle size={16} />
           ) : (
             <Circle size={11} />
           )}
@@ -112,9 +121,14 @@ export function BuildStage({
             </small>
           </span>
         </div>
-        <button className="secondary-action" type="button" onClick={onFinish}>
+        <button
+          className="secondary-action"
+          type="button"
+          onClick={onFinish}
+          disabled={launchStatus !== "ready"}
+        >
           <FastForward size={16} />
-          Finish demo now
+          {mode === "demo" ? "Finish demo now" : "Finish Mission now"}
         </button>
       </div>
     </section>

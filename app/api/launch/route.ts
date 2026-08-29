@@ -47,6 +47,13 @@ export async function POST(request: Request) {
   const connectorEnv = mode === "demo" ? {} : process.env;
   const status = getConnectorStatus(connectorEnv);
 
+  if (mode === "live" && !status.liveExecutionEnabled) {
+    return NextResponse.json(
+      { error: "Live connectors are disabled by the SharedNet operator." },
+      { status: 403 },
+    );
+  }
+
   if (
     mode === "live" &&
     (!status.vercel.credentialConfigured ||

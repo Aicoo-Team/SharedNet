@@ -11,6 +11,7 @@ export function getConnectorStatus(env: ConnectorEnvironment) {
   const vercel = createVercelConnector(env).inspectCapability();
 
   return {
+    liveExecutionEnabled: env.SHAREDNET_ENABLE_LIVE_CONNECTORS === "true",
     neon: {
       mode: neon.mode,
       available: neon.available,

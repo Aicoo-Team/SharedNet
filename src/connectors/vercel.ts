@@ -135,28 +135,37 @@ export function createVercelConnector(
             `Vercel project creation failed with status ${projectResponse.status}.`,
           );
         }
-        const projectBody = readObject(await projectResponse.json());
-        projectId =
-          typeof projectBody.id === "string"
-            ? projectBody.id
-            : typeof projectBody.name === "string"
-              ? projectBody.name
-              : "";
+        try {
+          const projectBody = readObject(await projectResponse.json());
+          projectId =
+            typeof projectBody.id === "string"
+              ? projectBody.id
+              : typeof projectBody.name === "string"
+                ? projectBody.name
+                : "";
+        } catch {
+          return reconciliationResult(plan.slug, "project creation");
+        }
         if (!projectId) return reconciliationResult(plan.slug, "project creation");
       }
 
       if (plan.context.databaseUrl) {
-        const envResponse = await postJson(
-          fetcher,
-          withTeam(`/v10/projects/${encodeURIComponent(projectId)}/env`, teamId),
-          token!,
-          {
-            key: "DATABASE_URL",
-            value: plan.context.databaseUrl,
-            type: "encrypted",
-            target: ["preview", "production"],
-          },
-        );
+        let envResponse;
+        try {
+          envResponse = await postJson(
+            fetcher,
+            withTeam(`/v10/projects/${encodeURIComponent(projectId)}/env`, teamId),
+            token!,
+            {
+              key: "DATABASE_URL",
+              value: plan.context.databaseUrl,
+              type: "encrypted",
+              target: ["preview", "production"],
+            },
+          );
+        } catch {
+          return reconciliationResult(plan.slug, "environment configuration");
+        }
         if (!envResponse.ok) {
           return reconciliationResult(plan.slug, "environment configuration");
         }
@@ -192,7 +201,12 @@ export function createVercelConnector(
           `Vercel deployment failed with status ${deploymentResponse.status}.`,
         );
       }
-      const deploymentBody = readObject(await deploymentResponse.json());
+      let deploymentBody: Record<string, unknown>;
+      try {
+        deploymentBody = readObject(await deploymentResponse.json());
+      } catch {
+        return reconciliationResult(plan.slug, "deployment creation");
+      }
       const deploymentId =
         typeof deploymentBody.id === "string" ? deploymentBody.id : "unknown";
       const deploymentHost =

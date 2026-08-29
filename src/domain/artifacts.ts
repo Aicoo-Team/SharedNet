@@ -101,6 +101,9 @@ function schemaSql(brief: ProductBrief): string {
 }
 
 function sourceArtifact(brief: ProductBrief): string {
+  const titleLiteral = JSON.stringify(brief.title);
+  const outcomeLiteral = JSON.stringify(brief.outcome);
+
   return `"use client";
 
 import { useState } from "react";
@@ -124,8 +127,8 @@ export default function ProductPage() {
   return (
     <main>
       <p>PUBLIC FEEDBACK BOARD</p>
-      <h1>${brief.title}</h1>
-      <p>${brief.outcome}</p>
+      <h1>{${titleLiteral}}</h1>
+      <p>{${outcomeLiteral}}</p>
       <form onSubmit={submit}>
         <label htmlFor="idea">Share an idea</label>
         <input id="idea" value={title} onChange={(event) => setTitle(event.target.value)} />

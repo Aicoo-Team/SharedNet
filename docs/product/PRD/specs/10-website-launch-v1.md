@@ -21,11 +21,11 @@ confirmed Product Brief
   ↓
 official Agent organization
   ↓
-research + architecture + build + database + deployment
+research constraints + architecture + generated source + database/deployment plans
   ↓
-browser-level verification
+deterministic verification + interactive preview
   ↓
-live URL + source artifact + infrastructure manifest + evidence
+simulated or guarded-live manifest + source + evidence
 ```
 
 ## 2. Demo truth boundary
@@ -38,14 +38,15 @@ Demo mode is deterministic and requires no external credentials. It executes the
 
 ### Live connector mode
 
-Live connector mode is available only when server-side credentials exist and the user explicitly approves external resource creation. It may:
+Live connector mode is available only when the operator explicitly enables it, server-side credentials exist, and the user explicitly approves external resource creation. It may:
 
 - create a Neon project through `POST https://console.neon.tech/api/v2/projects`;
-- wait for Neon operations before database use;
 - retrieve a pooled connection URI server-side;
 - create/configure a Vercel project and environment variables;
 - create a Vercel deployment;
-- inspect build/deployment state and verify the returned URL.
+- return redacted creation manifests for later provider-side verification.
+
+Polling provider operations, validating a deployed URL, and production promotion remain follow-up work. A partial or uncertain write stops in `reconciliation-required` and cannot advance the Mission to handoff.
 
 Tokens and database credentials never enter client state, Agent messages, traces, or downloadable artifacts. Demo output must never be labeled as a real external resource.
 
@@ -97,7 +98,7 @@ V1 preloads persistent Agents owned by the SharedNet Principal. “Official” m
 | Agent | Role | Typical deliverable |
 | --- | --- | --- |
 | `@sharednet/product` | Requirement discovery and scope | Product Brief and acceptance checklist |
-| `@sharednet/research` | Official-doc and product research | Source-backed stack and integration notes |
+| `@sharednet/research` | Product and integration constraint research | Architecture inputs recorded in the Mission trace |
 | `@sharednet/architect` | System and data design | Architecture, schema, API and risk plan |
 | `@sharednet/builder` | Full-stack implementation and integration | Source tree and build report |
 | `@sharednet/neon` | Neon provisioning and database verification | Database manifest, migration evidence, redacted connection status |
@@ -158,7 +159,7 @@ Candidate World becomes visible. RAC selects official Agents and renders their d
 
 The Mission view streams meaningful events rather than fake token logs:
 
-- research sources found;
+- research and integration constraints accepted;
 - architecture and schema accepted;
 - files and migrations produced;
 - Neon project ready or simulated;
@@ -176,7 +177,7 @@ The result includes:
 - Product Brief and architecture;
 - database and deployment manifests with secrets redacted;
 - acceptance evidence;
-- cost, duration, organization graph, and unresolved limitations;
+- selected organization, dependency-wave count, and unresolved infrastructure state;
 - recommended next iteration.
 
 ## 8. Application architecture
@@ -231,12 +232,13 @@ The no-credential experience must be complete and honest:
 - infrastructure cards display `SIMULATED`;
 - source and architecture artifacts are real downloadable text generated from the brief/template;
 - the embedded application preview is interactive;
-- verification checks run against the generated preview model;
+- deterministic verification checks run against the generated preview model and the application test suite covers the primary interactive flow;
 - refreshing the page can restore the active Mission from local storage.
 
 ## 10. Live-mode safeguards
 
 - Credentials are read only on the server from environment variables.
+- Live writes require a separate operator opt-in and are limited to a trusted, access-controlled, single-user V1 instance.
 - The client sees capability availability, never token values.
 - Every external mutation has a human-readable plan and explicit approval.
 - Neon connection URIs are stored transiently server-side and redacted in logs/results.

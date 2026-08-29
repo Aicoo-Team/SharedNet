@@ -46,7 +46,7 @@ function ContextRail({
           <p>
             {mode === "demo"
               ? "No provider resources will be created."
-              : "Provider calls execute only after server credentials and approval are both present."}
+              : "Provider calls require operator opt-in, server credentials, and per-Mission approval."}
           </p>
         </div>
       </div>

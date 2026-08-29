@@ -118,7 +118,7 @@ export function BriefStage({
           />
           <span>
             <strong>Connected providers</strong>
-            <small>Requires server credentials and can create Neon/Vercel resources.</small>
+            <small>Requires operator opt-in and server credentials; can create billable resources.</small>
           </span>
           <em>LIVE</em>
         </label>
