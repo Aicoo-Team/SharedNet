@@ -1,10 +1,10 @@
 # SharedNet — Product Requirements Document
 
-> **Status:** Draft v0.5 — Website Launch V1 implemented
+> **Status:** Draft v0.6 — Network Console V1 implemented
 >
 > **Owner:** Xisen Wang
 >
-> **Last updated:** 2026-08-29
+> **Last updated:** 2026-08-30
 >
 > **Composition:** SharedNet = network control plane + Runtime Agent Coordination (RAC) + SharedOS + runtime/session bridges + Environment providers
 
@@ -40,9 +40,9 @@ The governing architectural principle is:
 
 The first runnable release is deliberately narrower than the complete network:
 
-> **Give SharedNet a rough website idea; it resolves the product decisions that matter, forms the smallest useful official Agent organization, and returns an interactive preview with source, infrastructure truth, and independent verification.**
+> **Give SharedNet one outcome. A Planning Agent forms an organization from your Agents and trusted external Agents, asks only for authority-bearing decisions, and returns the work in the same conversation.**
 
-Website Launch V1 proves the outcome-shaped interaction, RAC dependency graph, durable Mission model, official AgentCards, guarded external-action boundary, and evidence-bearing handoff. Its provider resources are simulated by default. It does not yet prove live Codex/Claude session coordination or Cross-Principal recruitment.
+Network Console V1 proves the product language of Principals, owned and external AgentCards, Principal Connections, task-scoped recruitment, a human authority inbox, and platform-wide usage. Website Launch is its first task scenario. The execution and Cross-Principal exchange are deterministic demo fixtures; live runtime bridges remain subsequent work.
 
 ## 2. Product thesis
 
@@ -79,20 +79,18 @@ The user gives SharedNet a goal in natural language. The user owns the outcome, 
 The implemented V1 interaction is:
 
 ```text
-Rough website outcome
+One natural-language outcome
   ↓
-Product Agent asks seven material questions
+Planning Agent derives Graph Intent
   ↓
-User confirms one Product Brief
+Candidate World spans owned and connected-Principal Agents
   ↓
-RAC selects official specialist Agents
+SharedNet surfaces only authority-bearing decisions
   ↓
-Dependency-aware Mission execution
-  ↓
-Interactive preview + source + manifests + independent evidence
+Simulated result + organization + platform usage ledger
 ```
 
-This uses SharedNet-owned persistent Agent identities and deterministic execution so the full product contract can be experienced before live runtime bridges are complete.
+This uses persistent demo Agent identities under `@xisen` and `@aicoo` so the network contract can be experienced before live runtime bridges are complete.
 
 A later network-native signature prompt is:
 
@@ -280,9 +278,9 @@ The product is algorithm- and backend-heavy with a deliberately light frontend.
 
 The implemented V1 framing leads with an outcome:
 
-> **Bring the outcome. SharedNet forms the company around it.**
+> **What do you want done?**
 
-The first task family is Website Launch. A user should not need to understand Candidate World, RAC, local versus Cloud placement, Neon, or Vercel before describing what they want to ship. Those objects appear progressively as SharedNet explains its decisions and returns the work.
+The first task family is Website Launch. A user should not need to understand Candidate World, RAC, local versus Cloud placement, Neon, or Vercel before describing what they want to ship. The Planning Agent introduces those objects only when it explains its organization or needs authority.
 
 The network-level framing remains:
 
@@ -295,16 +293,13 @@ Two entry points sit beneath it:
 
 The primary action is still a prompt, not a configuration UI. Advanced policy may narrow or expand the allowed Candidate radius, but RAC decides the actual organization.
 
-The web app focuses on:
+Network Console V1 deliberately exposes only three product pages:
 
-- installation and onboarding;
-- owned and discoverable Agents;
-- caller-relative AgentCards and execution routes;
-- Principal Connections and exposure policy;
-- Candidate World, admission reasons, and selection;
-- running and completed Tasks;
-- generated organization graph and trace;
-- permissions, cost, reliability, and verification dashboards.
+- **Chat** — one prompt, in-conversation planning, organization, work, result, and task usage;
+- **Network** — Principals, owned and external Agents, Connections, recruitment, runtime metadata, and usage;
+- **Decisions** — recruitment, inbound use, authorization, and material plan choices with a retained audit trail.
+
+Installation, Agent management, deeper traces, and policy editing remain future capabilities inside this same product model rather than additional top-level demo pages.
 
 ### 8.1 Product hierarchy and packaging
 
@@ -361,9 +356,9 @@ RAC is not the durable Task state machine. SharedOS is not the product identity 
 
 ## 10. Release sequence
 
-### V1 — Website Launch
+### V1 — Network Console
 
-One outcome-shaped workflow: describe a website, answer an adaptive product interview, let an official Agent bench form a bounded organization, inspect the work and verification trace, interact with the generated preview, and receive a complete handoff. The default path is explicitly simulated; live Neon and Vercel writes remain credentialed, approved, and guarded.
+One outcome-shaped prompt over a deterministic two-Principal network. The user sees in-conversation planning, `@xisen` owned Agents, `@aicoo` external specialists, task-scoped recruitment, an authority inbox, a tangible website-launch result, and raw token/cost accounting. All execution remains explicitly simulated.
 
 ### V1.5 — Local Organization
 
@@ -421,7 +416,7 @@ Candidate count, message volume, and graph complexity are not success metrics by
 | [Product Experience](PRD/specs/07-product-experience.md) | Onboarding, CLI/Skills, Console, Candidates, graph, policy UX |
 | [System Boundaries and Architecture](PRD/specs/08-system-boundaries.md) | SharedOS/RAC/SharedNet ownership, data model, dependency direction |
 | [Roadmap and Evaluation](PRD/specs/09-roadmap-evaluation.md) | Milestones, acceptance criteria, benchmark and metrics |
-| [Website Launch V1](PRD/specs/10-website-launch-v1.md) | Runnable wedge, interview, official Agent bench, execution trace, preview, handoff, and provider safety |
+| [Network Console V1](PRD/specs/10-network-console-v1.md) | Three-page runnable wedge, demo Principal graph, planning transcript, authority inbox, and usage ledger |
 
 Accepted decisions:
 
@@ -445,7 +440,7 @@ Exploratory ideas:
 9. RAC forms the organization; it does not own durable product lifecycle.
 10. SharedOS owns capability authorization and bounded execution.
 11. CC-Direct-style infrastructure is a Session Bridge, not a competing network layer.
-12. Website Launch V1 proves the outcome-shaped RAC loop; V1.5 replaces deterministic execution with real local runtimes before Connected Principals and SharedNet Cloud.
+12. Network Console V1 proves the network-shaped interaction; V1.5 replaces deterministic execution with real local runtimes before live Connected Principals and SharedNet Cloud.
 
 ## 15. Deferred questions
 

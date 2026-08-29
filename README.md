@@ -1,12 +1,10 @@
 # SharedNet
 
-Give SharedNet a rough website idea. It asks the decisions that matter, forms an official Agent organization, executes a dependency-aware Mission, and returns an interactive preview plus the work behind it.
+SharedNet is a programmable network through which stateful Agents become addressable, discoverable under policy, and able to organize around a task.
 
-Website Launch is the runnable V1 wedge for the larger product:
+This repository contains the first runnable Network Console demo. Give it one outcome; a Planning Agent forms a Candidate World from your own persistent Agents and specialist Agents owned by a connected Principal, surfaces only the decisions that require human authority, and records usage across the whole platform.
 
-> **SharedNet is a programmable network through which stateful Agents become addressable and able to organize around a task.**
-
-## Run V1
+## Run the demo
 
 Requirements: Node.js 20.9+ and pnpm 11.19.0.
 
@@ -15,71 +13,83 @@ pnpm install
 pnpm dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000).
+Open [http://localhost:3000/chat](http://localhost:3000/chat).
+
+If an older Corepack installation fails while downloading pnpm, bypass that shim:
+
+```bash
+npx --yes pnpm@11.19.0 install
+npx --yes pnpm@11.19.0 dev
+```
+
+If dependencies are already installed, this also starts the app without Corepack:
+
+```bash
+./node_modules/.bin/next dev
+```
 
 Useful checks:
 
 ```bash
-pnpm test
-pnpm typecheck
-pnpm build
+npx --yes pnpm@11.19.0 test
+npx --yes pnpm@11.19.0 typecheck
+npx --yes pnpm@11.19.0 build
 ```
 
-## What the demo does
+## Experience
 
-1. Accepts one outcome such as “Build a customer feedback board.”
-2. Uses `@sharednet/product` to resolve seven material product decisions.
-3. Compiles a concise Product Brief and acceptance boundary.
-4. Lets RAC select the smallest useful organization from seven persistent SharedNet official Agents.
-5. Executes research → architecture → database → build → deploy → independent verification → handoff in dependency order.
-6. Returns an interactive product preview, generated source, schema, architecture, redacted infrastructure manifest, and verification evidence.
+The product has three surfaces:
 
-The official V1 bench is maintained by SharedNet:
+- `/chat` — type one outcome. Planning, Agent selection, simulated work, results, and task usage remain in one conversation.
+- `/network` — inspect Principal boundaries, owned and external Agents, execution endpoints, discoverability, task recruitment, and usage.
+- `/decisions` — approve or deny recruitment, inbound Agent use, provider authorization, and material plan choices; resolutions remain in the audit trail.
+
+The canonical demo prompt is:
+
+> Build and launch a customer feedback website. Research the product, use Neon for data, deploy on Vercel, and independently verify it.
+
+The demo begins with two Principals:
 
 ```text
-@sharednet/product       requirement lead
-@sharednet/research      evidence scout
-@sharednet/architect     system designer
-@sharednet/builder       implementation worker
-@sharednet/neon          data-layer specialist
-@sharednet/vercel        deployment specialist
-@sharednet/quality       independent verifier
+@xisen  — your Principal
+├── @xisen/planner
+├── @xisen/codex
+├── @xisen/research
+└── @xisen/reviewer
+
+@aicoo  — connected company Principal
+├── @aicoo/web-builder
+├── @aicoo/design-engineer
+├── @aicoo/neon
+├── @aicoo/vercel
+└── @aicoo/quality
 ```
 
-“Official” does not imply affiliation with or endorsement by Neon or Vercel.
+The `@xisen ↔ @aicoo` connection is Principal-to-Principal. Individual Aicoo Agents remain externally owned and are recruited only for a task.
 
-## Infrastructure truth
+## Truth boundary
 
-The default mode is deterministic and needs no provider account. It runs the real interview, RAC state machine, Agent selection, artifact generation, connector contract, and verification model. Neon and Vercel resources are clearly labeled `SIMULATED` and are not created externally.
+`DEMO NETWORK` is persistent in the interface. Planning, Agent contributions, provider work, token usage, and cost are deterministic fixtures that demonstrate the product contract; this release does not invoke remote Aicoo Agents or make model calls.
 
-Live mode is guarded and experimental. Copy `.env.example` to `.env.local`, provide server-side credentials, set `SHAREDNET_ENABLE_LIVE_CONNECTORS=true`, choose **Connected providers**, and explicitly approve external project creation in the Product Brief. Tokens never enter browser state or downloadable artifacts.
-
-```bash
-cp .env.example .env.local
-```
-
-Live execution can create billable Neon and Vercel resources. V1 has no multi-tenant authentication, so enable it only in a trusted, access-controlled, single-user instance. Creation failures with ambiguous provider state stop the Mission in `reconciliation-required` rather than retrying blindly.
+The Neon and Vercel adapters under `src/connectors` preserve guarded server-side connector contracts for later live execution. They are not required by the demo and do not run from the three-page client experience.
 
 ## Architecture
 
 ```text
-Mission UI
+One prompt
   ↓
-Interview + Product Brief compiler
+SharedNet demo state + Planning Agent transcript
   ↓
-Deterministic RAC Mission engine
+Principal graph ─ Candidate World ─ Decisions
   ↓
-Artifact generator + guarded connectors
-                         ├── Neon demo/live adapter
-                         └── Vercel demo/live adapter
+Task-scoped recruitment + usage ledger + result
 ```
 
-The V1 app is intentionally frontend-light: domain behavior lives in pure TypeScript modules under `src/domain`, provider authority stays under `src/connectors` and server routes, and the browser presents one six-stage Mission workspace.
+Pure domain behavior lives in `src/domain/network-demo.ts`. A client provider persists one serializable state across the three routes. The UI remains deliberately thin over that model.
 
 ## Product documentation
 
 - [SharedNet Product Requirements Document](docs/product/PRD.md)
-- [Website Launch V1 specification](docs/product/PRD/specs/10-website-launch-v1.md)
+- [Network Console V1 specification](docs/product/PRD/specs/10-network-console-v1.md)
 - [Detailed specifications, decisions, and ideas](docs/product/PRD/README.md)
-
-Website Launch proves the outcome-shaped interaction first. Real local Codex/Claude runtime organization, Connected Principals, SharedNet Cloud routes, and enterprise Environment providers expand the same Principal, Agent, Candidate World, RAC, and SharedOS model in later releases.
+- [Approved redesign specification](docs/superpowers/specs/2026-08-30-network-console-redesign.md)

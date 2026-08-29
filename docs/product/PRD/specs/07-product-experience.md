@@ -18,31 +18,38 @@ Advanced users may inspect and constrain the organization. They should not need 
 
 ## 2. First impression
 
-The V1 first impression is an outcome surface, not a network configuration surface:
+The V1 first impression is one quiet outcome surface, not a network configuration surface:
 
-> **Bring the outcome. SharedNet forms the company around it.**
+> **What do you want done?**
 
-The user sees one large prompt:
+The user sees one multiline input. Submitting it creates a conversation in which `@xisen/planner` explains the plan, forms a Candidate World, recruits only when another Principal adds value, and links to decisions when authority changes. There is no static question breakdown, six-stage navigation, or authored workflow.
 
-> **What do you want to launch?**
-
-A rough answer begins a six-stage Mission:
+The V1 Console has exactly three destinations:
 
 ```text
-Describe → Clarify → Confirm → Organize → Build → Handoff
+Chat       one goal, plan, organization, work, result, task usage
+Network    Principals, Agents, Connections, recruitment, runtime metadata
+Decisions  cross-boundary authority and retained resolutions
 ```
 
-The experience asks one consequential question at a time, confirms one compact Product Brief, then reveals Candidate World and the RAC dependency graph. It ends with a usable preview and an owner package rather than a chat transcript.
+The visual language is quiet, warm, and network-native: flat linework, precise labels, and Principal boundaries. It must avoid chat bubbles, generic KPI cards, gradients, fake token streams, and activity that does not correspond to causal progress.
 
-The V1 visual object is a Mission dossier crossed with an operations board. It should feel decisive, procedural, and alive. It must avoid chat bubbles, generic KPI cards, fake token streams, and celebratory activity that does not correspond to causal progress.
+### 2.1 Network Console V1
 
-### 2.1 Website Launch V1
+The demo preloads `@xisen` as the user's Principal and `@aicoo` as a connected company Principal. Website Launch is the first task scenario, so Aicoo exposes Website, Design, Neon, Vercel, and Quality specialists. “Official” means published by the Aicoo demo Principal and does not imply provider endorsement.
 
-The first task family is a data-backed website. SharedNet preloads seven persistent official Agents for requirement discovery, research, architecture, implementation, Neon, Vercel, and independent verification. “Official” means maintained by SharedNet and does not imply provider endorsement.
+The run is deterministic and persistently labeled `DEMO NETWORK`. Agent work, provider work, tokens, costs, and outputs are illustrative fixtures. The Console does not claim remote runtime or model execution.
 
-The default run is deterministic and labels all provider resources `SIMULATED`. Live provider actions require server credentials and an explicit approval at the Product Brief boundary.
+### 2.2 Planning in the conversation
 
-### 2.2 Network entry points
+The Planning Agent is the only addition required before the user's task. It may ask a consequential follow-up when an answer changes scope, risk, architecture, or acceptance, but it must not expose a fixed questionnaire. Its normal response contains:
+
+1. a concise interpretation of the goal;
+2. the proposed organization and why each boundary is justified;
+3. the decisions that require the user's authority;
+4. the next observable result.
+
+### 2.3 Network entry points
 
 As live runtimes and broader Candidate World radii ship, the top-level network framing is:
 

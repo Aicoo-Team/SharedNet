@@ -11,11 +11,11 @@
 SharedNet expands one Candidate World rather than launching disconnected products:
 
 ```text
-V1  Website Launch with SharedNet official Agents
+V1  Network Console with a deterministic two-Principal network
   ↓
-V1.5  Intra-Principal local runtime candidates
+V1.5  Real Intra-Principal local runtime candidates
   ↓
-V2  Connected Principal candidates
+V2  Live Connected Principal candidates
   ↓
 V3  Managed SharedNet Cloud execution routes
   ↓
@@ -24,52 +24,51 @@ V4  Organization governance and private providers
 
 Every milestone must preserve the same Principal, Agent, AgentCard, Task, Delegation, trace, and authority model.
 
-## 2. V1 — Website Launch
+## 2. V1 — Network Console
 
-> **Give SharedNet a rough website idea; it asks enough product questions, forms the smallest useful official Agent organization, executes in dependency order, and returns a usable preview plus the work behind it.**
+> **Give SharedNet one outcome; a Planning Agent forms an organization from your Agents and trusted external Agents, asks only for authority-bearing decisions, and returns the work in the same conversation.**
 
-V1 is the implemented outcome-shaped wedge. It makes the coordination model tangible before live local and Cross-Principal runtime bridges are complete.
+V1 is the implemented network-shaped wedge. It makes Principal ownership, Candidate World, Cross-Principal recruitment, decisions, and usage tangible before live local and Cross-Principal runtime bridges are complete. Website Launch is the canonical task scenario rather than a separate staged product.
 
 ### 2.1 Required user loop
 
 ```text
-1. Describe one website outcome
-2. Answer seven material Product Agent questions
-3. Confirm the Product Brief and acceptance boundary
-4. Inspect the official Agents selected by RAC and why
-5. Run the dependency-aware Mission
-6. Receive an interactive preview, source, architecture, schema, manifests, and verification
+1. Open /chat and describe one outcome
+2. Read the Planning Agent's plan in the same conversation
+3. Inspect owned @xisen Agents and requested @aicoo specialists
+4. Open /network to understand Principal boundaries and runtime metadata
+5. Open /decisions to resolve recruitment, inbound-use, provider, or plan authority
+6. Inspect the simulated result and platform-wide token/cost ledger
 ```
 
 ### 2.2 Functional requirements
 
-1. **Adaptive requirement discovery** — cover user, outcome, persistent data, access, visual direction, launch target, and observable acceptance.
-2. **Persistent official Agent bench** — Product, Research, Architect, Builder, Neon, Vercel, and Quality AgentCards owned by SharedNet.
-3. **RAC dependency graph** — research, architecture, optional database, build, deployment, independent verification, and handoff become runnable only when dependencies close.
-4. **Truthful demo execution** — the real state machine and artifact generation work without credentials while provider resources remain visibly `SIMULATED`.
-5. **Guarded live connectors** — provider tokens stay server-side; external creation requires explicit approval; ambiguous writes enter reconciliation rather than blind retry.
-6. **Evidence-bearing handoff** — return preview, source, Product Brief, architecture, schema when needed, redacted infrastructure manifest, and verification evidence.
-7. **Restorable Mission UI** — safe Mission state survives refresh without persisting provider credentials.
+1. **Single prompt front door** — planning occurs in the transcript without a static questionnaire or workflow builder.
+2. **Two-Principal fixture** — `@xisen` owns four persistent Agents; connected `@aicoo` exposes five website specialists.
+3. **Network semantics** — Principal Connection and task-scoped Agent recruitment are visually and behaviorally distinct.
+4. **Authority inbox** — recruitment, inbound use, provider authorization, and material plan choices can be approved, denied, and audited.
+5. **Usage ledger** — raw input, output, cached, total tokens, and normalized cost aggregate by task, Agent, Principal, and platform.
+6. **Truthful demo execution** — every Agent contribution and provider operation remains visibly simulated.
+7. **Restorable Console** — one versioned state survives refresh and remains coherent across Chat, Network, and Decisions.
 
 ### 2.3 Acceptance criteria
 
-1. A new user reaches the first material question from a rough outcome in one action.
-2. SharedNet does not form an organization until all seven material decisions are clear.
-3. A data-backed brief recruits `@sharednet/neon`; a non-persistent brief may omit it.
-4. Deployment is never runnable before build, and verification is owned independently of the Builder.
-5. Demo mode makes no provider network call and labels every infrastructure result `SIMULATED`.
-6. Live mode fails closed without credentials or explicit approval and never returns credentials to the browser.
-7. The final preview supports at least one complete interactive loop.
-8. The handoff contains seven inspectable artifacts for the canonical data-backed Mission.
-9. Desktop and narrow-screen layouts retain all critical actions without horizontal page overflow.
-10. Automated tests cover interview readiness, RAC transitions, artifacts, connector safety, and the primary UI flow.
+1. A new user submits one task from one textarea.
+2. The Planning Agent and mixed-Principal Candidate World appear in the conversation.
+3. Network separates `@xisen` owned Agents from `@aicoo` external specialists.
+4. Connection, recruitment, runtime route, discoverability, and Principal ownership are distinguishable.
+5. All four authority decision types can be represented and resolved without losing their audit record.
+6. Usage totals remain coherent across the header, current task, each Principal, and each Agent.
+7. Demo mode makes no provider or model call and remains visibly labeled.
+8. State persists while navigating all three routes and after refresh.
+9. Desktop and 390px layouts retain all critical actions without horizontal page overflow.
+10. Automated tests cover the demo domain, shell, Chat, Network, Decisions, usage, and connector safety.
 
 ### 2.4 Explicitly out of V1
 
-- claiming that generated demo code is a production-ready business;
+- claiming that the demo organization ran nine real Agent runtimes;
 - live Codex or Claude Code session attachment;
-- arbitrary task families beyond the Website Launch archetype;
-- Cross-Principal recruitment;
+- actual Cross-Principal messaging or execution;
 - SharedNet Cloud execution;
 - public Agent discovery;
 - learned routing or benchmark superiority claims;

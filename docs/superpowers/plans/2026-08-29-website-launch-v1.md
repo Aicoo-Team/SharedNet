@@ -1,5 +1,7 @@
 # Website Launch V1 Implementation Plan
 
+> **Status:** Superseded on 2026-08-30 by [`2026-08-30-network-console-redesign.md`](2026-08-30-network-console-redesign.md). Retained as implementation history; its routes and UI are no longer current.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox syntax for tracking.
 
 **Goal:** Build a runnable SharedNet Website Launch demo that interviews a user, forms an official Agent organization, executes a deterministic website mission, models safe Neon/Vercel integration, and returns an interactive preview with verified handoff artifacts.
@@ -8,7 +10,7 @@
 
 **Tech Stack:** Node.js 23+, Next.js, React, TypeScript, CSS, Lucide React, Vitest, Testing Library
 
-**Spec:** docs/product/PRD/specs/10-website-launch-v1.md
+**Historical spec:** replaced by `docs/product/PRD/specs/10-network-console-v1.md`
 
 ## Global Constraints
 

@@ -92,7 +92,7 @@
 - Modify: `docs/product/PRD.md`
 - Modify: `docs/product/PRD/specs/07-product-experience.md`
 - Modify: `docs/product/PRD/specs/09-roadmap-evaluation.md`
-- Modify: `docs/product/PRD/specs/10-website-launch-v1.md`
+- Replace: `docs/product/PRD/specs/10-website-launch-v1.md` with `docs/product/PRD/specs/10-network-console-v1.md`
 
 1. Remove the obsolete six-stage surface and dead client hook/domain code while preserving connector boundaries.
 2. Update documentation so V1 is the Network Console demo and Website Launch is its first task scenario.
@@ -107,4 +107,3 @@
 3. Inspect console errors and horizontal overflow.
 4. Review the final diff for accidental or unrelated changes.
 5. Push `codex/website-launch-v1` and update PR #1 title/body to describe the Network Console V1.
-
