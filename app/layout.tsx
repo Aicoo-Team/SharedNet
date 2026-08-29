@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
+import "@fontsource-variable/albert-sans";
+import "@fontsource-variable/anybody";
 import "./globals.css";
 
 export const metadata: Metadata = {
