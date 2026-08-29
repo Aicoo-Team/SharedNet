@@ -41,6 +41,7 @@ An idea note preserves a potentially valuable direction without quietly turning 
 7. [Product Experience](specs/07-product-experience.md)
 8. [System Boundaries and Architecture](specs/08-system-boundaries.md)
 9. [Roadmap and Evaluation](specs/09-roadmap-evaluation.md)
+10. [Website Launch V1](specs/10-website-launch-v1.md)
 
 ### Decisions
 
