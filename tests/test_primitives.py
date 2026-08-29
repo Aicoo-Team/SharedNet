@@ -47,6 +47,10 @@ class PrimitiveTests(unittest.TestCase):
     def test_candidate_utility_subtracts_each_operating_cost(self) -> None:
         self.assertEqual(candidate_utility(candidate("a"), coordination_overhead=0.2), 0.3)
 
+    def test_unadmitted_candidate_cannot_receive_utility_score(self) -> None:
+        with self.assertRaisesRegex(ValueError, "candidate must be admitted"):
+            candidate_utility(candidate("denied", admitted=False, admission_reason="policy_denied"))
+
     def test_child_budget_cannot_exceed_reserved_parent_remainder(self) -> None:
         budget = LocalBudget(cost_limit=5.0)
         budget.reserve("a", 4.0)
@@ -61,6 +65,26 @@ class PrimitiveTests(unittest.TestCase):
         self.assertEqual(budget.spent_cost, 1.5)
         self.assertEqual(budget.unreserved_cost, 3.5)
         with self.assertRaisesRegex(BudgetExceeded, "reservation_not_found"):
+            budget.charge("child", 0.1)
+
+    def test_budget_rejects_nan_and_infinite_numeric_values(self) -> None:
+        with self.assertRaisesRegex(ValueError, "finite"):
+            LocalBudget(cost_limit=float("nan"))
+        budget = LocalBudget(cost_limit=5.0, deadline_ms=10)
+        with self.assertRaisesRegex(ValueError, "finite"):
+            budget.reserve("infinite", float("inf"), deadline_ms=1)
+        budget.reserve("child", 2.0, deadline_ms=5)
+        with self.assertRaisesRegex(ValueError, "finite"):
+            budget.charge("child", float("nan"))
+        with self.assertRaisesRegex(ValueError, "finite"):
+            candidate_utility(candidate("a"), coordination_overhead=float("inf"))
+
+    def test_budget_rejects_charge_after_child_deadline(self) -> None:
+        now = [0.0]
+        budget = LocalBudget(cost_limit=5.0, deadline_ms=10, clock=lambda: now[0])
+        budget.reserve("child", 2.0, deadline_ms=5)
+        now[0] = 0.006
+        with self.assertRaisesRegex(BudgetExceeded, "child_deadline_exceeded"):
             budget.charge("child", 0.1)
 
     def test_forum_is_append_only_and_excludes_reader_own_posts(self) -> None:

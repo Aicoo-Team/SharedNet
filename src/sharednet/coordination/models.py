@@ -372,6 +372,8 @@ class CoordinationPlan:
             raise ValueError("attempt must be a nonnegative integer")
         if not isinstance(self.budget, CoordinationBudget):
             raise ValueError("budget must be a CoordinationBudget")
+        if self.attempt > self.budget.max_retries:
+            raise ValueError("attempt exceeds retry budget")
         exclusions = frozenset(_nonempty_string(item, "exclusions") for item in self.exclusions)
         participants = tuple(self.participants)
         if not all(isinstance(item, ParticipantPlan) for item in participants):

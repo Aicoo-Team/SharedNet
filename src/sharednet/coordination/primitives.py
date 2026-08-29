@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Xisen Wang
+# SPDX-License-Identifier: MIT
 """Small, bounded coordination primitives derived from RAC research.
 
 Adapted from ``Aicoo-Team/runtime-agent-coordination`` under the MIT License:
@@ -10,6 +12,7 @@ semantics while exposing SharedNet's smaller product-facing contracts.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 import threading
 import time
 from typing import Any, Callable, Mapping
@@ -25,6 +28,24 @@ class BudgetExceeded(Exception):
         super().__init__(reason)
 
 
+def _finite_nonnegative(value: object, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+        raise ValueError(f"{name} must be a finite nonnegative number")
+    return float(value)
+
+
+def _deadline_ms(value: object | None, name: str = "deadline_ms") -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{name} must be a finite nonnegative integer")
+    return value
+
+
+def _clock_value(clock: Callable[[], float]) -> float:
+    return _finite_nonnegative(clock(), "clock")
+
+
 def verified_experience(candidate: Candidate) -> float:
     """Return centered Beta(1, 1) experience without an unseen-candidate bonus."""
     return (
@@ -36,8 +57,9 @@ def verified_experience(candidate: Candidate) -> float:
 
 def candidate_utility(candidate: Candidate, coordination_overhead: float = 0.0) -> float:
     """Return deterministic-score input; callers provide ID tie-breaking separately."""
-    if coordination_overhead < 0:
-        raise ValueError("coordination_overhead must be nonnegative")
+    if not candidate.admitted:
+        raise ValueError("candidate must be admitted before utility scoring")
+    coordination_overhead = _finite_nonnegative(coordination_overhead, "coordination_overhead")
     return round(
         candidate.predicted_quality
         + verified_experience(candidate)
@@ -63,14 +85,12 @@ class LocalBudget:
         deadline_ms: int | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        if cost_limit < 0:
-            raise ValueError("cost_limit must be nonnegative")
-        if deadline_ms is not None and deadline_ms < 0:
-            raise ValueError("deadline_ms must be nonnegative")
+        cost_limit = _finite_nonnegative(cost_limit, "cost_limit")
+        deadline_ms = _deadline_ms(deadline_ms)
         self._lock = threading.Lock()
         self._clock = clock
-        self._cost_limit = float(cost_limit)
-        self._unreserved_cost = float(cost_limit)
+        self._cost_limit = cost_limit
+        self._unreserved_cost = cost_limit
         self._deadline_ms = deadline_ms
         self._unreserved_deadline_ms = deadline_ms
         self._spent_cost = 0.0
@@ -103,10 +123,8 @@ class LocalBudget:
         """Reserve a child's declared envelope before allowing it to run."""
         if not isinstance(child_id, str) or not child_id:
             raise ValueError("child_id must be a nonempty string")
-        if cost_limit < 0:
-            raise ValueError("cost_limit must be nonnegative")
-        if deadline_ms is not None and deadline_ms < 0:
-            raise ValueError("deadline_ms must be nonnegative")
+        cost_limit = _finite_nonnegative(cost_limit, "cost_limit")
+        deadline_ms = _deadline_ms(deadline_ms)
         with self._lock:
             if child_id in self._reservations:
                 raise BudgetExceeded("duplicate_child_requirement_id")
@@ -115,30 +133,32 @@ class LocalBudget:
             if self._unreserved_deadline_ms is not None:
                 if deadline_ms is None or deadline_ms > self._unreserved_deadline_ms:
                     raise BudgetExceeded("insufficient_unreserved_deadline")
-            self._unreserved_cost -= float(cost_limit)
+            self._unreserved_cost -= cost_limit
             if self._unreserved_deadline_ms is not None:
                 self._unreserved_deadline_ms -= int(deadline_ms)
             self._reservations[child_id] = {
-                "reserved_cost": float(cost_limit),
+                "reserved_cost": cost_limit,
                 "spent_cost": 0.0,
                 "deadline_ms": deadline_ms,
-                "started": self._clock(),
+                "started": _clock_value(self._clock),
                 "open": True,
             }
 
     def charge(self, child_id: str, cost: float) -> None:
         """Charge actual spend to exactly one open reservation."""
-        if cost < 0:
-            raise ValueError("cost must be nonnegative")
+        cost = _finite_nonnegative(cost, "cost")
         with self._lock:
             reservation = self._reservations.get(child_id)
             if reservation is None or not reservation["open"]:
                 raise BudgetExceeded("reservation_not_found")
-            proposed = reservation["spent_cost"] + float(cost)
+            deadline_ms = reservation["deadline_ms"]
+            if deadline_ms is not None and (_clock_value(self._clock) - reservation["started"]) * 1000 >= deadline_ms:
+                raise BudgetExceeded("child_deadline_exceeded")
+            proposed = reservation["spent_cost"] + cost
             if proposed > reservation["reserved_cost"]:
                 raise BudgetExceeded("child_spend_exceeds_reservation")
             reservation["spent_cost"] = proposed
-            self._spent_cost += float(cost)
+            self._spent_cost += cost
 
     def release(self, child_id: str) -> dict[str, float | int | str]:
         """Close a reservation and return its unused capacity to the parent."""
@@ -147,7 +167,7 @@ class LocalBudget:
             if reservation is None or not reservation["open"]:
                 raise BudgetExceeded("reservation_not_found")
             reservation["open"] = False
-            elapsed_ms = int((self._clock() - reservation["started"]) * 1000)
+            elapsed_ms = int((_clock_value(self._clock) - reservation["started"]) * 1000)
             refunded_cost = reservation["reserved_cost"] - reservation["spent_cost"]
             self._unreserved_cost += refunded_cost
             refunded_deadline_ms = 0

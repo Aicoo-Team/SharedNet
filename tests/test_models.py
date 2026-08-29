@@ -174,6 +174,20 @@ class ModelTests(unittest.TestCase):
                 "not-a-budget",  # type: ignore[arg-type]
             )
 
+    def test_plan_allows_attempt_at_the_retry_limit(self) -> None:
+        plan = CoordinationPlan(
+            "rac-rge", "task-1", "trace-1", 2, frozenset(), (), (), (), {},
+            CoordinationBudget(max_retries=2),
+        )
+        self.assertEqual(plan.attempt, 2)
+
+    def test_plan_rejects_first_attempt_after_retry_limit(self) -> None:
+        with self.assertRaisesRegex(ValueError, "attempt exceeds retry budget"):
+            CoordinationPlan(
+                "rac-rge", "task-1", "trace-1", 3, frozenset(), (), (), (), {},
+                CoordinationBudget(max_retries=2),
+            )
+
     def test_result_retains_structured_runtime_outputs(self) -> None:
         plan = plan_with(ParticipantPlan("self", "root", "work", (), "best"))
         result = CoordinationResult(
