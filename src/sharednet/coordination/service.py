@@ -20,6 +20,7 @@ class CoordinationService:
     def execute(self, request: CoordinationRequest, runtime: CoordinationRuntime) -> CoordinationResult:
         """Execute at most one initial attempt plus the configured attributable retries."""
         backend = get_backend(request.mechanism)
+        admitted_candidate_ids = frozenset(candidate.candidate_id for candidate in request.candidates if candidate.admitted)
         excluded = frozenset()
         attempts: list[AttemptSummary] = []
         usage: dict[str, int | float] = {}
@@ -49,7 +50,8 @@ class CoordinationService:
 
             if result.status is TerminalStatus.ACCEPTED:
                 return completed
-            if not result.failed_participant_ids:
+            attributable_failures = frozenset(result.failed_participant_ids) & admitted_candidate_ids
+            if not attributable_failures:
                 return completed
             if attempt == request.budget.max_retries:
                 return replace(
@@ -57,7 +59,7 @@ class CoordinationService:
                     status=TerminalStatus.EXHAUSTED,
                     error="retry_budget_exhausted",
                 )
-            excluded = excluded | frozenset(result.failed_participant_ids)
+            excluded = excluded | attributable_failures
 
         raise RuntimeError("bounded coordination execution reached an unreachable state")
 

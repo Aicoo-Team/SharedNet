@@ -131,6 +131,47 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(result.usage, {"tokens": 4})
         self.assertEqual(len(result.attempts), 1)
 
+    def test_execute_stops_when_only_unknown_ids_are_reported_failed(self) -> None:
+        from sharednet.coordination.service import CoordinationService
+
+        runtime = ScriptedRuntime([
+            lambda plan: failed_result(plan, ("unknown-agent",)),
+            accepted_result,
+        ])
+        result = CoordinationService().execute(adaptive_request(max_retries=1), runtime)
+
+        self.assertEqual(runtime.calls, 1)
+        self.assertEqual(result.status, TerminalStatus.FAILED)
+        self.assertEqual(result.failed_participant_ids, ("unknown-agent",))
+
+    def test_execute_stops_when_only_denied_ids_are_reported_failed(self) -> None:
+        from sharednet.coordination.service import CoordinationService
+
+        request = four_agent_request(mechanism="rac-adaptive", include_denied_superstar=True)
+        runtime = ScriptedRuntime([
+            lambda plan: failed_result(plan, ("denied-superstar",)),
+            accepted_result,
+        ])
+        result = CoordinationService().execute(request, runtime)
+
+        self.assertEqual(runtime.calls, 1)
+        self.assertEqual(result.status, TerminalStatus.FAILED)
+        self.assertEqual(result.failed_participant_ids, ("denied-superstar",))
+
+    def test_execute_retries_only_with_admitted_ids_from_mixed_failure_evidence(self) -> None:
+        from sharednet.coordination.service import CoordinationService
+
+        request = four_agent_request(mechanism="rac-adaptive", include_denied_superstar=True)
+        runtime = ScriptedRuntime([
+            lambda plan: failed_result(plan, ("risk-analyst", "unknown-agent", "denied-superstar")),
+            accepted_result,
+        ])
+        result = CoordinationService().execute(request, runtime)
+
+        self.assertEqual(result.status, TerminalStatus.ACCEPTED)
+        self.assertEqual(runtime.calls, 2)
+        self.assertEqual(runtime.plans[1].exclusions, frozenset({"risk-analyst"}))
+
     def test_execute_accumulates_failed_ids_as_immutable_plan_exclusions(self) -> None:
         from sharednet.coordination.service import CoordinationService
 
