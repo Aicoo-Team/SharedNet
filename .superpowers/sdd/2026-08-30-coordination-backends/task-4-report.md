@@ -196,3 +196,39 @@ binary ordering. The `Popen.communicate(timeout=...)` seam is intentionally
 retained as required. Consequently, a child process can still allocate its full
 stdout/stderr in memory before the post-return capture-size check rejects it;
 this residual pre-return memory risk is documented rather than hidden.
+
+## Fix round 2: root-authored spawn proof
+
+Implementation commit: `f864a701bda17111ce2f5d3358b2c7710e21f2f8`
+(`fix: require root-authored spawn evidence`).
+
+Two regressions were written and observed RED before the narrow parser gate was
+changed:
+
+```text
+test_one_participant_plan_rejects_any_spawn_evidence
+TerminalStatus.ACCEPTED != TerminalStatus.FAILED
+
+test_senderless_spawn_event_cannot_prove_root_authorship
+TerminalStatus.ACCEPTED != TerminalStatus.FAILED
+```
+
+Spawn evidence now requires an explicit `sender_thread_id` that equals the root
+thread ID. The legacy synthetic spawn fixture now records that root sender;
+actual completed `collab_tool_call` events already carry it. Acceptance checks
+the distinct child-ID count and raw spawn occurrence count against exactly
+`N - 1`, including zero, so a one-participant plan rejects any child spawn.
+
+GREEN verification:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m unittest tests.test_codex_runtime -v
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m unittest tests.test_models tests.test_primitives tests.test_registry tests.test_backends tests.test_service tests.test_codex_runtime -v
+PYTHONDONTWRITEBYTECODE=1 python3 -m compileall -q src tests
+git diff --check
+```
+
+Observed: Task 4 `24 tests ... OK`; Tasks 1–4 `77 tests ... OK`; compile and
+diff checks passed. Self-review confirmed the zero-child and senderless gates
+do not alter the prior strict duplicate/surplus, lifecycle, timeout, artifact,
+or binary-order protections.
