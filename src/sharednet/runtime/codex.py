@@ -193,6 +193,7 @@ class CodexRuntime:
         nonce_factory: Callable[[], str] | None = None,
         artifact_dir: str | Path | None = None,
         max_capture_bytes: int = _DEFAULT_MAX_CAPTURE_BYTES,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         if not isinstance(model, str) or not model.strip():
             raise ValueError("model must be a nonempty string")
@@ -200,7 +201,8 @@ class CodexRuntime:
             raise ValueError("max_capture_bytes must be a positive integer")
         self._configured_binary = binary
         self._model = model
-        self._runner = runner or _default_runner
+        self._clock = clock if clock is not None else time.monotonic
+        self._runner = runner
         self._nonce_factory = nonce_factory or (lambda: secrets.token_urlsafe(18))
         self._artifact_dir = Path(artifact_dir) if artifact_dir is not None else None
         self._max_capture_bytes = max_capture_bytes
@@ -209,23 +211,40 @@ class CodexRuntime:
         """Return whether a resolved binary answers one cheap version request."""
         try:
             binary = self._resolve_binary()
-            outcome = self._runner([binary, "--version"], 10.0)
+            if self._runner is None:
+                outcome = _default_runner([binary, "--version"], 10.0, clock=self._clock)
+            else:
+                outcome = self._runner([binary, "--version"], 10.0)
         except (CodexUnavailable, OSError):
             return False
         return outcome.returncode == 0 and not outcome.timed_out
 
     def execute(self, plan: CoordinationPlan) -> CoordinationResult:
         """Execute a plan once and return typed, attributable evidence."""
+        deadline = self._clock() + float(plan.budget.max_wall_seconds)
         try:
             binary = self._resolve_binary()
         except CodexUnavailable:
+            if self._clock() >= deadline:
+                return self._setup_timeout(plan)
             return self._failure(plan, "codex_unavailable")
 
         nonce = self._nonce_factory()
         prompt = build_codex_prompt(plan, nonce)
         command = self._command(binary, prompt)
+        remaining_wall_seconds = deadline - self._clock()
+        if remaining_wall_seconds <= 0:
+            return self._setup_timeout(plan)
         try:
-            outcome = self._runner(command, float(plan.budget.max_wall_seconds))
+            if self._runner is None:
+                outcome = _default_runner(
+                    command,
+                    remaining_wall_seconds,
+                    clock=self._clock,
+                    deadline=deadline,
+                )
+            else:
+                outcome = self._runner(command, remaining_wall_seconds)
         except OSError as error:
             return self._failure(plan, "codex_exec_os_error", stderr=str(error))
 
@@ -246,7 +265,13 @@ class CodexRuntime:
         runtime_evidence = self._runtime_evidence(evidence, outcome, command)
         runtime_evidence.update(self._persist_artifacts(plan, outcome))
         if outcome.timed_out:
-            return self._failure(plan, "codex_exec_timeout", evidence=runtime_evidence, usage=evidence.usage)
+            return self._failure(
+                plan,
+                "codex_exec_timeout",
+                evidence=runtime_evidence,
+                usage=evidence.usage,
+                status=TerminalStatus.EXHAUSTED,
+            )
         if outcome.returncode != 0:
             return self._failure(plan, "codex_exec_nonzero_exit", evidence=runtime_evidence, usage=evidence.usage)
         if not (evidence.root_thread_started and evidence.turn_completed and evidence.final_message_completed):
@@ -279,6 +304,15 @@ class CodexRuntime:
             synthesis=synthesis,
             runtime_evidence=runtime_evidence,
             usage=evidence.usage,
+        )
+
+    @staticmethod
+    def _setup_timeout(plan: CoordinationPlan) -> CoordinationResult:
+        return CoordinationResult(
+            status=TerminalStatus.EXHAUSTED,
+            plan=plan,
+            runtime_evidence={"timed_out": True, "timeout_phase": "setup"},
+            error="codex_exec_timeout",
         )
 
     def _resolve_binary(self) -> str:
@@ -324,12 +358,13 @@ class CodexRuntime:
         evidence: Mapping[str, Any] | None = None,
         usage: Mapping[str, int | float] | None = None,
         stderr: str = "",
+        status: TerminalStatus = TerminalStatus.FAILED,
     ) -> CoordinationResult:
         runtime_evidence = dict(evidence or {})
         if stderr:
             runtime_evidence["stderr"] = stderr[-_STDERR_LIMIT:]
         return CoordinationResult(
-            status=TerminalStatus.FAILED,
+            status=status,
             plan=plan,
             runtime_evidence=runtime_evidence,
             usage=dict(usage or {}),
@@ -381,26 +416,29 @@ def _default_runner(
     timeout: float,
     *,
     clock: Callable[[], float] | None = None,
+    deadline: float | None = None,
 ) -> ProcessOutcome:
     """Run one process and escalate termination deterministically on timeout."""
-    monotonic = clock or time.monotonic
-    deadline = monotonic() + timeout
+    monotonic = clock if clock is not None else time.monotonic
+    absolute_deadline = deadline if deadline is not None else monotonic() + timeout
+    if absolute_deadline - monotonic() <= 0:
+        return ProcessOutcome(124, "", "", True)
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     try:
-        stdout, stderr = process.communicate(timeout=max(0.0, deadline - monotonic()))
+        stdout, stderr = process.communicate(timeout=max(0.0, absolute_deadline - monotonic()))
         return ProcessOutcome(process.returncode or 0, stdout or "", stderr or "", False)
     except subprocess.TimeoutExpired as timeout_error:
         process.terminate()
-        remaining = max(0.0, deadline - monotonic())
+        remaining = max(0.0, absolute_deadline - monotonic())
         if remaining <= 0:
             process.kill()
-            final_stdout, final_stderr = _communicate_within_deadline(process, deadline, monotonic, timeout_error)
+            final_stdout, final_stderr = _communicate_within_deadline(process, absolute_deadline, monotonic, timeout_error)
             return ProcessOutcome(process.returncode or 0, final_stdout, final_stderr, True)
         try:
             final_stdout, final_stderr = process.communicate(timeout=min(_TERMINATE_GRACE_SECONDS, remaining))
         except subprocess.TimeoutExpired as terminate_error:
             process.kill()
-            final_stdout, final_stderr = _communicate_within_deadline(process, deadline, monotonic, terminate_error)
+            final_stdout, final_stderr = _communicate_within_deadline(process, absolute_deadline, monotonic, terminate_error)
         return ProcessOutcome(process.returncode or 0, _as_text(final_stdout), _as_text(final_stderr), True)
 
 

@@ -122,6 +122,14 @@ class ManualClock:
         self.now += seconds
 
 
+class SequenceClock:
+    def __init__(self, values: list[float]) -> None:
+        self._values = iter(values)
+
+    def __call__(self) -> float:
+        return next(self._values)
+
+
 class DeadlineProcess(TimeoutProcess):
     def __init__(self, clock: ManualClock, *, first_elapsed: float, terminate_elapsed: float = 0.0) -> None:
         super().__init__()
@@ -141,11 +149,123 @@ class DeadlineProcess(TimeoutProcess):
         return "authoritative-out", "authoritative-err"
 
 
+class SuccessfulProcess:
+    def __init__(self, stdout: str) -> None:
+        self.returncode = 0
+        self.stdout = stdout
+        self.communicate_calls: list[float | None] = []
+
+    def communicate(self, timeout: float | None = None) -> tuple[str, str]:
+        self.communicate_calls.append(timeout)
+        return self.stdout, ""
+
+
 class CodexRuntimeTests(unittest.TestCase):
+    def test_setup_time_reduces_the_relative_allowance_passed_to_the_runner(self) -> None:
+        clock = ManualClock()
+        runner = RecordingRunner(ProcessOutcome(0, success_jsonl(markers_for("nonce-1")), "", False))
+
+        def nonce_after_four_seconds() -> str:
+            clock.advance(4)
+            return "nonce-1"
+
+        timed_plan = replace(plan(), budget=replace(plan().budget, max_wall_seconds=10))
+        with patch("sharednet.runtime.codex.time.monotonic", clock):
+            result = CodexRuntime(
+                binary="/real/codex",
+                runner=runner,
+                nonce_factory=nonce_after_four_seconds,
+            ).execute(timed_plan)
+
+        self.assertEqual(result.status, TerminalStatus.ACCEPTED)
+        self.assertEqual(runner.timeout, 6.0)
+
+    def test_setup_exhaustion_returns_typed_timeout_without_launching_runner(self) -> None:
+        clock = ManualClock()
+        runner = RecordingRunner(ProcessOutcome(0, success_jsonl(markers_for("nonce-1")), "", False))
+
+        def nonce_at_deadline() -> str:
+            clock.advance(10)
+            return "nonce-1"
+
+        timed_plan = replace(plan(), budget=replace(plan().budget, max_wall_seconds=10))
+        with patch("sharednet.runtime.codex.time.monotonic", clock):
+            result = CodexRuntime(
+                binary="/real/codex",
+                runner=runner,
+                nonce_factory=nonce_at_deadline,
+            ).execute(timed_plan)
+
+        self.assertEqual(result.status, TerminalStatus.EXHAUSTED)
+        self.assertEqual(result.error, "codex_exec_timeout")
+        self.assertEqual(result.runtime_evidence, {"timed_out": True, "timeout_phase": "setup"})
+        self.assertEqual(runner.command, [])
+        self.assertIsNone(runner.timeout)
+
+    def test_default_runner_uses_the_runtime_deadline_remainder(self) -> None:
+        clock = ManualClock()
+        process = SuccessfulProcess(success_jsonl(markers_for("nonce-1")))
+
+        def nonce_after_four_seconds() -> str:
+            clock.advance(4)
+            return "nonce-1"
+
+        timed_plan = replace(plan(), budget=replace(plan().budget, max_wall_seconds=10))
+        with (
+            patch("sharednet.runtime.codex.time.monotonic", clock),
+            patch("sharednet.runtime.codex.subprocess.Popen", return_value=process),
+        ):
+            result = CodexRuntime(
+                binary="/real/codex",
+                nonce_factory=nonce_after_four_seconds,
+            ).execute(timed_plan)
+
+        self.assertEqual(result.status, TerminalStatus.ACCEPTED)
+        self.assertEqual(process.communicate_calls, [6.0])
+
+    def test_default_runner_does_not_restart_deadline_during_runtime_handoff(self) -> None:
+        clock = SequenceClock([0.0, 4.0, 5.0, 5.0])
+        process = SuccessfulProcess(success_jsonl(markers_for("nonce-1")))
+        timed_plan = replace(plan(), budget=replace(plan().budget, max_wall_seconds=10))
+        with patch("sharednet.runtime.codex.subprocess.Popen", return_value=process):
+            result = CodexRuntime(
+                binary="/real/codex",
+                nonce_factory=lambda: "nonce-1",
+                clock=clock,
+            ).execute(timed_plan)
+
+        self.assertEqual(result.status, TerminalStatus.ACCEPTED)
+        self.assertEqual(process.communicate_calls, [5.0])
+
+    def test_deadline_exhaustion_at_default_runner_handoff_does_not_launch(self) -> None:
+        clock = SequenceClock([0.0, 4.0, 10.0])
+        launches: list[list[str]] = []
+
+        def record_launch(command, **kwargs):
+            launches.append(command)
+            return SuccessfulProcess(success_jsonl(markers_for("nonce-1")))
+
+        timed_plan = replace(plan(), budget=replace(plan().budget, max_wall_seconds=10))
+        with patch("sharednet.runtime.codex.subprocess.Popen", side_effect=record_launch):
+            result = CodexRuntime(
+                binary="/real/codex",
+                nonce_factory=lambda: "nonce-1",
+                clock=clock,
+            ).execute(timed_plan)
+
+        self.assertEqual(result.status, TerminalStatus.EXHAUSTED)
+        self.assertEqual(result.error, "codex_exec_timeout")
+        self.assertEqual(launches, [])
+
     def test_command_places_global_safety_flags_before_exec(self) -> None:
         runner = RecordingRunner(ProcessOutcome(0, success_jsonl(markers_for("nonce-1")), "", False))
 
-        CodexRuntime(binary="/real/codex", runner=runner, nonce_factory=lambda: "nonce-1").execute(plan())
+        CodexRuntime(
+            binary="/real/codex",
+            runner=runner,
+            nonce_factory=lambda: "nonce-1",
+            clock=ManualClock(),
+        ).execute(plan())
 
         self.assertEqual(
             runner.command[:7],
