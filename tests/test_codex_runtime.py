@@ -9,6 +9,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import warnings
@@ -73,7 +74,10 @@ def expected_child_spawn_prompt(
     marker: str,
 ) -> str:
     """Mirror the complete provider-boundary payload used by a native child."""
-    task = target_plan.to_dict()["runtime_instructions"]["task"]
+    runtime_instructions = target_plan.to_dict()["runtime_instructions"]
+    task = runtime_instructions.get("task")
+    if not isinstance(task, dict):
+        task = {"task_id": target_plan.task_id, "runtime_instructions": runtime_instructions}
     return json.dumps(
         {
             "task": task,
@@ -86,7 +90,10 @@ def expected_child_spawn_prompt(
             "marker": marker,
             "response_contract": {
                 "format": "marker-first-line-then-content",
-                "content": "Complete the assigned work with a nonempty contribution grounded in the task payload.",
+                "content": (
+                    "Complete the assigned work, satisfy every task acceptance criterion, and ground a nonempty "
+                    "contribution in the task payload."
+                ),
             },
         },
         sort_keys=True,
@@ -319,6 +326,7 @@ class KillCleanupProcess:
         self.stderr = FakePipe()
         self.communicate_calls: list[float | None] = []
         self.wait_calls: list[float | None] = []
+        self.reaped = threading.Event()
         self.terminated = False
         self.killed = False
 
@@ -335,6 +343,22 @@ class KillCleanupProcess:
     def wait(self, timeout: float | None = None) -> int:
         self.wait_calls.append(timeout)
         self.returncode = -9
+        self.reaped.set()
+        return self.returncode
+
+
+class BlockingReapProcess(KillCleanupProcess):
+    def __init__(self) -> None:
+        super().__init__()
+        self.wait_started = threading.Event()
+        self.release_wait = threading.Event()
+
+    def wait(self, timeout: float | None = None) -> int:
+        self.wait_calls.append(timeout)
+        self.wait_started.set()
+        self.release_wait.wait(2.0)
+        self.returncode = -9
+        self.reaped.set()
         return self.returncode
 
 
@@ -385,6 +409,24 @@ class CodexRuntimeTests(unittest.TestCase):
 
         self.assertEqual(result.status, TerminalStatus.ACCEPTED)
         self.assertEqual(runner.timeout, 6.0)
+
+    def test_execute_until_does_not_launch_when_the_caller_deadline_has_arrived(self) -> None:
+        clock = ManualClock()
+        clock.advance(10)
+        runner = RecordingRunner(ProcessOutcome(0, success_jsonl(markers_for("nonce-1")), "", False))
+        runtime = CodexRuntime(
+            binary="/real/codex",
+            runner=runner,
+            nonce_factory=lambda: "nonce-1",
+            clock=clock,
+        )
+
+        result = runtime.execute_until(plan(), monotonic_deadline=10.0)
+
+        self.assertEqual(result.status, TerminalStatus.EXHAUSTED)
+        self.assertEqual(result.error, "codex_exec_timeout")
+        self.assertEqual(result.runtime_evidence["timeout_phase"], "setup")
+        self.assertEqual(runner.command, [])
 
     def test_setup_time_reduces_the_relative_allowance_passed_to_the_runner(self) -> None:
         clock = ManualClock()
@@ -884,6 +926,45 @@ class CodexRuntimeTests(unittest.TestCase):
         self.assertEqual(result.status, TerminalStatus.FAILED)
         self.assertEqual(result.error, "missing_native_spawn_evidence")
 
+    def test_spawn_prompt_json_must_preserve_value_types_and_reject_duplicate_keys(self) -> None:
+        typed_plan = replace(
+            plan(),
+            runtime_instructions={
+                **plan().to_dict()["runtime_instructions"],
+                "task": {
+                    **plan().to_dict()["runtime_instructions"]["task"],
+                    "input_data": {"enabled": True},
+                },
+            },
+        )
+        for mutation in ("boolean_as_integer", "duplicate_marker"):
+            with self.subTest(mutation=mutation):
+                events = success_events(markers_for("nonce-1", typed_plan), typed_plan)
+                for event in events:
+                    item = event.get("item")
+                    if not isinstance(item, dict) or item.get("id") != "spawn-1":
+                        continue
+                    prompt = item["prompt"]
+                    if mutation == "boolean_as_integer":
+                        payload = json.loads(prompt)
+                        payload["task"]["input_data"]["enabled"] = 1
+                        item["prompt"] = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+                    else:
+                        marker = json.loads(prompt)["marker"]
+                        item["prompt"] = f'{prompt[:-1]},"marker":{json.dumps(marker)}}}'
+                runner = RecordingRunner(
+                    ProcessOutcome(0, "\n".join(json.dumps(event) for event in events), "", False)
+                )
+
+                result = CodexRuntime(
+                    binary="/real/codex",
+                    runner=runner,
+                    nonce_factory=lambda: "nonce-1",
+                ).execute(typed_plan)
+
+                self.assertEqual(result.status, TerminalStatus.FAILED)
+                self.assertEqual(result.error, "missing_native_spawn_evidence")
+
     def test_root_cannot_fabricate_a_worker_output_not_returned_by_that_child(self) -> None:
         events = success_events(markers_for("nonce-1"))
         final_event = structured_final_event(events)
@@ -1368,6 +1449,27 @@ class CodexRuntimeTests(unittest.TestCase):
         self.assertIn("Never wait on the same completed child twice", prompt)
         self.assertIn("[[sharednet:nonce-1:root]]", prompt)
 
+    def test_prompt_materializes_the_runtime_task_fallback_for_direct_legacy_plans(self) -> None:
+        legacy_plan = replace(plan(), runtime_instructions={"goal": "Legacy direct plan."})
+
+        prompt = build_codex_prompt(legacy_plan, "nonce-1")
+        payload = json.loads(prompt.split("Plan and required markers:\n", 1)[1])
+
+        self.assertEqual(
+            payload["plan"]["runtime_instructions"]["task"],
+            {
+                "task_id": legacy_plan.task_id,
+                "runtime_instructions": {"goal": "Legacy direct plan."},
+            },
+        )
+
+        runner = RecordingRunner(
+            ProcessOutcome(0, success_jsonl(markers_for("nonce-1", legacy_plan), legacy_plan), "", False)
+        )
+        result = CodexRuntime(binary="/real/codex", runner=runner, nonce_factory=lambda: "nonce-1").execute(legacy_plan)
+
+        self.assertEqual(result.status, TerminalStatus.ACCEPTED)
+
     def test_one_turn_prompt_never_directs_a_child_spawn(self) -> None:
         single_participant_plan = replace(
             plan(),
@@ -1535,10 +1637,31 @@ class CodexRuntimeTests(unittest.TestCase):
         self.assertEqual(outcome.stdout, "partial-out")
         self.assertEqual(outcome.stderr, "partial-err")
         self.assertTrue(process.killed)
-        self.assertEqual(len(process.wait_calls), 1)
-        self.assertGreater(process.wait_calls[0] or 0, 0)
+        self.assertTrue(process.reaped.wait(1.0))
+        self.assertEqual(process.wait_calls, [None])
+        self.assertEqual(process.returncode, -9)
+        self.assertEqual(process.communicate_calls[-1], 1.0)
         self.assertTrue(process.stdout.closed)
         self.assertTrue(process.stderr.closed)
+
+    def test_default_runner_uses_timeout_exit_sentinel_while_background_reap_is_pending(self) -> None:
+        process = BlockingReapProcess()
+        clock = ManualClock()
+        try:
+            with patch("sharednet.runtime.codex.subprocess.Popen", return_value=process):
+                outcome = _default_runner(["codex"], 0.01, clock=clock, deadline=0.01)
+
+            self.assertTrue(process.wait_started.wait(1.0))
+            self.assertTrue(outcome.timed_out)
+            self.assertEqual(outcome.returncode, 124)
+            self.assertEqual(process.wait_calls, [None])
+            self.assertIsNone(process.returncode)
+            self.assertTrue(process.stdout.closed)
+            self.assertTrue(process.stderr.closed)
+        finally:
+            process.release_wait.set()
+        self.assertTrue(process.reaped.wait(1.0))
+        self.assertEqual(process.returncode, -9)
 
     def test_default_runner_reaps_a_real_short_lived_process_after_timeout(self) -> None:
         started = time.monotonic()

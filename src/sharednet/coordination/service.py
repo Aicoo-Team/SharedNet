@@ -7,7 +7,7 @@ import time
 from typing import Callable, Mapping
 
 from .costs import remaining_cost as subtract_cost, sum_costs, to_decimal
-from .interface import CoordinationBackend, CoordinationRuntime
+from .interface import CoordinationBackend, CoordinationRuntime, DeadlineAwareCoordinationRuntime
 from .models import AttemptSummary, CoordinationPlan, CoordinationRequest, CoordinationResult, TerminalStatus
 from .registry import get_backend
 
@@ -98,7 +98,10 @@ class CoordinationService:
                     usage=usage,
                 )
 
-            result = runtime.execute(plan)
+            if isinstance(runtime, DeadlineAwareCoordinationRuntime):
+                result = runtime.execute_until(plan, monotonic_deadline=deadline)
+            else:
+                result = runtime.execute(plan)
             planned_turns = len(plan.participants)
             attempt_usage = dict(result.usage)
             attempt_usage["planned_turns"] = planned_turns

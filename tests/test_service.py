@@ -91,6 +91,16 @@ class ScriptedRuntime:
         return next(self._outcomes)(plan)
 
 
+class DeadlineAwareScriptedRuntime(ScriptedRuntime):
+    def __init__(self, outcomes) -> None:
+        super().__init__(outcomes)
+        self.monotonic_deadlines: list[float] = []
+
+    def execute_until(self, plan, *, monotonic_deadline: float):
+        self.monotonic_deadlines.append(monotonic_deadline)
+        return self.execute(plan)
+
+
 class ManualClock:
     def __init__(self) -> None:
         self.now = 0.0
@@ -692,6 +702,25 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(runtime.plans[0].budget.max_wall_seconds, 10)
         self.assertEqual(runtime.plans[1].budget.max_wall_seconds, 6)
         self.assertGreater(runtime.plans[1].budget.max_wall_seconds, 0)
+
+    def test_execute_passes_one_absolute_deadline_to_a_deadline_aware_runtime(self) -> None:
+        from sharednet.coordination.service import CoordinationService
+
+        clock = ManualClock()
+
+        def fail_after_four_seconds(plan):
+            clock.advance(4)
+            return failed_result(plan, ("self",))
+
+        request = adaptive_request(max_retries=1)
+        request = replace(request, budget=replace(request.budget, max_wall_seconds=10))
+        runtime = DeadlineAwareScriptedRuntime([fail_after_four_seconds, accepted_result])
+
+        result = CoordinationService(clock=clock).execute(request, runtime)
+
+        self.assertEqual(result.status, TerminalStatus.ACCEPTED)
+        self.assertEqual(runtime.monotonic_deadlines, [10.0, 10.0])
+        self.assertEqual([plan.budget.max_wall_seconds for plan in runtime.plans], [10, 6])
 
     def test_execute_stops_before_replanning_when_wall_deadline_is_exhausted(self) -> None:
         from sharednet.coordination.backends.rac_adaptive import RacAdaptiveBackend

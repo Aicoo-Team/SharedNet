@@ -10,6 +10,7 @@ import secrets
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from typing import Any, Callable, Mapping, Sequence
 
@@ -29,7 +30,10 @@ _MAX_RETAINED_PROOF_RECORDS = 128
 _SUCCESSFUL_SPAWN_CHILD_STATES = frozenset({"pending_init", "in_progress", "running", "completed"})
 _CHILD_RESPONSE_CONTRACT = {
     "format": "marker-first-line-then-content",
-    "content": "Complete the assigned work with a nonempty contribution grounded in the task payload.",
+    "content": (
+        "Complete the assigned work, satisfy every task acceptance criterion, and ground a nonempty contribution "
+        "in the task payload."
+    ),
 }
 
 
@@ -99,8 +103,12 @@ def build_codex_prompt(plan: CoordinationPlan, nonce: str) -> str:
     markers = {participant.candidate_id: f"[[sharednet:{nonce}:{participant.candidate_id}]]" for participant in participants}
     root_id = participants[0].candidate_id
     child_count = len(participants) - 1
+    plan_payload = plan.to_dict()
+    runtime_instructions = plan_payload["runtime_instructions"]
+    if not isinstance(runtime_instructions.get("task"), Mapping):
+        runtime_instructions["task"] = _effective_task_payload(plan)
     payload = {
-        "plan": plan.to_dict(),
+        "plan": plan_payload,
         "markers": markers,
         "child_response_contract": _CHILD_RESPONSE_CONTRACT,
     }
@@ -110,8 +118,7 @@ def build_codex_prompt(plan: CoordinationPlan, nonce: str) -> str:
         "Markdown fences, containing exactly `task`, `participant`, `marker`, and `response_contract`. Copy `task` "
         "exactly from `plan.runtime_instructions.task`. The `participant` object must contain exactly that candidate's "
         "`candidate_id`, `role`, `assignment`, and `capabilities` from the plan. Copy exactly that candidate's exact marker "
-        "and the supplied child response contract. JSON key order and "
-        "insignificant whitespace may vary. Each child "
+        "and the supplied child response contract. JSON key order and insignificant whitespace may vary. Each child "
         "must return its marker as its first line and its nonempty contribution after that line. Wait for every child "
         "before replying. In final `outputs`, copy each non-root child's contribution body exactly; do not summarize, "
         "rewrite, or fabricate worker output. "
@@ -693,36 +700,53 @@ def _default_runner(
             if remaining <= 0:
                 process.kill()
                 final_stdout, final_stderr = _collect_killed_process(process, timeout_error)
-                return ProcessOutcome(process.returncode or 0, final_stdout, final_stderr, True)
+                return ProcessOutcome(_timeout_returncode(process), final_stdout, final_stderr, True)
             try:
                 final_stdout, final_stderr = process.communicate(timeout=min(_TERMINATE_GRACE_SECONDS, remaining))
             except subprocess.TimeoutExpired as terminate_error:
                 process.kill()
                 final_stdout, final_stderr = _collect_killed_process(process, terminate_error)
-            return ProcessOutcome(process.returncode or 0, _as_text(final_stdout), _as_text(final_stderr), True)
+            return ProcessOutcome(_timeout_returncode(process), _as_text(final_stdout), _as_text(final_stderr), True)
 
 
 def _collect_killed_process(
     process: subprocess.Popen[bytes],
     prior_timeout: subprocess.TimeoutExpired,
 ) -> tuple[str, str]:
-    """Reap a killed process within a bounded OS-cleanup allowance and close its pipes."""
+    """Collect bounded output and ensure a killed process is eventually reaped."""
     stdout = prior_timeout.output
     stderr = prior_timeout.stderr
+    needs_background_reap = False
     try:
         stdout, stderr = process.communicate(timeout=_PROCESS_REAP_ALLOWANCE_SECONDS)
     except subprocess.TimeoutExpired as kill_error:
         stdout = kill_error.output if kill_error.output is not None else prior_timeout.output
         stderr = kill_error.stderr if kill_error.stderr is not None else prior_timeout.stderr
-        try:
-            process.wait(timeout=_PROCESS_REAP_ALLOWANCE_SECONDS)
-        except subprocess.TimeoutExpired:
-            pass
+        needs_background_reap = True
     finally:
         for pipe in (getattr(process, "stdout", None), getattr(process, "stderr", None)):
             if pipe is not None:
                 pipe.close()
+    if needs_background_reap:
+        _reap_in_background(process)
     return _as_text(stdout), _as_text(stderr)
+
+
+def _reap_in_background(process: subprocess.Popen[bytes]) -> None:
+    """Hold the process strongly until the OS makes its killed child reapable."""
+
+    def reap() -> None:
+        try:
+            process.wait()
+        except (ChildProcessError, OSError):
+            return
+
+    threading.Thread(target=reap, name="sharednet-codex-reaper", daemon=True).start()
+
+
+def _timeout_returncode(process: subprocess.Popen[bytes]) -> int:
+    """Return the observed status or the conventional timeout sentinel while reap is pending."""
+    return process.returncode if process.returncode is not None else 124
 
 
 def _as_text(value: str | bytes | None) -> str:
@@ -849,7 +873,7 @@ def _native_coordination_proof(
         matches = [
             participant_id
             for participant_id, expected_payload in expected_spawn_payloads.items()
-            if decoded_prompt == expected_payload
+            if decoded_prompt is not None and _canonical_json(decoded_prompt) == _canonical_json(expected_payload)
         ]
         if len(matches) != 1:
             valid = False
@@ -897,11 +921,7 @@ def _expected_child_spawn_payloads(
     expected_markers: Mapping[str, str],
 ) -> dict[str, Mapping[str, Any]]:
     """Describe the exact JSON data each planned native child must receive."""
-    plan_data = plan.to_dict()
-    runtime_instructions = plan_data["runtime_instructions"]
-    task = runtime_instructions.get("task")
-    if not isinstance(task, Mapping):
-        task = {"task_id": plan.task_id, "runtime_instructions": runtime_instructions}
+    task = _effective_task_payload(plan)
     return {
         participant.candidate_id: {
             "task": task,
@@ -918,12 +938,34 @@ def _expected_child_spawn_payloads(
     }
 
 
+def _effective_task_payload(plan: CoordinationPlan) -> Mapping[str, Any]:
+    """Return the explicit task or a materialized legacy direct-plan fallback."""
+    runtime_instructions = plan.to_dict()["runtime_instructions"]
+    task = runtime_instructions.get("task")
+    if isinstance(task, Mapping):
+        return task
+    return {"task_id": plan.task_id, "runtime_instructions": runtime_instructions}
+
+
 def _decode_child_spawn_prompt(prompt: str) -> Mapping[str, Any] | None:
     try:
-        value = json.loads(prompt)
-    except (TypeError, json.JSONDecodeError):
+        value = json.loads(prompt, object_pairs_hook=_json_object_without_duplicates)
+    except (TypeError, ValueError):
         return None
     return value if isinstance(value, Mapping) else None
+
+
+def _json_object_without_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("duplicate JSON object key")
+        value[key] = item
+    return value
+
+
+def _canonical_json(value: Mapping[str, Any]) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
 def _child_contribution_body(message: str, marker: str) -> str | None:
