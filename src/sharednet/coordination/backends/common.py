@@ -99,7 +99,7 @@ def make_plan(
         participants=tuple(participants),
         edges=tuple(edges),
         decision_trace=tuple(trace),
-        runtime_instructions=runtime_instructions,
+        runtime_instructions={**runtime_instructions, "task": request.task.to_dict()},
         budget=request.budget,
         terminal_status=terminal_status,
     )

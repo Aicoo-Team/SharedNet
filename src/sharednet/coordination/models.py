@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+import json
 import math
 from types import MappingProxyType
 from typing import Any, Mapping
@@ -274,6 +275,14 @@ class CoordinationRequest:
             raise ValueError("task must be a TaskSpec")
         if not isinstance(self.budget, CoordinationBudget):
             raise ValueError("budget must be a CoordinationBudget")
+        task_payload = json.dumps(
+            self.task.to_dict(),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        if len(task_payload) > self.budget.max_disclosure_bytes:
+            raise ValueError("task exceeds max_disclosure_bytes")
         candidates = tuple(self.candidates)
         if not all(isinstance(candidate, Candidate) for candidate in candidates):
             raise ValueError("candidates must contain Candidate values")

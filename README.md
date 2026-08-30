@@ -19,7 +19,7 @@ The first product milestone is **Local Organization**: one Principal gives a nat
 
 SharedNet includes four deterministic coordination planners: `discovery-and-use`, `rac-rge`, `rac-adaptive`, and `peer-forum`. They are default baselines for inspecting bounded coordination behavior, not claims of benchmark-winning performance. The compatibility spelling `rac-adpt` resolves to the canonical `rac-adaptive` mechanism; plans and results always record the canonical identity.
 
-Plan locally and offline (this does not construct or invoke a model runtime):
+From a source checkout, plan locally and offline (this does not construct or invoke a model runtime):
 
 ```console
 sharednet coord list

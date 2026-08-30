@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -21,12 +22,18 @@ EXAMPLE_REQUEST = REPOSITORY_ROOT / "examples" / "four-agent-task.json"
 
 
 def run_cli(*arguments: str) -> subprocess.CompletedProcess[str]:
+    environment = os.environ.copy()
+    source_directory = str(REPOSITORY_ROOT / "src")
+    environment["PYTHONPATH"] = os.pathsep.join(
+        path for path in (source_directory, environment.get("PYTHONPATH")) if path
+    )
     return subprocess.run(
         [sys.executable, "-m", "sharednet.cli", *arguments],
         cwd=REPOSITORY_ROOT,
         text=True,
         capture_output=True,
         check=False,
+        env=environment,
     )
 
 
