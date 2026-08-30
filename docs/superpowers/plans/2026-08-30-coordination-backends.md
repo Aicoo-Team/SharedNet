@@ -271,7 +271,7 @@ Expected: import failure for `sharednet.coordination.service`.
 
 - [ ] **Step 3: Implement bounded service loop**
 
-The service resolves the requested backend once, plans with an immutable `excluded` set, executes at most `max_retries + 1` attempts, aggregates usage numerically, records one `AttemptSummary` per call, and excludes only IDs the runtime attributes as failed. Every runtime call conservatively reserves that plan's `total_predicted_cost`; retries receive the remaining request-wide `max_cost`, and no remaining cost returns `status=EXHAUSTED` with `error="cost_budget_exhausted"`. A non-accepted result without attributable failures returns immediately; it is not retried blindly. Other retry exhaustion returns the last evidence with `status=EXHAUSTED` and `error="retry_budget_exhausted"`.
+The service resolves the requested backend once, plans with an immutable `excluded` set, executes at most `max_retries + 1` attempts, aggregates usage numerically, records one `AttemptSummary` per call, and excludes only IDs the runtime attributes as failed. Every runtime call conservatively reserves that plan's `total_predicted_cost`; retries receive the remaining request-wide `max_cost`, and no remaining cost returns `status=EXHAUSTED` with `error="cost_budget_exhausted"`. If a replan abstains for that same cost reason, the service returns the prior completed plan, attempt evidence, and usage as `EXHAUSTED` instead of discarding it; an initial abstention remains `ABSTAINED`. A non-accepted result without attributable failures returns immediately; it is not retried blindly. Other retry exhaustion returns the last evidence with `status=EXHAUSTED` and `error="retry_budget_exhausted"`.
 
 - [ ] **Step 4: Run service tests and verify GREEN**
 

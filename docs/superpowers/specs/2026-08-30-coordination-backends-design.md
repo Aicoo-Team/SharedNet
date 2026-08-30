@@ -81,7 +81,7 @@ peer-forum
 
 ### discovery-and-use
 
-Filter admitted, individually affordable candidates with full required-capability coverage, then rank by capability coverage multiplied by verification-backed trust, minus normalized cost, latency, and risk. When an admitted requester `SELF` is present, preserve its accountability: select the highest-ranked specialist whose cost plus `SELF` fits the cumulative ceiling. If none fits, abstain with `cost_budget_exhausted`; if the participant limit cannot hold the accountable pair, abstain with `participant_limit_reached`; do not silently drop `SELF`. A self-specialist can still execute alone. This is the smallest specialist-use path and abstains explicitly when no candidate qualifies.
+Filter admitted, individually affordable candidates with full required-capability coverage, then rank by capability coverage multiplied by verification-backed trust, minus normalized cost, latency, and risk. Resolve an admitted requester `SELF` from the immutable request snapshot, rather than the remaining-cost-filtered candidate set, and preserve its accountability: select the highest-ranked specialist whose cost plus `SELF` fits the cumulative ceiling. If the remaining ceiling no longer fits `SELF`, abstain with `cost_budget_exhausted`; if it is attempt-excluded, abstain with `requester_excluded`; if no pair fits, abstain with `cost_budget_exhausted`; and if the participant limit cannot hold the accountable pair, abstain with `participant_limit_reached`. Do not silently drop `SELF`. A self-specialist can still execute alone. This is the smallest specialist-use path and abstains explicitly when no candidate qualifies.
 
 ### rac-rge
 

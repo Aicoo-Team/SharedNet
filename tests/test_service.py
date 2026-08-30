@@ -6,10 +6,14 @@ from dataclasses import replace
 import unittest
 
 from sharednet.coordination.models import (
+    Candidate,
+    CandidateMode,
     CoordinationPlan,
+    CoordinationBudget,
     CoordinationRequest,
     CoordinationResult,
     ParticipantPlan,
+    TaskSpec,
     TerminalStatus,
 )
 from tests.fixtures import four_agent_request, linear_request
@@ -18,6 +22,20 @@ from tests.fixtures import four_agent_request, linear_request
 def adaptive_request(*, max_retries: int = 1) -> CoordinationRequest:
     request = four_agent_request(mechanism="rac-adaptive")
     return replace(request, budget=replace(request.budget, max_retries=max_retries))
+
+
+def discovery_cost_replan_request() -> CoordinationRequest:
+    return CoordinationRequest(
+        TaskSpec("discovery-cost-replan", "Use accountable specialist output.", ("analysis",), (), {}),
+        (
+            Candidate("self", CandidateMode.SELF, ("accountability",), True, "trusted", 0.5, 0.6, 0.1, 0.1),
+            Candidate("first-specialist", CandidateMode.RECRUIT, ("analysis",), True, "trusted", 1.0, 0.2, 0.1, 0.1),
+            Candidate("second-specialist", CandidateMode.RECRUIT, ("analysis",), True, "trusted", 0.8, 0.1, 0.1, 0.1),
+        ),
+        CoordinationBudget(max_cost=0.9, max_participants=2, max_retries=1),
+        "discovery-and-use",
+        "trace-discovery-cost-replan",
+    )
 
 
 def accepted_result(plan, *, usage: dict[str, int | float] | None = None) -> CoordinationResult:
@@ -159,8 +177,25 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(runtime.calls, 1)
         self.assertEqual(backend.budgets[0], 1.0)
         self.assertAlmostEqual(backend.budgets[1], 0.3)
-        self.assertEqual(result.status, TerminalStatus.ABSTAINED)
-        self.assertEqual(result.plan.stop_reason, "cost_budget_exhausted")
+        self.assertEqual(result.status, TerminalStatus.EXHAUSTED)
+        self.assertEqual(result.error, "cost_budget_exhausted")
+        self.assertEqual(result.plan, runtime.plans[0])
+        self.assertEqual(result.attempts[0].status, TerminalStatus.FAILED)
+
+    def test_execute_preserves_failed_evidence_when_discovery_cannot_afford_requester_on_replan(self) -> None:
+        from sharednet.coordination.service import CoordinationService
+
+        runtime = ScriptedRuntime([lambda plan: failed_result(plan, ("first-specialist",), usage={"tokens": 7})])
+        result = CoordinationService().execute(discovery_cost_replan_request(), runtime)
+
+        self.assertEqual(runtime.calls, 1)
+        self.assertEqual(runtime.plans[0].participant_ids, ("self", "first-specialist"))
+        self.assertEqual(result.status, TerminalStatus.EXHAUSTED)
+        self.assertEqual(result.error, "cost_budget_exhausted")
+        self.assertEqual(result.plan, runtime.plans[0])
+        self.assertEqual(result.runtime_evidence, {"source": "scripted", "attempt": 0})
+        self.assertEqual(result.usage, {"tokens": 7, "planned_turns": 2})
+        self.assertEqual(len(result.attempts), 1)
 
     def test_execute_exhausts_when_a_failed_attempt_reserves_the_entire_cost_budget(self) -> None:
         import sharednet.coordination.service as service_module

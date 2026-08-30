@@ -13,7 +13,16 @@ class DiscoveryAndUseBackend:
     _SELF_INTEGRATION_REASON = "accountable_requester_integrator_consumes_specialist_output"
 
     def plan(self, request: CoordinationRequest, *, excluded: frozenset[str] = frozenset()) -> CoordinationPlan:
+        requester = next(
+            (candidate for candidate in request.candidates if candidate.mode is CandidateMode.SELF and candidate.admitted),
+            None,
+        )
         eligible, trace = eligibility_trace(request, excluded)
+        if requester is not None:
+            if requester.candidate_id in excluded:
+                return abstained_plan(self.mechanism_id, request, excluded, trace, "requester_excluded")
+            if not cost_fits_budget(0, requester.predicted_cost, request.budget.max_cost):
+                return abstained_plan(self.mechanism_id, request, excluded, trace, "cost_budget_exhausted")
         if not eligible:
             return abstained_plan(self.mechanism_id, request, excluded, trace, "no_eligible_candidates")
 
@@ -27,7 +36,6 @@ class DiscoveryAndUseBackend:
         if not specialists:
             return abstained_plan(self.mechanism_id, request, excluded, trace, "no_complete_coverage_candidate")
 
-        requester = next((candidate for candidate in eligible if candidate.mode is CandidateMode.SELF), None)
         compatible_specialists = []
         for candidate in specialists:
             if (

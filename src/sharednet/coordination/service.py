@@ -78,6 +78,12 @@ class CoordinationService:
                 )
             plan = replace(plan, budget=replace(plan.budget, max_wall_seconds=execution_wall_seconds))
             if plan.terminal_status is TerminalStatus.ABSTAINED:
+                if last_completed is not None and plan.stop_reason == "cost_budget_exhausted":
+                    return replace(
+                        last_completed,
+                        status=TerminalStatus.EXHAUSTED,
+                        error="cost_budget_exhausted",
+                    )
                 return CoordinationResult(
                     status=TerminalStatus.ABSTAINED,
                     plan=plan,

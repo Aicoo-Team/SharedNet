@@ -109,6 +109,39 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(plan.terminal_status, TerminalStatus.ABSTAINED)
         self.assertEqual(plan.stop_reason, "participant_limit_reached")
 
+    def test_discovery_abstains_when_snapshot_requester_is_unaffordable_after_replan(self) -> None:
+        request = self._request(
+            "discovery-and-use",
+            (
+                self._candidate("self", ("accountability",), 0.5, 0.6, CandidateMode.SELF),
+                self._candidate("specialist", ("analysis",), 0.8, 0.1),
+            ),
+            ("analysis",),
+            max_cost=0.1,
+        )
+
+        plan = DiscoveryAndUseBackend().plan(request)
+
+        self.assertEqual(plan.terminal_status, TerminalStatus.ABSTAINED)
+        self.assertEqual(plan.stop_reason, "cost_budget_exhausted")
+        self.assertEqual(plan.participants, ())
+
+    def test_discovery_abstains_when_snapshot_requester_is_attempt_excluded(self) -> None:
+        request = self._request(
+            "discovery-and-use",
+            (
+                self._candidate("self", ("accountability",), 0.5, 0.1, CandidateMode.SELF),
+                self._candidate("specialist", ("analysis",), 0.8, 0.1),
+            ),
+            ("analysis",),
+            max_cost=1.0,
+        )
+
+        plan = DiscoveryAndUseBackend().plan(request, excluded=frozenset({"self"}))
+
+        self.assertEqual(plan.terminal_status, TerminalStatus.ABSTAINED)
+        self.assertEqual(plan.stop_reason, "requester_excluded")
+
     def test_every_planner_stops_at_cumulative_cost_budget(self) -> None:
         candidates = (
             self._candidate("self", ("a",), 1.0, 0.5, CandidateMode.SELF),
