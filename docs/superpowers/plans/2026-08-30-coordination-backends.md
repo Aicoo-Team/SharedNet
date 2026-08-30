@@ -15,9 +15,11 @@
 - SharedNet owns the request, immutable Candidate Snapshot, retry loop, and trace; a backend never mutates durable product state.
 - Canonical mechanisms are ordered `discovery-and-use`, `rac-rge`, `rac-adaptive`, `peer-forum`; `rac-adpt` is an alias only.
 - Admission happens before scoring and experience never admits a candidate.
-- Candidate modes are exactly `SELF`, `RECRUIT`, and `SPAWN`.
+- Candidate modes are exactly `SELF`, `RECRUIT`, and `SPAWN`; `ParticipantPlan` copies the selected Candidate Snapshot mode unchanged. `RECRUIT`/`SPAWN` are organization authority, while a native Codex child thread is execution transport and never escalates a participant's mode.
 - Every run enforces wall-time, turn, depth, retry, participant, disclosure, and provider-neutral predicted-cost limits. Each runtime invocation conservatively reserves its plan's total predicted cost, even after an attributable failed attempt; replans receive only the request-wide remainder.
+- Predicted-cost comparisons use shared exact decimal helpers: exact bounds pass and every positive overage fails without tolerance. A cost-rejected empty eligible set reports `cost_budget_exhausted`, and policy rejection traces preserve the snapshot's `admission_reason`.
 - Runtime execution defaults to `read-only`, `approval=never`, `ephemeral`, and no user config.
+- Production Codex runs from a fresh empty temporary working directory and accepts only exact root-authored successful spawns, completed waits for the same children, and marker-bound child contributions; disallowed data-only tool activity fails closed.
 - Offline tests make no provider calls. The live test is gated by `RUN_CODEX_E2E=1`.
 - Borrowed RAC logic retains the upstream MIT notice and source provenance.
 
@@ -37,7 +39,7 @@
 - Create: `tests/test_primitives.py`
 
 **Interfaces:**
-- Produces: `CandidateMode`, `TerminalStatus`, `TaskSpec`, `CoordinationBudget`, `Candidate`, `CoordinationRequest`, `ParticipantPlan`, `GraphEdge`, `CoordinationPlan`, `AgentOutput`, `AttemptSummary`, `CoordinationResult`.
+- Produces: `CandidateMode`, `TerminalStatus`, `TaskSpec`, `CoordinationBudget`, `Candidate`, `CoordinationRequest`, `ParticipantPlan`, `GraphEdge`, `CoordinationPlan`, `AgentOutput`, `AttemptSummary`, `CoordinationResult`, plus exact predicted-cost helpers `to_decimal`, `sum_costs`, `fits_cost_budget`, and `remaining_cost`.
 - Produces: `CoordinationBackend.plan(request, *, excluded=frozenset())` and `CoordinationRuntime.execute(plan)` protocols.
 - Produces: `verified_experience`, `candidate_utility`, `LocalBudget`, `BudgetExceeded`, `attenuation_failure`, and `AppendOnlyForum`.
 
@@ -74,7 +76,7 @@ Expected: import failure for `sharednet.coordination.models`.
 
 - [ ] **Step 3: Implement frozen JSON-safe contracts and protocols**
 
-Use frozen dataclasses and enums. `CoordinationBudget` defaults are `max_wall_seconds=300`, `max_turns=16`, `max_depth=2`, `max_participants=4`, `max_retries=1`, `max_disclosure_bytes=65536`, and `max_cost=1.0`. `max_cost` is a positive finite provider-neutral ceiling on summed selected `predicted_cost`; actual provider tokens remain evidence and are never converted to a price. Copy each selected candidate's nonnegative finite `predicted_cost` to `ParticipantPlan` (default `0` for compatibility), expose the plan's total predicted cost, and reject a plan over the ceiling. Validate positive numeric bounds, nonempty IDs/goals/capabilities, unique candidates/participants, participant count, edge endpoints, dependencies, and cumulative selected cost. Every public value implements `to_dict()` with stable camel-free snake_case keys.
+Use frozen dataclasses and enums. `CoordinationBudget` defaults are `max_wall_seconds=300`, `max_turns=16`, `max_depth=2`, `max_participants=4`, `max_retries=1`, `max_disclosure_bytes=65536`, and `max_cost=1.0`. `max_cost` is a positive finite provider-neutral ceiling on summed selected `predicted_cost`; actual provider tokens remain evidence and are never converted to a price. Copy each selected candidate's nonnegative finite `predicted_cost` to `ParticipantPlan` (default `0` for compatibility) and copy its `mode` unchanged (default `RECRUIT` for compatible construction), expose the plan's total predicted cost, and reject a plan over the ceiling. Validate positive numeric bounds, nonempty IDs/goals/capabilities, unique candidates/participants, participant count, edge endpoints, dependencies, and exact decimal cumulative selected cost. Every public value implements `to_dict()` with stable camel-free snake_case keys.
 
 ```python
 class CoordinationBackend(Protocol):
@@ -191,7 +193,7 @@ Expected: imports for backend modules fail.
 
 - [ ] **Step 3: Implement shared selection helpers and the four planners**
 
-`eligible_candidates()` removes non-admitted and attempt-excluded candidates before any score is computed. `discovery-and-use` chooses the best complete-coverage specialist. `rac-rge` greedily expands uncovered capabilities and assigns each new node to the selected node with greatest overlap, subject to depth and participant limits. `rac-adaptive` adds only candidates whose utility minus `0.10` coordination overhead is positive. `peer-forum` greedily maximizes complementary coverage and assigns the final selected `SELF` candidate as integrator, or the best generalist if no `SELF` candidate is admitted.
+`eligible_candidates()` removes non-admitted, individually unaffordable, and attempt-excluded candidates before any score is computed. Its trace retains the actual policy `admission_reason`, and cost-caused emptiness reports `cost_budget_exhausted`. `discovery-and-use` chooses the best complete-coverage specialist. `rac-rge` rejects roots without positive required-capability contribution, then greedily expands uncovered capabilities and assigns each new node to the selected node with greatest overlap, subject to depth and participant limits. `rac-adaptive` adds only candidates whose utility minus `0.10` coordination overhead is positive and reports `coverage_complete` before a participant cap when `SELF` already covers the task. `peer-forum` greedily maximizes complementary coverage and places the designated admitted `SELF` integrator at participant zero, or the best selected generalist if no `SELF` candidate is admitted; peers follow and contribute through peer-to-integrator edges.
 
 Every plan trace includes `candidate_considered`, `candidate_rejected`, `candidate_selected`, `edge_added`, and `planning_stopped` records as applicable. An empty admitted set returns a plan with `terminal_status="abstained"`, no participants, and an explicit reason rather than raising.
 
@@ -335,7 +337,7 @@ Expected: import failure for `sharednet.runtime.codex`.
 
 Resolve the binary from constructor, `SHAREDNET_CODEX_BINARY`, the ChatGPT app bundle, then `shutil.which("codex")`; run `--version` only in `availability()`, not before every task. `_default_runner` uses `subprocess.Popen`, `communicate(timeout=...)`, `terminate()`, a 10-second grace, then `kill()`. Parse stdout line-by-line and ignore only non-JSON diagnostic lines. Preserve raw event count, collaboration event records, spawned agent thread IDs, root thread ID, final agent message, usage, exit code, and the last 4,000 stderr characters.
 
-The prompt embeds JSON for the plan and exact markers. For `N` participants, it tells the root to represent participant zero, issue exactly `N-1` parallel `spawn_agent` calls, wait for every child, and return a JSON object containing all markers and contributions. It forbids file/shell/web tools for the data-only smoke.
+The prompt embeds JSON for the plan and exact markers. For `N` participants, it tells the root to represent participant zero, issue exactly `N-1` parallel `spawn_agent` calls, wait for every child, and return a JSON object containing all markers and contributions. Production launches in a fresh empty temporary working directory. Acceptance requires exactly `N-1` successful root-authored spawn events, completed root-authored waits covering those same children, and marker-bound child contributions. It forbids file/shell/web tools for the data-only smoke, and any such disallowed tool evidence fails closed.
 
 - [ ] **Step 4: Run runtime tests and verify GREEN**
 
@@ -439,6 +441,9 @@ class CodexLiveE2E(unittest.TestCase):
         self.assertEqual(result.status, TerminalStatus.ACCEPTED, result.error)
         self.assertEqual(len(result.outputs), 4)
         self.assertEqual(len(result.runtime_evidence["spawned_agent_ids"]), 3)
+        self.assertEqual(len(result.runtime_evidence["completed_child_ids"]), 3)
+        self.assertEqual(len(result.runtime_evidence["contributing_child_ids"]), 3)
+        self.assertTrue(result.runtime_evidence["native_proof_complete"])
         self.assertTrue(result.runtime_evidence["thread_id"])
         self.assertGreater(result.usage["input_tokens"] + result.usage["output_tokens"], 0)
         for output in result.outputs:

@@ -169,6 +169,78 @@ class BackendTests(unittest.TestCase):
                 plan = backend.plan(self._request(mechanism, candidates, ("a", "b"), max_cost=1.0, max_participants=1))
                 self.assertEqual(plan.stop_reason, "participant_limit_reached")
 
+    def test_every_backend_reports_cost_when_individual_cost_rejection_empties_eligibility(self) -> None:
+        candidates = (
+            self._candidate("too-expensive", ("analysis",), 1.0, 1.0000000000000002),
+        )
+        for mechanism, backend in (
+            ("discovery-and-use", DiscoveryAndUseBackend()),
+            ("rac-rge", RacRgeBackend()),
+            ("rac-adaptive", RacAdaptiveBackend()),
+            ("peer-forum", PeerForumBackend()),
+        ):
+            with self.subTest(mechanism=mechanism):
+                plan = backend.plan(self._request(mechanism, candidates, ("analysis",), max_cost=1.0))
+                self.assertEqual(plan.terminal_status, TerminalStatus.ABSTAINED)
+                self.assertEqual(plan.stop_reason, "cost_budget_exhausted")
+
+    def test_every_backend_reports_cost_when_retry_exclusion_and_cost_empty_eligibility(self) -> None:
+        candidates = (
+            self._candidate("attempt-failed", ("analysis",), 0.9, 0.1),
+            self._candidate("too-expensive", ("analysis",), 1.0, 1.1),
+            Candidate(
+                "policy-denied",
+                CandidateMode.RECRUIT,
+                ("analysis",),
+                False,
+                "tenant_boundary_denied",
+                1.0,
+                0.1,
+                0.1,
+                0.1,
+            ),
+        )
+        for mechanism, backend in (
+            ("discovery-and-use", DiscoveryAndUseBackend()),
+            ("rac-rge", RacRgeBackend()),
+            ("rac-adaptive", RacAdaptiveBackend()),
+            ("peer-forum", PeerForumBackend()),
+        ):
+            with self.subTest(mechanism=mechanism):
+                plan = backend.plan(
+                    self._request(mechanism, candidates, ("analysis",), max_cost=1.0),
+                    excluded=frozenset({"attempt-failed"}),
+                )
+                self.assertEqual(plan.terminal_status, TerminalStatus.ABSTAINED)
+                self.assertEqual(plan.stop_reason, "cost_budget_exhausted")
+
+    def test_every_backend_preserves_policy_admission_reason_in_rejection_trace(self) -> None:
+        candidates = (
+            Candidate(
+                "policy-denied",
+                CandidateMode.RECRUIT,
+                ("analysis",),
+                False,
+                "cross_principal_grant_missing",
+                1.0,
+                0.1,
+                0.1,
+                0.1,
+            ),
+            self._candidate("admitted", ("analysis",), 0.8, 0.1),
+        )
+        for mechanism, backend in (
+            ("discovery-and-use", DiscoveryAndUseBackend()),
+            ("rac-rge", RacRgeBackend()),
+            ("rac-adaptive", RacAdaptiveBackend()),
+            ("peer-forum", PeerForumBackend()),
+        ):
+            with self.subTest(mechanism=mechanism):
+                plan = backend.plan(self._request(mechanism, candidates, ("analysis",), max_cost=1.0))
+                denied = next(event for event in plan.decision_trace if event.get("candidate_id") == "policy-denied")
+                self.assertEqual(denied["reason"], "not_admitted")
+                self.assertEqual(denied["admission_reason"], "cross_principal_grant_missing")
+
     def test_adaptive_reports_no_utility_before_cost_for_a_costly_unhelpful_candidate(self) -> None:
         request = self._request(
             "rac-adaptive",
@@ -199,10 +271,39 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(len(plan.edges), 3)
         self.assertEqual(set(plan.covered_capabilities), {"research", "architecture", "risk", "synthesis"})
 
+    def test_rge_rejects_roots_without_positive_task_specific_contribution(self) -> None:
+        request = self._request(
+            "rac-rge",
+            (
+                self._candidate("irrelevant-superstar", ("unrelated",), 1.0, 0.1),
+                self._candidate("negative-specialist", ("analysis", "synthesis"), 0.1, 0.8),
+                self._candidate("complete-specialist", ("analysis", "synthesis"), 0.6, 0.1),
+            ),
+            ("analysis", "synthesis"),
+            max_cost=1.0,
+        )
+
+        plan = RacRgeBackend().plan(request)
+
+        self.assertEqual(plan.participant_ids, ("complete-specialist",))
+        rejected = {
+            event["candidate_id"]: event["reason"]
+            for event in plan.decision_trace
+            if event.get("event") == "candidate_rejected" and event.get("candidate_id") in {"irrelevant-superstar", "negative-specialist"}
+        }
+        self.assertEqual(
+            rejected,
+            {
+                "irrelevant-superstar": "no_positive_task_contribution",
+                "negative-specialist": "no_positive_task_contribution",
+            },
+        )
+        self.assertEqual(plan.stop_reason, "coverage_complete")
+
     def test_adaptive_keeps_short_linear_task_with_self(self) -> None:
         plan = RacAdaptiveBackend().plan(linear_request())
         self.assertEqual(plan.participant_ids, ("self",))
-        self.assertIn("no_positive_marginal_utility", plan.stop_reason)
+        self.assertEqual(plan.stop_reason, "coverage_complete")
 
     def test_adaptive_excludes_failed_candidate_on_replan(self) -> None:
         request = specialist_request()
@@ -214,9 +315,18 @@ class BackendTests(unittest.TestCase):
         plan = PeerForumBackend().plan(four_agent_request(mechanism="peer-forum"))
         self.assertEqual(len(plan.participants), 4)
         self.assertEqual(plan.runtime_instructions["coordination"], "append-only-forum")
-        self.assertEqual(plan.participants[-1].role, "integrator")
+        self.assertEqual(plan.participant_ids[0], "self")
+        self.assertEqual(plan.participants[0].role, "integrator")
+        self.assertEqual(plan.participants[0].mode, CandidateMode.SELF)
+        peer_ids = plan.participant_ids[1:]
+        self.assertEqual(plan.participants[0].dependencies, peer_ids)
+        self.assertTrue(all(participant.role == "peer" for participant in plan.participants[1:]))
+        self.assertEqual(
+            {(edge.source, edge.target, edge.relation) for edge in plan.edges},
+            {(peer_id, "self", "contributes_to") for peer_id in peer_ids},
+        )
 
-    def test_peer_forum_keeps_admitted_self_as_final_integrator_when_generalist_covers_task(self) -> None:
+    def test_peer_forum_keeps_admitted_self_as_root_integrator_when_generalist_covers_task(self) -> None:
         request = CoordinationRequest(
             TaskSpec("forum-accountability", "Synthesize findings.", ("research", "risk"), (), {}),
             (
@@ -230,8 +340,68 @@ class BackendTests(unittest.TestCase):
 
         plan = PeerForumBackend().plan(request)
 
-        self.assertEqual(plan.participant_ids, ("generalist", "self"))
-        self.assertEqual(plan.participants[-1].role, "integrator")
+        self.assertEqual(plan.participant_ids, ("self", "generalist"))
+        self.assertEqual(plan.participants[0].role, "integrator")
+        self.assertEqual(plan.participants[0].dependencies, ("generalist",))
+
+    def test_all_planners_preserve_candidate_organization_modes(self) -> None:
+        for mechanism, backend in (
+            ("discovery-and-use", DiscoveryAndUseBackend()),
+            ("rac-rge", RacRgeBackend()),
+            ("rac-adaptive", RacAdaptiveBackend()),
+            ("peer-forum", PeerForumBackend()),
+        ):
+            with self.subTest(mechanism=mechanism):
+                request = four_agent_request(mechanism=mechanism)
+                plan = backend.plan(request)
+                modes = {candidate.candidate_id: candidate.mode for candidate in request.candidates}
+                self.assertTrue(plan.participants)
+                for item in plan.participants:
+                    self.assertEqual(item.mode, modes[item.candidate_id])
+
+    def test_exact_decimal_cost_bound_is_allowed_by_every_backend(self) -> None:
+        for mechanism, backend in (
+            ("discovery-and-use", DiscoveryAndUseBackend()),
+            ("rac-rge", RacRgeBackend()),
+            ("rac-adaptive", RacAdaptiveBackend()),
+            ("peer-forum", PeerForumBackend()),
+        ):
+            with self.subTest(mechanism=mechanism):
+                required = ("b",) if mechanism == "discovery-and-use" else ("a", "b")
+                request = self._request(
+                    mechanism,
+                    (
+                        self._candidate("self", ("a",), 1.0, 0.1, CandidateMode.SELF),
+                        self._candidate("worker", ("b",), 1.0, 0.2),
+                    ),
+                    required,
+                    max_cost=0.3,
+                )
+                plan = backend.plan(request)
+                self.assertEqual(plan.participant_ids, ("self", "worker"))
+                self.assertEqual(plan.total_predicted_cost, 0.3)
+
+    def test_positive_decimal_cost_overage_is_rejected_by_every_backend(self) -> None:
+        for mechanism, backend in (
+            ("discovery-and-use", DiscoveryAndUseBackend()),
+            ("rac-rge", RacRgeBackend()),
+            ("rac-adaptive", RacAdaptiveBackend()),
+            ("peer-forum", PeerForumBackend()),
+        ):
+            with self.subTest(mechanism=mechanism):
+                required = ("b",) if mechanism == "discovery-and-use" else ("a", "b")
+                request = self._request(
+                    mechanism,
+                    (
+                        self._candidate("self", ("a",), 1.0, 0.1, CandidateMode.SELF),
+                        self._candidate("worker", ("b",), 1.0, 0.20000000000000004),
+                    ),
+                    required,
+                    max_cost=0.3,
+                )
+                plan = backend.plan(request)
+                self.assertEqual(plan.stop_reason, "cost_budget_exhausted")
+                self.assertNotIn("worker", plan.participant_ids)
 
 
     def test_empty_eligible_set_abstains_with_inspectable_reason(self) -> None:
@@ -261,6 +431,7 @@ class BackendTests(unittest.TestCase):
         denied = next(event for event in plan.decision_trace if event.get("candidate_id") == "denied-superstar")
         self.assertEqual(denied["event"], "candidate_rejected")
         self.assertEqual(denied["reason"], "not_admitted")
+        self.assertEqual(denied["admission_reason"], "policy_denied")
 
     def test_adaptive_does_not_build_dependencies_deeper_than_budget(self) -> None:
         def candidate(candidate_id: str, capabilities: tuple[str, ...], quality: float, mode: CandidateMode = CandidateMode.RECRUIT) -> Candidate:
@@ -305,7 +476,7 @@ class BackendTests(unittest.TestCase):
         stop_events = [event for event in plan.decision_trace if event.get("event") == "planning_stopped"]
         self.assertEqual(stop_events, [{"event": "planning_stopped", "reason": "participant_limit_reached"}])
 
-    def test_adaptive_records_one_participant_limit_stop_event(self) -> None:
+    def test_adaptive_records_coverage_complete_before_participant_limit(self) -> None:
         request = linear_request()
         limited_request = CoordinationRequest(
             request.task,
@@ -318,8 +489,8 @@ class BackendTests(unittest.TestCase):
         plan = RacAdaptiveBackend().plan(limited_request)
 
         stop_events = [event for event in plan.decision_trace if event.get("event") == "planning_stopped"]
-        self.assertEqual(stop_events, [{"event": "planning_stopped", "reason": "participant_limit_reached"}])
-        self.assertEqual(plan.stop_reason, "participant_limit_reached")
+        self.assertEqual(stop_events, [{"event": "planning_stopped", "reason": "coverage_complete"}])
+        self.assertEqual(plan.stop_reason, "coverage_complete")
 
 
 if __name__ == "__main__":

@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
-import math
 
+from ..costs import fits_cost_budget
 from ..models import Candidate, CoordinationPlan, CoordinationRequest, GraphEdge, JsonValue, ParticipantPlan, TerminalStatus
 from ..primitives import candidate_utility
 
@@ -15,10 +15,17 @@ def eligibility_trace(request: CoordinationRequest, excluded: frozenset[str]) ->
     trace: list[dict[str, str]] = []
     for candidate in request.candidates:
         if not candidate.admitted:
-            trace.append({"event": "candidate_rejected", "candidate_id": candidate.candidate_id, "reason": "not_admitted"})
+            trace.append(
+                {
+                    "event": "candidate_rejected",
+                    "candidate_id": candidate.candidate_id,
+                    "reason": "not_admitted",
+                    "admission_reason": candidate.admission_reason,
+                }
+            )
         elif candidate.candidate_id in excluded:
             trace.append({"event": "candidate_rejected", "candidate_id": candidate.candidate_id, "reason": "attempt_excluded"})
-        elif not cost_fits_budget(0, candidate.predicted_cost, request.budget.max_cost):
+        elif not fits_cost_budget(0, candidate.predicted_cost, request.budget.max_cost):
             trace.append({"event": "candidate_rejected", "candidate_id": candidate.candidate_id, "reason": "individual_cost_exceeds_budget"})
         else:
             eligible.append(candidate)
@@ -26,10 +33,11 @@ def eligibility_trace(request: CoordinationRequest, excluded: frozenset[str]) ->
     return tuple(eligible), trace
 
 
-def cost_fits_budget(current_cost: float, addition_cost: float, max_cost: float) -> bool:
-    """Permit exact cost-bound selections while rejecting real overages."""
-    total = math.fsum((current_cost, addition_cost))
-    return total < max_cost or math.isclose(total, max_cost, rel_tol=0.0, abs_tol=1e-12)
+def empty_eligibility_stop_reason(trace: Sequence[Mapping[str, str]]) -> str:
+    """Distinguish policy/search emptiness from hard individual-cost rejection."""
+    if any(event.get("reason") == "individual_cost_exceeds_budget" for event in trace):
+        return "cost_budget_exhausted"
+    return "no_eligible_candidates"
 
 
 def eligible_candidates(request: CoordinationRequest, excluded: frozenset[str] = frozenset()) -> tuple[Candidate, ...]:
@@ -82,6 +90,7 @@ def participant(candidate: Candidate, *, role: str, assignment: str, dependencie
         selection_reason=reason,
         capabilities=candidate.capabilities,
         predicted_cost=candidate.predicted_cost,
+        mode=candidate.mode,
     )
 
 

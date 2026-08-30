@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from ..costs import fits_cost_budget
 from ..models import CandidateMode, CoordinationPlan, CoordinationRequest, GraphEdge, ParticipantPlan
-from .common import abstained_plan, add_edge, cost_fits_budget, eligibility_trace, make_plan, participant, ranked_candidates, required_coverage
+from .common import abstained_plan, add_edge, eligibility_trace, empty_eligibility_stop_reason, make_plan, participant, ranked_candidates, required_coverage
 
 
 class DiscoveryAndUseBackend:
@@ -21,10 +22,10 @@ class DiscoveryAndUseBackend:
         if requester is not None:
             if requester.candidate_id in excluded:
                 return abstained_plan(self.mechanism_id, request, excluded, trace, "requester_excluded")
-            if not cost_fits_budget(0, requester.predicted_cost, request.budget.max_cost):
+            if not fits_cost_budget(0, requester.predicted_cost, request.budget.max_cost):
                 return abstained_plan(self.mechanism_id, request, excluded, trace, "cost_budget_exhausted")
         if not eligible:
-            return abstained_plan(self.mechanism_id, request, excluded, trace, "no_eligible_candidates")
+            return abstained_plan(self.mechanism_id, request, excluded, trace, empty_eligibility_stop_reason(trace))
 
         required = request.task.required_capabilities
         specialists = []
@@ -41,7 +42,7 @@ class DiscoveryAndUseBackend:
             if (
                 requester is not None
                 and candidate.candidate_id != requester.candidate_id
-                and not cost_fits_budget(candidate.predicted_cost, requester.predicted_cost, request.budget.max_cost)
+                and not fits_cost_budget(candidate.predicted_cost, requester.predicted_cost, request.budget.max_cost)
             ):
                 trace.append({"event": "candidate_rejected", "candidate_id": candidate.candidate_id, "reason": "cumulative_cost_exceeds_budget"})
             else:
