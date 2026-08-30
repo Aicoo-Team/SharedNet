@@ -111,6 +111,36 @@ class TimeoutProcess:
         self.killed = True
 
 
+class ManualClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+class DeadlineProcess(TimeoutProcess):
+    def __init__(self, clock: ManualClock, *, first_elapsed: float, terminate_elapsed: float = 0.0) -> None:
+        super().__init__()
+        self.clock = clock
+        self.first_elapsed = first_elapsed
+        self.terminate_elapsed = terminate_elapsed
+
+    def communicate(self, timeout: float | None = None) -> tuple[str, str]:
+        self.communicate_calls.append(timeout)
+        if len(self.communicate_calls) == 1:
+            self.clock.advance(self.first_elapsed)
+            raise subprocess.TimeoutExpired("codex", timeout, output="prefix", stderr="prefix-error")
+        if not self.killed:
+            self.clock.advance(self.terminate_elapsed)
+            if timeout is not None and self.terminate_elapsed > timeout:
+                raise subprocess.TimeoutExpired("codex", timeout, output="term-prefix", stderr="term-error")
+        return "authoritative-out", "authoritative-err"
+
+
 class CodexRuntimeTests(unittest.TestCase):
     def test_command_places_global_safety_flags_before_exec(self) -> None:
         runner = RecordingRunner(ProcessOutcome(0, success_jsonl(markers_for("nonce-1")), "", False))
@@ -126,6 +156,7 @@ class CodexRuntimeTests(unittest.TestCase):
         self.assertIn("--ignore-user-config", runner.command)
         self.assertIn("--json", runner.command)
         self.assertEqual(runner.command[runner.command.index("--color") + 1], "never")
+        self.assertEqual(runner.timeout, 300.0)
 
     def test_command_uses_validated_model_and_skips_git_check(self) -> None:
         runner = RecordingRunner(ProcessOutcome(0, success_jsonl(markers_for("nonce-1")), "", False))
@@ -352,7 +383,21 @@ class CodexRuntimeTests(unittest.TestCase):
         self.assertIn("exactly 3 parallel native spawn_agent calls", prompt)
         self.assertIn("Wait for every child", prompt)
         self.assertIn("Do not use file, shell, or web tools", prompt)
+        self.assertIn("Each planned participant consumes one reserved SharedNet turn", prompt)
+        self.assertIn("Do not execute or spawn any unplanned participant or turn", prompt)
         self.assertIn("[[sharednet:nonce-1:root]]", prompt)
+
+    def test_one_turn_prompt_never_directs_a_child_spawn(self) -> None:
+        single_participant_plan = replace(
+            plan(),
+            participants=plan().participants[:1],
+            budget=replace(plan().budget, max_turns=1, max_participants=1),
+        )
+
+        prompt = build_codex_prompt(single_participant_plan, "nonce-1")
+
+        self.assertNotIn("spawn_agent calls", prompt)
+        self.assertIn("Do not spawn any child", prompt)
 
     def test_artifact_directory_receives_raw_process_logs(self) -> None:
         runner = RecordingRunner(ProcessOutcome(0, success_jsonl(markers_for("nonce-1")), "diagnostic", False))
@@ -410,6 +455,29 @@ class CodexRuntimeTests(unittest.TestCase):
         self.assertTrue(process.killed)
         self.assertEqual(outcome.stdout, "authoritative-out")
         self.assertEqual(outcome.stderr, "authoritative-err")
+
+    def test_default_runner_uses_only_deadline_remainder_for_termination_grace(self) -> None:
+        clock = ManualClock()
+        process = DeadlineProcess(clock, first_elapsed=2.0, terminate_elapsed=3.0)
+        with patch("sharednet.runtime.codex.subprocess.Popen", return_value=process):
+            outcome = _default_runner(["codex"], 5.0, clock=clock)
+
+        self.assertEqual(process.communicate_calls, [5.0, 3.0])
+        self.assertEqual(clock.now, 5.0)
+        self.assertTrue(process.terminated)
+        self.assertFalse(process.killed)
+        self.assertTrue(outcome.timed_out)
+
+    def test_default_runner_kills_without_extra_grace_when_deadline_is_spent(self) -> None:
+        clock = ManualClock()
+        process = DeadlineProcess(clock, first_elapsed=5.0)
+        with patch("sharednet.runtime.codex.subprocess.Popen", return_value=process):
+            outcome = _default_runner(["codex"], 5.0, clock=clock)
+
+        self.assertEqual(clock.now, 5.0)
+        self.assertTrue(process.terminated)
+        self.assertTrue(process.killed)
+        self.assertTrue(outcome.timed_out)
 
 
 if __name__ == "__main__":

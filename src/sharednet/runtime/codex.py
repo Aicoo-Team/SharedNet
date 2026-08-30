@@ -9,6 +9,7 @@ from pathlib import Path
 import secrets
 import shutil
 import subprocess
+import time
 from typing import Any, Callable, Mapping, Sequence
 
 from sharednet.coordination.models import AgentOutput, CoordinationPlan, CoordinationResult, TerminalStatus
@@ -69,10 +70,18 @@ def build_codex_prompt(plan: CoordinationPlan, nonce: str) -> str:
     root_id = participants[0].candidate_id
     child_count = len(participants) - 1
     payload = {"plan": plan.to_dict(), "markers": markers}
+    spawn_instruction = (
+        f"Issue exactly {child_count} parallel native spawn_agent calls for the remaining planned participants; "
+        "do not delegate spawning to a child. Wait for every child before replying. "
+        if child_count
+        else "Do not spawn any child. "
+    )
     return (
         "You are the root coordinator for a bounded SharedNet smoke. "
-        f"Represent participant zero ({root_id}) yourself. Issue exactly {child_count} parallel native spawn_agent calls "
-        "for the remaining planned participants; do not delegate spawning to a child. Wait for every child before replying. "
+        f"Represent participant zero ({root_id}) yourself. "
+        f"{spawn_instruction}"
+        "Each planned participant consumes one reserved SharedNet turn. "
+        "Do not execute or spawn any unplanned participant or turn. "
         "Do not use file, shell, or web tools for this data-only smoke. "
         "Your final response must be a JSON object with exactly the keys `synthesis` and `outputs`. "
         "`synthesis` must be a string. `outputs` must contain one object for every planned participant, and each object "
@@ -367,20 +376,49 @@ class CodexRuntime:
             return {"artifact_error": str(error)}
 
 
-def _default_runner(command: list[str], timeout: float) -> ProcessOutcome:
+def _default_runner(
+    command: list[str],
+    timeout: float,
+    *,
+    clock: Callable[[], float] | None = None,
+) -> ProcessOutcome:
     """Run one process and escalate termination deterministically on timeout."""
+    monotonic = clock or time.monotonic
+    deadline = monotonic() + timeout
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     try:
-        stdout, stderr = process.communicate(timeout=timeout)
+        stdout, stderr = process.communicate(timeout=max(0.0, deadline - monotonic()))
         return ProcessOutcome(process.returncode or 0, stdout or "", stderr or "", False)
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as timeout_error:
         process.terminate()
-        try:
-            final_stdout, final_stderr = process.communicate(timeout=_TERMINATE_GRACE_SECONDS)
-        except subprocess.TimeoutExpired:
+        remaining = max(0.0, deadline - monotonic())
+        if remaining <= 0:
             process.kill()
-            final_stdout, final_stderr = process.communicate()
+            final_stdout, final_stderr = _communicate_within_deadline(process, deadline, monotonic, timeout_error)
+            return ProcessOutcome(process.returncode or 0, final_stdout, final_stderr, True)
+        try:
+            final_stdout, final_stderr = process.communicate(timeout=min(_TERMINATE_GRACE_SECONDS, remaining))
+        except subprocess.TimeoutExpired as terminate_error:
+            process.kill()
+            final_stdout, final_stderr = _communicate_within_deadline(process, deadline, monotonic, terminate_error)
         return ProcessOutcome(process.returncode or 0, _as_text(final_stdout), _as_text(final_stderr), True)
+
+
+def _communicate_within_deadline(
+    process: subprocess.Popen[str],
+    deadline: float,
+    clock: Callable[[], float],
+    prior_timeout: subprocess.TimeoutExpired,
+) -> tuple[str, str]:
+    """Collect killed-process output without granting time beyond the attempt deadline."""
+    remaining = max(0.0, deadline - clock())
+    try:
+        stdout, stderr = process.communicate(timeout=remaining)
+        return _as_text(stdout), _as_text(stderr)
+    except subprocess.TimeoutExpired as kill_error:
+        stdout = kill_error.output if kill_error.output is not None else prior_timeout.output
+        stderr = kill_error.stderr if kill_error.stderr is not None else prior_timeout.stderr
+        return _as_text(stdout), _as_text(stderr)
 
 
 def _as_text(value: str | bytes | None) -> str:

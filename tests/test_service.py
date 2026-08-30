@@ -58,6 +58,17 @@ class ScriptedRuntime:
         return next(self._outcomes)(plan)
 
 
+class ManualClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
 class CountingBackend:
     mechanism_id = "counting"
 
@@ -70,6 +81,18 @@ class CountingBackend:
         self.plan_calls += 1
         self.exclusions.append(excluded)
         return self.delegate.plan(request, excluded=excluded)
+
+
+class ReplanDeadlineBackend(CountingBackend):
+    def __init__(self, delegate, clock: ManualClock) -> None:
+        super().__init__(delegate)
+        self.clock = clock
+
+    def plan(self, request, *, excluded=frozenset()):
+        plan = super().plan(request, excluded=excluded)
+        if self.plan_calls == 2:
+            self.clock.advance(request.budget.max_wall_seconds)
+        return plan
 
 
 class ServiceTests(unittest.TestCase):
@@ -128,7 +151,7 @@ class ServiceTests(unittest.TestCase):
 
         self.assertEqual(runtime.calls, 1)
         self.assertEqual(result.status, TerminalStatus.FAILED)
-        self.assertEqual(result.usage, {"tokens": 4})
+        self.assertEqual(result.usage, {"tokens": 4, "planned_turns": 4})
         self.assertEqual(len(result.attempts), 1)
 
     def test_execute_stops_when_only_unknown_ids_are_reported_failed(self) -> None:
@@ -171,6 +194,27 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(result.status, TerminalStatus.ACCEPTED)
         self.assertEqual(runtime.calls, 2)
         self.assertEqual(runtime.plans[1].exclusions, frozenset({"risk-analyst"}))
+
+    def test_execute_does_not_retry_an_admitted_id_unselected_from_the_failed_plan(self) -> None:
+        from sharednet.coordination.service import CoordinationService
+
+        request = replace(
+            adaptive_request(max_retries=1),
+            budget=replace(adaptive_request().budget, max_participants=1, max_retries=1),
+        )
+        runtime = ScriptedRuntime([
+            lambda plan: failed_result(plan, ("generalist",), error="raw_unselected_failure"),
+            accepted_result,
+        ])
+
+        result = CoordinationService().execute(request, runtime)
+
+        self.assertEqual(runtime.calls, 1)
+        self.assertNotIn("generalist", runtime.plans[0].participant_ids)
+        self.assertEqual(result.status, TerminalStatus.FAILED)
+        self.assertEqual(result.failed_participant_ids, ("generalist",))
+        self.assertEqual(result.error, "raw_unselected_failure")
+        self.assertEqual(result.runtime_evidence, {"source": "scripted", "attempt": 0})
 
     def test_execute_accumulates_failed_ids_as_immutable_plan_exclusions(self) -> None:
         from sharednet.coordination.service import CoordinationService
@@ -232,6 +276,150 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(runtime.calls, 0)
         self.assertEqual(result.attempts, ())
 
+    def test_plan_caps_participants_to_the_available_turn_budget(self) -> None:
+        from sharednet.coordination.service import CoordinationService
+
+        request = adaptive_request()
+        request = replace(request, budget=replace(request.budget, max_turns=1))
+
+        plan = CoordinationService().plan(request)
+
+        self.assertEqual(len(plan.participants), 1)
+        self.assertEqual(plan.budget.max_participants, 1)
+
+    def test_execute_reserves_one_turn_per_planned_participant_across_retries(self) -> None:
+        from sharednet.coordination.service import CoordinationService
+
+        request = adaptive_request(max_retries=1)
+        request = replace(request, budget=replace(request.budget, max_turns=5))
+        runtime = ScriptedRuntime([
+            lambda plan: failed_result(plan, ("self",), usage={"tokens": 2}),
+            accepted_result,
+        ])
+
+        result = CoordinationService().execute(request, runtime)
+
+        self.assertEqual([len(plan.participants) for plan in runtime.plans], [4, 1])
+        self.assertEqual([attempt.usage["planned_turns"] for attempt in result.attempts], [4, 1])
+        self.assertEqual(result.usage["planned_turns"], 5)
+
+    def test_execute_exhausts_before_attributable_retry_when_no_turns_remain(self) -> None:
+        from sharednet.coordination.service import CoordinationService
+
+        request = adaptive_request(max_retries=1)
+        request = replace(request, budget=replace(request.budget, max_turns=4))
+        runtime = ScriptedRuntime([
+            lambda plan: failed_result(plan, ("self",), error="raw_first_failure"),
+            accepted_result,
+        ])
+
+        result = CoordinationService().execute(request, runtime)
+
+        self.assertEqual(runtime.calls, 1)
+        self.assertEqual(result.status, TerminalStatus.EXHAUSTED)
+        self.assertEqual(result.error, "turn_budget_exhausted")
+        self.assertEqual(result.failed_participant_ids, ("self",))
+        self.assertEqual(result.runtime_evidence, {"source": "scripted", "attempt": 0})
+        self.assertEqual(result.attempts[0].error, "raw_first_failure")
+        self.assertEqual(result.attempts[0].usage["planned_turns"], 4)
+        self.assertEqual(result.usage["planned_turns"], 4)
+
+    def test_execute_shares_one_monotonic_wall_deadline_across_retries(self) -> None:
+        from sharednet.coordination.service import CoordinationService
+
+        clock = ManualClock()
+
+        def fail_after_four_seconds(plan):
+            clock.advance(4)
+            return failed_result(plan, ("self",))
+
+        request = adaptive_request(max_retries=1)
+        request = replace(request, budget=replace(request.budget, max_wall_seconds=10))
+        runtime = ScriptedRuntime([fail_after_four_seconds, accepted_result])
+
+        result = CoordinationService(clock=clock).execute(request, runtime)
+
+        self.assertEqual(result.status, TerminalStatus.ACCEPTED)
+        self.assertEqual(runtime.plans[0].budget.max_wall_seconds, 10)
+        self.assertEqual(runtime.plans[1].budget.max_wall_seconds, 6)
+        self.assertGreater(runtime.plans[1].budget.max_wall_seconds, 0)
+
+    def test_execute_stops_before_replanning_when_wall_deadline_is_exhausted(self) -> None:
+        from sharednet.coordination.backends.rac_adaptive import RacAdaptiveBackend
+        import sharednet.coordination.service as service_module
+        from sharednet.coordination.service import CoordinationService
+
+        clock = ManualClock()
+        backend = CountingBackend(RacAdaptiveBackend())
+
+        def consume_deadline(plan):
+            clock.advance(10)
+            return failed_result(plan, ("self",), error="raw_deadline_failure")
+
+        request = adaptive_request(max_retries=1)
+        request = replace(request, budget=replace(request.budget, max_wall_seconds=10))
+        runtime = ScriptedRuntime([consume_deadline, accepted_result])
+        original_get_backend = service_module.get_backend
+        service_module.get_backend = lambda mechanism: backend
+        try:
+            result = CoordinationService(clock=clock).execute(request, runtime)
+        finally:
+            service_module.get_backend = original_get_backend
+
+        self.assertEqual(backend.plan_calls, 1)
+        self.assertEqual(runtime.calls, 1)
+        self.assertEqual(result.status, TerminalStatus.EXHAUSTED)
+        self.assertEqual(result.error, "wall_time_budget_exhausted")
+        self.assertEqual(result.attempts[0].error, "raw_deadline_failure")
+
+    def test_deadline_expiring_during_replan_preserves_prior_failure_evidence(self) -> None:
+        from sharednet.coordination.backends.rac_adaptive import RacAdaptiveBackend
+        import sharednet.coordination.service as service_module
+        from sharednet.coordination.service import CoordinationService
+
+        clock = ManualClock()
+        backend = ReplanDeadlineBackend(RacAdaptiveBackend(), clock)
+        request = adaptive_request(max_retries=1)
+        request = replace(request, budget=replace(request.budget, max_wall_seconds=10))
+        runtime = ScriptedRuntime([
+            lambda plan: failed_result(plan, ("self",), error="raw_replan_failure"),
+        ])
+        original_get_backend = service_module.get_backend
+        service_module.get_backend = lambda mechanism: backend
+        try:
+            result = CoordinationService(clock=clock).execute(request, runtime)
+        finally:
+            service_module.get_backend = original_get_backend
+
+        self.assertEqual(runtime.calls, 1)
+        self.assertEqual(result.status, TerminalStatus.EXHAUSTED)
+        self.assertEqual(result.error, "wall_time_budget_exhausted")
+        self.assertEqual(result.failed_participant_ids, ("self",))
+        self.assertEqual(result.runtime_evidence, {"source": "scripted", "attempt": 0})
+        self.assertEqual(result.attempts[0].error, "raw_replan_failure")
+
+    def test_accepted_result_arriving_after_wall_deadline_becomes_exhausted(self) -> None:
+        from sharednet.coordination.service import CoordinationService
+
+        clock = ManualClock()
+
+        def late_acceptance(plan):
+            clock.advance(11)
+            return accepted_result(plan, usage={"tokens": 9})
+
+        request = adaptive_request(max_retries=1)
+        request = replace(request, budget=replace(request.budget, max_wall_seconds=10))
+        runtime = ScriptedRuntime([late_acceptance])
+
+        result = CoordinationService(clock=clock).execute(request, runtime)
+
+        self.assertEqual(result.status, TerminalStatus.EXHAUSTED)
+        self.assertEqual(result.error, "wall_time_budget_exhausted")
+        self.assertEqual(result.runtime_evidence, {"source": "scripted"})
+        self.assertEqual(result.attempts[0].status, TerminalStatus.ACCEPTED)
+        self.assertEqual(result.attempts[0].usage, {"tokens": 9, "planned_turns": 4})
+        self.assertEqual(result.usage, {"tokens": 9, "planned_turns": 4})
+
     def test_exhaustion_preserves_final_evidence_and_aggregates_numeric_usage(self) -> None:
         from sharednet.coordination.service import CoordinationService
 
@@ -245,7 +433,7 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(result.error, "retry_budget_exhausted")
         self.assertEqual(result.failed_participant_ids, ("architect",))
         self.assertEqual(result.runtime_evidence, {"source": "scripted", "attempt": 1})
-        self.assertEqual(result.usage, {"tokens": 7, "seconds": 2.0})
+        self.assertEqual(result.usage, {"tokens": 7, "seconds": 2.0, "planned_turns": 7})
         self.assertEqual([attempt.error for attempt in result.attempts], ["participant_failed", "second_failure"])
 
 
