@@ -173,3 +173,32 @@ OK (skipped=2)
 ```
 
 The recorded real four-agent artifact remained `accepted` with three spawned children, complete native proof, no disallowed evidence, and zero malformed records. `compileall` and `git diff --check` completed with no output. No provider was invoked.
+
+## Hard-timeout process cleanup correction
+
+The live provider attempt reached its 300-second hard wall during network failures and exposed that the post-kill collection path reused the already exhausted model deadline. A zero-timeout second `communicate` could raise again, after which the runner returned without reaping the subprocess or closing stdout/stderr.
+
+A deterministic killed-process fake reproduced the leak before production changes:
+
+```text
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m unittest \
+  tests.test_codex_runtime.CodexRuntimeTests.test_default_runner_reaps_killed_process_and_closes_pipes_after_cleanup_communicate_timeout -v
+Ran 1 test in 0.002s
+FAILED (failures=1: expected one reap wait, observed zero)
+```
+
+After the model deadline expires, Codex is killed immediately. The runner now uses a distinct one-second OS cleanup allowance only to collect/reap the already killed process, then closes both pipe objects in `finally`. If cleanup `communicate` itself times out, the latest partial stdout/stderr is retained without duplication and a bounded `wait` performs the reap. This allowance does not grant Codex additional execution time and does not alter the model termination grace or custom-runner contract.
+
+Fresh verification, including a real short-lived local subprocess timeout test:
+
+```text
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m unittest tests.test_codex_runtime -q
+Ran 67 tests in 0.118s
+OK
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m unittest discover -s tests -q
+Ran 175 tests in 0.446s
+OK (skipped=2)
+```
+
+`compileall` and `git diff --check` completed with no output. No provider was invoked during this correction.

@@ -7,8 +7,11 @@ from dataclasses import replace
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
+import warnings
 from unittest.mock import patch
 
 from sharednet.coordination.models import CoordinationBudget, CoordinationPlan, ParticipantPlan, TerminalStatus
@@ -259,6 +262,40 @@ class ByteProcess:
 
     def communicate(self, timeout: float | None = None) -> tuple[bytes, bytes]:
         return self.stdout, self.stderr
+
+
+class FakePipe:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class KillCleanupProcess:
+    def __init__(self) -> None:
+        self.returncode: int | None = None
+        self.stdout = FakePipe()
+        self.stderr = FakePipe()
+        self.communicate_calls: list[float | None] = []
+        self.wait_calls: list[float | None] = []
+        self.terminated = False
+        self.killed = False
+
+    def communicate(self, timeout: float | None = None) -> tuple[bytes, bytes]:
+        self.communicate_calls.append(timeout)
+        raise subprocess.TimeoutExpired("codex", timeout, output=b"partial-out", stderr=b"partial-err")
+
+    def terminate(self) -> None:
+        self.terminated = True
+
+    def kill(self) -> None:
+        self.killed = True
+
+    def wait(self, timeout: float | None = None) -> int:
+        self.wait_calls.append(timeout)
+        self.returncode = -9
+        return self.returncode
 
 
 class NoParseText(str):
@@ -1369,6 +1406,34 @@ class CodexRuntimeTests(unittest.TestCase):
         self.assertTrue(process.terminated)
         self.assertTrue(process.killed)
         self.assertTrue(outcome.timed_out)
+
+    def test_default_runner_reaps_killed_process_and_closes_pipes_after_cleanup_communicate_timeout(self) -> None:
+        process = KillCleanupProcess()
+        clock = ManualClock()
+        with patch("sharednet.runtime.codex.subprocess.Popen", return_value=process):
+            outcome = _default_runner(["codex"], 0.01, clock=clock, deadline=0.01)
+
+        self.assertTrue(outcome.timed_out)
+        self.assertEqual(outcome.stdout, "partial-out")
+        self.assertEqual(outcome.stderr, "partial-err")
+        self.assertTrue(process.killed)
+        self.assertEqual(len(process.wait_calls), 1)
+        self.assertGreater(process.wait_calls[0] or 0, 0)
+        self.assertTrue(process.stdout.closed)
+        self.assertTrue(process.stderr.closed)
+
+    def test_default_runner_reaps_a_real_short_lived_process_after_timeout(self) -> None:
+        started = time.monotonic()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", ResourceWarning)
+            outcome = _default_runner(
+                [sys.executable, "-c", "import time; time.sleep(30)"],
+                0.02,
+            )
+
+        self.assertTrue(outcome.timed_out)
+        self.assertLess(time.monotonic() - started, 3.0)
+        self.assertFalse([warning for warning in caught if issubclass(warning.category, ResourceWarning)])
 
 
 if __name__ == "__main__":

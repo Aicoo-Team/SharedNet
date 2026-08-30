@@ -21,6 +21,7 @@ _CHATGPT_CODEX_PATHS = (
 )
 _STDERR_LIMIT = 4_000
 _TERMINATE_GRACE_SECONDS = 10.0
+_PROCESS_REAP_ALLOWANCE_SECONDS = 1.0
 _DEFAULT_MODEL = "gpt-5.3-codex"
 _DEFAULT_MAX_CAPTURE_BYTES = 1_000_000
 _MAX_RETAINED_DIAGNOSTIC_EVENTS = 128
@@ -650,31 +651,37 @@ def _default_runner(
             remaining = max(0.0, absolute_deadline - monotonic())
             if remaining <= 0:
                 process.kill()
-                final_stdout, final_stderr = _communicate_within_deadline(process, absolute_deadline, monotonic, timeout_error)
+                final_stdout, final_stderr = _collect_killed_process(process, timeout_error)
                 return ProcessOutcome(process.returncode or 0, final_stdout, final_stderr, True)
             try:
                 final_stdout, final_stderr = process.communicate(timeout=min(_TERMINATE_GRACE_SECONDS, remaining))
             except subprocess.TimeoutExpired as terminate_error:
                 process.kill()
-                final_stdout, final_stderr = _communicate_within_deadline(process, absolute_deadline, monotonic, terminate_error)
+                final_stdout, final_stderr = _collect_killed_process(process, terminate_error)
             return ProcessOutcome(process.returncode or 0, _as_text(final_stdout), _as_text(final_stderr), True)
 
 
-def _communicate_within_deadline(
+def _collect_killed_process(
     process: subprocess.Popen[bytes],
-    deadline: float,
-    clock: Callable[[], float],
     prior_timeout: subprocess.TimeoutExpired,
 ) -> tuple[str, str]:
-    """Collect killed-process output without granting time beyond the attempt deadline."""
-    remaining = max(0.0, deadline - clock())
+    """Reap a killed process within a bounded OS-cleanup allowance and close its pipes."""
+    stdout = prior_timeout.output
+    stderr = prior_timeout.stderr
     try:
-        stdout, stderr = process.communicate(timeout=remaining)
-        return _as_text(stdout), _as_text(stderr)
+        stdout, stderr = process.communicate(timeout=_PROCESS_REAP_ALLOWANCE_SECONDS)
     except subprocess.TimeoutExpired as kill_error:
         stdout = kill_error.output if kill_error.output is not None else prior_timeout.output
         stderr = kill_error.stderr if kill_error.stderr is not None else prior_timeout.stderr
-        return _as_text(stdout), _as_text(stderr)
+        try:
+            process.wait(timeout=_PROCESS_REAP_ALLOWANCE_SECONDS)
+        except subprocess.TimeoutExpired:
+            pass
+    finally:
+        for pipe in (getattr(process, "stdout", None), getattr(process, "stderr", None)):
+            if pipe is not None:
+                pipe.close()
+    return _as_text(stdout), _as_text(stderr)
 
 
 def _as_text(value: str | bytes | None) -> str:
