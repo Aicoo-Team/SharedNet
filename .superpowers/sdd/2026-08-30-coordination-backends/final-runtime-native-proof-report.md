@@ -119,3 +119,31 @@ OK (skipped=2)
 ```
 
 `compileall` over the runtime and tests and `git diff --check` both completed successfully with no output.
+
+## Final protocol-shape corrections
+
+A final narrow review added official passive `item.completed` reasoning records to the allowlist, while retaining fail-closed rejection for started reasoning and unknown function/tool records. Reasoning content is ignored and never retained in runtime evidence.
+
+Wait starts now name the exact duplicate-free set of successfully spawned children that remain pending at that event. Unplanned receivers, repeated receivers, already completed children, partial pending sets, and any spawn after the wait phase begins all invalidate native proof. A wait completion may still return a nonempty subset of its matching start, preserving the observed two-wait protocol. Completed spawns additionally require their sole child state to be one of the exact known nonfailure states; failed, errored, and cancelled spawn states are rejected.
+
+The regressions were run before production changes:
+
+```text
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m unittest tests.test_codex_runtime -q
+Ran 62 tests in 0.031s
+FAILED (failures=9)
+```
+
+Fresh focused and complete offline GREEN results:
+
+```text
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m unittest tests.test_codex_runtime -q
+Ran 62 tests in 0.066s
+OK
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m unittest discover -s tests -q
+Ran 170 tests in 0.152s
+OK (skipped=2)
+```
+
+The prior real four-agent artifact replay remained `accepted`: three exact spawned/completed/contributing children, complete native proof, no disallowed evidence, final message index 21 after collaboration completion index 20, and exactly one following turn completion. No provider was invoked.

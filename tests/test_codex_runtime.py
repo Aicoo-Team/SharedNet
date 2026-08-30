@@ -822,6 +822,77 @@ class CodexRuntimeTests(unittest.TestCase):
                 self.assertEqual(result.status, TerminalStatus.FAILED)
                 self.assertEqual(result.error, "missing_native_spawn_evidence")
 
+    def test_wait_start_must_name_every_currently_pending_spawn_exactly_once(self) -> None:
+        for mutation in ("unplanned", "duplicate", "already_completed", "partial", "spawn_after_wait"):
+            with self.subTest(mutation=mutation):
+                events = success_events(markers_for("nonce-1"))
+                first_wait_index = next(
+                    index
+                    for index, event in enumerate(events)
+                    if event["type"] == "item.started"
+                    and isinstance(event.get("item"), dict)
+                    and event["item"].get("id") == "wait-1"
+                )
+                first_wait = events[first_wait_index]["item"]
+                if mutation == "unplanned":
+                    first_wait["receiver_thread_ids"].append("unplanned-child")
+                elif mutation == "duplicate":
+                    first_wait["receiver_thread_ids"].append("child-1")
+                elif mutation == "already_completed":
+                    second_wait = next(
+                        event["item"]
+                        for event in events
+                        if event["type"] == "item.started"
+                        and isinstance(event.get("item"), dict)
+                        and event["item"].get("id") == "wait-2"
+                    )
+                    second_wait["receiver_thread_ids"].append("child-1")
+                elif mutation == "partial":
+                    first_wait["receiver_thread_ids"].pop()
+                else:
+                    spawn_started = next(
+                        event for event in events if event["type"] == "item.started" and event.get("item", {}).get("id") == "spawn-3"
+                    )
+                    spawn_completed = next(
+                        event for event in events if event["type"] == "item.completed" and event.get("item", {}).get("id") == "spawn-3"
+                    )
+                    events.remove(spawn_started)
+                    events.remove(spawn_completed)
+                    events[first_wait_index:first_wait_index] = [spawn_started, spawn_completed]
+                    moved_started = events.pop(first_wait_index)
+                    moved_completed = events.pop(first_wait_index)
+                    wait_completed_index = next(
+                        index
+                        for index, event in enumerate(events)
+                        if event["type"] == "item.completed" and event.get("item", {}).get("id") == "wait-1"
+                    )
+                    events[wait_completed_index + 1:wait_completed_index + 1] = [moved_started, moved_completed]
+                runner = RecordingRunner(ProcessOutcome(0, "\n".join(json.dumps(event) for event in events), "", False))
+
+                result = CodexRuntime(binary="/real/codex", runner=runner, nonce_factory=lambda: "nonce-1").execute(plan())
+
+                self.assertEqual(result.status, TerminalStatus.FAILED)
+                self.assertEqual(result.error, "missing_native_spawn_evidence")
+
+    def test_completed_spawn_child_state_must_not_report_failure(self) -> None:
+        for child_status in ("failed", "errored", "cancelled"):
+            with self.subTest(child_status=child_status):
+                events = success_events(markers_for("nonce-1"))
+                spawn = next(
+                    event["item"]
+                    for event in events
+                    if event["type"] == "item.completed"
+                    and isinstance(event.get("item"), dict)
+                    and event["item"].get("id") == "spawn-1"
+                )
+                spawn["agents_states"]["child-1"]["status"] = child_status
+                runner = RecordingRunner(ProcessOutcome(0, "\n".join(json.dumps(event) for event in events), "", False))
+
+                result = CodexRuntime(binary="/real/codex", runner=runner, nonce_factory=lambda: "nonce-1").execute(plan())
+
+                self.assertEqual(result.status, TerminalStatus.FAILED)
+                self.assertEqual(result.error, "missing_native_spawn_evidence")
+
     def test_duplicate_start_or_completion_call_id_fails_closed(self) -> None:
         for event_type in ("item.started", "item.completed"):
             with self.subTest(event_type=event_type):
@@ -962,6 +1033,32 @@ class CodexRuntimeTests(unittest.TestCase):
         result = CodexRuntime(binary="/real/codex", runner=runner, nonce_factory=lambda: "nonce-1").execute(plan())
 
         self.assertEqual(result.status, TerminalStatus.ACCEPTED)
+
+    def test_observed_completed_reasoning_item_is_passive_and_not_retained(self) -> None:
+        events = success_events(markers_for("nonce-1"))
+        events.insert(
+            -2,
+            {
+                "type": "item.completed",
+                "item": {"id": "reasoning-1", "type": "reasoning", "text": "private chain of thought"},
+            },
+        )
+        runner = RecordingRunner(ProcessOutcome(0, "\n".join(json.dumps(event) for event in events), "", False))
+
+        result = CodexRuntime(binary="/real/codex", runner=runner, nonce_factory=lambda: "nonce-1").execute(plan())
+
+        self.assertEqual(result.status, TerminalStatus.ACCEPTED)
+        self.assertNotIn("private chain of thought", json.dumps(result.to_dict()["runtime_evidence"]))
+
+    def test_started_reasoning_item_remains_disallowed(self) -> None:
+        events = success_events(markers_for("nonce-1"))
+        events.insert(-2, {"type": "item.started", "item": {"id": "reasoning-1", "type": "reasoning"}})
+        runner = RecordingRunner(ProcessOutcome(0, "\n".join(json.dumps(event) for event in events), "", False))
+
+        result = CodexRuntime(binary="/real/codex", runner=runner, nonce_factory=lambda: "nonce-1").execute(plan())
+
+        self.assertEqual(result.status, TerminalStatus.FAILED)
+        self.assertEqual(result.error, "disallowed_runtime_tool_evidence")
 
     def test_unplanned_collaboration_action_is_disallowed(self) -> None:
         events = success_events(markers_for("nonce-1"))

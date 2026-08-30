@@ -25,6 +25,7 @@ _DEFAULT_MODEL = "gpt-5.3-codex"
 _DEFAULT_MAX_CAPTURE_BYTES = 1_000_000
 _MAX_RETAINED_DIAGNOSTIC_EVENTS = 128
 _MAX_RETAINED_PROOF_RECORDS = 128
+_SUCCESSFUL_SPAWN_CHILD_STATES = frozenset({"pending_init", "in_progress", "running", "completed"})
 
 
 class CodexUnavailable(RuntimeError):
@@ -130,6 +131,8 @@ def parse_codex_events(stdout: str) -> CodexEventEvidence:
     started_collaboration_calls: dict[str, _StartedCollaborationCall] = {}
     completed_collaboration_calls: set[str] = set()
     completed_wait_child_ids: set[str] = set()
+    successfully_spawned_child_ids: set[str] = set()
+    wait_phase_started = False
     turn_completed_indices: list[int] = []
     collaboration_completion_indices: list[int] = []
     raw_event_count = 0
@@ -206,12 +209,20 @@ def parse_codex_events(stdout: str) -> CodexEventEvidence:
                     invalid_collaboration_evidence = True
                     continue
                 if tool == "spawn_agent":
-                    if not isinstance(prompt, str) or not prompt or receiver_ids:
+                    if wait_phase_started or not isinstance(prompt, str) or not prompt or receiver_ids:
                         invalid_collaboration_evidence = True
                         continue
-                elif prompt is not None or not receiver_ids:
-                    invalid_collaboration_evidence = True
-                    continue
+                else:
+                    wait_phase_started = True
+                    pending_child_ids = successfully_spawned_child_ids - completed_wait_child_ids
+                    if (
+                        prompt is not None
+                        or not receiver_ids
+                        or len(receiver_ids) != len(set(receiver_ids))
+                        or set(receiver_ids) != pending_child_ids
+                    ):
+                        invalid_collaboration_evidence = True
+                        continue
                 started_collaboration_calls[call_id] = _StartedCollaborationCall(
                     tool=tool,
                     sender_thread_id=sender_thread_id,
@@ -238,13 +249,17 @@ def parse_codex_events(stdout: str) -> CodexEventEvidence:
                 continue
             if tool == "spawn_agent":
                 state_ids = _bounded_identifier_sequence(list(states.keys())) if isinstance(states, Mapping) else None
+                child_state = states.get(receiver_ids[0]) if receiver_ids is not None and len(receiver_ids) == 1 and isinstance(states, Mapping) else None
+                child_status = child_state.get("status") if isinstance(child_state, Mapping) else None
                 if (
-                    receiver_ids is None
+                    wait_phase_started
+                    or receiver_ids is None
                     or len(receiver_ids) != 1
                     or not isinstance(prompt, str)
                     or prompt != started_call.prompt
                     or state_ids is None
                     or set(state_ids) != set(receiver_ids)
+                    or child_status not in _SUCCESSFUL_SPAWN_CHILD_STATES
                 ):
                     invalid_collaboration_evidence = True
                     continue
@@ -252,6 +267,7 @@ def parse_codex_events(stdout: str) -> CodexEventEvidence:
                     invalid_collaboration_evidence = True
                     continue
                 spawn_bindings.append((receiver_ids[0], prompt))
+                successfully_spawned_child_ids.add(receiver_ids[0])
                 continue
 
             if (
@@ -700,7 +716,7 @@ def _disallowed_event_diagnostic(
     passive_top_level = {"thread.started", "turn.started", "turn.completed", "error"}
     if event_type in passive_top_level and not isinstance(item, Mapping):
         return None
-    if event_type == "item.completed" and item_type in {"agent_message", "error"} and not tool:
+    if event_type == "item.completed" and item_type in {"agent_message", "error", "reasoning"} and not tool:
         return None
     if (
         event_type in {"item.started", "item.completed"}
