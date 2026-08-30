@@ -85,3 +85,17 @@ Full non-runtime suite: Ran 106 tests in 0.236s — OK (skipped=1)
 ```
 
 Fresh `compileall` and owned-path `git diff --check` also completed with no output.
+
+## Exact public-float integer follow-up
+
+The final minor review found that a finite integer can still be narrowed by the public float boundary: `9007199254740993` becomes `9007199254740992.0`. The shared positive/nonnegative validators now reject any integer that does not round-trip exactly through `float`, with the deterministic error `must be exactly representable as a float`. Exactly representable integers, ordinary floats, and `1e-13` remain valid.
+
+```text
+RED:   Ran 1 test in 0.002s — FAILED (failures=1)
+GREEN: Ran 1 test in 0.001s — OK
+Focused models/service: Ran 56 tests in 0.059s — OK
+Relevant planners: Ran 28 tests in 0.008s — OK
+Full non-runtime suite: Ran 107 tests in 0.352s — OK (skipped=1)
+```
+
+Fresh `compileall` and owned-path `git diff --check` again completed with no output.

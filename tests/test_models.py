@@ -118,6 +118,25 @@ class ModelTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "predicted_cost must be finite"):
             ParticipantPlan("helper", "worker", "work", (), "selected", (), huge)
 
+    def test_numeric_contracts_reject_integer_values_that_float_would_narrow(self) -> None:
+        narrowed = 9_007_199_254_740_993
+        message = "must be exactly representable as a float"
+
+        with self.assertRaisesRegex(ValueError, message):
+            CoordinationBudget(max_cost=narrowed)
+        with self.assertRaisesRegex(ValueError, message):
+            CoordinationBudget(max_wall_seconds=narrowed)
+        with self.assertRaisesRegex(ValueError, message):
+            candidate("narrowed-cost", predicted_cost=narrowed)
+        with self.assertRaisesRegex(ValueError, message):
+            candidate("narrowed-quality", predicted_quality=narrowed)
+        with self.assertRaisesRegex(ValueError, message):
+            ParticipantPlan("helper", "worker", "work", (), "selected", (), narrowed)
+
+        exactly_representable = 9_007_199_254_740_992
+        self.assertEqual(CoordinationBudget(max_cost=exactly_representable).max_cost, exactly_representable)
+        self.assertEqual(CoordinationBudget(max_cost=1e-13).max_cost, 1e-13)
+
     def test_result_rejects_attempt_history_beyond_plan_retry_bound(self) -> None:
         plan = plan_with()
         attempts = tuple(AttemptSummary(index, TerminalStatus.FAILED) for index in range(3))

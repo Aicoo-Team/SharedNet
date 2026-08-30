@@ -39,6 +39,8 @@ def _positive_number(value: object, name: str) -> float | int:
         raise ValueError(f"{name} must be finite") from error
     if not math.isfinite(finite_value):
         raise ValueError(f"{name} must be finite")
+    if isinstance(value, int) and int(finite_value) != value:
+        raise ValueError(f"{name} must be exactly representable as a float")
     return value
 
 
@@ -51,6 +53,8 @@ def _nonnegative_number(value: object, name: str) -> float | int:
         raise ValueError(f"{name} must be finite") from error
     if not math.isfinite(finite_value):
         raise ValueError(f"{name} must be finite")
+    if isinstance(value, int) and int(finite_value) != value:
+        raise ValueError(f"{name} must be exactly representable as a float")
     return value
 
 
