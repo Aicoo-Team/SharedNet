@@ -16,11 +16,11 @@ from sharednet.coordination.models import AgentOutput, CoordinationPlan, Coordin
 
 _CHATGPT_CODEX_PATHS = (
     "/Applications/ChatGPT.app/Contents/Resources/codex",
-    "/Applications/ChatGPT.app/Contents/MacOS/codex",
-    "/Applications/Codex.app/Contents/MacOS/codex",
 )
 _STDERR_LIMIT = 4_000
 _TERMINATE_GRACE_SECONDS = 10.0
+_DEFAULT_MODEL = "gpt-5.3-codex"
+_DEFAULT_MAX_CAPTURE_BYTES = 1_000_000
 
 
 class CodexUnavailable(RuntimeError):
@@ -48,6 +48,10 @@ class CodexEventEvidence:
     usage: Mapping[str, int | float]
     raw_event_count: int
     collaboration_events: tuple[Mapping[str, Any], ...]
+    root_thread_started: bool
+    turn_completed: bool
+    final_message_completed: bool
+    invalid_spawn_sender: bool
 
 
 Runner = Callable[[list[str], float], ProcessOutcome]
@@ -72,7 +76,8 @@ def build_codex_prompt(plan: CoordinationPlan, nonce: str) -> str:
         "Do not use file, shell, or web tools for this data-only smoke. "
         "Your final response must be a JSON object with exactly the keys `synthesis` and `outputs`. "
         "`synthesis` must be a string. `outputs` must contain one object for every planned participant, and each object "
-        "must contain `candidate_id`, `marker`, and `content` strings. Preserve the exact marker assigned to each participant.\n\n"
+        "must contain `candidate_id`, `marker`, and `content` strings. Preserve the exact marker assigned to each participant "
+        "and include every exact participant marker in `synthesis`.\n\n"
         "Plan and required markers:\n"
         f"{json.dumps(payload, sort_keys=True, separators=(',', ':'))}"
     )
@@ -84,10 +89,12 @@ def parse_codex_events(stdout: str) -> CodexEventEvidence:
     final_message = ""
     usage: dict[str, int | float] = {}
     collaboration_events: list[Mapping[str, Any]] = []
-    spawned: list[str] = []
-    fallback_agent_thread_ids: list[str] = []
+    spawn_records: list[tuple[str | None, tuple[str, ...]]] = []
     raw_event_count = 0
     explicit_spawn_count = 0
+    root_thread_started = False
+    turn_completed = False
+    final_message_completed = False
 
     for line in stdout.splitlines():
         try:
@@ -100,6 +107,7 @@ def parse_codex_events(stdout: str) -> CodexEventEvidence:
         event_type = _event_type(event)
         if thread_id is None and (event_type == "thread.started" or event_type.endswith("thread.started")):
             thread_id = _first_string(event, "thread_id")
+            root_thread_started = thread_id is not None
         if thread_id is None:
             candidate_root = _first_string(event, "thread_id")
             if candidate_root is not None and "thread" in event_type and "agent" not in event_type:
@@ -110,34 +118,47 @@ def parse_codex_events(stdout: str) -> CodexEventEvidence:
             for key, value in event_usage.items():
                 if isinstance(key, str) and isinstance(value, (int, float)) and not isinstance(value, bool):
                     usage[key] = usage.get(key, 0) + value
+        if event_type == "turn.completed":
+            turn_completed = True
 
         item = event.get("item")
         item_type = item.get("type", "").lower() if isinstance(item, Mapping) and isinstance(item.get("type"), str) else ""
         is_collaboration = "collaboration" in event_type or item_type == "collab_tool_call"
-        is_spawn = "spawn" in event_type or (
-            item_type == "collab_tool_call" and isinstance(item, Mapping) and item.get("tool") == "spawn_agent"
+        is_completed_collab_spawn = (
+            event_type == "item.completed"
+            and item_type == "collab_tool_call"
+            and isinstance(item, Mapping)
+            and item.get("tool") == "spawn_agent"
+            and item.get("status") == "completed"
+        )
+        is_compatible_collab_spawn = "collaboration" in event_type and "spawn" in event_type and bool(
+            _strings_for_key(event, "agent_thread_id")
         )
         if is_collaboration:
             collaboration_events.append(dict(event))
-            if is_spawn:
-                spawned.extend(_strings_for_key(event, "agent_thread_id"))
+            if is_completed_collab_spawn or is_compatible_collab_spawn:
+                spawned = _strings_for_key(event, "agent_thread_id")
                 receiver_ids = _strings_for_key(event, "receiver_thread_ids")
-                spawned.extend(receiver_ids)
-                if receiver_ids:
-                    explicit_spawn_count += len(receiver_ids)
-                elif not isinstance(item, Mapping) or item.get("status") != "in_progress":
-                    explicit_spawn_count += 1
+                spawn_records.append((_first_string(event, "sender_thread_id"), tuple(spawned + receiver_ids)))
 
-        fallback_agent_thread_ids.extend(_strings_for_key(event, "agent_thread_id"))
         message = _agent_message(event)
         if message is not None:
             final_message = message
+            final_message_completed = True
 
     root_ids = {thread_id} if thread_id is not None else set()
-    for agent_thread_id in fallback_agent_thread_ids:
-        if agent_thread_id not in root_ids:
-            spawned.append(agent_thread_id)
-    spawned_agent_ids = tuple(dict.fromkeys(agent_id for agent_id in spawned if agent_id not in root_ids))
+    invalid_spawn_sender = any(
+        sender_thread_id is not None and sender_thread_id != thread_id for sender_thread_id, _ in spawn_records
+    )
+    raw_spawned_agent_ids = [
+        agent_id
+        for sender_thread_id, agent_ids in spawn_records
+        if sender_thread_id is None or sender_thread_id == thread_id
+        for agent_id in agent_ids
+        if agent_id not in root_ids
+    ]
+    spawned_agent_ids = tuple(dict.fromkeys(raw_spawned_agent_ids))
+    explicit_spawn_count = len(raw_spawned_agent_ids)
     return CodexEventEvidence(
         thread_id=thread_id,
         spawned_agent_ids=spawned_agent_ids,
@@ -146,6 +167,10 @@ def parse_codex_events(stdout: str) -> CodexEventEvidence:
         usage=usage,
         raw_event_count=raw_event_count,
         collaboration_events=tuple(collaboration_events),
+        root_thread_started=root_thread_started,
+        turn_completed=turn_completed,
+        final_message_completed=final_message_completed,
+        invalid_spawn_sender=invalid_spawn_sender,
     )
 
 
@@ -156,14 +181,22 @@ class CodexRuntime:
         self,
         *,
         binary: str | None = None,
+        model: str = _DEFAULT_MODEL,
         runner: Runner | None = None,
         nonce_factory: Callable[[], str] | None = None,
         artifact_dir: str | Path | None = None,
+        max_capture_bytes: int = _DEFAULT_MAX_CAPTURE_BYTES,
     ) -> None:
+        if not isinstance(model, str) or not model.strip():
+            raise ValueError("model must be a nonempty string")
+        if isinstance(max_capture_bytes, bool) or not isinstance(max_capture_bytes, int) or max_capture_bytes <= 0:
+            raise ValueError("max_capture_bytes must be a positive integer")
         self._configured_binary = binary
+        self._model = model
         self._runner = runner or _default_runner
         self._nonce_factory = nonce_factory or (lambda: secrets.token_urlsafe(18))
         self._artifact_dir = Path(artifact_dir) if artifact_dir is not None else None
+        self._max_capture_bytes = max_capture_bytes
 
     def availability(self) -> bool:
         """Return whether a resolved binary answers one cheap version request."""
@@ -189,6 +222,19 @@ class CodexRuntime:
         except OSError as error:
             return self._failure(plan, "codex_exec_os_error", stderr=str(error))
 
+        capture_bytes = len(outcome.stdout.encode("utf-8")) + len(outcome.stderr.encode("utf-8"))
+        if capture_bytes > self._max_capture_bytes:
+            return self._failure(
+                plan,
+                "codex_output_too_large",
+                evidence={
+                    "exit_code": outcome.returncode,
+                    "timed_out": outcome.timed_out,
+                    "captured_bytes": capture_bytes,
+                    "max_capture_bytes": self._max_capture_bytes,
+                    "stderr": outcome.stderr[-_STDERR_LIMIT:],
+                },
+            )
         evidence = parse_codex_events(outcome.stdout)
         runtime_evidence = self._runtime_evidence(evidence, outcome, command)
         runtime_evidence.update(self._persist_artifacts(plan, outcome))
@@ -196,6 +242,8 @@ class CodexRuntime:
             return self._failure(plan, "codex_exec_timeout", evidence=runtime_evidence, usage=evidence.usage)
         if outcome.returncode != 0:
             return self._failure(plan, "codex_exec_nonzero_exit", evidence=runtime_evidence, usage=evidence.usage)
+        if not (evidence.root_thread_started and evidence.turn_completed and evidence.final_message_completed):
+            return self._failure(plan, "incomplete_codex_lifecycle", evidence=runtime_evidence, usage=evidence.usage)
 
         decoded = _decode_final_output(evidence.final_message)
         if decoded is None:
@@ -208,11 +256,14 @@ class CodexRuntime:
         if (
             {output.marker for output in parsed_outputs} != set(expected_markers.values())
             or any(output.marker != expected_markers[output.participant_id] for output in parsed_outputs)
+            or any(marker not in synthesis for marker in expected_markers.values())
         ):
             return self._failure(plan, "missing_participant_markers", evidence=runtime_evidence, usage=evidence.usage)
 
         required_children = len(plan.participants) - 1
-        if required_children and max(evidence.explicit_spawn_count, len(evidence.spawned_agent_ids)) < required_children:
+        if evidence.invalid_spawn_sender or (required_children and (
+            len(evidence.spawned_agent_ids) != required_children or evidence.explicit_spawn_count != required_children
+        )):
             return self._failure(plan, "missing_native_spawn_evidence", evidence=runtime_evidence, usage=evidence.usage)
         return CoordinationResult(
             status=TerminalStatus.ACCEPTED,
@@ -237,8 +288,7 @@ class CodexRuntime:
             return path_binary
         raise CodexUnavailable("no Codex binary found")
 
-    @staticmethod
-    def _command(binary: str, prompt: str) -> list[str]:
+    def _command(self, binary: str, prompt: str) -> list[str]:
         return [
             binary,
             "--enable",
@@ -248,8 +298,11 @@ class CodexRuntime:
             "-s",
             "read-only",
             "exec",
+            "-m",
+            self._model,
             "--ephemeral",
             "--ignore-user-config",
+            "--skip-git-repo-check",
             "--json",
             "--color",
             "never",
@@ -284,10 +337,15 @@ class CodexRuntime:
             "explicit_spawn_count": evidence.explicit_spawn_count,
             "raw_event_count": evidence.raw_event_count,
             "collaboration_events": list(evidence.collaboration_events),
+            "root_thread_started": evidence.root_thread_started,
+            "turn_completed": evidence.turn_completed,
+            "final_message_completed": evidence.final_message_completed,
+            "invalid_spawn_sender": evidence.invalid_spawn_sender,
             "exit_code": outcome.returncode,
             "timed_out": outcome.timed_out,
             "stderr": outcome.stderr[-_STDERR_LIMIT:],
             "command": list(command[:-1]),
+            "captured_bytes": len(outcome.stdout.encode("utf-8")) + len(outcome.stderr.encode("utf-8")),
         }
 
     def _persist_artifacts(self, plan: CoordinationPlan, outcome: ProcessOutcome) -> dict[str, str]:
@@ -296,12 +354,17 @@ class CodexRuntime:
         try:
             self._artifact_dir.mkdir(parents=True, exist_ok=True)
             safe_trace_id = "".join(character if character.isalnum() or character in "-_" else "_" for character in plan.trace_id)
-            stem = f"{safe_trace_id}-attempt-{plan.attempt}"
-            stdout_path = self._artifact_dir / f"{stem}.stdout.jsonl"
-            stderr_path = self._artifact_dir / f"{stem}.stderr.log"
-            stdout_path.write_text(outcome.stdout, encoding="utf-8")
-            stderr_path.write_text(outcome.stderr, encoding="utf-8")
-            return {"stdout_artifact": str(stdout_path), "stderr_artifact": str(stderr_path)}
+            for _ in range(10):
+                stem = f"{safe_trace_id}-attempt-{plan.attempt}-{secrets.token_hex(12)}"
+                stdout_path = self._artifact_dir / f"{stem}.stdout.jsonl"
+                stderr_path = self._artifact_dir / f"{stem}.stderr.log"
+                try:
+                    _write_exclusive(stdout_path, outcome.stdout)
+                    _write_exclusive(stderr_path, outcome.stderr)
+                except FileExistsError:
+                    continue
+                return {"stdout_artifact": str(stdout_path), "stderr_artifact": str(stderr_path)}
+            return {"artifact_error": "artifact_name_collision"}
         except OSError as error:
             return {"artifact_error": str(error)}
 
@@ -312,24 +375,29 @@ def _default_runner(command: list[str], timeout: float) -> ProcessOutcome:
     try:
         stdout, stderr = process.communicate(timeout=timeout)
         return ProcessOutcome(process.returncode or 0, stdout or "", stderr or "", False)
-    except subprocess.TimeoutExpired as timeout_error:
-        stdout = _as_text(timeout_error.output)
-        stderr = _as_text(timeout_error.stderr)
+    except subprocess.TimeoutExpired:
         process.terminate()
         try:
             final_stdout, final_stderr = process.communicate(timeout=_TERMINATE_GRACE_SECONDS)
-        except subprocess.TimeoutExpired as grace_error:
-            stdout += _as_text(grace_error.output)
-            stderr += _as_text(grace_error.stderr)
+        except subprocess.TimeoutExpired:
             process.kill()
             final_stdout, final_stderr = process.communicate()
-        return ProcessOutcome(process.returncode or 0, stdout + (final_stdout or ""), stderr + (final_stderr or ""), True)
+        return ProcessOutcome(process.returncode or 0, _as_text(final_stdout), _as_text(final_stderr), True)
 
 
 def _as_text(value: str | bytes | None) -> str:
     if isinstance(value, bytes):
         return value.decode(errors="replace")
     return value or ""
+
+
+def _write_exclusive(path: Path, content: str) -> None:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(path, flags, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as artifact:
+        artifact.write(content)
 
 
 def _event_type(event: Mapping[str, Any]) -> str:
@@ -390,14 +458,9 @@ def _first_mapping(value: object, key: str) -> Mapping[str, Any] | None:
 
 def _agent_message(event: Mapping[str, Any]) -> str | None:
     item = event.get("item")
-    if isinstance(item, Mapping) and item.get("type") in {"agent_message", "assistant_message"}:
+    if event.get("type") == "item.completed" and isinstance(item, Mapping) and item.get("type") in {"agent_message", "assistant_message"}:
         for key in ("text", "content", "message"):
             value = item.get(key)
-            if isinstance(value, str):
-                return value
-    if event.get("type") in {"agent_message", "assistant_message"}:
-        for key in ("text", "content", "message"):
-            value = event.get(key)
             if isinstance(value, str):
                 return value
     return None
