@@ -147,3 +147,29 @@ OK (skipped=2)
 ```
 
 The prior real four-agent artifact replay remained `accepted`: three exact spawned/completed/contributing children, complete native proof, no disallowed evidence, final message index 21 after collaboration completion index 20, and exactly one following turn completion. No provider was invoked.
+
+## Malformed JSONL fail-closed correction
+
+Nonblank JSONL records that cannot be decoded or decode to a scalar/list are now transcript-integrity failures instead of being silently skipped. Runtime evidence exposes only a bounded `malformed_record_count` (capped at 128) and `malformed_records_truncated` flag; it never retains the malformed payload. Blank and whitespace-only lines remain ignored. A zero-exit transcript containing any malformed record deterministically returns `malformed_codex_jsonl` before acceptance.
+
+The regressions were run before production changes:
+
+```text
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m unittest tests.test_codex_runtime -q
+Ran 65 tests in 0.029s
+FAILED (failures=4, errors=1)
+```
+
+Fresh verification after the correction:
+
+```text
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m unittest tests.test_codex_runtime -q
+Ran 65 tests in 0.071s
+OK
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m unittest discover -s tests -q
+Ran 173 tests in 0.450s
+OK (skipped=2)
+```
+
+The recorded real four-agent artifact remained `accepted` with three spawned children, complete native proof, no disallowed evidence, and zero malformed records. `compileall` and `git diff --check` completed with no output. No provider was invoked.

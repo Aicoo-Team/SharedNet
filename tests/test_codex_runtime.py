@@ -442,6 +442,43 @@ class CodexRuntimeTests(unittest.TestCase):
         self.assertNotIn("Finding from child", diagnostics)
         self.assertLess(len(diagnostics), 4_000)
 
+    def test_nonblank_malformed_or_non_object_jsonl_fails_closed_without_payload_retention(self) -> None:
+        for malformed_line in ("injected-secret-not-json", "[]", '"injected-secret-scalar"'):
+            with self.subTest(malformed_line=malformed_line):
+                stdout = success_jsonl(markers_for("nonce-1")) + "\n" + malformed_line
+                runner = RecordingRunner(ProcessOutcome(0, stdout, "", False))
+
+                result = CodexRuntime(binary="/real/codex", runner=runner, nonce_factory=lambda: "nonce-1").execute(plan())
+
+                self.assertEqual(result.status, TerminalStatus.FAILED)
+                self.assertEqual(result.error, "malformed_codex_jsonl")
+                self.assertEqual(result.runtime_evidence["malformed_record_count"], 1)
+                self.assertFalse(result.runtime_evidence["malformed_records_truncated"])
+                self.assertNotIn("injected-secret", json.dumps(result.to_dict()["runtime_evidence"]))
+
+    def test_malformed_record_facts_are_bounded(self) -> None:
+        stdout = success_jsonl(markers_for("nonce-1")) + "\n" + "\n".join(
+            f"private-malformed-payload-{index}" for index in range(300)
+        )
+        runner = RecordingRunner(ProcessOutcome(0, stdout, "", False))
+
+        result = CodexRuntime(binary="/real/codex", runner=runner, nonce_factory=lambda: "nonce-1").execute(plan())
+
+        self.assertEqual(result.error, "malformed_codex_jsonl")
+        self.assertEqual(result.runtime_evidence["malformed_record_count"], 128)
+        self.assertTrue(result.runtime_evidence["malformed_records_truncated"])
+        self.assertNotIn("private-malformed-payload", json.dumps(result.to_dict()["runtime_evidence"]))
+
+    def test_blank_jsonl_lines_are_ignored(self) -> None:
+        stdout = " \t\n" + success_jsonl(markers_for("nonce-1")).replace("\n", "\n\n") + "\n  "
+        runner = RecordingRunner(ProcessOutcome(0, stdout, "", False))
+
+        result = CodexRuntime(binary="/real/codex", runner=runner, nonce_factory=lambda: "nonce-1").execute(plan())
+
+        self.assertEqual(result.status, TerminalStatus.ACCEPTED)
+        self.assertEqual(result.runtime_evidence["malformed_record_count"], 0)
+        self.assertFalse(result.runtime_evidence["malformed_records_truncated"])
+
     def test_missing_participant_marker_fails_closed(self) -> None:
         events = success_events(markers_for("nonce-1"))
         final_event = structured_final_event(events)
@@ -1286,7 +1323,7 @@ class CodexRuntimeTests(unittest.TestCase):
                 self.fail(f"invalid process bytes escaped as an untyped decoding failure: {error}")
 
         self.assertEqual(result.status, TerminalStatus.FAILED)
-        self.assertEqual(result.error, "incomplete_codex_lifecycle")
+        self.assertEqual(result.error, "malformed_codex_jsonl")
         self.assertIn("\ufffd", result.runtime_evidence["stderr"])
 
     def test_default_runner_uses_authoritative_output_after_terminate(self) -> None:

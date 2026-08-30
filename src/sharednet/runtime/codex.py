@@ -67,6 +67,8 @@ class CodexEventEvidence:
     invalid_collaboration_evidence: bool
     disallowed_tool_evidence_present: bool
     diagnostic_events_truncated: bool
+    malformed_record_count: int
+    malformed_records_truncated: bool
 
 
 @dataclass(frozen=True)
@@ -142,13 +144,25 @@ def parse_codex_events(stdout: str) -> CodexEventEvidence:
     invalid_collaboration_evidence = False
     disallowed_tool_evidence_present = False
     diagnostic_events_truncated = False
+    malformed_record_count = 0
+    malformed_records_truncated = False
 
     for event_index, line in enumerate(stdout.splitlines()):
+        if not line.strip():
+            continue
         try:
             event = json.loads(line)
         except json.JSONDecodeError:
+            if malformed_record_count < _MAX_RETAINED_DIAGNOSTIC_EVENTS:
+                malformed_record_count += 1
+            else:
+                malformed_records_truncated = True
             continue
         if not isinstance(event, Mapping):
+            if malformed_record_count < _MAX_RETAINED_DIAGNOSTIC_EVENTS:
+                malformed_record_count += 1
+            else:
+                malformed_records_truncated = True
             continue
         raw_event_count += 1
         event_type = _event_type(event)
@@ -333,6 +347,8 @@ def parse_codex_events(stdout: str) -> CodexEventEvidence:
         invalid_collaboration_evidence=invalid_collaboration_evidence,
         disallowed_tool_evidence_present=disallowed_tool_evidence_present,
         diagnostic_events_truncated=diagnostic_events_truncated,
+        malformed_record_count=malformed_record_count,
+        malformed_records_truncated=malformed_records_truncated,
     )
 
 
@@ -451,6 +467,8 @@ class CodexRuntime:
             )
         if outcome.returncode != 0:
             return self._failure(plan, "codex_exec_nonzero_exit", evidence=runtime_evidence, usage=evidence.usage)
+        if evidence.malformed_record_count:
+            return self._failure(plan, "malformed_codex_jsonl", evidence=runtime_evidence, usage=evidence.usage)
         if not _completed_lifecycle(evidence):
             return self._failure(plan, "incomplete_codex_lifecycle", evidence=runtime_evidence, usage=evidence.usage)
         if evidence.disallowed_tool_evidence_present:
@@ -575,6 +593,8 @@ class CodexRuntime:
             "invalid_collaboration_evidence": evidence.invalid_collaboration_evidence,
             "disallowed_tool_evidence_present": evidence.disallowed_tool_evidence_present,
             "diagnostic_events_truncated": evidence.diagnostic_events_truncated,
+            "malformed_record_count": evidence.malformed_record_count,
+            "malformed_records_truncated": evidence.malformed_records_truncated,
             "exit_code": outcome.returncode,
             "timed_out": outcome.timed_out,
             "stderr": outcome.stderr[-_STDERR_LIMIT:],
