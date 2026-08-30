@@ -45,12 +45,23 @@ class CodexLiveE2E(unittest.TestCase):
 
         root_thread_id = result.runtime_evidence["thread_id"]
         child_thread_ids = result.runtime_evidence["spawned_agent_ids"]
+        completed_child_ids = result.runtime_evidence["completed_child_ids"]
+        contributing_child_ids = result.runtime_evidence["contributing_child_ids"]
         self.assertTrue(root_thread_id)
         self.assertEqual(len(child_thread_ids), 3)
         self.assertEqual(len(set(child_thread_ids)), 3)
         self.assertNotIn(root_thread_id, child_thread_ids)
+        self.assertEqual(set(completed_child_ids), set(child_thread_ids))
+        self.assertEqual(set(contributing_child_ids), set(child_thread_ids))
+        self.assertEqual(
+            set(result.runtime_evidence["child_participant_bindings"].values()),
+            set(EXPECTED_PARTICIPANTS[1:]),
+        )
+        self.assertTrue(result.runtime_evidence["native_proof_complete"])
+        self.assertEqual(result.runtime_evidence["disallowed_tool_events"], ())
         self.assertGreater(result.usage["input_tokens"] + result.usage["output_tokens"], 0)
 
+        self.assertEqual({output.participant_id for output in result.outputs}, set(EXPECTED_PARTICIPANTS))
         for output in result.outputs:
             self.assertIn(output.marker, result.synthesis)
         for incident_id in INCIDENT_IDS:

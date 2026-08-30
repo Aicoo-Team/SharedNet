@@ -9,6 +9,7 @@ from pathlib import Path
 import secrets
 import shutil
 import subprocess
+import tempfile
 import time
 from typing import Any, Callable, Mapping, Sequence
 
@@ -22,6 +23,8 @@ _STDERR_LIMIT = 4_000
 _TERMINATE_GRACE_SECONDS = 10.0
 _DEFAULT_MODEL = "gpt-5.3-codex"
 _DEFAULT_MAX_CAPTURE_BYTES = 1_000_000
+_MAX_RETAINED_DIAGNOSTIC_EVENTS = 128
+_MAX_RETAINED_PROOF_RECORDS = 128
 
 
 class CodexUnavailable(RuntimeError):
@@ -44,15 +47,22 @@ class CodexEventEvidence:
 
     thread_id: str | None
     spawned_agent_ids: tuple[str, ...]
+    completed_child_ids: tuple[str, ...]
     explicit_spawn_count: int
     final_message: str
     usage: Mapping[str, int | float]
     raw_event_count: int
     collaboration_events: tuple[Mapping[str, Any], ...]
+    disallowed_tool_events: tuple[Mapping[str, Any], ...]
+    spawn_bindings: tuple[tuple[str, str], ...]
+    completed_child_messages: tuple[tuple[str, str], ...]
     root_thread_started: bool
     turn_completed: bool
     final_message_completed: bool
     invalid_spawn_sender: bool
+    invalid_collaboration_evidence: bool
+    disallowed_tool_evidence_present: bool
+    diagnostic_events_truncated: bool
 
 
 Runner = Callable[[list[str], float], ProcessOutcome]
@@ -72,7 +82,8 @@ def build_codex_prompt(plan: CoordinationPlan, nonce: str) -> str:
     payload = {"plan": plan.to_dict(), "markers": markers}
     spawn_instruction = (
         f"Issue exactly {child_count} parallel native spawn_agent calls for the remaining planned participants; "
-        "do not delegate spawning to a child. Wait for every child before replying. "
+        "do not delegate spawning to a child. Each spawn prompt must name exactly one remaining candidate and include "
+        "exactly that candidate's exact marker, with no other participant marker. Wait for every child before replying. "
         if child_count
         else "Do not spawn any child. "
     )
@@ -93,17 +104,24 @@ def build_codex_prompt(plan: CoordinationPlan, nonce: str) -> str:
 
 
 def parse_codex_events(stdout: str) -> CodexEventEvidence:
-    """Parse JSONL while retaining only JSON records and ignoring diagnostics."""
+    """Parse exact Codex JSONL shapes into bounded facts and private proof inputs."""
     thread_id: str | None = None
     final_message = ""
     usage: dict[str, int | float] = {}
     collaboration_events: list[Mapping[str, Any]] = []
-    spawn_records: list[tuple[str | None, tuple[str, ...]]] = []
+    disallowed_tool_events: list[Mapping[str, Any]] = []
+    spawn_bindings: list[tuple[str, str]] = []
+    completed_child_messages: list[tuple[str, str]] = []
+    started_collaboration_calls: dict[str, tuple[str, str | None]] = {}
+    completed_collaboration_calls: set[str] = set()
     raw_event_count = 0
-    explicit_spawn_count = 0
     root_thread_started = False
     turn_completed = False
     final_message_completed = False
+    invalid_spawn_sender = False
+    invalid_collaboration_evidence = False
+    disallowed_tool_evidence_present = False
+    diagnostic_events_truncated = False
 
     for line in stdout.splitlines():
         try:
@@ -114,16 +132,14 @@ def parse_codex_events(stdout: str) -> CodexEventEvidence:
             continue
         raw_event_count += 1
         event_type = _event_type(event)
-        if thread_id is None and (event_type == "thread.started" or event_type.endswith("thread.started")):
-            thread_id = _first_string(event, "thread_id")
-            root_thread_started = thread_id is not None
-        if thread_id is None:
-            candidate_root = _first_string(event, "thread_id")
-            if candidate_root is not None and "thread" in event_type and "agent" not in event_type:
-                thread_id = candidate_root
+        if thread_id is None and event_type == "thread.started":
+            candidate_thread_id = _bounded_identifier(event.get("thread_id"))
+            if candidate_thread_id is not None:
+                thread_id = candidate_thread_id
+                root_thread_started = True
 
-        event_usage = _first_mapping(event, "usage")
-        if event_usage is not None:
+        event_usage = event.get("usage") if event_type == "turn.completed" else None
+        if isinstance(event_usage, Mapping):
             for key, value in event_usage.items():
                 if isinstance(key, str) and isinstance(value, (int, float)) and not isinstance(value, bool):
                     usage[key] = usage.get(key, 0) + value
@@ -131,53 +147,108 @@ def parse_codex_events(stdout: str) -> CodexEventEvidence:
             turn_completed = True
 
         item = event.get("item")
-        item_type = item.get("type", "").lower() if isinstance(item, Mapping) and isinstance(item.get("type"), str) else ""
-        is_collaboration = "collaboration" in event_type or item_type == "collab_tool_call"
-        is_completed_collab_spawn = (
-            event_type == "item.completed"
-            and item_type == "collab_tool_call"
-            and isinstance(item, Mapping)
-            and item.get("tool") == "spawn_agent"
-            and item.get("status") == "completed"
-        )
-        is_compatible_collab_spawn = "collaboration" in event_type and "spawn" in event_type and bool(
-            _strings_for_key(event, "agent_thread_id")
-        )
-        if is_collaboration:
-            collaboration_events.append(dict(event))
-            if is_completed_collab_spawn or is_compatible_collab_spawn:
-                spawned = _strings_for_key(event, "agent_thread_id")
-                receiver_ids = _strings_for_key(event, "receiver_thread_ids")
-                spawn_records.append((_first_string(event, "sender_thread_id"), tuple(spawned + receiver_ids)))
+        item_type = item.get("type", "") if isinstance(item, Mapping) and isinstance(item.get("type"), str) else ""
+        tool = item.get("tool", "") if isinstance(item, Mapping) and isinstance(item.get("tool"), str) else ""
+        disallowed = _disallowed_tool_diagnostic(event_type, item_type, tool, item)
+        if disallowed is not None:
+            disallowed_tool_evidence_present = True
+            if len(collaboration_events) + len(disallowed_tool_events) < _MAX_RETAINED_DIAGNOSTIC_EVENTS:
+                disallowed_tool_events.append(disallowed)
+            else:
+                diagnostic_events_truncated = True
+
+        if item_type == "collab_tool_call" and disallowed is None and isinstance(item, Mapping):
+            if len(collaboration_events) + len(disallowed_tool_events) < _MAX_RETAINED_DIAGNOSTIC_EVENTS:
+                collaboration_events.append(_collaboration_diagnostic(event_type, tool, item, thread_id))
+            else:
+                diagnostic_events_truncated = True
+            call_id = _bounded_identifier(item.get("id"))
+            sender_thread_id = _bounded_identifier(item.get("sender_thread_id"))
+            status = item.get("status")
+            sender_is_root = thread_id is not None and sender_thread_id == thread_id
+            if not sender_is_root:
+                invalid_collaboration_evidence = True
+                if tool == "spawn_agent":
+                    invalid_spawn_sender = True
+            if call_id is None or event_type not in {"item.started", "item.completed"}:
+                invalid_collaboration_evidence = True
+                continue
+            if event_type == "item.started":
+                if status != "in_progress" or call_id in started_collaboration_calls:
+                    invalid_collaboration_evidence = True
+                started_collaboration_calls[call_id] = (tool, sender_thread_id)
+                continue
+            if status != "completed" or call_id in completed_collaboration_calls:
+                invalid_collaboration_evidence = True
+                continue
+            completed_collaboration_calls.add(call_id)
+            started_call = started_collaboration_calls.get(call_id)
+            if started_call is not None and started_call != (tool, sender_thread_id):
+                invalid_collaboration_evidence = True
+            if not sender_is_root:
+                continue
+
+            receiver_ids = _bounded_identifier_sequence(item.get("receiver_thread_ids"))
+            if tool == "spawn_agent":
+                prompt = item.get("prompt")
+                if receiver_ids is None or len(receiver_ids) != 1 or not isinstance(prompt, str) or not prompt:
+                    invalid_collaboration_evidence = True
+                    continue
+                if len(spawn_bindings) >= _MAX_RETAINED_PROOF_RECORDS:
+                    invalid_collaboration_evidence = True
+                    continue
+                spawn_bindings.append((receiver_ids[0], prompt))
+                continue
+
+            states = item.get("agents_states")
+            if receiver_ids is None or not receiver_ids or not isinstance(states, Mapping):
+                invalid_collaboration_evidence = True
+                continue
+            state_ids = _bounded_identifier_sequence(list(states.keys()))
+            if state_ids is None or set(state_ids) != set(receiver_ids):
+                invalid_collaboration_evidence = True
+                continue
+            for child_id in receiver_ids:
+                state = states.get(child_id)
+                child_status = state.get("status") if isinstance(state, Mapping) else None
+                child_message = state.get("message") if isinstance(state, Mapping) else None
+                if child_status != "completed" or not isinstance(child_message, str) or not child_message:
+                    invalid_collaboration_evidence = True
+                    continue
+                if len(completed_child_messages) >= _MAX_RETAINED_PROOF_RECORDS:
+                    invalid_collaboration_evidence = True
+                    continue
+                completed_child_messages.append((child_id, child_message))
 
         message = _agent_message(event)
         if message is not None:
             final_message = message
             final_message_completed = True
 
-    root_ids = {thread_id} if thread_id is not None else set()
-    invalid_spawn_sender = any(sender_thread_id != thread_id for sender_thread_id, _ in spawn_records)
-    raw_spawned_agent_ids = [
-        agent_id
-        for sender_thread_id, agent_ids in spawn_records
-        if sender_thread_id == thread_id
-        for agent_id in agent_ids
-        if agent_id not in root_ids
-    ]
+    if set(started_collaboration_calls) - completed_collaboration_calls:
+        invalid_collaboration_evidence = True
+    raw_spawned_agent_ids = [child_id for child_id, _ in spawn_bindings if child_id != thread_id]
     spawned_agent_ids = tuple(dict.fromkeys(raw_spawned_agent_ids))
-    explicit_spawn_count = len(raw_spawned_agent_ids)
+    completed_child_ids = tuple(dict.fromkeys(child_id for child_id, _ in completed_child_messages))
     return CodexEventEvidence(
         thread_id=thread_id,
         spawned_agent_ids=spawned_agent_ids,
-        explicit_spawn_count=explicit_spawn_count,
+        completed_child_ids=completed_child_ids,
+        explicit_spawn_count=len(raw_spawned_agent_ids),
         final_message=final_message,
         usage=usage,
         raw_event_count=raw_event_count,
         collaboration_events=tuple(collaboration_events),
+        disallowed_tool_events=tuple(disallowed_tool_events),
+        spawn_bindings=tuple(spawn_bindings),
+        completed_child_messages=tuple(completed_child_messages),
         root_thread_started=root_thread_started,
         turn_completed=turn_completed,
         final_message_completed=final_message_completed,
         invalid_spawn_sender=invalid_spawn_sender,
+        invalid_collaboration_evidence=invalid_collaboration_evidence,
+        disallowed_tool_evidence_present=disallowed_tool_evidence_present,
+        diagnostic_events_truncated=diagnostic_events_truncated,
     )
 
 
@@ -278,7 +349,13 @@ class CodexRuntime:
                 },
             )
         evidence = parse_codex_events(outcome.stdout)
+        expected_markers = {
+            participant.candidate_id: f"[[sharednet:{nonce}:{participant.candidate_id}]]"
+            for participant in plan.participants
+        }
+        native_proof = _native_coordination_proof(evidence, expected_markers)
         runtime_evidence = self._runtime_evidence(evidence, outcome, command)
+        runtime_evidence.update(native_proof)
         runtime_evidence.update(self._persist_artifacts(plan, outcome))
         if outcome.timed_out:
             return self._failure(
@@ -292,12 +369,18 @@ class CodexRuntime:
             return self._failure(plan, "codex_exec_nonzero_exit", evidence=runtime_evidence, usage=evidence.usage)
         if not (evidence.root_thread_started and evidence.turn_completed and evidence.final_message_completed):
             return self._failure(plan, "incomplete_codex_lifecycle", evidence=runtime_evidence, usage=evidence.usage)
+        if evidence.disallowed_tool_evidence_present:
+            return self._failure(
+                plan,
+                "disallowed_runtime_tool_evidence",
+                evidence=runtime_evidence,
+                usage=evidence.usage,
+            )
 
         decoded = _decode_final_output(evidence.final_message)
         if decoded is None:
             return self._failure(plan, "invalid_structured_output", evidence=runtime_evidence, usage=evidence.usage)
         synthesis, outputs = decoded
-        expected_markers = {participant.candidate_id: f"[[sharednet:{nonce}:{participant.candidate_id}]]" for participant in plan.participants}
         parsed_outputs = _validated_outputs(outputs, expected_markers)
         if parsed_outputs is None:
             return self._failure(plan, "invalid_structured_output", evidence=runtime_evidence, usage=evidence.usage)
@@ -308,10 +391,7 @@ class CodexRuntime:
         ):
             return self._failure(plan, "missing_participant_markers", evidence=runtime_evidence, usage=evidence.usage)
 
-        required_children = len(plan.participants) - 1
-        if evidence.invalid_spawn_sender or (
-            len(evidence.spawned_agent_ids) != required_children or evidence.explicit_spawn_count != required_children
-        ):
+        if not native_proof["native_proof_complete"]:
             return self._failure(plan, "missing_native_spawn_evidence", evidence=runtime_evidence, usage=evidence.usage)
         return CoordinationResult(
             status=TerminalStatus.ACCEPTED,
@@ -392,13 +472,18 @@ class CodexRuntime:
         return {
             "thread_id": evidence.thread_id,
             "spawned_agent_ids": list(evidence.spawned_agent_ids),
+            "completed_child_ids": list(evidence.completed_child_ids),
             "explicit_spawn_count": evidence.explicit_spawn_count,
             "raw_event_count": evidence.raw_event_count,
             "collaboration_events": list(evidence.collaboration_events),
+            "disallowed_tool_events": list(evidence.disallowed_tool_events),
             "root_thread_started": evidence.root_thread_started,
             "turn_completed": evidence.turn_completed,
             "final_message_completed": evidence.final_message_completed,
             "invalid_spawn_sender": evidence.invalid_spawn_sender,
+            "invalid_collaboration_evidence": evidence.invalid_collaboration_evidence,
+            "disallowed_tool_evidence_present": evidence.disallowed_tool_evidence_present,
+            "diagnostic_events_truncated": evidence.diagnostic_events_truncated,
             "exit_code": outcome.returncode,
             "timed_out": outcome.timed_out,
             "stderr": outcome.stderr[-_STDERR_LIMIT:],
@@ -439,27 +524,33 @@ def _default_runner(
     absolute_deadline = deadline if deadline is not None else monotonic() + timeout
     if absolute_deadline - monotonic() <= 0:
         return ProcessOutcome(124, "", "", True)
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    try:
-        stdout, stderr = process.communicate(timeout=max(0.0, absolute_deadline - monotonic()))
-        return ProcessOutcome(process.returncode or 0, stdout or "", stderr or "", False)
-    except subprocess.TimeoutExpired as timeout_error:
-        process.terminate()
-        remaining = max(0.0, absolute_deadline - monotonic())
-        if remaining <= 0:
-            process.kill()
-            final_stdout, final_stderr = _communicate_within_deadline(process, absolute_deadline, monotonic, timeout_error)
-            return ProcessOutcome(process.returncode or 0, final_stdout, final_stderr, True)
+    with tempfile.TemporaryDirectory(prefix="sharednet-codex-") as runtime_cwd:
+        process = subprocess.Popen(
+            command,
+            cwd=runtime_cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
         try:
-            final_stdout, final_stderr = process.communicate(timeout=min(_TERMINATE_GRACE_SECONDS, remaining))
-        except subprocess.TimeoutExpired as terminate_error:
-            process.kill()
-            final_stdout, final_stderr = _communicate_within_deadline(process, absolute_deadline, monotonic, terminate_error)
-        return ProcessOutcome(process.returncode or 0, _as_text(final_stdout), _as_text(final_stderr), True)
+            stdout, stderr = process.communicate(timeout=max(0.0, absolute_deadline - monotonic()))
+            return ProcessOutcome(process.returncode or 0, _as_text(stdout), _as_text(stderr), False)
+        except subprocess.TimeoutExpired as timeout_error:
+            process.terminate()
+            remaining = max(0.0, absolute_deadline - monotonic())
+            if remaining <= 0:
+                process.kill()
+                final_stdout, final_stderr = _communicate_within_deadline(process, absolute_deadline, monotonic, timeout_error)
+                return ProcessOutcome(process.returncode or 0, final_stdout, final_stderr, True)
+            try:
+                final_stdout, final_stderr = process.communicate(timeout=min(_TERMINATE_GRACE_SECONDS, remaining))
+            except subprocess.TimeoutExpired as terminate_error:
+                process.kill()
+                final_stdout, final_stderr = _communicate_within_deadline(process, absolute_deadline, monotonic, terminate_error)
+            return ProcessOutcome(process.returncode or 0, _as_text(final_stdout), _as_text(final_stderr), True)
 
 
 def _communicate_within_deadline(
-    process: subprocess.Popen[str],
+    process: subprocess.Popen[bytes],
     deadline: float,
     clock: Callable[[], float],
     prior_timeout: subprocess.TimeoutExpired,
@@ -477,7 +568,7 @@ def _communicate_within_deadline(
 
 def _as_text(value: str | bytes | None) -> str:
     if isinstance(value, bytes):
-        return value.decode(errors="replace")
+        return value.decode("utf-8", errors="replace")
     return value or ""
 
 
@@ -492,67 +583,151 @@ def _write_exclusive(path: Path, content: str) -> None:
 
 def _event_type(event: Mapping[str, Any]) -> str:
     value = event.get("type")
-    return value.lower() if isinstance(value, str) else ""
+    return value if isinstance(value, str) else ""
 
 
-def _first_string(value: object, key: str) -> str | None:
-    if isinstance(value, Mapping):
-        direct = value.get(key)
-        if isinstance(direct, str):
-            return direct
-        for nested in value.values():
-            found = _first_string(nested, key)
-            if found is not None:
-                return found
-    elif isinstance(value, list):
-        for nested in value:
-            found = _first_string(nested, key)
-            if found is not None:
-                return found
+def _bounded_identifier(value: object) -> str | None:
+    if isinstance(value, str) and value and len(value) <= 256:
+        return value
     return None
 
 
-def _strings_for_key(value: object, key: str) -> list[str]:
-    found: list[str] = []
-    if isinstance(value, Mapping):
-        direct = value.get(key)
-        if isinstance(direct, str):
-            found.append(direct)
-        elif isinstance(direct, list):
-            found.extend(item for item in direct if isinstance(item, str))
-        for nested_key, nested in value.items():
-            if nested_key != key:
-                found.extend(_strings_for_key(nested, key))
-    elif isinstance(value, list):
-        for nested in value:
-            found.extend(_strings_for_key(nested, key))
-    return found
+def _bounded_identifier_sequence(value: object) -> tuple[str, ...] | None:
+    if not isinstance(value, list):
+        return None
+    identifiers: list[str] = []
+    for item in value:
+        identifier = _bounded_identifier(item)
+        if identifier is None:
+            return None
+        identifiers.append(identifier)
+    return tuple(identifiers)
 
 
-def _first_mapping(value: object, key: str) -> Mapping[str, Any] | None:
-    if isinstance(value, Mapping):
-        direct = value.get(key)
-        if isinstance(direct, Mapping):
-            return direct
-        for nested in value.values():
-            found = _first_mapping(nested, key)
-            if found is not None:
-                return found
-    elif isinstance(value, list):
-        for nested in value:
-            found = _first_mapping(nested, key)
-            if found is not None:
-                return found
-    return None
+def _bounded_diagnostic_text(value: object) -> str:
+    return value[:80] if isinstance(value, str) else ""
+
+
+def _disallowed_tool_diagnostic(
+    event_type: str,
+    item_type: str,
+    tool: str,
+    item: object,
+) -> Mapping[str, Any] | None:
+    """Classify tool evidence without retaining commands, prompts, or outputs."""
+    if item_type == "collab_tool_call" and tool in {"spawn_agent", "wait"}:
+        return None
+    combined = " ".join((event_type, item_type, tool)).lower()
+    tool_tokens = (
+        "collab",
+        "collaboration",
+        "command",
+        "shell",
+        "web",
+        "mcp",
+        "file_change",
+        "file_read",
+        "file_write",
+        "read_file",
+        "write_file",
+        "apply_patch",
+        "tool_call",
+    )
+    if not any(token in combined for token in tool_tokens):
+        return None
+    status = item.get("status") if isinstance(item, Mapping) else None
+    diagnostic: dict[str, Any] = {
+        "event_type": _bounded_diagnostic_text(event_type),
+        "item_type": _bounded_diagnostic_text(item_type),
+    }
+    if tool:
+        diagnostic["tool"] = _bounded_diagnostic_text(tool)
+    if isinstance(status, str):
+        diagnostic["status"] = _bounded_diagnostic_text(status)
+    return diagnostic
+
+
+def _collaboration_diagnostic(
+    event_type: str,
+    tool: str,
+    item: Mapping[str, Any],
+    root_thread_id: str | None,
+) -> Mapping[str, Any]:
+    receivers = item.get("receiver_thread_ids")
+    states = item.get("agents_states")
+    return {
+        "event_type": _bounded_diagnostic_text(event_type),
+        "item_id": _bounded_diagnostic_text(item.get("id")),
+        "tool": _bounded_diagnostic_text(tool),
+        "status": _bounded_diagnostic_text(item.get("status")),
+        "sender_is_root": root_thread_id is not None and item.get("sender_thread_id") == root_thread_id,
+        "receiver_count": len(receivers) if isinstance(receivers, list) else 0,
+        "state_count": len(states) if isinstance(states, Mapping) else 0,
+    }
+
+
+def _native_coordination_proof(
+    evidence: CodexEventEvidence,
+    expected_markers: Mapping[str, str],
+) -> dict[str, Any]:
+    """Bind root spawns to planned markers and completed wait messages."""
+    child_markers = dict(list(expected_markers.items())[1:])
+    required_child_ids = set(child_markers)
+    valid = not evidence.invalid_collaboration_evidence and not evidence.disallowed_tool_evidence_present
+    spawned_ids = evidence.spawned_agent_ids
+    if evidence.explicit_spawn_count != len(required_child_ids) or len(spawned_ids) != len(required_child_ids):
+        valid = False
+
+    participant_by_child: dict[str, str] = {}
+    all_markers = tuple(expected_markers.items())
+    for child_id, prompt in evidence.spawn_bindings:
+        matches = [participant_id for participant_id, marker in all_markers if marker in prompt]
+        if len(matches) != 1 or matches[0] not in required_child_ids:
+            valid = False
+            continue
+        participant_id = matches[0]
+        if child_id in participant_by_child or participant_id in participant_by_child.values():
+            valid = False
+            continue
+        participant_by_child[child_id] = participant_id
+    if set(participant_by_child.values()) != required_child_ids:
+        valid = False
+
+    completed_ids = evidence.completed_child_ids
+    if set(completed_ids) != set(spawned_ids) or len(completed_ids) != len(spawned_ids):
+        valid = False
+
+    messages_by_child: dict[str, list[str]] = {}
+    for child_id, message in evidence.completed_child_messages:
+        messages_by_child.setdefault(child_id, []).append(message)
+    contributing_ids: list[str] = []
+    for child_id in spawned_ids:
+        participant_id = participant_by_child.get(child_id)
+        marker = child_markers.get(participant_id, "") if participant_id is not None else ""
+        messages = messages_by_child.get(child_id, [])
+        if marker and messages and all(marker in message for message in messages):
+            contributing_ids.append(child_id)
+        else:
+            valid = False
+
+    if not required_child_ids and (
+        evidence.spawn_bindings or evidence.completed_child_messages or evidence.collaboration_events
+    ):
+        valid = False
+    return {
+        "completed_child_ids": list(completed_ids),
+        "contributing_child_ids": contributing_ids,
+        "child_participant_bindings": participant_by_child,
+        "native_proof_complete": valid,
+    }
 
 
 def _agent_message(event: Mapping[str, Any]) -> str | None:
     item = event.get("item")
-    if event.get("type") == "item.completed" and isinstance(item, Mapping) and item.get("type") in {"agent_message", "assistant_message"}:
-        for key in ("text", "content", "message"):
-            value = item.get(key)
-            if isinstance(value, str):
-                return value
+    if event.get("type") == "item.completed" and isinstance(item, Mapping) and item.get("type") == "agent_message":
+        value = item.get("text")
+        if isinstance(value, str):
+            return value
     return None
 
 

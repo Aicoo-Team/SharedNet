@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -11,6 +12,7 @@ import unittest
 from unittest.mock import patch
 
 from sharednet.coordination.models import CoordinationBudget, CoordinationPlan, ParticipantPlan, TerminalStatus
+from sharednet.coordination.backends import PeerForumBackend
 from sharednet.runtime.codex import (
     CodexRuntime,
     ProcessOutcome,
@@ -19,6 +21,7 @@ from sharednet.runtime.codex import (
     build_codex_prompt,
     parse_codex_events,
 )
+from tests.fixtures import four_agent_request
 
 
 def plan() -> CoordinationPlan:
@@ -47,12 +50,16 @@ def plan() -> CoordinationPlan:
     )
 
 
-def markers_for(nonce: str) -> list[str]:
-    return [f"[[sharednet:{nonce}:{candidate_id}]]" for candidate_id in plan().participant_ids]
+def markers_for(nonce: str, target_plan: CoordinationPlan | None = None) -> list[str]:
+    selected_plan = target_plan or plan()
+    return [f"[[sharednet:{nonce}:{candidate_id}]]" for candidate_id in selected_plan.participant_ids]
 
 
-def success_jsonl(markers: list[str]) -> str:
-    participant_ids = plan().participant_ids
+def success_events(markers: list[str], target_plan: CoordinationPlan | None = None) -> list[dict[str, object]]:
+    selected_plan = target_plan or plan()
+    participant_ids = selected_plan.participant_ids
+    if len(markers) != len(participant_ids):
+        raise ValueError("one marker is required for every participant")
     final = {
         "synthesis": "The contributors agree on a bounded result. " + " ".join(markers),
         "outputs": [
@@ -60,14 +67,65 @@ def success_jsonl(markers: list[str]) -> str:
             for participant_id, marker in zip(participant_ids, markers)
         ],
     }
-    events = [
-        {"type": "thread.started", "thread_id": "thread-root"},
-        {"type": "collaboration.agent.spawned", "sender_thread_id": "thread-root", "agent_thread_id": "child-1"},
-        {"type": "collaboration.agent.spawned", "sender_thread_id": "thread-root", "agent_thread_id": "child-2"},
-        {"type": "collaboration.agent.spawned", "sender_thread_id": "thread-root", "agent_thread_id": "child-3"},
-        {"type": "turn.completed", "usage": {"input_tokens": 100, "output_tokens": 40}},
-        {"type": "item.completed", "item": {"type": "agent_message", "text": json.dumps(final)}},
-    ]
+    child_ids = tuple(f"child-{index}" for index in range(1, len(participant_ids)))
+    events: list[dict[str, object]] = [{"type": "thread.started", "thread_id": "thread-root"}]
+    for index, (child_id, participant_id, marker) in enumerate(
+        zip(child_ids, participant_ids[1:], markers[1:]),
+        start=1,
+    ):
+        item = {
+            "id": f"spawn-{index}",
+            "type": "collab_tool_call",
+            "tool": "spawn_agent",
+            "sender_thread_id": "thread-root",
+            "receiver_thread_ids": [child_id],
+            "prompt": f"Your candidate_id is {participant_id}. Your exact marker is {marker}.",
+            "agents_states": {child_id: {"status": "pending_init", "message": None}},
+        }
+        events.append({"type": "item.started", "item": {**item, "receiver_thread_ids": [], "agents_states": {}, "status": "in_progress"}})
+        events.append({"type": "item.completed", "item": {**item, "status": "completed"}})
+
+    wait_groups = (child_ids[:1], child_ids[1:]) if len(child_ids) > 1 else (child_ids,)
+    marker_by_child = dict(zip(child_ids, markers[1:]))
+    for index, group in enumerate(wait_groups, start=1):
+        if not group:
+            continue
+        item = {
+            "id": f"wait-{index}",
+            "type": "collab_tool_call",
+            "tool": "wait",
+            "sender_thread_id": "thread-root",
+            "receiver_thread_ids": list(group),
+            "prompt": None,
+        }
+        events.append({"type": "item.started", "item": {**item, "agents_states": {}, "status": "in_progress"}})
+        events.append(
+            {
+                "type": "item.completed",
+                "item": {
+                    **item,
+                    "agents_states": {
+                        child_id: {
+                            "status": "completed",
+                            "message": f"{marker_by_child[child_id]}\nFinding from {child_id}.",
+                        }
+                        for child_id in group
+                    },
+                    "status": "completed",
+                },
+            }
+        )
+    events.extend(
+        (
+            {"type": "turn.completed", "usage": {"input_tokens": 100, "output_tokens": 40}},
+            {"type": "item.completed", "item": {"type": "agent_message", "text": json.dumps(final)}},
+        )
+    )
+    return events
+
+
+def success_jsonl(markers: list[str], target_plan: CoordinationPlan | None = None) -> str:
+    events = success_events(markers, target_plan)
     return "\n".join(json.dumps(event) for event in events)
 
 
@@ -158,6 +216,16 @@ class SuccessfulProcess:
     def communicate(self, timeout: float | None = None) -> tuple[str, str]:
         self.communicate_calls.append(timeout)
         return self.stdout, ""
+
+
+class ByteProcess:
+    def __init__(self, stdout: bytes, stderr: bytes, *, returncode: int = 0) -> None:
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+    def communicate(self, timeout: float | None = None) -> tuple[bytes, bytes]:
+        return self.stdout, self.stderr
 
 
 class NoParseText(str):
@@ -306,37 +374,25 @@ class CodexRuntimeTests(unittest.TestCase):
 
         self.assertEqual(evidence.thread_id, "thread-root")
         self.assertEqual(evidence.spawned_agent_ids, ("child-1", "child-2", "child-3"))
+        self.assertEqual(getattr(evidence, "completed_child_ids", ()), ("child-1", "child-2", "child-3"))
         self.assertEqual(evidence.usage["input_tokens"], 100)
         self.assertIn("nonce-1", evidence.final_message)
-        self.assertEqual(evidence.raw_event_count, 6)
+        self.assertEqual(evidence.raw_event_count, 13)
 
-    def test_parser_collects_real_collab_tool_call_receivers(self) -> None:
-        evidence = parse_codex_events(
-            "\n".join(
-                json.dumps(event)
-                for event in (
-                    {"type": "thread.started", "thread_id": "thread-root"},
-                    {
-                        "type": "item.completed",
-                        "item": {
-                            "type": "collab_tool_call",
-                            "tool": "spawn_agent",
-                            "sender_thread_id": "thread-root",
-                            "receiver_thread_ids": ["child-1", "child-2", "child-3"],
-                            "agents_states": {},
-                            "status": "completed",
-                        },
-                    },
-                )
-            )
-        )
+    def test_parser_retains_only_bounded_collaboration_diagnostics(self) -> None:
+        evidence = parse_codex_events(success_jsonl(markers_for("nonce-1")))
+        diagnostics = json.dumps(evidence.collaboration_events)
 
-        self.assertEqual(evidence.spawned_agent_ids, ("child-1", "child-2", "child-3"))
-        self.assertEqual(evidence.explicit_spawn_count, 3)
-        self.assertEqual(len(evidence.collaboration_events), 1)
+        self.assertNotIn("Your candidate_id", diagnostics)
+        self.assertNotIn("Finding from child", diagnostics)
+        self.assertLess(len(diagnostics), 4_000)
 
     def test_missing_participant_marker_fails_closed(self) -> None:
-        runner = RecordingRunner(ProcessOutcome(0, success_jsonl(markers_for("nonce-1")[:-1]), "", False))
+        events = success_events(markers_for("nonce-1"))
+        final = json.loads(events[-1]["item"]["text"])
+        final["outputs"] = final["outputs"][:-1]
+        events[-1]["item"]["text"] = json.dumps(final)
+        runner = RecordingRunner(ProcessOutcome(0, "\n".join(json.dumps(event) for event in events), "", False))
 
         result = CodexRuntime(binary="/real/codex", runner=runner, nonce_factory=lambda: "nonce-1").execute(plan())
 
@@ -419,8 +475,12 @@ class CodexRuntimeTests(unittest.TestCase):
         self.assertEqual(result.error, "incomplete_codex_lifecycle")
 
     def test_marker_text_does_not_prove_native_spawning(self) -> None:
-        events = success_jsonl(markers_for("nonce-1")).splitlines()
-        no_spawn_events = "\n".join(line for line in events if "collaboration.agent.spawned" not in line)
+        events = success_events(markers_for("nonce-1"))
+        no_spawn_events = "\n".join(
+            json.dumps(event)
+            for event in events
+            if not (isinstance(event.get("item"), dict) and event["item"].get("tool") == "spawn_agent")
+        )
         runner = RecordingRunner(ProcessOutcome(0, no_spawn_events, "", False))
 
         result = CodexRuntime(binary="/real/codex", runner=runner, nonce_factory=lambda: "nonce-1").execute(plan())
@@ -428,20 +488,43 @@ class CodexRuntimeTests(unittest.TestCase):
         self.assertEqual(result.status, TerminalStatus.FAILED)
         self.assertEqual(result.error, "missing_native_spawn_evidence")
 
-    def test_unrelated_agent_thread_ids_do_not_prove_or_pad_native_spawns(self) -> None:
-        events = [json.loads(line) for line in success_jsonl(markers_for("nonce-1")).splitlines()]
-        events = [event for event in events if event.get("agent_thread_id") != "child-3"]
-        events.insert(4, {"type": "turn.progress", "agent_thread_id": "unrelated-thread"})
-        runner = RecordingRunner(ProcessOutcome(0, "\n".join(json.dumps(event) for event in events), "", False))
+    def test_compatibility_event_names_cannot_prove_native_spawns(self) -> None:
+        events = success_events(markers_for("nonce-1"))
+        rewritten: list[dict[str, object]] = []
+        for event in events:
+            item = event.get("item")
+            if isinstance(item, dict) and item.get("tool") == "spawn_agent":
+                if event["type"] == "item.completed":
+                    rewritten.append(
+                        {
+                            "type": "future.collaboration.agent.spawned",
+                            "sender_thread_id": "thread-root",
+                            "agent_thread_id": item["receiver_thread_ids"][0],
+                        }
+                    )
+                continue
+            rewritten.append(event)
+        runner = RecordingRunner(ProcessOutcome(0, "\n".join(json.dumps(event) for event in rewritten), "", False))
 
         result = CodexRuntime(binary="/real/codex", runner=runner, nonce_factory=lambda: "nonce-1").execute(plan())
 
         self.assertEqual(result.status, TerminalStatus.FAILED)
-        self.assertEqual(result.error, "missing_native_spawn_evidence")
+
+    def test_unrelated_agent_thread_ids_do_not_prove_or_pad_native_spawns(self) -> None:
+        events = success_events(markers_for("nonce-1"))
+        events.insert(-2, {"type": "turn.progress", "agent_thread_id": "unrelated-thread"})
+        runner = RecordingRunner(ProcessOutcome(0, "\n".join(json.dumps(event) for event in events), "", False))
+
+        result = CodexRuntime(binary="/real/codex", runner=runner, nonce_factory=lambda: "nonce-1").execute(plan())
+
+        self.assertEqual(result.status, TerminalStatus.ACCEPTED)
+        self.assertNotIn("unrelated-thread", result.runtime_evidence["spawned_agent_ids"])
 
     def test_duplicate_native_child_id_fails_closed(self) -> None:
-        events = [json.loads(line) for line in success_jsonl(markers_for("nonce-1")).splitlines()]
-        events.insert(4, {"type": "collaboration.agent.spawned", "agent_thread_id": "child-1"})
+        events = success_events(markers_for("nonce-1"))
+        duplicate = json.loads(json.dumps(events[2]))
+        duplicate["item"]["id"] = "spawn-duplicate"
+        events.insert(3, duplicate)
         runner = RecordingRunner(ProcessOutcome(0, "\n".join(json.dumps(event) for event in events), "", False))
 
         result = CodexRuntime(binary="/real/codex", runner=runner, nonce_factory=lambda: "nonce-1").execute(plan())
@@ -450,15 +533,8 @@ class CodexRuntimeTests(unittest.TestCase):
         self.assertEqual(result.error, "missing_native_spawn_evidence")
 
     def test_nonroot_spawn_sender_fails_closed(self) -> None:
-        events = [json.loads(line) for line in success_jsonl(markers_for("nonce-1")).splitlines()]
-        events.insert(
-            4,
-            {
-                "type": "collaboration.agent.spawned",
-                "sender_thread_id": "child-1",
-                "agent_thread_id": "child-4",
-            },
-        )
+        events = success_events(markers_for("nonce-1"))
+        events[2]["item"]["sender_thread_id"] = "child-1"
         runner = RecordingRunner(ProcessOutcome(0, "\n".join(json.dumps(event) for event in events), "", False))
 
         result = CodexRuntime(binary="/real/codex", runner=runner, nonce_factory=lambda: "nonce-1").execute(plan())
@@ -476,9 +552,17 @@ class CodexRuntimeTests(unittest.TestCase):
         events = (
             {"type": "thread.started", "thread_id": "thread-root"},
             {
-                "type": "collaboration.agent.spawned",
-                "sender_thread_id": "thread-root",
-                "agent_thread_id": "unexpected-child",
+                "type": "item.completed",
+                "item": {
+                    "id": "spawn-unplanned",
+                    "type": "collab_tool_call",
+                    "tool": "spawn_agent",
+                    "sender_thread_id": "thread-root",
+                    "receiver_thread_ids": ["unexpected-child"],
+                    "prompt": "unplanned",
+                    "agents_states": {},
+                    "status": "completed",
+                },
             },
             {"type": "turn.completed", "usage": {}},
             {"type": "item.completed", "item": {"type": "agent_message", "text": json.dumps(final)}},
@@ -491,15 +575,248 @@ class CodexRuntimeTests(unittest.TestCase):
         self.assertEqual(result.error, "missing_native_spawn_evidence")
 
     def test_senderless_spawn_event_cannot_prove_root_authorship(self) -> None:
-        events = [json.loads(line) for line in success_jsonl(markers_for("nonce-1")).splitlines()]
+        events = success_events(markers_for("nonce-1"))
         for event in events:
-            event.pop("sender_thread_id", None)
+            item = event.get("item")
+            if isinstance(item, dict) and item.get("tool") == "spawn_agent":
+                item.pop("sender_thread_id", None)
         runner = RecordingRunner(ProcessOutcome(0, "\n".join(json.dumps(event) for event in events), "", False))
 
         result = CodexRuntime(binary="/real/codex", runner=runner, nonce_factory=lambda: "nonce-1").execute(plan())
 
         self.assertEqual(result.status, TerminalStatus.FAILED)
         self.assertEqual(result.error, "missing_native_spawn_evidence")
+
+    def test_completed_root_waits_must_cover_every_spawned_child(self) -> None:
+        events = success_events(markers_for("nonce-1"))
+        events = [
+            event
+            for event in events
+            if not (isinstance(event.get("item"), dict) and event["item"].get("tool") == "wait")
+        ]
+        runner = RecordingRunner(ProcessOutcome(0, "\n".join(json.dumps(event) for event in events), "", False))
+
+        result = CodexRuntime(binary="/real/codex", runner=runner, nonce_factory=lambda: "nonce-1").execute(plan())
+
+        self.assertEqual(result.status, TerminalStatus.FAILED)
+        self.assertEqual(result.error, "missing_native_spawn_evidence")
+
+    def test_partial_wait_coverage_cannot_be_completed_by_root_final_output(self) -> None:
+        events = success_events(markers_for("nonce-1"))
+        events = [
+            event
+            for event in events
+            if not (isinstance(event.get("item"), dict) and event["item"].get("id") == "wait-2")
+        ]
+        runner = RecordingRunner(ProcessOutcome(0, "\n".join(json.dumps(event) for event in events), "", False))
+
+        result = CodexRuntime(binary="/real/codex", runner=runner, nonce_factory=lambda: "nonce-1").execute(plan())
+
+        self.assertEqual(result.status, TerminalStatus.FAILED)
+        self.assertEqual(result.error, "missing_native_spawn_evidence")
+
+    def test_failed_wait_state_does_not_prove_child_completion(self) -> None:
+        events = success_events(markers_for("nonce-1"))
+        wait = next(event["item"] for event in events if isinstance(event.get("item"), dict) and event["type"] == "item.completed" and event["item"].get("id") == "wait-2")
+        wait["agents_states"]["child-2"] = {"status": "failed", "message": "failed worker"}
+        runner = RecordingRunner(ProcessOutcome(0, "\n".join(json.dumps(event) for event in events), "", False))
+
+        result = CodexRuntime(binary="/real/codex", runner=runner, nonce_factory=lambda: "nonce-1").execute(plan())
+
+        self.assertEqual(result.status, TerminalStatus.FAILED)
+        self.assertEqual(result.error, "missing_native_spawn_evidence")
+
+    def test_child_must_return_the_marker_bound_by_its_spawn_prompt(self) -> None:
+        events = success_events(markers_for("nonce-1"))
+        wait = next(event["item"] for event in events if isinstance(event.get("item"), dict) and event["type"] == "item.completed" and event["item"].get("id") == "wait-2")
+        wait["agents_states"]["child-2"]["message"] = "[[sharednet:nonce-1:child-c]] wrong child marker"
+        runner = RecordingRunner(ProcessOutcome(0, "\n".join(json.dumps(event) for event in events), "", False))
+
+        result = CodexRuntime(binary="/real/codex", runner=runner, nonce_factory=lambda: "nonce-1").execute(plan())
+
+        self.assertEqual(result.status, TerminalStatus.FAILED)
+        self.assertEqual(result.error, "missing_native_spawn_evidence")
+        self.assertNotIn("child-2", result.runtime_evidence["contributing_child_ids"])
+
+    def test_spawn_prompt_marker_binding_cannot_be_inferred_from_final_output(self) -> None:
+        events = success_events(markers_for("nonce-1"))
+        spawn = next(event["item"] for event in events if isinstance(event.get("item"), dict) and event["type"] == "item.completed" and event["item"].get("id") == "spawn-1")
+        spawn["prompt"] = "Your exact marker is [[sharednet:nonce-1:child-b]]."
+        runner = RecordingRunner(ProcessOutcome(0, "\n".join(json.dumps(event) for event in events), "", False))
+
+        result = CodexRuntime(binary="/real/codex", runner=runner, nonce_factory=lambda: "nonce-1").execute(plan())
+
+        self.assertEqual(result.status, TerminalStatus.FAILED)
+        self.assertEqual(result.error, "missing_native_spawn_evidence")
+
+    def test_senderless_or_unplanned_wait_state_fails_closed(self) -> None:
+        for mutation in ("senderless", "unplanned"):
+            with self.subTest(mutation=mutation):
+                events = success_events(markers_for("nonce-1"))
+                wait = next(event["item"] for event in events if isinstance(event.get("item"), dict) and event["type"] == "item.completed" and event["item"].get("id") == "wait-1")
+                if mutation == "senderless":
+                    wait.pop("sender_thread_id")
+                else:
+                    wait["receiver_thread_ids"].append("unplanned-child")
+                    wait["agents_states"]["unplanned-child"] = {
+                        "status": "completed",
+                        "message": "[[sharednet:nonce-1:child-a]] forged",
+                    }
+                runner = RecordingRunner(ProcessOutcome(0, "\n".join(json.dumps(event) for event in events), "", False))
+
+                result = CodexRuntime(binary="/real/codex", runner=runner, nonce_factory=lambda: "nonce-1").execute(plan())
+
+                self.assertEqual(result.status, TerminalStatus.FAILED)
+                self.assertEqual(result.error, "missing_native_spawn_evidence")
+
+    def test_failed_in_progress_or_uncompleted_spawn_never_counts(self) -> None:
+        for mutation in ("failed", "in_progress", "no_completion"):
+            with self.subTest(mutation=mutation):
+                events = success_events(markers_for("nonce-1"))
+                completed_index = next(
+                    index
+                    for index, event in enumerate(events)
+                    if isinstance(event.get("item"), dict)
+                    and event["type"] == "item.completed"
+                    and event["item"].get("id") == "spawn-1"
+                )
+                if mutation == "no_completion":
+                    events.pop(completed_index)
+                else:
+                    events[completed_index]["item"]["status"] = mutation
+                runner = RecordingRunner(ProcessOutcome(0, "\n".join(json.dumps(event) for event in events), "", False))
+
+                result = CodexRuntime(binary="/real/codex", runner=runner, nonce_factory=lambda: "nonce-1").execute(plan())
+
+                self.assertEqual(result.status, TerminalStatus.FAILED)
+                self.assertEqual(result.error, "missing_native_spawn_evidence")
+
+    def test_disallowed_data_tools_fail_closed_without_retaining_payloads(self) -> None:
+        variants = (
+            ("command_execution", {"command": "cat /private/customer-secret"}),
+            ("file_change", {"changes": "private patch payload"}),
+            ("shell_command", {"command": "printf private"}),
+            ("web_search", {"query": "private query"}),
+            ("mcp_tool_call", {"tool": "private_mcp", "arguments": "private args"}),
+            ("file_read", {"path": "/private/customer-secret"}),
+        )
+        for item_type, payload in variants:
+            with self.subTest(item_type=item_type):
+                events = success_events(markers_for("nonce-1"))
+                events.insert(-2, {"type": "item.completed", "item": {"id": "forbidden", "type": item_type, **payload}})
+                runner = RecordingRunner(ProcessOutcome(0, "\n".join(json.dumps(event) for event in events), "", False))
+
+                result = CodexRuntime(binary="/real/codex", runner=runner, nonce_factory=lambda: "nonce-1").execute(plan())
+
+                self.assertEqual(result.status, TerminalStatus.FAILED)
+                self.assertEqual(result.error, "disallowed_runtime_tool_evidence")
+                diagnostic_text = json.dumps(result.to_dict()["runtime_evidence"]["disallowed_tool_events"])
+                self.assertNotIn("customer-secret", diagnostic_text)
+                for sensitive_payload in ("private patch payload", "printf private", "private query", "private args"):
+                    self.assertNotIn(sensitive_payload, diagnostic_text)
+                self.assertLess(len(diagnostic_text), 1_000)
+
+    def test_unplanned_collaboration_action_is_disallowed(self) -> None:
+        events = success_events(markers_for("nonce-1"))
+        events.insert(
+            -2,
+            {
+                "type": "item.completed",
+                "item": {
+                    "id": "send-1",
+                    "type": "collab_tool_call",
+                    "tool": "send_input",
+                    "sender_thread_id": "thread-root",
+                    "receiver_thread_ids": ["child-1"],
+                    "status": "completed",
+                },
+            },
+        )
+        runner = RecordingRunner(ProcessOutcome(0, "\n".join(json.dumps(event) for event in events), "", False))
+
+        result = CodexRuntime(binary="/real/codex", runner=runner, nonce_factory=lambda: "nonce-1").execute(plan())
+
+        self.assertEqual(result.status, TerminalStatus.FAILED)
+        self.assertEqual(result.error, "disallowed_runtime_tool_evidence")
+
+    def test_tool_diagnostics_are_bounded_for_adversarial_transcripts(self) -> None:
+        events = success_events(markers_for("nonce-1"))
+        for index in range(300):
+            events.insert(
+                -2,
+                {
+                    "type": "item.completed",
+                    "item": {
+                        "id": f"forbidden-{index}",
+                        "type": "command_execution",
+                        "command": f"cat /private/secret-{index}",
+                    },
+                },
+            )
+        runner = RecordingRunner(ProcessOutcome(0, "\n".join(json.dumps(event) for event in events), "", False))
+
+        result = CodexRuntime(binary="/real/codex", runner=runner, nonce_factory=lambda: "nonce-1").execute(plan())
+        runtime_evidence = result.to_dict()["runtime_evidence"]
+
+        self.assertEqual(result.error, "disallowed_runtime_tool_evidence")
+        self.assertLessEqual(len(runtime_evidence["disallowed_tool_events"]), 128)
+        self.assertTrue(runtime_evidence["diagnostic_events_truncated"])
+
+    def test_disallowed_tool_presence_survives_a_full_diagnostic_buffer(self) -> None:
+        events: list[dict[str, object]] = [{"type": "thread.started", "thread_id": "thread-root"}]
+        for index in range(128):
+            events.append(
+                {
+                    "type": "item.started",
+                    "item": {
+                        "id": f"spawn-{index}",
+                        "type": "collab_tool_call",
+                        "tool": "spawn_agent",
+                        "sender_thread_id": "thread-root",
+                        "receiver_thread_ids": [],
+                        "prompt": "bounded",
+                        "agents_states": {},
+                        "status": "in_progress",
+                    },
+                }
+            )
+        events.append(
+            {
+                "type": "item.completed",
+                "item": {"id": "forbidden", "type": "command_execution", "command": "cat /private/secret"},
+            }
+        )
+
+        evidence = parse_codex_events("\n".join(json.dumps(event) for event in events))
+
+        self.assertTrue(getattr(evidence, "disallowed_tool_evidence_present", False))
+        self.assertEqual(evidence.disallowed_tool_events, ())
+        self.assertTrue(evidence.diagnostic_events_truncated)
+
+    def test_one_participant_succeeds_without_spawn_or_wait_evidence(self) -> None:
+        single_participant_plan = replace(plan(), participants=plan().participants[:1])
+        markers = markers_for("nonce-1", single_participant_plan)
+        runner = RecordingRunner(ProcessOutcome(0, success_jsonl(markers, single_participant_plan), "", False))
+
+        result = CodexRuntime(binary="/real/codex", runner=runner, nonce_factory=lambda: "nonce-1").execute(single_participant_plan)
+
+        self.assertEqual(result.status, TerminalStatus.ACCEPTED)
+        self.assertEqual(result.runtime_evidence["spawned_agent_ids"], ())
+        self.assertEqual(result.runtime_evidence["completed_child_ids"], ())
+
+    def test_peer_forum_integrator_is_runtime_root_and_peers_are_children(self) -> None:
+        peer_plan = PeerForumBackend().plan(four_agent_request(mechanism="peer-forum"))
+        markers = markers_for("nonce-peer", peer_plan)
+        runner = RecordingRunner(ProcessOutcome(0, success_jsonl(markers, peer_plan), "", False))
+
+        result = CodexRuntime(binary="/real/codex", runner=runner, nonce_factory=lambda: "nonce-peer").execute(peer_plan)
+
+        self.assertEqual(peer_plan.participants[0].role, "integrator")
+        self.assertEqual(peer_plan.participants[0].candidate_id, "self")
+        self.assertTrue(all(participant.role == "peer" for participant in peer_plan.participants[1:]))
+        self.assertEqual(result.status, TerminalStatus.ACCEPTED)
+        self.assertIn("Represent participant zero (self) yourself", runner.command[-1])
+        self.assertIn("exactly 3 parallel native spawn_agent calls", runner.command[-1])
 
     def test_prompt_instructs_root_to_spawn_exactly_the_nonroot_participants(self) -> None:
         prompt = build_codex_prompt(plan(), "nonce-1")
@@ -510,6 +827,7 @@ class CodexRuntimeTests(unittest.TestCase):
         self.assertIn("Do not use file, shell, or web tools", prompt)
         self.assertIn("Each planned participant consumes one reserved SharedNet turn", prompt)
         self.assertIn("Do not execute or spawn any unplanned participant or turn", prompt)
+        self.assertIn("exactly that candidate's exact marker", prompt)
         self.assertIn("[[sharednet:nonce-1:root]]", prompt)
 
     def test_one_turn_prompt_never_directs_a_child_spawn(self) -> None:
@@ -585,6 +903,45 @@ class CodexRuntimeTests(unittest.TestCase):
 
             self.assertNotEqual(first.runtime_evidence["stdout_artifact"], second.runtime_evidence["stdout_artifact"])
             self.assertEqual(len(list(Path(directory).iterdir())), 4)
+
+    def test_default_runner_uses_an_empty_ephemeral_working_directory_and_inherited_auth(self) -> None:
+        observed: dict[str, object] = {}
+
+        def launch(command: list[str], **kwargs: object) -> SuccessfulProcess:
+            cwd = kwargs.get("cwd")
+            observed["cwd"] = cwd
+            observed["cwd_exists_during_launch"] = isinstance(cwd, str) and Path(cwd).is_dir()
+            observed["cwd_entries_during_launch"] = sorted(os.listdir(cwd)) if isinstance(cwd, str) else None
+            observed["env_was_overridden"] = "env" in kwargs
+            return SuccessfulProcess("process output")
+
+        with patch("sharednet.runtime.codex.subprocess.Popen", side_effect=launch):
+            outcome = _default_runner(["codex"], 1.0)
+
+        cwd = observed["cwd"]
+        self.assertIsInstance(cwd, str)
+        self.assertTrue(observed["cwd_exists_during_launch"])
+        self.assertEqual(observed["cwd_entries_during_launch"], [])
+        self.assertFalse(observed["env_was_overridden"])
+        self.assertNotEqual(cwd, os.getcwd())
+        self.assertFalse(Path(cwd).exists())
+        self.assertEqual(outcome.stdout, "process output")
+
+    def test_invalid_utf8_from_default_process_returns_typed_failure(self) -> None:
+        process = ByteProcess(b"\xff", b"\xfe")
+        with patch("sharednet.runtime.codex.subprocess.Popen", return_value=process):
+            try:
+                result = CodexRuntime(
+                    binary="/real/codex",
+                    nonce_factory=lambda: "nonce-1",
+                    clock=ManualClock(),
+                ).execute(plan())
+            except (AttributeError, UnicodeError) as error:
+                self.fail(f"invalid process bytes escaped as an untyped decoding failure: {error}")
+
+        self.assertEqual(result.status, TerminalStatus.FAILED)
+        self.assertEqual(result.error, "incomplete_codex_lifecycle")
+        self.assertIn("\ufffd", result.runtime_evidence["stderr"])
 
     def test_default_runner_uses_authoritative_output_after_terminate(self) -> None:
         process = TimeoutProcess()
