@@ -147,13 +147,11 @@ def parse_codex_events(stdout: str) -> CodexEventEvidence:
             final_message_completed = True
 
     root_ids = {thread_id} if thread_id is not None else set()
-    invalid_spawn_sender = any(
-        sender_thread_id is not None and sender_thread_id != thread_id for sender_thread_id, _ in spawn_records
-    )
+    invalid_spawn_sender = any(sender_thread_id != thread_id for sender_thread_id, _ in spawn_records)
     raw_spawned_agent_ids = [
         agent_id
         for sender_thread_id, agent_ids in spawn_records
-        if sender_thread_id is None or sender_thread_id == thread_id
+        if sender_thread_id == thread_id
         for agent_id in agent_ids
         if agent_id not in root_ids
     ]
@@ -261,9 +259,9 @@ class CodexRuntime:
             return self._failure(plan, "missing_participant_markers", evidence=runtime_evidence, usage=evidence.usage)
 
         required_children = len(plan.participants) - 1
-        if evidence.invalid_spawn_sender or (required_children and (
+        if evidence.invalid_spawn_sender or (
             len(evidence.spawned_agent_ids) != required_children or evidence.explicit_spawn_count != required_children
-        )):
+        ):
             return self._failure(plan, "missing_native_spawn_evidence", evidence=runtime_evidence, usage=evidence.usage)
         return CoordinationResult(
             status=TerminalStatus.ACCEPTED,

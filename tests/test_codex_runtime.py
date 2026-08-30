@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 import subprocess
 import tempfile
@@ -61,9 +62,9 @@ def success_jsonl(markers: list[str]) -> str:
     }
     events = [
         {"type": "thread.started", "thread_id": "thread-root"},
-        {"type": "collaboration.agent.spawned", "agent_thread_id": "child-1"},
-        {"type": "collaboration.agent.spawned", "agent_thread_id": "child-2"},
-        {"type": "collaboration.agent.spawned", "agent_thread_id": "child-3"},
+        {"type": "collaboration.agent.spawned", "sender_thread_id": "thread-root", "agent_thread_id": "child-1"},
+        {"type": "collaboration.agent.spawned", "sender_thread_id": "thread-root", "agent_thread_id": "child-2"},
+        {"type": "collaboration.agent.spawned", "sender_thread_id": "thread-root", "agent_thread_id": "child-3"},
         {"type": "turn.completed", "usage": {"input_tokens": 100, "output_tokens": 40}},
         {"type": "item.completed", "item": {"type": "agent_message", "text": json.dumps(final)}},
     ]
@@ -302,6 +303,41 @@ class CodexRuntimeTests(unittest.TestCase):
                 "agent_thread_id": "child-4",
             },
         )
+        runner = RecordingRunner(ProcessOutcome(0, "\n".join(json.dumps(event) for event in events), "", False))
+
+        result = CodexRuntime(binary="/real/codex", runner=runner, nonce_factory=lambda: "nonce-1").execute(plan())
+
+        self.assertEqual(result.status, TerminalStatus.FAILED)
+        self.assertEqual(result.error, "missing_native_spawn_evidence")
+
+    def test_one_participant_plan_rejects_any_spawn_evidence(self) -> None:
+        single_participant_plan = replace(plan(), participants=plan().participants[:1])
+        marker = "[[sharednet:nonce-1:root]]"
+        final = {
+            "synthesis": f"The root completed the task. {marker}",
+            "outputs": [{"candidate_id": "root", "marker": marker, "content": "Root finding."}],
+        }
+        events = (
+            {"type": "thread.started", "thread_id": "thread-root"},
+            {
+                "type": "collaboration.agent.spawned",
+                "sender_thread_id": "thread-root",
+                "agent_thread_id": "unexpected-child",
+            },
+            {"type": "turn.completed", "usage": {}},
+            {"type": "item.completed", "item": {"type": "agent_message", "text": json.dumps(final)}},
+        )
+        runner = RecordingRunner(ProcessOutcome(0, "\n".join(json.dumps(event) for event in events), "", False))
+
+        result = CodexRuntime(binary="/real/codex", runner=runner, nonce_factory=lambda: "nonce-1").execute(single_participant_plan)
+
+        self.assertEqual(result.status, TerminalStatus.FAILED)
+        self.assertEqual(result.error, "missing_native_spawn_evidence")
+
+    def test_senderless_spawn_event_cannot_prove_root_authorship(self) -> None:
+        events = [json.loads(line) for line in success_jsonl(markers_for("nonce-1")).splitlines()]
+        for event in events:
+            event.pop("sender_thread_id", None)
         runner = RecordingRunner(ProcessOutcome(0, "\n".join(json.dumps(event) for event in events), "", False))
 
         result = CodexRuntime(binary="/real/codex", runner=runner, nonce_factory=lambda: "nonce-1").execute(plan())
