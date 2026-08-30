@@ -73,7 +73,7 @@
     }
   ],
   "budget": {
-    "max_wall_seconds": 300,
+    "max_wall_seconds": 600,
     "max_turns": 16,
     "max_depth": 2,
     "max_participants": 4,

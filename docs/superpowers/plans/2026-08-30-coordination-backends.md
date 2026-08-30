@@ -391,7 +391,7 @@ Expected: import failure for `sharednet.cli` or missing console entry point.
 
 `CoordinationRequest.from_dict()` parses the example. `coord list` returns mechanisms and aliases. `coord plan` overrides only the mechanism field and prints the pure plan. `coord run` creates `CodexRuntime(model=args.model)` and prints the result. Caller-contract errors print `{"error": ..., "type": ...}` on stderr and return 2; terminal run failure returns 1.
 
-The example has four admitted candidates (`self`, `research-agent`, `architecture-agent`, `risk-agent`) whose complementary capabilities are `synthesis`, `research`, `architecture`, and `risk`. The mocked task supplies four incident records and asks for a prioritized remediation brief. Budget limits four participants, depth two, one retry, and 300 seconds.
+The example has four admitted candidates (`self`, `research-agent`, `architecture-agent`, `risk-agent`) whose complementary capabilities are `synthesis`, `research`, `architecture`, and `risk`. The mocked task supplies four incident records and asks for a prioritized remediation brief. Budget limits four participants, depth two, one retry, and a fixture-specific 600-second hard wall so the root-plus-three provider proof can tolerate transient transport variability. This does not change the product `CoordinationBudget` default of 300 seconds.
 
 Add `.codex-live-artifacts/`, `__pycache__/`, `*.pyc`, and `.coverage` to `.gitignore`. `THIRD_PARTY_NOTICES.md` includes both upstream repository URLs, immutable inspected commits, MIT copyright, and copied/adapted file names.
 

@@ -40,6 +40,8 @@ An actual runtime invocation is opt-in:
 sharednet coord run --mechanism rac-rge --request examples/four-agent-task.json --model gpt-5.6-luna
 ```
 
+The checked-in four-agent live fixture uses a bounded 600-second hard wall to accommodate root-plus-three provider and transport variability. The product `CoordinationBudget` default remains 300 seconds.
+
 `run` uses the locally available Codex runtime with a bounded, read-only plan. It returns the runtime evidence, participant markers, usage, and terminal state as JSON. An accepted result exits with `0`; other terminal runtime outcomes exit with `1`. Invalid request data, argument errors, and unknown mechanisms exit with `2` and write one structured JSON error to standard error.
 
 Planning operates only on the request's admitted, immutable candidate snapshot. Request-wide wall-time, turn, and predicted-cost ceilings are consumed across attempts; dependency depth, participant count, and retry count are also hard bounds. `max_disclosure_bytes` limits the serialized task payload accepted at the request boundary, not the entire generated Codex prompt, process output, or evidence record. Execution failures can exclude attributable participants for a bounded replan but cannot expand the candidate set or authority.
