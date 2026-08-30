@@ -202,3 +202,40 @@ OK (skipped=2)
 ```
 
 `compileall` and `git diff --check` completed with no output. No provider was invoked during this correction.
+
+## Superseding final-protocol verification — 2026-08-31
+
+The earlier `efaf...` accepted transcript predates exact JSON child-task payloads and exact child-output binding. Replaying it under the final parser now correctly returns `missing_native_spawn_evidence`; all earlier statements that it remained accepted are retained above only as historical development evidence and are superseded by this section.
+
+The final protocol requires each recorded child spawn prompt to decode to the exact task, participant assignment/capabilities, marker, and response contract. Each completed child returns its marker on the first line and a nonempty contribution body. Acceptance requires the final output for that participant to equal the child's body after newline normalization. Spawn JSON rejects duplicate object keys and preserves type distinctions such as boolean versus integer.
+
+Request-wide deadline propagation now uses an optional deadline-aware runtime capability. The service passes one original process-wide monotonic deadline across retries, and Codex clamps it against its plan-local budget. On timeout, model termination grace never exceeds that deadline. Post-kill cleanup uses one one-second OS-only `communicate`; a cleanup timeout closes pipes and hands the process to a daemon blocking waiter, with exit sentinel `124` until the OS supplies the real return code.
+
+Fresh deterministic verification at commit `c17f291` passed 184 tests in both the system and bundled Python environments. The bundled run included isolated package build/install/provenance checks; one opt-in live test was skipped. The only accepted limitation is the documented peak-memory exposure from buffering complete process output before enforcing `max_capture_bytes`.
+
+The final live command invoked the real bundled `codex-cli 0.150.0-alpha.8` and passed:
+
+```text
+RUN_CODEX_E2E=1 SHAREDNET_CODEX_BINARY=/Applications/ChatGPT.app/Contents/Resources/codex \
+  PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src <bundled-python> \
+  -m unittest tests.test_codex_live_e2e -v
+Ran 1 test in 335.102s
+OK
+```
+
+Retained artifacts:
+
+- `.codex-live-artifacts/incident-remediation-brief-001-attempt-0-a8ec8f21237f4e0e17819b95.stdout.jsonl`
+- `.codex-live-artifacts/incident-remediation-brief-001-attempt-0-a8ec8f21237f4e0e17819b95.stderr.log`
+
+Final evidence:
+
+- Root: `01a053b1-f6d6-7ff0-acb3-eb45110f3e78`.
+- Research child: `01a053b4-1d6b-7a51-802c-29ca138ff35c`.
+- Architecture child: `01a053b4-1dc9-7233-bc98-9c497c5d6e45`.
+- Risk child: `01a053b4-1dea-7d62-9c61-95a42dcde03e`.
+- Exactly three successful root-authored spawns and completed root-authored waits; all three children contributed.
+- Every spawn task payload contained `INC-101`, `INC-102`, `INC-103`, and `INC-104`.
+- Every child body matched its final participant output, and all four participant outputs plus the root synthesis cited all four incidents.
+- `native_proof_complete=true`, 24 JSONL events, one completed turn, zero malformed records, and zero disallowed tool events.
+- Usage: 141,462 input tokens, 4,163 output tokens, 119,296 cached input tokens, 821 reasoning output tokens, and 0 cache-write input tokens.
