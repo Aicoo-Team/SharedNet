@@ -13,6 +13,7 @@ from sharednet.runtime.codex import CodexRuntime
 
 
 EXAMPLE_REQUEST = Path(__file__).resolve().parents[1] / "examples" / "four-agent-task.json"
+ARTIFACT_DIR = Path(__file__).resolve().parents[1] / ".codex-live-artifacts"
 EXPECTED_PARTICIPANTS = ("self", "research-agent", "architecture-agent", "risk-agent")
 INCIDENT_IDS = ("INC-101", "INC-102", "INC-103", "INC-104")
 ROLE_SIGNALS = {
@@ -40,7 +41,7 @@ class CodexLiveE2E(unittest.TestCase):
 
         result = service.execute(
             request,
-            CodexRuntime(model="gpt-5.6-luna", artifact_dir=Path(".codex-live-artifacts")),
+            CodexRuntime(model="gpt-5.6-luna", artifact_dir=ARTIFACT_DIR),
         )
         context = json.dumps(result.to_dict(), sort_keys=True, default=str)
 
