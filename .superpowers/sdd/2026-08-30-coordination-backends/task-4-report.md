@@ -121,3 +121,78 @@ Implementation commit: `1b3eb7e997382c72d1ec63442e0e8fc3b62e26d1`
 No live runtime execution is performed by these unit tests; the supplied
 successful native probe was parsed as a fixture-level compatibility check. Live
 E2E/CLI wiring remains outside Task 4 scope.
+
+## Fix round 1: fail-closed runtime evidence and bounded artifacts
+
+Committed implementation as `11ca4b6cc4651642b38aebca2cf4af926ca7e9bd`
+(`fix: harden codex runtime evidence`).
+
+### Delivered
+
+- Native child IDs now come only from completed native `collab_tool_call`
+  `spawn_agent` events or narrowly compatible collaboration spawn events with
+  an `agent_thread_id`. Every sender must be the root; duplicate, missing, or
+  surplus child IDs fail closed.
+- The adapter requires a root `thread.started`, completed final agent message,
+  and `turn.completed` before accepting a response. JSON reconnect/error events
+  remain non-terminal.
+- `model` is validated, defaults to `gpt-5.3-codex`, emits `-m`, and execution
+  adds `--skip-git-repo-check` without altering the safety prefix.
+- The timeout path preserves only the resumed authoritative `communicate()`
+  output after termination or kill escalation.
+- Every exact participant marker is now required in synthesis and in its bound
+  participant output.
+- Captures are bounded by a validated `max_capture_bytes` (default 1,000,000)
+  before JSON parsing. Artifacts use random names plus exclusive, no-follow file
+  creation and are never overwritten.
+- Lookup now follows exactly explicit binary, environment binary, documented
+  ChatGPT bundle, then `PATH`.
+
+### RED evidence
+
+Focused tests were added before each change. Representative observed failures:
+
+```text
+test_unrelated_agent_thread_ids_do_not_prove_or_pad_native_spawns
+TerminalStatus.ACCEPTED != TerminalStatus.FAILED
+
+test_command_uses_validated_model_and_skips_git_check
+TypeError: CodexRuntime.__init__() got an unexpected keyword argument 'model'
+
+test_acceptance_requires_completed_root_lifecycle
+TerminalStatus.ACCEPTED != TerminalStatus.FAILED
+
+test_default_runner_uses_authoritative_output_after_terminate
+'prefixauthoritative-out' != 'authoritative-out'
+
+test_synthesis_must_repeat_every_participant_marker
+TerminalStatus.ACCEPTED != TerminalStatus.FAILED
+
+test_oversized_capture_fails_before_json_parsing
+TypeError: CodexRuntime.__init__() got an unexpected keyword argument 'max_capture_bytes'
+```
+
+### GREEN evidence
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m unittest tests.test_codex_runtime -v
+```
+
+Observed: `Ran 22 tests ... OK`.
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m unittest tests.test_models tests.test_primitives tests.test_registry tests.test_backends tests.test_service tests.test_codex_runtime -v
+PYTHONDONTWRITEBYTECODE=1 python3 -m compileall -q src tests
+git diff --check
+```
+
+Observed: `Ran 75 tests ... OK`; compile and diff checks exited successfully.
+
+### Self-review and residual concern
+
+Reviewed the strict source and sender gates for spawn proof, lifecycle flags,
+stderr tail handling, timeout escalation, random exclusive artifact writes, and
+binary ordering. The `Popen.communicate(timeout=...)` seam is intentionally
+retained as required. Consequently, a child process can still allocate its full
+stdout/stderr in memory before the post-return capture-size check rejects it;
+this residual pre-return memory risk is documented rather than hidden.
