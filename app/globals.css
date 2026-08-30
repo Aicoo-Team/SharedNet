@@ -4,7 +4,7 @@
   --paper-muted: #ece9df;
   --ink: #171912;
   --ink-soft: #5e6258;
-  --ink-faint: #85877f;
+  --ink-faint: #62645c;
   --line: #d5d2c7;
   --line-strong: #b9b7ad;
   --signal: #286447;
@@ -523,13 +523,15 @@ textarea:focus-visible,
   gap: 10px;
 }
 
-.thread-heading > p:last-child {
+.thread-heading > h1 {
+  min-width: 0;
   max-width: 720px;
   font-family: var(--font-display);
   font-size: clamp(26px, 4vw, 40px);
   font-variation-settings: "wdth" 106, "wght" 560;
   letter-spacing: -0.035em;
   line-height: 1.08;
+  overflow-wrap: anywhere;
 }
 
 .transcript {
@@ -542,6 +544,7 @@ textarea:focus-visible,
 
 .transcript-user {
   display: grid;
+  min-width: 0;
   padding: 30px 0 32px min(18%, 120px);
   gap: 7px;
 }
@@ -565,9 +568,11 @@ textarea:focus-visible,
 }
 
 .user-prompt {
+  min-width: 0;
   max-width: 650px;
   font-size: 18px;
   line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .transcript-entry:not(.transcript-user) {
@@ -611,12 +616,14 @@ textarea:focus-visible,
   font-variation-settings: "wdth" 105, "wght" 580;
   letter-spacing: -0.035em;
   line-height: 1.12;
+  overflow-wrap: anywhere;
 }
 
 .entry-copy {
   max-width: 720px;
   margin-top: 12px;
   color: var(--ink-soft);
+  overflow-wrap: anywhere;
 }
 
 .entry-details {
@@ -695,6 +702,78 @@ textarea:focus-visible,
   border-style: dashed;
   border-color: var(--signal);
   color: var(--signal-ink);
+}
+
+.work-ledger {
+  margin-top: 24px;
+  border-top: 1px solid var(--line-strong);
+  border-bottom: 1px solid var(--line-strong);
+}
+
+.work-ledger > header,
+.work-ledger li {
+  display: grid;
+  grid-template-columns: minmax(170px, 0.9fr) minmax(240px, 1.4fr) 82px;
+  gap: 16px;
+}
+
+.work-ledger > header {
+  min-height: 34px;
+  padding: 9px 8px;
+  align-items: center;
+  color: var(--ink-faint);
+  font-size: 8px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.work-ledger ul {
+  padding: 0;
+  list-style: none;
+}
+
+.work-ledger li {
+  min-height: 54px;
+  padding: 9px 8px;
+  border-top: 1px solid var(--line);
+  align-items: center;
+}
+
+.work-ledger li > div {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.work-ledger li strong {
+  overflow: hidden;
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-variation-settings: "wdth" 103, "wght" 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.work-ledger li > div span {
+  color: var(--ink-faint);
+  font-size: 8px;
+}
+
+.work-ledger li > p {
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+
+.work-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--signal);
+  font-size: 8px;
+  font-weight: 720;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .text-action {
@@ -829,16 +908,8 @@ textarea:focus-visible,
   font-weight: 680;
 }
 
-.thread-composer-wrap {
+.thread-reset-wrap {
   padding-top: 36px;
-}
-
-.thread-composer-wrap .chat-composer {
-  margin-top: 10px;
-}
-
-.thread-composer-wrap .chat-composer textarea {
-  min-height: 84px;
 }
 
 /* Network */
@@ -962,8 +1033,13 @@ textarea:focus-visible,
   content: "";
 }
 
-.agent-row[data-recruited="true"] {
+.agent-row[data-recruitment="pending"],
+.agent-row[data-recruitment="approved"] {
   background-color: rgb(40 100 71 / 3%);
+}
+
+.agent-row[data-recruitment="denied"] {
+  background-color: rgb(126 61 57 / 3%);
 }
 
 .agent-presence {
@@ -1013,10 +1089,20 @@ textarea:focus-visible,
   letter-spacing: 0.08em;
 }
 
-.agent-identity .recruited-label {
+.agent-identity .recruitment-label {
   border-style: dashed;
   border-color: var(--signal);
   color: var(--signal);
+}
+
+.agent-row[data-recruitment="pending"] .recruitment-label {
+  border-color: var(--attention);
+  color: var(--attention);
+}
+
+.agent-row[data-recruitment="denied"] .recruitment-label {
+  border-color: var(--denied);
+  color: var(--denied);
 }
 
 .agent-identity small {
@@ -1134,6 +1220,12 @@ textarea:focus-visible,
   border-top: 1px solid var(--ink-soft);
 }
 
+.network-legend > div > .legend-boundary {
+  height: 18px;
+  margin-top: 2px;
+  border: 1px solid var(--ink-soft);
+}
+
 .network-legend > div > .legend-dashed {
   border-top-style: dashed;
   border-top-color: var(--signal);
@@ -1149,15 +1241,6 @@ textarea:focus-visible,
 .network-legend strong {
   color: var(--ink);
   font-size: 12px;
-}
-
-.network-legend .legend-recruitment {
-  grid-template-columns: 20px minmax(0, 1fr);
-  color: var(--signal);
-}
-
-.network-legend .legend-recruitment svg {
-  margin-top: 3px;
 }
 
 .agent-details {
@@ -1454,7 +1537,7 @@ textarea:focus-visible,
 }
 
 .decision-resolution button {
-  min-height: 42px;
+  min-height: 44px;
   cursor: pointer;
   border-radius: var(--radius-sm);
   padding: 8px 11px;
@@ -1643,20 +1726,50 @@ textarea:focus-visible,
 }
 
 @media (max-width: 560px) {
+  .brand-cluster {
+    gap: 6px;
+  }
+
+  .brand-name {
+    font-size: 17px;
+  }
+
   .demo-label {
-    display: none;
+    padding: 3px 5px 2px;
+    font-size: 8px;
+    letter-spacing: 0.08em;
   }
 
   .decision-count {
-    width: 7px;
-    min-height: 7px;
-    overflow: hidden;
-    padding: 0;
-    color: transparent;
+    min-width: 20px;
+    min-height: 20px;
+    padding: 2px 5px;
+    color: var(--attention);
+    font-size: 0;
+  }
+
+  .decision-count::after {
+    content: attr(data-count);
+    font-size: 9px;
+  }
+
+  .usage-details > summary {
+    gap: 4px;
+    font-size: 10px;
+  }
+
+  .usage-details > summary::before {
+    width: 5px;
+    height: 5px;
   }
 
   .usage-details > summary span {
-    display: none;
+    font-size: 0;
+  }
+
+  .usage-details > summary span::after {
+    content: attr(data-compact);
+    font-size: 10px;
   }
 
   .page-frame {
@@ -1713,6 +1826,19 @@ textarea:focus-visible,
     border-top: 1px solid var(--line-strong);
     border-left: 0;
     padding-left: 0;
+  }
+
+  .work-ledger > header {
+    display: none;
+  }
+
+  .work-ledger li {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 6px 12px;
+  }
+
+  .work-ledger li > p {
+    grid-column: 1 / -1;
   }
 
   .preview-site {

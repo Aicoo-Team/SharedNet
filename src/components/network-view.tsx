@@ -6,6 +6,7 @@ import {
   aggregateUsage,
   type Agent,
   type Principal,
+  type TaskRecruitment,
 } from "@/src/domain/network-demo";
 import { formatTokenCount } from "./app-shell";
 
@@ -19,7 +20,8 @@ function PrincipalRegion({
   principal,
   agents,
   selectedAgentId,
-  recruitedAgentIds,
+  recruitmentAgentIds,
+  recruitmentStatus,
   onSelect,
   usageTokens,
   usageCost,
@@ -27,7 +29,8 @@ function PrincipalRegion({
   principal: Principal;
   agents: Agent[];
   selectedAgentId: string;
-  recruitedAgentIds: Set<string>;
+  recruitmentAgentIds: Set<string>;
+  recruitmentStatus?: TaskRecruitment["status"];
   onSelect: (agentId: string) => void;
   usageTokens: number;
   usageCost: number;
@@ -58,7 +61,14 @@ function PrincipalRegion({
       <div className="agent-list">
         {agents.map((agent) => {
           const isSelected = selectedAgentId === agent.id;
-          const isRecruited = recruitedAgentIds.has(agent.id);
+          const isInRecruitment = recruitmentAgentIds.has(agent.id);
+          const recruitmentLabel = isInRecruitment
+            ? recruitmentStatus === "approved"
+              ? "RECRUITED"
+              : recruitmentStatus === "denied"
+                ? "DECLINED"
+                : "REQUESTED"
+            : null;
           return (
             <button
               type="button"
@@ -66,7 +76,7 @@ function PrincipalRegion({
               aria-label={`Inspect ${agent.handle}`}
               aria-pressed={isSelected}
               data-selected={isSelected ? "true" : undefined}
-              data-recruited={isRecruited ? "true" : undefined}
+              data-recruitment={isInRecruitment ? recruitmentStatus : undefined}
               key={agent.id}
               onClick={() => onSelect(agent.id)}
             >
@@ -75,7 +85,9 @@ function PrincipalRegion({
                 <span>
                   <strong>{agent.handle}</strong>
                   {agent.official ? <em>OFFICIAL</em> : null}
-                  {isRecruited ? <em className="recruited-label">TASK</em> : null}
+                  {recruitmentLabel ? (
+                    <em className="recruitment-label">{recruitmentLabel}</em>
+                  ) : null}
                 </span>
                 <small>{agent.role}</small>
               </span>
@@ -106,7 +118,7 @@ export function NetworkView() {
     (agent) => agent.principalId === connectedPrincipal.id,
   );
   const latestRecruitment = state.recruitments.at(-1);
-  const recruitedAgentIds = new Set(latestRecruitment?.agentIds ?? []);
+  const recruitmentAgentIds = new Set(latestRecruitment?.agentIds ?? []);
   const selectedAgent =
     state.agents.find((agent) => agent.id === state.selectedAgentId) ?? state.agents[0];
   const selectedPrincipal = state.principals.find(
@@ -138,7 +150,8 @@ export function NetworkView() {
           principal={ownPrincipal}
           agents={ownAgents}
           selectedAgentId={selectedAgent.id}
-          recruitedAgentIds={recruitedAgentIds}
+          recruitmentAgentIds={recruitmentAgentIds}
+          recruitmentStatus={latestRecruitment?.status}
           onSelect={selectAgent}
           usageTokens={ownUsage.totalTokens}
           usageCost={ownUsage.costUsd}
@@ -164,7 +177,8 @@ export function NetworkView() {
           principal={connectedPrincipal}
           agents={connectedAgents}
           selectedAgentId={selectedAgent.id}
-          recruitedAgentIds={recruitedAgentIds}
+          recruitmentAgentIds={recruitmentAgentIds}
+          recruitmentStatus={latestRecruitment?.status}
           onSelect={selectAgent}
           usageTokens={connectedUsage.totalTokens}
           usageCost={connectedUsage.costUsd}
@@ -173,28 +187,28 @@ export function NetworkView() {
 
       <section className="network-legend" aria-label="Network relationship legend">
         <div>
+          <span className="legend-boundary" aria-hidden="true" />
+          <p>
+            <strong>Intra-Principal boundary</strong>
+            Persistent Agents governed by the same owner and policy boundary.
+          </p>
+        </div>
+        <div>
           <span className="legend-solid" aria-hidden="true" />
           <p>
-            <strong>Intra-Principal</strong>
-            Persistent Agents governed by the same owner and policy boundary.
+            <strong>Cross-Principal connection</strong>
+            A durable discovery and messaging relationship between two Principals.
           </p>
         </div>
         <div>
           <span className="legend-dashed" aria-hidden="true" />
           <p>
-            <strong>Cross-Principal</strong>
-            A durable Principal connection; individual Agents are recruited per task.
+            <strong>Task recruitment</strong>
+            {latestRecruitment
+              ? `${latestRecruitment.status[0]?.toUpperCase()}${latestRecruitment.status.slice(1)} · ${latestRecruitment.agentIds.length} Agents`
+              : "No task-scoped request yet"}
           </p>
         </div>
-        {latestRecruitment ? (
-          <div className="legend-recruitment">
-            <Zap aria-hidden="true" size={15} />
-            <p>
-              <strong>{latestRecruitment.agentIds.length} requested</strong>
-              Current task · {latestRecruitment.status}
-            </p>
-          </div>
-        ) : null}
       </section>
 
       <section className="agent-details" aria-label="Agent details">

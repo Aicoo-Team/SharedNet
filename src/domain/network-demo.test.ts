@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   aggregateUsage,
   createInitialDemoState,
+  isDemoState,
   resolveDecision,
   selectAgent,
   submitChatPrompt,
@@ -136,11 +137,60 @@ describe("SharedNet network demo domain", () => {
     );
   });
 
+  it("keeps task and recruitment lifecycle coherent as decisions resolve", () => {
+    const seeded = submitChatPrompt(createInitialDemoState(), "Build a website");
+    const task = seeded.tasks.at(-1)!;
+    const recruitmentDecision = seeded.decisions.find(
+      (decision) => decision.taskId === task.id && decision.type === "recruitment",
+    )!;
+    const authorizationDecision = seeded.decisions.find(
+      (decision) => decision.taskId === task.id && decision.type === "authorization",
+    )!;
+
+    const recruited = resolveDecision(seeded, recruitmentDecision.id, "approved");
+    expect(recruited.tasks.at(-1)?.status).toBe("awaiting_decisions");
+    expect(recruited.recruitments.at(-1)?.status).toBe("approved");
+
+    const ready = resolveDecision(recruited, authorizationDecision.id, "denied");
+    expect(ready.tasks.at(-1)?.status).toBe("ready");
+  });
+
   it("keeps selected Agent state shareable across the Network page", () => {
     const state = createInitialDemoState();
     const next = selectAgent(state, "agent-aicoo-neon");
 
     expect(next.selectedAgentId).toBe("agent-aicoo-neon");
     expect(state.selectedAgentId).toBe("agent-xisen-planner");
+  });
+
+  it("rejects incomplete persisted state before the UI can hydrate it", () => {
+    expect(
+      isDemoState({
+        version: 2,
+        principals: [],
+        agents: [],
+        decisions: [],
+        usage: [],
+      }),
+    ).toBe(false);
+    expect(
+      isDemoState({
+        ...createInitialDemoState(),
+        version: 2,
+      }),
+    ).toBe(false);
+    expect(
+      isDemoState({
+        ...createInitialDemoState(),
+        agents: [{}],
+      }),
+    ).toBe(false);
+    expect(
+      isDemoState({
+        ...createInitialDemoState(),
+        selectedAgentId: "missing-agent",
+      }),
+    ).toBe(false);
+    expect(isDemoState(createInitialDemoState())).toBe(true);
   });
 });

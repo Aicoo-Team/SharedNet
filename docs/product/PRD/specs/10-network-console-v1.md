@@ -115,6 +115,8 @@ For the canonical website prompt, the deterministic Planning Agent:
 
 The demo intentionally illustrates the organization even while authority decisions are pending. Copy must state that actual external execution would wait for approval.
 
+V1 is intentionally scoped to this canonical website-launch flow. The input remains conversational, but the interface names that scope and does not pretend a new submission is an arbitrary follow-up to an existing task.
+
 ## 6. Usage ledger
 
 Every simulated Agent call creates an immutable usage entry:
@@ -136,7 +138,9 @@ Totals aggregate across task, Agent, Principal, and platform. Cached tokens are 
 
 ## 7. State and persistence
 
-One versioned, serializable client state owns Principals, Agents, Connections, Tasks, recruitments, transcript entries, decisions, events, usage, and selected Agent. The state persists to local storage and is shared across routes. Invalid or obsolete persisted state falls back to the canonical fixture.
+One versioned, serializable client state owns Principals, Agents, Connections, Tasks, recruitments, transcript entries, decisions, events, usage, and selected Agent. Schema V3 validates the complete nested state and cross-references before hydration. The state persists to local storage and is shared across routes; invalid, obsolete, or unavailable storage falls back to the canonical in-memory fixture.
+
+Decision resolution recomputes the owning task and recruitment status. The transcript derives remaining-decision copy from current state, and Network labels task recruitment as `REQUESTED`, `RECRUITED`, or `DECLINED` without changing the durable Principal connection.
 
 Pure domain functions must cover:
 
@@ -145,6 +149,8 @@ Pure domain functions must cover:
 - usage aggregation;
 - decision resolution and audit events;
 - Agent selection.
+
+The retained Neon and Vercel adapters enforce `SHAREDNET_ENABLE_LIVE_CONNECTORS=true` and explicit action approval inside execution. Returned Neon connection details are redacted by default.
 
 ## 8. Visual and interaction requirements
 
@@ -177,4 +183,3 @@ Pure domain functions must cover:
 - provider OAuth or resource creation from the console;
 - production identity, storage, billing, or learned RAC ranking;
 - proving multi-Agent benchmark superiority.
-

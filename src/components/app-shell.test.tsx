@@ -29,7 +29,7 @@ describe("SharedNet application shell", () => {
       "href",
       "/network",
     );
-    expect(screen.getByRole("link", { name: /Decisions/ })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Decisions, 2 pending" })).toHaveAttribute(
       "href",
       "/decisions",
     );
@@ -37,5 +37,8 @@ describe("SharedNet application shell", () => {
     expect(screen.getByText("2 pending")).toBeTruthy();
     expect(screen.getByText("15.7k tokens")).toBeTruthy();
     expect(screen.getByText("$0.08")).toBeTruthy();
+    expect(
+      screen.getByLabelText("Open platform usage ledger: 15.7k tokens, $0.08"),
+    ).toBeTruthy();
   });
 });

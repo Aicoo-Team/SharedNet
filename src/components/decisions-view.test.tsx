@@ -39,6 +39,8 @@ describe("SharedNet Decisions", () => {
     expect(screen.getByText("Plan choice")).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Recruit five Aicoo specialists?" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Connect Neon and Vercel for launch?" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Approve demo scopes" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Review access" })).toBeNull();
   });
 
   it("moves a resolved decision into the audit section instead of deleting it", () => {
@@ -52,5 +54,8 @@ describe("SharedNet Decisions", () => {
     const resolved = screen.getByRole("region", { name: "Resolved decisions" });
     expect(within(resolved).getByRole("heading", { name: title })).toBeTruthy();
     expect(within(resolved).getByText("Approved")).toBeTruthy();
+    expect(document.activeElement).toBe(
+      within(pending).getByRole("button", { name: "Run in Cloud" }),
+    );
   });
 });

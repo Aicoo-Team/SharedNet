@@ -33,6 +33,7 @@ export function createNeonConnector(
 ): Connector {
   const apiKey = env.NEON_API_KEY;
   const mode = apiKey ? "live" : "demo";
+  const liveExecutionEnabled = env.SHAREDNET_ENABLE_LIVE_CONNECTORS === "true";
 
   return {
     inspectCapability() {
@@ -41,7 +42,7 @@ export function createNeonConnector(
         mode,
         available: true,
         credentialConfigured: Boolean(apiKey),
-        externalWrites: mode === "live",
+        externalWrites: mode === "live" && liveExecutionEnabled,
       };
     },
 
@@ -84,6 +85,10 @@ export function createNeonConnector(
             region: "aws-us-east-2",
           },
         };
+      }
+
+      if (!liveExecutionEnabled) {
+        throw new Error("Live connector execution is disabled by the global kill switch.");
       }
 
       if (!approvedExternalActions) {
@@ -155,7 +160,7 @@ export function createNeonConnector(
         details: {
           projectId,
           region: env.NEON_REGION ?? "aws-us-east-2",
-          connectionUri,
+          connectionUri: "[REDACTED]",
         },
       };
     },

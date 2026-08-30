@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { ArrowRight, CornerDownLeft, ExternalLink } from "lucide-react";
+import { ArrowRight, Check, CornerDownLeft, ExternalLink } from "lucide-react";
 import { type FormEvent, useMemo, useRef, useState } from "react";
 import { useSharedNetDemo } from "@/src/context/sharednet-demo-context";
 import {
@@ -19,6 +19,21 @@ function MessageBlock({ message }: { message: TranscriptMessage }) {
   const involvedAgents = (message.agentIds ?? [])
     .map((agentId) => state.agents.find((candidate) => candidate.id === agentId))
     .filter((candidate) => candidate !== undefined);
+  const pendingTaskDecisions = state.decisions.filter(
+    (decision) => decision.taskId === message.taskId && decision.status === "pending",
+  ).length;
+  const content =
+    message.kind === "result"
+      ? pendingTaskDecisions > 0
+        ? `The implementation package is ready to review. ${pendingTaskDecisions} authority ${pendingTaskDecisions === 1 ? "decision remains" : "decisions remain"} before SharedNet could recruit external runtimes or touch provider accounts.`
+        : "The implementation package is ready, and all authority decisions for this task are resolved. The audit remains available in Decisions."
+      : message.content;
+  const actionLabel =
+    message.kind === "result"
+      ? pendingTaskDecisions > 0
+        ? `Review ${pendingTaskDecisions} ${pendingTaskDecisions === 1 ? "decision" : "decisions"}`
+        : "View decision audit"
+      : message.actionLabel;
 
   if (message.kind === "user") {
     return (
@@ -40,7 +55,7 @@ function MessageBlock({ message }: { message: TranscriptMessage }) {
           <span>{message.kind}</span>
         </p>
         {message.title ? <h2>{message.title}</h2> : null}
-        <p className="entry-copy">{message.content}</p>
+        <p className="entry-copy">{content}</p>
 
         {message.details ? (
           <ol className="entry-details">
@@ -75,6 +90,41 @@ function MessageBlock({ message }: { message: TranscriptMessage }) {
           </div>
         ) : null}
 
+        {message.kind === "work" && message.contributions ? (
+          <section className="work-ledger" aria-label="Agent work ledger">
+            <header>
+              <p>Agent</p>
+              <p>Accepted contribution</p>
+              <p>State</p>
+            </header>
+            <ul>
+              {message.contributions.map((contribution) => {
+                const contributor = state.agents.find(
+                  (candidate) => candidate.id === contribution.agentId,
+                );
+                if (!contributor) return null;
+                return (
+                  <li key={contribution.agentId}>
+                    <div>
+                      <strong>{contributor.handle}</strong>
+                      <span>
+                        {contributor.principalId === "principal-xisen"
+                          ? "Your Principal"
+                          : "Aicoo · external"}
+                      </span>
+                    </div>
+                    <p>{contribution.output}</p>
+                    <span className="work-state">
+                      <Check aria-hidden="true" size={12} />
+                      simulated
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          </section>
+        ) : null}
+
         {message.kind === "result" ? (
           <div className="result-preview" aria-label="Demo website preview">
             <div className="preview-browser-bar">
@@ -100,9 +150,9 @@ function MessageBlock({ message }: { message: TranscriptMessage }) {
           </div>
         ) : null}
 
-        {message.actionHref && message.actionLabel ? (
+        {message.actionHref && actionLabel ? (
           <Link className="text-action" href={message.actionHref}>
-            {message.actionLabel}
+            {actionLabel}
             <ArrowRight aria-hidden="true" size={15} strokeWidth={1.8} />
           </Link>
         ) : null}
@@ -112,7 +162,7 @@ function MessageBlock({ message }: { message: TranscriptMessage }) {
 }
 
 export function ChatView() {
-  const { state, submitPrompt } = useSharedNetDemo();
+  const { state, submitPrompt, resetDemo } = useSharedNetDemo();
   const [draft, setDraft] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const latestTask = state.tasks.at(-1);
@@ -172,11 +222,11 @@ export function ChatView() {
     return (
       <section className="chat-empty page-frame">
         <div className="chat-empty-inner">
-          <p className="eyebrow">One outcome · any Agent</p>
+          <p className="eyebrow">Website launch V1 · one outcome</p>
           <h1>What do you want done?</h1>
           <p className="chat-empty-copy">
-            Your Planning Agent will decide what to do itself, what to parallelize,
-            and when the network is worth involving.
+            This canonical website-launch flow lets your Planning Agent decide what
+            to do itself, what to parallelize, and when the network is worth involving.
           </p>
           {composer}
           <button
@@ -198,7 +248,7 @@ export function ChatView() {
     <section className="chat-thread">
       <div className="thread-heading">
         <p className="eyebrow">Task thread · simulated execution</p>
-        <p>{latestTask?.prompt}</p>
+        <h1>{latestTask?.prompt}</h1>
       </div>
 
       <div className="transcript" aria-live="polite">
@@ -236,9 +286,11 @@ export function ChatView() {
         </section>
       ) : null}
 
-      <div className="thread-composer-wrap">
-        <p className="eyebrow">Continue the task</p>
-        {composer}
+      <div className="thread-reset-wrap">
+        <button type="button" className="text-action" onClick={resetDemo}>
+          Start another website launch
+          <ArrowRight aria-hidden="true" size={15} strokeWidth={1.8} />
+        </button>
       </div>
     </section>
   );

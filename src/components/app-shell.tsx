@@ -51,11 +51,18 @@ export function AppShell({ children }: { children: ReactNode }) {
                   data-active={isActive ? "true" : undefined}
                   href={item.href}
                   key={item.href}
+                  aria-label={
+                    item.href === "/decisions" && pendingCount > 0
+                      ? `Decisions, ${pendingCount} pending`
+                      : undefined
+                  }
                   aria-current={isActive ? "page" : undefined}
                 >
                   {item.label}
                   {item.href === "/decisions" && pendingCount > 0 ? (
-                    <span className="decision-count">{pendingCount} pending</span>
+                    <span className="decision-count" data-count={pendingCount}>
+                      {pendingCount} pending
+                    </span>
                   ) : null}
                 </Link>
               );
@@ -63,8 +70,12 @@ export function AppShell({ children }: { children: ReactNode }) {
           </nav>
 
           <details className="usage-details">
-            <summary aria-label="Open platform usage ledger">
-              <span>{formatTokenCount(usage.totalTokens)} tokens</span>
+            <summary
+              aria-label={`Open platform usage ledger: ${formatTokenCount(usage.totalTokens)} tokens, $${usage.costUsd.toFixed(2)}`}
+            >
+              <span data-compact={formatTokenCount(usage.totalTokens)}>
+                {formatTokenCount(usage.totalTokens)} tokens
+              </span>
               <strong>${usage.costUsd.toFixed(2)}</strong>
             </summary>
             <div className="usage-popover">
@@ -95,4 +106,3 @@ export function AppShell({ children }: { children: ReactNode }) {
     </div>
   );
 }
-

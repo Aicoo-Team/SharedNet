@@ -55,6 +55,7 @@ export function createVercelConnector(
 ): Connector {
   const token = env.VERCEL_TOKEN;
   const mode = token ? "live" : "demo";
+  const liveExecutionEnabled = env.SHAREDNET_ENABLE_LIVE_CONNECTORS === "true";
 
   return {
     inspectCapability() {
@@ -63,7 +64,7 @@ export function createVercelConnector(
         mode,
         available: true,
         credentialConfigured: Boolean(token),
-        externalWrites: mode === "live",
+        externalWrites: mode === "live" && liveExecutionEnabled,
       };
     },
 
@@ -106,6 +107,10 @@ export function createVercelConnector(
             framework: "nextjs",
           },
         };
+      }
+
+      if (!liveExecutionEnabled) {
+        throw new Error("Live connector execution is disabled by the global kill switch.");
       }
 
       if (!approvedExternalActions) {

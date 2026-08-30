@@ -6,7 +6,7 @@ This repository contains the first runnable Network Console demo. Give it one ou
 
 ## Run the demo
 
-Requirements: Node.js 20.9+ and pnpm 11.19.0.
+Requirements: Node.js 22.13+ (or an even-numbered Node 24/26 release) and pnpm 11.19.0. Node 23 is not supported by pnpm 11; see the [official compatibility table](https://pnpm.io/installation#compatibility).
 
 ```bash
 pnpm install
@@ -15,11 +15,13 @@ pnpm dev
 
 Open [http://localhost:3000/chat](http://localhost:3000/chat).
 
-If an older Corepack installation fails while downloading pnpm, bypass that shim:
+If Node 23 or an older Corepack installation produces a signature/key error, switch to Node 24 and install pnpm independently. For example, on this Mac with Homebrew:
 
 ```bash
-npx --yes pnpm@11.19.0 install
-npx --yes pnpm@11.19.0 dev
+brew install node@24 pnpm
+export PATH="/opt/homebrew/opt/node@24/bin:$PATH"
+pnpm install
+pnpm dev
 ```
 
 If dependencies are already installed, this also starts the app without Corepack:
@@ -31,9 +33,9 @@ If dependencies are already installed, this also starts the app without Corepack
 Useful checks:
 
 ```bash
-npx --yes pnpm@11.19.0 test
-npx --yes pnpm@11.19.0 typecheck
-npx --yes pnpm@11.19.0 build
+pnpm test
+pnpm typecheck
+pnpm build
 ```
 
 ## Experience
@@ -71,7 +73,7 @@ The `@xisen ↔ @aicoo` connection is Principal-to-Principal. Individual Aicoo A
 
 `DEMO NETWORK` is persistent in the interface. Planning, Agent contributions, provider work, token usage, and cost are deterministic fixtures that demonstrate the product contract; this release does not invoke remote Aicoo Agents or make model calls.
 
-The Neon and Vercel adapters under `src/connectors` preserve guarded server-side connector contracts for later live execution. They are not required by the demo and do not run from the three-page client experience.
+The Neon and Vercel adapters under `src/connectors` preserve guarded server-side connector contracts for later live execution. They are not required by the demo and do not run from the three-page client experience. Even with credentials present, writes remain blocked unless `SHAREDNET_ENABLE_LIVE_CONNECTORS=true` and the caller supplies explicit action approval; Neon connection data is redacted by default.
 
 ## Architecture
 

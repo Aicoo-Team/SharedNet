@@ -23,11 +23,34 @@ describe("provider connector safety", () => {
   });
 
   it("refuses live execution without explicit approval", async () => {
-    const vercel = createVercelConnector({ VERCEL_TOKEN: "secret" }, vi.fn());
+    const vercel = createVercelConnector(
+      {
+        VERCEL_TOKEN: "secret",
+        SHAREDNET_ENABLE_LIVE_CONNECTORS: "true",
+      },
+      vi.fn(),
+    );
 
     await expect(
       vercel.execute(await vercel.plan({ slug: "signal-board" }), false),
     ).rejects.toThrow("approval");
+  });
+
+  it("enforces the global live-connector kill switch even after approval", async () => {
+    const fetcher = vi.fn();
+    const vercel = createVercelConnector(
+      {
+        VERCEL_TOKEN: "secret",
+        SHAREDNET_ENABLE_LIVE_CONNECTORS: "false",
+      },
+      fetcher,
+    );
+
+    expect(vercel.inspectCapability().externalWrites).toBe(false);
+    await expect(
+      vercel.execute(await vercel.plan({ slug: "signal-board" }), true),
+    ).rejects.toThrow("disabled");
+    expect(fetcher).not.toHaveBeenCalled();
   });
 
   it("keeps credentials in the server request and redacts returned connection data", async () => {
@@ -43,7 +66,13 @@ describe("provider connector safety", () => {
         status: 200,
         json: async () => ({ uri: "postgresql://owner:password@example.test/app" }),
       });
-    const neon = createNeonConnector({ NEON_API_KEY: "server-secret" }, fetcher);
+    const neon = createNeonConnector(
+      {
+        NEON_API_KEY: "server-secret",
+        SHAREDNET_ENABLE_LIVE_CONNECTORS: "true",
+      },
+      fetcher,
+    );
     const result = await neon.execute(
       await neon.plan({ slug: "signal-board" }),
       true,
@@ -56,7 +85,7 @@ describe("provider connector safety", () => {
         headers: expect.objectContaining({ Authorization: "Bearer server-secret" }),
       }),
     );
-    expect(result.details.connectionUri).toContain("password");
+    expect(result.details.connectionUri).toBe("[REDACTED]");
     expect(redacted.details.connectionUri).toBe("[REDACTED]");
   });
 
@@ -66,7 +95,13 @@ describe("provider connector safety", () => {
       status: 503,
       json: async () => ({}),
     });
-    const neon = createNeonConnector({ NEON_API_KEY: "server-secret" }, fetcher);
+    const neon = createNeonConnector(
+      {
+        NEON_API_KEY: "server-secret",
+        SHAREDNET_ENABLE_LIVE_CONNECTORS: "true",
+      },
+      fetcher,
+    );
     const result = await neon.execute(
       await neon.plan({ slug: "signal-board" }),
       true,
@@ -85,7 +120,13 @@ describe("provider connector safety", () => {
         json: async () => ({ project: { id: "neon-project-1" } }),
       })
       .mockRejectedValueOnce(new Error("connection dropped"));
-    const neon = createNeonConnector({ NEON_API_KEY: "server-secret" }, fetcher);
+    const neon = createNeonConnector(
+      {
+        NEON_API_KEY: "server-secret",
+        SHAREDNET_ENABLE_LIVE_CONNECTORS: "true",
+      },
+      fetcher,
+    );
 
     const result = await neon.execute(
       await neon.plan({ slug: "signal-board" }),
@@ -105,7 +146,13 @@ describe("provider connector safety", () => {
         json: async () => ({ id: "project-1" }),
       })
       .mockRejectedValueOnce(new Error("connection dropped"));
-    const vercel = createVercelConnector({ VERCEL_TOKEN: "server-secret" }, fetcher);
+    const vercel = createVercelConnector(
+      {
+        VERCEL_TOKEN: "server-secret",
+        SHAREDNET_ENABLE_LIVE_CONNECTORS: "true",
+      },
+      fetcher,
+    );
 
     const result = await vercel.execute(
       await vercel.plan({

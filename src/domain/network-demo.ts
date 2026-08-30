@@ -71,6 +71,10 @@ export interface TranscriptMessage {
   details?: string[];
   agentId?: string;
   agentIds?: string[];
+  contributions?: Array<{
+    agentId: string;
+    output: string;
+  }>;
   actionHref?: string;
   actionLabel?: string;
   createdAt: string;
@@ -124,7 +128,7 @@ export interface DemoEvent {
 }
 
 export interface SharedNetDemoState {
-  version: 2;
+  version: 3;
   principals: Principal[];
   agents: Agent[];
   connections: PrincipalConnection[];
@@ -372,7 +376,7 @@ const initialDecisions: Decision[] = [
     type: "inbound_use",
     title: "Aicoo wants to use your Research Agent",
     description:
-      "@aicoo/product requested @xisen/research for a 20-minute API landscape scan.",
+      "@aicoo/web-builder requested @xisen/research for a 20-minute API landscape scan.",
     consequence:
       "Approval grants task-scoped access to the Agent, not your other Agents or files.",
     requestedByAgentId: "agent-aicoo-web-builder",
@@ -401,7 +405,7 @@ const initialDecisions: Decision[] = [
 
 export function createInitialDemoState(): SharedNetDemoState {
   return {
-    version: 2,
+    version: 3,
     principals: structuredClone(principals),
     agents: structuredClone(agents),
     connections: [
@@ -547,7 +551,7 @@ export function submitChatPrompt(
       requestedByAgentId: "agent-xisen-planner",
       subjectAgentIds: ["agent-aicoo-neon", "agent-aicoo-vercel"],
       status: "pending",
-      approveLabel: "Review access",
+      approveLabel: "Approve demo scopes",
       denyLabel: "Keep as preview",
       createdAt: timestamp(sequence, 3),
     },
@@ -604,6 +608,40 @@ export function submitChatPrompt(
         "Accessibility and launch evidence",
       ],
       agentIds: WEBSITE_AGENT_IDS.slice(1),
+      contributions: [
+        {
+          agentId: "agent-xisen-research",
+          output: "Product scope and primary API evidence",
+        },
+        {
+          agentId: "agent-aicoo-design-engineer",
+          output: "Interaction direction and visual system",
+        },
+        {
+          agentId: "agent-aicoo-web-builder",
+          output: "Responsive product implementation",
+        },
+        {
+          agentId: "agent-aicoo-neon",
+          output: "Database schema and migration plan",
+        },
+        {
+          agentId: "agent-aicoo-vercel",
+          output: "Deployment manifest and environment plan",
+        },
+        {
+          agentId: "agent-xisen-codex",
+          output: "Canonical integration in the task workspace",
+        },
+        {
+          agentId: "agent-xisen-reviewer",
+          output: "Repository and acceptance review",
+        },
+        {
+          agentId: "agent-aicoo-quality",
+          output: "Independent browser and launch evidence",
+        },
+      ],
       createdAt: timestamp(sequence, 4),
     },
     {
@@ -664,19 +702,34 @@ export function resolveDecision(
   const resolvedAt = new Date(
     new Date(decision.createdAt).getTime() + 60_000,
   ).toISOString();
+  const decisions = state.decisions.map((candidate) =>
+    candidate.id === decisionId
+      ? { ...candidate, status: outcome, resolvedAt }
+      : candidate,
+  );
 
   return {
     ...state,
-    decisions: state.decisions.map((candidate) =>
-      candidate.id === decisionId
-        ? { ...candidate, status: outcome, resolvedAt }
-        : candidate,
-    ),
+    decisions,
     recruitments: state.recruitments.map((recruitment) =>
       recruitment.id === decision.recruitmentId
         ? { ...recruitment, status: outcome }
         : recruitment,
     ),
+    tasks: state.tasks.map((task) => {
+      if (task.id !== decision.taskId) return task;
+      const taskDecisions = decisions.filter(
+        (candidate) => candidate.taskId === task.id,
+      );
+      return {
+        ...task,
+        status:
+          taskDecisions.length > 0 &&
+          taskDecisions.every((candidate) => candidate.status !== "pending")
+            ? "ready"
+            : "awaiting_decisions",
+      };
+    }),
     events: [
       ...state.events,
       {
@@ -699,14 +752,230 @@ export function selectAgent(
   return { ...state, selectedAgentId: agentId };
 }
 
+type UnknownRecord = Record<string, unknown>;
+
+function isRecord(value: unknown): value is UnknownRecord {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasString(value: UnknownRecord, key: string): boolean {
+  return typeof value[key] === "string";
+}
+
+function hasNumber(value: UnknownRecord, key: string): boolean {
+  return typeof value[key] === "number" && Number.isFinite(value[key]);
+}
+
+function hasOptionalString(value: UnknownRecord, key: string): boolean {
+  return value[key] === undefined || typeof value[key] === "string";
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function isOneOf(value: unknown, options: readonly string[]): boolean {
+  return typeof value === "string" && options.includes(value);
+}
+
+function isPrincipal(value: unknown): value is Principal {
+  return (
+    isRecord(value) &&
+    hasString(value, "id") &&
+    hasString(value, "handle") &&
+    hasString(value, "name") &&
+    isOneOf(value.kind, ["self", "connected"]) &&
+    hasString(value, "summary")
+  );
+}
+
+function isRuntime(value: unknown): value is AgentRuntime {
+  return (
+    isRecord(value) &&
+    isOneOf(value.kind, ["local", "cloud", "vpc"]) &&
+    hasString(value, "label") &&
+    hasString(value, "environment")
+  );
+}
+
+function isAgent(value: unknown): value is Agent {
+  return (
+    isRecord(value) &&
+    hasString(value, "id") &&
+    hasString(value, "principalId") &&
+    hasString(value, "handle") &&
+    hasString(value, "name") &&
+    hasString(value, "role") &&
+    hasString(value, "summary") &&
+    isStringArray(value.capabilities) &&
+    isRuntime(value.runtime) &&
+    isOneOf(value.discoverability, ["private", "connections"]) &&
+    isOneOf(value.status, ["online", "idle"]) &&
+    typeof value.official === "boolean"
+  );
+}
+
+function isConnection(value: unknown): value is PrincipalConnection {
+  return (
+    isRecord(value) &&
+    hasString(value, "id") &&
+    hasString(value, "fromPrincipalId") &&
+    hasString(value, "toPrincipalId") &&
+    value.status === "connected" &&
+    hasString(value, "permission")
+  );
+}
+
+function isRecruitment(value: unknown): value is TaskRecruitment {
+  return (
+    isRecord(value) &&
+    hasString(value, "id") &&
+    hasString(value, "taskId") &&
+    hasString(value, "principalId") &&
+    isStringArray(value.agentIds) &&
+    isOneOf(value.status, ["pending", "approved", "denied"]) &&
+    hasString(value, "reason")
+  );
+}
+
+function isTask(value: unknown): value is DemoTask {
+  return (
+    isRecord(value) &&
+    hasString(value, "id") &&
+    hasString(value, "prompt") &&
+    isOneOf(value.status, ["awaiting_decisions", "ready"]) &&
+    isStringArray(value.selectedAgentIds) &&
+    hasString(value, "createdAt")
+  );
+}
+
+function isContribution(value: unknown): boolean {
+  return isRecord(value) && hasString(value, "agentId") && hasString(value, "output");
+}
+
+function isMessage(value: unknown): value is TranscriptMessage {
+  return (
+    isRecord(value) &&
+    hasString(value, "id") &&
+    hasString(value, "taskId") &&
+    isOneOf(value.kind, ["user", "plan", "coordination", "work", "result"]) &&
+    hasString(value, "content") &&
+    hasOptionalString(value, "title") &&
+    (value.details === undefined || isStringArray(value.details)) &&
+    hasOptionalString(value, "agentId") &&
+    (value.agentIds === undefined || isStringArray(value.agentIds)) &&
+    (value.contributions === undefined ||
+      (Array.isArray(value.contributions) && value.contributions.every(isContribution))) &&
+    hasOptionalString(value, "actionHref") &&
+    hasOptionalString(value, "actionLabel") &&
+    hasString(value, "createdAt")
+  );
+}
+
+function isDecision(value: unknown): value is Decision {
+  return (
+    isRecord(value) &&
+    hasString(value, "id") &&
+    hasOptionalString(value, "taskId") &&
+    hasOptionalString(value, "recruitmentId") &&
+    isOneOf(value.type, ["recruitment", "inbound_use", "authorization", "plan"]) &&
+    hasString(value, "title") &&
+    hasString(value, "description") &&
+    hasString(value, "consequence") &&
+    hasString(value, "requestedByAgentId") &&
+    isStringArray(value.subjectAgentIds) &&
+    isOneOf(value.status, ["pending", "approved", "denied"]) &&
+    hasString(value, "approveLabel") &&
+    hasString(value, "denyLabel") &&
+    hasString(value, "createdAt") &&
+    hasOptionalString(value, "resolvedAt")
+  );
+}
+
+function isUsage(value: unknown): value is UsageEntry {
+  return (
+    isRecord(value) &&
+    hasString(value, "id") &&
+    hasString(value, "taskId") &&
+    hasString(value, "principalId") &&
+    hasString(value, "agentId") &&
+    hasString(value, "model") &&
+    hasNumber(value, "inputTokens") &&
+    hasNumber(value, "outputTokens") &&
+    hasNumber(value, "cachedTokens") &&
+    hasNumber(value, "costUsd") &&
+    hasString(value, "timestamp")
+  );
+}
+
+function isEvent(value: unknown): value is DemoEvent {
+  return (
+    isRecord(value) &&
+    hasString(value, "id") &&
+    isOneOf(value.type, ["decision_requested", "decision_resolved", "task_created"]) &&
+    hasString(value, "title") &&
+    hasString(value, "timestamp") &&
+    hasOptionalString(value, "decisionId") &&
+    hasOptionalString(value, "taskId")
+  );
+}
+
 export function isDemoState(value: unknown): value is SharedNetDemoState {
   if (!value || typeof value !== "object") return false;
   const candidate = value as Partial<SharedNetDemoState>;
+  if (
+    candidate.version !== 3 ||
+    !Array.isArray(candidate.principals) ||
+    !candidate.principals.every(isPrincipal) ||
+    !Array.isArray(candidate.agents) ||
+    !candidate.agents.every(isAgent) ||
+    !Array.isArray(candidate.connections) ||
+    !candidate.connections.every(isConnection) ||
+    !Array.isArray(candidate.recruitments) ||
+    !candidate.recruitments.every(isRecruitment) ||
+    !Array.isArray(candidate.tasks) ||
+    !candidate.tasks.every(isTask) ||
+    !Array.isArray(candidate.messages) ||
+    !candidate.messages.every(isMessage) ||
+    !Array.isArray(candidate.decisions) ||
+    !candidate.decisions.every(isDecision) ||
+    !Array.isArray(candidate.usage) ||
+    !candidate.usage.every(isUsage) ||
+    !Array.isArray(candidate.events) ||
+    !candidate.events.every(isEvent) ||
+    typeof candidate.selectedAgentId !== "string"
+  ) {
+    return false;
+  }
+
+  const principalIds = new Set(candidate.principals.map((principal) => principal.id));
+  const agentIds = new Set(candidate.agents.map((agent) => agent.id));
   return (
-    candidate.version === 2 &&
-    Array.isArray(candidate.principals) &&
-    Array.isArray(candidate.agents) &&
-    Array.isArray(candidate.decisions) &&
-    Array.isArray(candidate.usage)
+    principalIds.has("principal-xisen") &&
+    principalIds.has("principal-aicoo") &&
+    candidate.agents.every((agent) => principalIds.has(agent.principalId)) &&
+    agentIds.has(candidate.selectedAgentId) &&
+    candidate.connections.every(
+      (connection) =>
+        principalIds.has(connection.fromPrincipalId) &&
+        principalIds.has(connection.toPrincipalId),
+    ) &&
+    candidate.recruitments.every(
+      (recruitment) =>
+        principalIds.has(recruitment.principalId) &&
+        recruitment.agentIds.every((agentId) => agentIds.has(agentId)),
+    ) &&
+    candidate.tasks.every((task) =>
+      task.selectedAgentIds.every((agentId) => agentIds.has(agentId)),
+    ) &&
+    candidate.decisions.every(
+      (decision) =>
+        agentIds.has(decision.requestedByAgentId) &&
+        decision.subjectAgentIds.every((agentId) => agentIds.has(agentId)),
+    ) &&
+    candidate.usage.every(
+      (entry) =>
+        principalIds.has(entry.principalId) && agentIds.has(entry.agentId),
+    )
   );
 }

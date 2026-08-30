@@ -1,7 +1,9 @@
 # SharedNet Network Console Redesign
 
-**Date:** 2026-08-30  
-**Status:** Approved for implementation  
+**Date:** 2026-08-30
+
+**Status:** Approved for implementation
+
 **Supersedes:** The six-stage Website Launch wizard as the V1 product surface
 
 ## Product statement
@@ -47,7 +49,7 @@ These are Cross-Principal Agents. Their AgentCards are discoverable through the 
 
 ### Empty state
 
-The main object is a single multiline input with the prompt “What do you want done?” and a submit action. A small example can fill the input with the website-launch task. There is no questionnaire, stage navigation, side rail, or up-front decomposition UI.
+The main object is a single multiline input with the prompt “What do you want done?” and a submit action. A small example can fill the input with the website-launch task. The V1 surface explicitly scopes this deterministic prototype to the canonical website-launch flow. There is no questionnaire, stage navigation, side rail, up-front decomposition UI, or fake follow-up behavior.
 
 ### Planning and execution transcript
 
@@ -84,7 +86,7 @@ The decisions page is a single queue with Pending and Resolved sections. It supp
 - `authorization` — grant a provider or runtime permission such as Neon or Vercel;
 - `plan` — choose between materially different execution paths.
 
-Each item says who is requesting authority, what changes, why it is needed, and what approving or denying does. Approve and deny act inline, update shared state, and retain the resolution as an audit event. Routine internal coordination never appears here.
+Each item says who is requesting authority, what changes, why it is needed, and what approving or denying does. Approve and deny act inline, update task and recruitment state, retain the resolution as an audit event, and move focus to the next authority action. Routine internal coordination never appears here.
 
 ## Usage ledger
 
@@ -100,9 +102,9 @@ The application aggregates raw input, output, cached, and total tokens plus norm
 
 ## State and behavior
 
-A client-side SharedNet demo provider owns one serializable state object and persists it to local storage. Pure domain functions create the fixture, submit a prompt, resolve a decision, select an Agent, and aggregate usage. This keeps page navigation coherent and makes behavior independently testable.
+A client-side SharedNet demo provider owns one serializable V3 state object and persists it to local storage. Complete nested validation rejects obsolete or malformed state, while unavailable storage falls back to in-memory operation. Pure domain functions create the fixture, submit a prompt, resolve a decision, select an Agent, and aggregate usage. This keeps page navigation coherent and makes behavior independently testable.
 
-The V1 remains deterministic. It demonstrates the coordination contract and interaction model; it does not claim that remote Aicoo runtimes or real model calls executed. Existing guarded Neon and Vercel connectors may remain available to later live paths, but provider availability cannot block the demo.
+The V1 remains deterministic. It demonstrates the coordination contract and interaction model; it does not claim that remote Aicoo runtimes or real model calls executed. Existing guarded Neon and Vercel connectors may remain available to later live paths, but provider availability cannot block the demo. Their global live-execution flag and explicit approval are both enforced before any external write, and secret-bearing results are redacted by default.
 
 ## Visual system
 
@@ -123,4 +125,3 @@ The V1 remains deterministic. It demonstrates the coordination contract and inte
 6. Usage totals remain coherent across all three pages and persist across navigation/reload.
 7. The experience works at 390px and desktop widths with no horizontal overflow.
 8. The demo boundary remains unmistakable.
-

@@ -7,6 +7,7 @@ import {
   ShieldCheck,
   UserRoundPlus,
 } from "lucide-react";
+import { useEffect, useState } from "react";
 import { useSharedNetDemo } from "@/src/context/sharednet-demo-context";
 import { type Decision, type DecisionType } from "@/src/domain/network-demo";
 
@@ -24,8 +25,17 @@ function DecisionIcon({ type }: { type: DecisionType }) {
   return <GitFork aria-hidden="true" size={17} />;
 }
 
-function DecisionRow({ decision }: { decision: Decision }) {
-  const { state, resolveDecision } = useSharedNetDemo();
+function DecisionRow({
+  decision,
+  onResolve,
+}: {
+  decision: Decision;
+  onResolve: (
+    decisionId: string,
+    outcome: "approved" | "denied",
+  ) => void;
+}) {
+  const { state } = useSharedNetDemo();
   const requester = state.agents.find(
     (agent) => agent.id === decision.requestedByAgentId,
   );
@@ -64,20 +74,24 @@ function DecisionRow({ decision }: { decision: Decision }) {
             <button
               type="button"
               className="decision-approve"
-              onClick={() => resolveDecision(decision.id, "approved")}
+              onClick={() => onResolve(decision.id, "approved")}
             >
               {decision.approveLabel}
             </button>
             <button
               type="button"
               className="decision-deny"
-              onClick={() => resolveDecision(decision.id, "denied")}
+              onClick={() => onResolve(decision.id, "denied")}
             >
               {decision.denyLabel}
             </button>
           </>
         ) : (
-          <div className={`resolution-stamp resolution-${decision.status}`}>
+          <div
+            className={`resolution-stamp resolution-${decision.status}`}
+            id={`decision-resolution-${decision.id}`}
+            tabIndex={-1}
+          >
             <ShieldCheck aria-hidden="true" size={16} />
             <strong>
               {decision.status === "approved" ? "Approved" : "Denied"}
@@ -89,11 +103,33 @@ function DecisionRow({ decision }: { decision: Decision }) {
     </article>
   );
 }
-
 export function DecisionsView() {
-  const { state } = useSharedNetDemo();
+  const { state, resolveDecision } = useSharedNetDemo();
+  const [lastResolvedDecisionId, setLastResolvedDecisionId] = useState<string | null>(
+    null,
+  );
   const pending = state.decisions.filter((decision) => decision.status === "pending");
   const resolved = state.decisions.filter((decision) => decision.status !== "pending");
+
+  useEffect(() => {
+    if (!lastResolvedDecisionId) return;
+    const nextPendingAction = document.querySelector<HTMLButtonElement>(
+      '[data-decision-list="pending"] .decision-approve',
+    );
+    const resolvedStatus = document.getElementById(
+      `decision-resolution-${lastResolvedDecisionId}`,
+    );
+    (nextPendingAction ?? resolvedStatus)?.focus();
+    setLastResolvedDecisionId(null);
+  }, [lastResolvedDecisionId, pending.length]);
+
+  function handleResolve(
+    decisionId: string,
+    outcome: "approved" | "denied",
+  ) {
+    setLastResolvedDecisionId(decisionId);
+    resolveDecision(decisionId, outcome);
+  }
 
   return (
     <div className="decisions-page page-frame">
@@ -124,10 +160,14 @@ export function DecisionsView() {
           </div>
           <span>{pending.length}</span>
         </header>
-        <div className="decision-list">
+        <div className="decision-list" data-decision-list="pending">
           {pending.length > 0 ? (
             pending.map((decision) => (
-              <DecisionRow key={decision.id} decision={decision} />
+              <DecisionRow
+                key={decision.id}
+                decision={decision}
+                onResolve={handleResolve}
+              />
             ))
           ) : (
             <p className="empty-decisions">Nothing is waiting on you.</p>
@@ -149,7 +189,11 @@ export function DecisionsView() {
         <div className="decision-list">
           {resolved.length > 0 ? (
             resolved.map((decision) => (
-              <DecisionRow key={decision.id} decision={decision} />
+              <DecisionRow
+                key={decision.id}
+                decision={decision}
+                onResolve={handleResolve}
+              />
             ))
           ) : (
             <p className="empty-decisions">
@@ -161,4 +205,3 @@ export function DecisionsView() {
     </div>
   );
 }
-

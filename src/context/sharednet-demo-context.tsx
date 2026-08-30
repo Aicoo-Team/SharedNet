@@ -19,7 +19,15 @@ import {
   type SharedNetDemoState,
 } from "@/src/domain/network-demo";
 
-const STORAGE_KEY = "sharednet:network-console:v2";
+const STORAGE_KEY = "sharednet:network-console:v3";
+
+function removePersistedState(): void {
+  try {
+    window.localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    // The deterministic demo remains fully usable when storage is unavailable.
+  }
+}
 
 interface SharedNetDemoContextValue {
   state: SharedNetDemoState;
@@ -43,10 +51,14 @@ export function SharedNetDemoProvider({ children }: { children: ReactNode }) {
       const rawState = window.localStorage.getItem(STORAGE_KEY);
       if (rawState) {
         const parsedState: unknown = JSON.parse(rawState);
-        if (isDemoState(parsedState)) setState(parsedState);
+        if (isDemoState(parsedState)) {
+          setState(parsedState);
+        } else {
+          removePersistedState();
+        }
       }
     } catch {
-      window.localStorage.removeItem(STORAGE_KEY);
+      removePersistedState();
     } finally {
       setStorageReady(true);
     }
@@ -54,7 +66,11 @@ export function SharedNetDemoProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!storageReady) return;
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    try {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    } catch {
+      // Persistence is an enhancement; coordination state still works in memory.
+    }
   }, [state, storageReady]);
 
   const submitPrompt = useCallback((prompt: string) => {
@@ -95,4 +111,3 @@ export function useSharedNetDemo(): SharedNetDemoContextValue {
   }
   return context;
 }
-
