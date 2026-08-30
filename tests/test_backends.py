@@ -13,6 +13,93 @@ from tests.fixtures import four_agent_request, linear_request, specialist_reques
 
 
 class BackendTests(unittest.TestCase):
+    @staticmethod
+    def _request(
+        mechanism: str,
+        candidates: tuple[Candidate, ...],
+        capabilities: tuple[str, ...],
+        *,
+        max_cost: float,
+        max_participants: int = 4,
+    ) -> CoordinationRequest:
+        return CoordinationRequest(
+            TaskSpec("cost-task", "Cover the requested work.", capabilities, (), {}),
+            candidates,
+            CoordinationBudget(max_cost=max_cost, max_participants=max_participants),
+            mechanism,
+            "trace-cost",
+        )
+
+    @staticmethod
+    def _candidate(candidate_id: str, capabilities: tuple[str, ...], quality: float, cost: float, mode: CandidateMode = CandidateMode.RECRUIT) -> Candidate:
+        return Candidate(candidate_id, mode, capabilities, True, "trusted", quality, cost, 0.1, 0.1)
+
+    def test_unaffordable_superstar_is_rejected_before_discovery_ranking(self) -> None:
+        request = self._request(
+            "discovery-and-use",
+            (
+                self._candidate("self", ("accountability",), 0.5, 0.1, CandidateMode.SELF),
+                self._candidate("unaffordable-superstar", ("analysis",), 1.0, 1.1),
+                self._candidate("affordable-specialist", ("analysis",), 0.3, 0.4),
+            ),
+            ("analysis",),
+            max_cost=1.0,
+        )
+
+        plan = DiscoveryAndUseBackend().plan(request)
+
+        self.assertNotIn("unaffordable-superstar", plan.participant_ids)
+        self.assertIn("affordable-specialist", plan.participant_ids)
+        self.assertIn(
+            {"event": "candidate_rejected", "candidate_id": "unaffordable-superstar", "reason": "individual_cost_exceeds_budget"},
+            plan.decision_trace,
+        )
+
+    def test_discovery_omits_requester_when_specialist_alone_fits_cost_budget(self) -> None:
+        request = self._request(
+            "discovery-and-use",
+            (
+                self._candidate("self", ("accountability",), 0.5, 0.4, CandidateMode.SELF),
+                self._candidate("specialist", ("analysis",), 0.8, 0.7),
+            ),
+            ("analysis",),
+            max_cost=1.0,
+        )
+
+        plan = DiscoveryAndUseBackend().plan(request)
+
+        self.assertEqual(plan.participant_ids, ("specialist",))
+        self.assertIn(
+            {"event": "candidate_rejected", "candidate_id": "self", "reason": "cumulative_cost_exceeds_budget"},
+            plan.decision_trace,
+        )
+
+    def test_every_planner_stops_at_cumulative_cost_budget(self) -> None:
+        candidates = (
+            self._candidate("self", ("a",), 1.0, 0.5, CandidateMode.SELF),
+            self._candidate("b-worker", ("b",), 0.95, 0.5),
+            self._candidate("c-worker", ("c",), 0.94, 0.5),
+        )
+        for mechanism, backend in (
+            ("rac-rge", RacRgeBackend()),
+            ("rac-adaptive", RacAdaptiveBackend()),
+            ("peer-forum", PeerForumBackend()),
+        ):
+            with self.subTest(mechanism=mechanism):
+                plan = backend.plan(self._request(mechanism, candidates, ("a", "b", "c"), max_cost=1.0))
+                self.assertEqual(plan.total_predicted_cost, 1.0)
+                self.assertEqual(plan.stop_reason, "cost_budget_exhausted")
+                self.assertNotIn("c-worker", plan.participant_ids)
+
+    def test_adaptive_and_forum_report_participant_limit_with_uncovered_work(self) -> None:
+        candidates = (
+            self._candidate("self", ("a",), 0.9, 0.1, CandidateMode.SELF),
+            self._candidate("b-worker", ("b",), 0.8, 0.1),
+        )
+        for mechanism, backend in (("rac-adaptive", RacAdaptiveBackend()), ("peer-forum", PeerForumBackend())):
+            with self.subTest(mechanism=mechanism):
+                plan = backend.plan(self._request(mechanism, candidates, ("a", "b"), max_cost=1.0, max_participants=1))
+                self.assertEqual(plan.stop_reason, "participant_limit_reached")
     def test_discovery_filters_denied_candidate_before_ranking(self) -> None:
         request = four_agent_request(mechanism="discovery-and-use", include_denied_superstar=True)
         plan = DiscoveryAndUseBackend().plan(request)

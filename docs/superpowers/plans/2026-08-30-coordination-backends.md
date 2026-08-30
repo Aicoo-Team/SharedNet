@@ -74,7 +74,7 @@ Expected: import failure for `sharednet.coordination.models`.
 
 - [ ] **Step 3: Implement frozen JSON-safe contracts and protocols**
 
-Use frozen dataclasses and enums. `CoordinationBudget` defaults are `max_wall_seconds=300`, `max_turns=16`, `max_depth=2`, `max_participants=4`, `max_retries=1`, and `max_disclosure_bytes=65536`. Validate positive numeric bounds, nonempty IDs/goals/capabilities, unique candidates/participants, participant count, edge endpoints, and dependencies. Every public value implements `to_dict()` with stable camel-free snake_case keys.
+Use frozen dataclasses and enums. `CoordinationBudget` defaults are `max_wall_seconds=300`, `max_turns=16`, `max_depth=2`, `max_participants=4`, `max_retries=1`, `max_disclosure_bytes=65536`, and `max_cost=1.0`. `max_cost` is a positive finite provider-neutral ceiling on summed selected `predicted_cost`; actual provider tokens remain evidence and are never converted to a price. Copy each selected candidate's nonnegative finite `predicted_cost` to `ParticipantPlan` (default `0` for compatibility), expose the plan's total predicted cost, and reject a plan over the ceiling. Validate positive numeric bounds, nonempty IDs/goals/capabilities, unique candidates/participants, participant count, edge endpoints, dependencies, and cumulative selected cost. Every public value implements `to_dict()` with stable camel-free snake_case keys.
 
 ```python
 class CoordinationBackend(Protocol):

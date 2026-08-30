@@ -56,15 +56,15 @@ This lets tests use a deterministic fake, while the local live path uses `CodexR
 All contracts are frozen dataclasses and JSON-safe through explicit `to_dict()` methods.
 
 - `TaskSpec`: `task_id`, natural-language `goal`, required capabilities, acceptance criteria, and immutable input data.
-- `CoordinationBudget`: positive wall-time, turn, depth, participant, retry, and disclosure limits.
+- `CoordinationBudget`: positive wall-time, turn, depth, participant, retry, disclosure, and provider-neutral predicted-cost limits. `max_cost` defaults to `1.0` and is a positive finite ceiling on the sum of selected candidates' predicted costs; it never converts actual provider tokens into an invented price.
 - `Candidate`: stable ID, mode (`SELF`, `RECRUIT`, or `SPAWN`), capabilities, admitted flag and reason, predicted quality/cost/latency/risk, and verified successes/failures.
 - `CoordinationRequest`: task, sealed candidate tuple, budget, requested mechanism, and trace ID.
-- `ParticipantPlan`: candidate ID, role, assignment, dependencies, and selection reason.
-- `CoordinationPlan`: mechanism ID, task/trace IDs, attempt number, attempt-local exclusions, selected participants, graph edges, decision trace, and runtime instructions.
+- `ParticipantPlan`: candidate ID, role, assignment, dependencies, selection reason, capabilities, and the selected candidate's nonnegative finite `predicted_cost` (default `0` for compatible construction).
+- `CoordinationPlan`: mechanism ID, task/trace IDs, attempt number, attempt-local exclusions, selected participants, graph edges, decision trace, runtime instructions, and an inspectable total predicted cost. It rejects participant totals above `budget.max_cost`.
 - `AgentOutput`: one participant's attributable output and marker.
 - `CoordinationResult`: terminal status, final plan, participant outputs, synthesis, runtime evidence, usage, attributable failed participant IDs, prior attempt summaries, and errors.
 
-Construction validates hard bounds, unique candidate and participant IDs, known dependencies, admitted selected candidates, and maximum participant/depth limits. A plan never mutates its request's candidate snapshot.
+Construction validates hard bounds, unique candidate and participant IDs, known dependencies, admitted selected candidates, maximum participant/depth limits, and cumulative selected predicted cost. Admission is evaluated before ranking: a candidate whose individual predicted cost exceeds `max_cost` is hard-rejected with a trace reason before scoring. Every mechanism also enforces remaining cumulative cost while selecting; exact-bound selections are valid. When cost alone leaves useful required work uncovered, the stop reason is `cost_budget_exhausted`. Actual provider tokens remain execution evidence, not pricing input. A plan never mutates its request's candidate snapshot.
 
 ## Registered default mechanisms
 
@@ -81,11 +81,11 @@ peer-forum
 
 ### discovery-and-use
 
-Filter admitted candidates with full required-capability coverage, then rank by capability coverage multiplied by verification-backed trust, minus normalized cost, latency, and risk. Select the best candidate deterministically and add `SELF` only when the selected candidate is not the requester. This is the smallest specialist-use path and abstains explicitly when no candidate qualifies.
+Filter admitted, individually affordable candidates with full required-capability coverage, then rank by capability coverage multiplied by verification-backed trust, minus normalized cost, latency, and risk. Select the best candidate deterministically and add `SELF` only when it also fits the cumulative ceiling; otherwise keep the specialist alone and trace the cost rejection. This is the smallest specialist-use path and abstains explicitly when no candidate qualifies.
 
 ### rac-rge
 
-Build an organization graph from a root rather than accepting a pre-authored workflow. Select the strongest admitted generalist root, then add positive-utility candidates that contribute uncovered required capabilities. Attach each addition to the selected participant with the greatest capability overlap, respect depth and participant limits, and stop when coverage is complete or no positive information gain remains. The trace records every expansion or stop reason.
+Build an organization graph from a root rather than accepting a pre-authored workflow. Select the strongest admitted, individually affordable generalist root, then add only cumulatively affordable positive-utility candidates that contribute uncovered required capabilities. Attach each addition to the selected participant with the greatest capability overlap, respect depth, participant, and cost limits, and stop when coverage is complete, cost is exhausted, or no positive information gain remains. The trace records every expansion or stop reason.
 
 ### rac-adaptive
 
@@ -95,11 +95,11 @@ Apply the reference RAC order: discover, hard-admit, rank, contract, execute, ve
 quality + verified experience - cost - latency - risk - coordination overhead
 ```
 
-Short linear tasks remain `SELF` when no extra candidate has positive utility. Independent required capabilities can add bounded participants. A verification failure excludes that candidate and causes the service to request a new plan from the same immutable snapshot within the retry budget; failure never creates authority or expands search radius.
+Short linear tasks remain `SELF` when no extra candidate has positive utility. Independent required capabilities can add only bounded, cumulatively affordable participants. If the participant cap is reached while required capabilities remain uncovered, the stop reason is `participant_limit_reached`; if affordability blocks useful work, it is `cost_budget_exhausted`. A verification failure excludes that candidate and causes the service to request a new plan from the same immutable snapshot within the retry budget; failure never creates authority or expands search radius.
 
 ### peer-forum
 
-Select up to the participant limit from admitted candidates with complementary coverage. They run as parallel peers and receive an append-only forum discipline: announce focus, avoid duplicate work, challenge or extend peer findings, and preserve authorship. A designated integrator synthesizes after all peer outputs. Forum evidence is an ordered transcript; reads and posts are attributable and bounded.
+Select up to the participant limit from admitted, individually and cumulatively affordable candidates with complementary coverage. They run as parallel peers and receive an append-only forum discipline: announce focus, avoid duplicate work, challenge or extend peer findings, and preserve authorship. A designated integrator synthesizes after all peer outputs. If uncovered capabilities remain at the participant cap, stop with `participant_limit_reached`; if useful coverage is blocked by cost, stop with `cost_budget_exhausted`. Forum evidence is an ordered transcript; reads and posts are attributable and bounded.
 
 ## RAC-derived primitives
 

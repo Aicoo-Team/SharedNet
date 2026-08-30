@@ -78,7 +78,8 @@
     "max_depth": 2,
     "max_participants": 4,
     "max_retries": 1,
-    "max_disclosure_bytes": 65536
+    "max_disclosure_bytes": 65536,
+    "max_cost": 1.0
   },
   "mechanism": "rac-rge",
   "trace_id": "incident-remediation-brief-001"

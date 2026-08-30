@@ -112,10 +112,35 @@ class ModelTests(unittest.TestCase):
                 "max_participants": 4,
                 "max_retries": 1,
                 "max_disclosure_bytes": 65536,
+                "max_cost": 1.0,
             },
         )
         with self.assertRaisesRegex(ValueError, "max_turns must be positive"):
             CoordinationBudget(max_turns=0)
+        for invalid_cost in (0, -0.1, float("inf"), float("nan")):
+            with self.subTest(invalid_cost=invalid_cost):
+                with self.assertRaisesRegex(ValueError, "max_cost must be (positive|finite)"):
+                    CoordinationBudget(max_cost=invalid_cost)
+
+    def test_plan_exposes_exact_selected_predicted_cost(self) -> None:
+        plan = plan_with(
+            ParticipantPlan("self", "root", "work", (), "best", (), 0.25),
+            ParticipantPlan("helper", "worker", "work", ("self",), "coverage", (), 0.75),
+        )
+
+        self.assertEqual(plan.total_predicted_cost, 1.0)
+        self.assertEqual(plan.to_dict()["total_predicted_cost"], 1.0)
+
+    def test_plan_rejects_selected_predicted_cost_above_budget(self) -> None:
+        with self.assertRaisesRegex(ValueError, "maximum predicted cost exceeded"):
+            CoordinationPlan(
+                "rac-rge", "task-1", "trace-1", 0, frozenset(),
+                (
+                    ParticipantPlan("self", "root", "work", (), "best", (), 0.6),
+                    ParticipantPlan("helper", "worker", "work", ("self",), "coverage", (), 0.5),
+                ),
+                (), (), {}, CoordinationBudget(max_cost=1.0),
+            )
 
     def test_plan_exposes_participants_coverage_and_stop_reason(self) -> None:
         plan = CoordinationPlan(

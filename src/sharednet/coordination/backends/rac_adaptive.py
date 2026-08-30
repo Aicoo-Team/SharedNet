@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from ..models import CandidateMode, CoordinationPlan, CoordinationRequest, GraphEdge, ParticipantPlan
 from ..primitives import candidate_utility
-from .common import abstained_plan, add_edge, eligibility_trace, make_plan, participant, participant_depth, ranked_candidates, select_parent
+from .common import abstained_plan, add_edge, cost_fits_budget, eligibility_trace, make_plan, participant, participant_depth, ranked_candidates, select_parent
 
 
 class RacAdaptiveBackend:
@@ -25,6 +25,7 @@ class RacAdaptiveBackend:
         edges: list[GraphEdge] = []
         trace.append({"event": "candidate_selected", "candidate_id": root.candidate_id, "reason": "requester_root" if self_candidate else "best_available_root"})
         uncovered = set(request.task.required_capabilities) - set(root.capabilities)
+        selected_cost = root.predicted_cost
         added = False
         stop_reason: str | None = None
         for candidate in ranked_candidates(candidate for candidate in eligible if candidate.candidate_id != root.candidate_id):
@@ -33,6 +34,9 @@ class RacAdaptiveBackend:
                 break
             if not (set(candidate.capabilities) & uncovered):
                 trace.append({"event": "candidate_rejected", "candidate_id": candidate.candidate_id, "reason": "no_new_capability_coverage"})
+                continue
+            if not cost_fits_budget(selected_cost, candidate.predicted_cost, request.budget.max_cost):
+                trace.append({"event": "candidate_rejected", "candidate_id": candidate.candidate_id, "reason": "cumulative_cost_exceeds_budget"})
                 continue
             if candidate_utility(candidate, self.coordination_overhead) <= 0:
                 trace.append({"event": "candidate_rejected", "candidate_id": candidate.candidate_id, "reason": "no_positive_marginal_utility"})
@@ -43,6 +47,7 @@ class RacAdaptiveBackend:
                 continue
             parent = select_parent(candidate, available_parents)
             selected.append(candidate)
+            selected_cost += candidate.predicted_cost
             participants.append(participant(candidate, role="worker", assignment="cover independent capability", dependencies=(parent.candidate_id,), reason="positive_marginal_utility"))
             trace.append({"event": "candidate_selected", "candidate_id": candidate.candidate_id, "reason": "positive_marginal_utility"})
             add_edge(trace, edges, parent.candidate_id, candidate.candidate_id, "delegates")
@@ -51,6 +56,13 @@ class RacAdaptiveBackend:
             if not uncovered:
                 break
         if stop_reason is None:
-            stop_reason = "coverage_complete" if not uncovered and added else "no_positive_marginal_utility"
+            if not uncovered:
+                stop_reason = "coverage_complete" if added else "no_positive_marginal_utility"
+            elif len(selected) >= request.budget.max_participants:
+                stop_reason = "participant_limit_reached"
+            elif any(event.get("reason") == "cumulative_cost_exceeds_budget" for event in trace):
+                stop_reason = "cost_budget_exhausted"
+            else:
+                stop_reason = "no_positive_marginal_utility"
         trace.append({"event": "planning_stopped", "reason": stop_reason})
         return make_plan(self.mechanism_id, request, excluded, participants, edges, trace, {"coordination": "marginal-utility"})

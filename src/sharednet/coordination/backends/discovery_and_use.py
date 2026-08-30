@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from ..models import CandidateMode, CoordinationPlan, CoordinationRequest, GraphEdge, ParticipantPlan
-from .common import abstained_plan, add_edge, eligibility_trace, make_plan, participant, ranked_candidates, required_coverage
+from .common import abstained_plan, add_edge, cost_fits_budget, eligibility_trace, make_plan, participant, ranked_candidates, required_coverage
 
 
 class DiscoveryAndUseBackend:
@@ -32,7 +32,12 @@ class DiscoveryAndUseBackend:
         participants: list[ParticipantPlan] = []
         edges: list[GraphEdge] = []
         requester = next((candidate for candidate in eligible if candidate.mode is CandidateMode.SELF), None)
-        if requester is not None and requester.candidate_id != selected.candidate_id and request.budget.max_participants > 1:
+        if (
+            requester is not None
+            and requester.candidate_id != selected.candidate_id
+            and request.budget.max_participants > 1
+            and cost_fits_budget(selected.predicted_cost, requester.predicted_cost, request.budget.max_cost)
+        ):
             participants.append(
                 participant(
                     requester,
@@ -45,6 +50,8 @@ class DiscoveryAndUseBackend:
             participants.append(participant(selected, role="specialist", assignment="complete the task", dependencies=(requester.candidate_id,), reason="complete_coverage_specialist"))
             add_edge(trace, edges, requester.candidate_id, selected.candidate_id, "delegates")
         else:
+            if requester is not None and requester.candidate_id != selected.candidate_id and request.budget.max_participants > 1:
+                trace.append({"event": "candidate_rejected", "candidate_id": requester.candidate_id, "reason": "cumulative_cost_exceeds_budget"})
             participants.append(participant(selected, role="specialist", assignment="complete the task", reason="complete_coverage_specialist"))
         trace.append({"event": "planning_stopped", "reason": "complete_coverage_selected"})
         return make_plan(self.mechanism_id, request, excluded, participants, edges, trace, {"coordination": "specialist-use"})

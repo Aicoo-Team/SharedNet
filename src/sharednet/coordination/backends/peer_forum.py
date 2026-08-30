@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from ..models import CandidateMode, CoordinationPlan, CoordinationRequest, GraphEdge, ParticipantPlan
-from .common import abstained_plan, add_edge, contribution_score, eligibility_trace, make_plan, participant, ranked_candidates
+from .common import abstained_plan, add_edge, contribution_score, cost_fits_budget, eligibility_trace, make_plan, participant, ranked_candidates
 
 
 class PeerForumBackend:
@@ -23,12 +23,20 @@ class PeerForumBackend:
         if integrator is not None:
             uncovered -= set(integrator.capabilities)
             trace.append({"event": "candidate_selected", "candidate_id": integrator.candidate_id, "reason": "accountable_requester_integrator"})
+        selected_cost = integrator.predicted_cost if integrator is not None else 0
         while len(selected) < request.budget.max_participants:
             choices = [candidate for candidate in eligible if candidate not in selected and contribution_score(candidate, uncovered) > 0]
             if not choices:
                 break
-            choice = min(choices, key=lambda candidate: (-contribution_score(candidate, uncovered), candidate.candidate_id))
+            affordable_choices = [candidate for candidate in choices if cost_fits_budget(selected_cost, candidate.predicted_cost, request.budget.max_cost)]
+            for candidate in choices:
+                if candidate not in affordable_choices:
+                    trace.append({"event": "candidate_rejected", "candidate_id": candidate.candidate_id, "reason": "cumulative_cost_exceeds_budget"})
+            if not affordable_choices:
+                break
+            choice = min(affordable_choices, key=lambda candidate: (-contribution_score(candidate, uncovered), candidate.candidate_id))
             selected.append(choice)
+            selected_cost += choice.predicted_cost
             uncovered -= set(choice.capabilities)
             trace.append({"event": "candidate_selected", "candidate_id": choice.candidate_id, "reason": "complementary_coverage"})
         if not selected:
@@ -44,7 +52,15 @@ class PeerForumBackend:
         participants.append(participant(integrator, role="integrator", assignment="synthesize peer contributions", dependencies=dependencies, reason="designated_integrator"))
         for peer_id in dependencies:
             add_edge(trace, edges, peer_id, integrator.candidate_id, "contributes_to")
-        trace.append({"event": "planning_stopped", "reason": "coverage_complete" if not uncovered else "no_positive_information_gain"})
+        if not uncovered:
+            stop_reason = "coverage_complete"
+        elif len(selected) >= request.budget.max_participants:
+            stop_reason = "participant_limit_reached"
+        elif any(event.get("reason") == "cumulative_cost_exceeds_budget" for event in trace):
+            stop_reason = "cost_budget_exhausted"
+        else:
+            stop_reason = "no_positive_information_gain"
+        trace.append({"event": "planning_stopped", "reason": stop_reason})
         return make_plan(
             self.mechanism_id,
             request,

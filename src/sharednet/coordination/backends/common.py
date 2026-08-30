@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
+import math
 
 from ..models import Candidate, CoordinationPlan, CoordinationRequest, GraphEdge, JsonValue, ParticipantPlan, TerminalStatus
 from ..primitives import candidate_utility
@@ -17,10 +18,18 @@ def eligibility_trace(request: CoordinationRequest, excluded: frozenset[str]) ->
             trace.append({"event": "candidate_rejected", "candidate_id": candidate.candidate_id, "reason": "not_admitted"})
         elif candidate.candidate_id in excluded:
             trace.append({"event": "candidate_rejected", "candidate_id": candidate.candidate_id, "reason": "attempt_excluded"})
+        elif not cost_fits_budget(0, candidate.predicted_cost, request.budget.max_cost):
+            trace.append({"event": "candidate_rejected", "candidate_id": candidate.candidate_id, "reason": "individual_cost_exceeds_budget"})
         else:
             eligible.append(candidate)
             trace.append({"event": "candidate_considered", "candidate_id": candidate.candidate_id})
     return tuple(eligible), trace
+
+
+def cost_fits_budget(current_cost: float, addition_cost: float, max_cost: float) -> bool:
+    """Permit exact cost-bound selections while rejecting real overages."""
+    total = math.fsum((current_cost, addition_cost))
+    return total < max_cost or math.isclose(total, max_cost, rel_tol=0.0, abs_tol=1e-12)
 
 
 def eligible_candidates(request: CoordinationRequest, excluded: frozenset[str] = frozenset()) -> tuple[Candidate, ...]:
@@ -72,6 +81,7 @@ def participant(candidate: Candidate, *, role: str, assignment: str, dependencie
         dependencies=dependencies,
         selection_reason=reason,
         capabilities=candidate.capabilities,
+        predicted_cost=candidate.predicted_cost,
     )
 
 

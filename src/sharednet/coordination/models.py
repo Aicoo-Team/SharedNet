@@ -156,9 +156,11 @@ class CoordinationBudget:
     max_participants: int = 4
     max_retries: int = 1
     max_disclosure_bytes: int = 65536
+    max_cost: float = 1.0
 
     def __post_init__(self) -> None:
         _positive_number(self.max_wall_seconds, "max_wall_seconds")
+        _positive_number(self.max_cost, "max_cost")
         for name in ("max_turns", "max_depth", "max_participants", "max_retries", "max_disclosure_bytes"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
@@ -181,6 +183,7 @@ class CoordinationBudget:
             "max_participants": self.max_participants,
             "max_retries": self.max_retries,
             "max_disclosure_bytes": self.max_disclosure_bytes,
+            "max_cost": self.max_cost,
         }
 
 
@@ -328,12 +331,14 @@ class ParticipantPlan:
     dependencies: tuple[str, ...]
     selection_reason: str
     capabilities: tuple[str, ...] = ()
+    predicted_cost: float = 0
 
     def __post_init__(self) -> None:
         for name in ("candidate_id", "role", "assignment", "selection_reason"):
             object.__setattr__(self, name, _nonempty_string(getattr(self, name), name))
         object.__setattr__(self, "dependencies", _string_tuple(self.dependencies, "dependencies", allow_empty=True))
         object.__setattr__(self, "capabilities", _string_tuple(self.capabilities, "capabilities", allow_empty=True))
+        _nonnegative_number(self.predicted_cost, "predicted_cost")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -343,6 +348,7 @@ class ParticipantPlan:
             "dependencies": list(self.dependencies),
             "selection_reason": self.selection_reason,
             "capabilities": list(self.capabilities),
+            "predicted_cost": self.predicted_cost,
         }
 
 
@@ -398,6 +404,10 @@ class CoordinationPlan:
             raise ValueError("duplicate participant id")
         if len(participants) > self.budget.max_participants:
             raise ValueError("maximum participant count exceeded")
+        if math.fsum(item.predicted_cost for item in participants) > self.budget.max_cost and not math.isclose(
+            math.fsum(item.predicted_cost for item in participants), self.budget.max_cost, rel_tol=0.0, abs_tol=1e-12
+        ):
+            raise ValueError("maximum predicted cost exceeded")
         known = set(identifiers)
         for participant in participants:
             unknown = set(participant.dependencies) - known
@@ -447,6 +457,10 @@ class CoordinationPlan:
         return tuple(dict.fromkeys(capability for item in self.participants for capability in item.capabilities))
 
     @property
+    def total_predicted_cost(self) -> float:
+        return math.fsum(item.predicted_cost for item in self.participants)
+
+    @property
     def stop_reason(self) -> str | None:
         for event in reversed(self.decision_trace):
             if event.get("event") == "planning_stopped" and isinstance(event.get("reason"), str):
@@ -461,6 +475,7 @@ class CoordinationPlan:
             "attempt": self.attempt,
             "exclusions": sorted(self.exclusions),
             "participants": [item.to_dict() for item in self.participants],
+            "total_predicted_cost": self.total_predicted_cost,
             "edges": [edge.to_dict() for edge in self.edges],
             "decision_trace": [_thaw_json(item) for item in self.decision_trace],
             "runtime_instructions": _thaw_json(self.runtime_instructions),

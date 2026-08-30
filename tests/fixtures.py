@@ -45,7 +45,7 @@ def four_agent_request(*, mechanism: str, include_denied_superstar: bool = False
             {},
         ),
         candidates=tuple(candidates),
-        budget=CoordinationBudget(max_participants=4),
+        budget=CoordinationBudget(max_participants=4, max_cost=1.0),
         mechanism=mechanism,
         trace_id="trace-four-agent",
     )
