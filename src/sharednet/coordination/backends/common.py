@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 
-from ..models import Candidate, CoordinationPlan, CoordinationRequest, GraphEdge, ParticipantPlan, TerminalStatus
+from ..models import Candidate, CoordinationPlan, CoordinationRequest, GraphEdge, JsonValue, ParticipantPlan, TerminalStatus
 from ..primitives import candidate_utility
 
 
@@ -87,7 +87,7 @@ def make_plan(
     participants: Sequence[ParticipantPlan],
     edges: Sequence[GraphEdge],
     trace: list[dict[str, str]],
-    runtime_instructions: dict[str, str],
+    runtime_instructions: Mapping[str, JsonValue],
     terminal_status: TerminalStatus = TerminalStatus.ACCEPTED,
 ) -> CoordinationPlan:
     return CoordinationPlan(
