@@ -160,6 +160,11 @@ class SuccessfulProcess:
         return self.stdout, ""
 
 
+class NoParseText(str):
+    def splitlines(self, keepends: bool = False):
+        raise AssertionError("oversized process output must not be parsed")
+
+
 class CodexRuntimeTests(unittest.TestCase):
     def test_setup_time_reduces_the_relative_allowance_passed_to_the_runner(self) -> None:
         clock = ManualClock()
@@ -539,6 +544,32 @@ class CodexRuntimeTests(unittest.TestCase):
 
         self.assertEqual(result.status, TerminalStatus.FAILED)
         self.assertEqual(result.error, "codex_output_too_large")
+
+    def test_timeout_dominates_oversize_without_parsing_or_persisting_payload(self) -> None:
+        runner = RecordingRunner(ProcessOutcome(-15, NoParseText("x" * 40), "y" * 10, True))
+        with tempfile.TemporaryDirectory() as directory:
+            result = CodexRuntime(
+                binary="/real/codex",
+                runner=runner,
+                artifact_dir=directory,
+                max_capture_bytes=32,
+            ).execute(plan())
+
+            self.assertEqual(list(Path(directory).iterdir()), [])
+
+        self.assertEqual(result.status, TerminalStatus.EXHAUSTED)
+        self.assertEqual(result.error, "codex_exec_timeout")
+        self.assertEqual(
+            result.runtime_evidence,
+            {
+                "exit_code": -15,
+                "timed_out": True,
+                "captured_bytes": 50,
+                "max_capture_bytes": 32,
+                "stdout_bytes": 40,
+                "stderr_bytes": 10,
+            },
+        )
 
     def test_artifact_paths_are_collision_safe(self) -> None:
         runner = RecordingRunner(ProcessOutcome(0, success_jsonl(markers_for("nonce-1")), "diagnostic", False))

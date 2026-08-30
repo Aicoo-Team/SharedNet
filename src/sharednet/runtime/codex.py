@@ -248,8 +248,24 @@ class CodexRuntime:
         except OSError as error:
             return self._failure(plan, "codex_exec_os_error", stderr=str(error))
 
-        capture_bytes = len(outcome.stdout.encode("utf-8")) + len(outcome.stderr.encode("utf-8"))
+        stdout_bytes = len(outcome.stdout.encode("utf-8"))
+        stderr_bytes = len(outcome.stderr.encode("utf-8"))
+        capture_bytes = stdout_bytes + stderr_bytes
         if capture_bytes > self._max_capture_bytes:
+            if outcome.timed_out:
+                return self._failure(
+                    plan,
+                    "codex_exec_timeout",
+                    evidence={
+                        "exit_code": outcome.returncode,
+                        "timed_out": True,
+                        "captured_bytes": capture_bytes,
+                        "max_capture_bytes": self._max_capture_bytes,
+                        "stdout_bytes": stdout_bytes,
+                        "stderr_bytes": stderr_bytes,
+                    },
+                    status=TerminalStatus.EXHAUSTED,
+                )
             return self._failure(
                 plan,
                 "codex_output_too_large",
