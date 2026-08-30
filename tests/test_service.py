@@ -696,6 +696,35 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(result.runtime_evidence, {"source": "scripted", "attempt": 0})
         self.assertEqual(result.attempts[0].error, "raw_replan_failure")
 
+    def test_late_post_attempt_abstention_records_replan_evidence_before_wall_exhaustion(self) -> None:
+        from sharednet.coordination.backends.discovery_and_use import DiscoveryAndUseBackend
+        import sharednet.coordination.service as service_module
+        from sharednet.coordination.service import CoordinationService
+
+        clock = ManualClock()
+        backend = ReplanDeadlineBackend(DiscoveryAndUseBackend(), clock)
+        request = replace(
+            discovery_cost_replan_request(),
+            budget=replace(discovery_cost_replan_request().budget, max_cost=1.0, max_wall_seconds=10),
+        )
+        runtime = ScriptedRuntime([
+            lambda plan: failed_result(plan, ("self",), error="requester_failed"),
+        ])
+        original_get_backend = service_module.get_backend
+        service_module.get_backend = lambda mechanism: backend
+        try:
+            result = CoordinationService(clock=clock).execute(request, runtime)
+        finally:
+            service_module.get_backend = original_get_backend
+
+        self.assertEqual(runtime.calls, 1)
+        self.assertEqual(result.status, TerminalStatus.EXHAUSTED)
+        self.assertEqual(result.error, "wall_time_budget_exhausted")
+        self.assertEqual(result.plan, runtime.plans[0])
+        self.assertEqual(result.runtime_evidence["source"], "scripted")
+        self.assertEqual(result.runtime_evidence["terminal_replan"]["reason"], "requester_excluded")
+        self.assertEqual(result.attempts[0].error, "requester_failed")
+
     def test_accepted_result_arriving_after_wall_deadline_becomes_exhausted(self) -> None:
         from sharednet.coordination.service import CoordinationService
 

@@ -45,6 +45,14 @@ OK
 
 `compileall` on all owned Python paths and `git diff --check` on all owned paths also passed with no output.
 
+One final boundary audit found the deadline could expire after a backend returned a post-attempt abstention but before its terminal replan evidence was attached. A new focused test reproduced the missing `terminal_replan` key, then passed after preserving the abstention evidence while retaining wall-time exhaustion as the terminal error:
+
+```text
+RED:   Ran 1 test in 0.014s — FAILED (errors=1, KeyError: terminal_replan)
+GREEN: Ran 1 test in 0.009s — OK
+Fresh focused regression: Ran 51 tests in 0.018s — OK
+```
+
 ## Coordination note
 
 The planner worker was given the stable cost helper signatures and wired `ParticipantPlan(mode=candidate.mode)` in its separately owned common planner path. No backend, runtime, packaging, or documentation file was staged by this slice.

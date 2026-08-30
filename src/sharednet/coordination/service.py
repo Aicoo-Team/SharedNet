@@ -70,6 +70,11 @@ class CoordinationService:
                 remaining_cost=remaining_cost,
             )
             execution_wall_seconds = deadline - self._clock()
+            if plan.terminal_status is TerminalStatus.ABSTAINED and last_completed is not None:
+                exhausted = self._terminal_replan_result(last_completed, plan)
+                if execution_wall_seconds <= 0:
+                    return replace(exhausted, error="wall_time_budget_exhausted")
+                return exhausted
             if execution_wall_seconds <= 0:
                 if last_completed is not None:
                     return replace(
@@ -86,8 +91,6 @@ class CoordinationService:
                 )
             plan = replace(plan, budget=replace(plan.budget, max_wall_seconds=execution_wall_seconds))
             if plan.terminal_status is TerminalStatus.ABSTAINED:
-                if last_completed is not None:
-                    return self._terminal_replan_result(last_completed, plan)
                 return CoordinationResult(
                     status=TerminalStatus.ABSTAINED,
                     plan=plan,
