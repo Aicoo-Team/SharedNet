@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
+from decimal import Decimal
 import unittest
 
 from sharednet.coordination.models import (
@@ -65,6 +66,33 @@ def plan_with(*participants: ParticipantPlan) -> CoordinationPlan:
 
 
 class ModelTests(unittest.TestCase):
+    def test_decimal_cost_utilities_enforce_exact_bounds(self) -> None:
+        from sharednet.coordination.costs import fits_cost_budget, remaining_cost, sum_costs, to_decimal
+
+        self.assertEqual(to_decimal(1e-13), Decimal("1E-13"))
+        self.assertEqual(sum_costs((0.6, 0.4)), Decimal("1.0"))
+        self.assertTrue(fits_cost_budget(0.6, 0.4, 1.0))
+        self.assertFalse(fits_cost_budget(1.0, 0.0000000000005, 1.0))
+        self.assertEqual(remaining_cost(1.0, 0.4), Decimal("0.6"))
+
+    def test_budget_from_dict_rejects_unknown_fields(self) -> None:
+        for unknown_field in ("max_turn", "max_costt"):
+            with self.subTest(unknown_field=unknown_field):
+                with self.assertRaisesRegex(ValueError, rf"budget\.unknown field: {unknown_field}"):
+                    CoordinationBudget.from_dict({unknown_field: 1})
+
+    def test_request_rejects_multiple_admitted_self_candidates(self) -> None:
+        with self.assertRaisesRegex(ValueError, "multiple admitted SELF candidates"):
+            request_with((candidate("self-a"), candidate("self-b")))
+
+    def test_participant_plan_serializes_candidate_mode_with_compatible_default(self) -> None:
+        participant = ParticipantPlan("helper", "worker", "work", (), "selected")
+
+        self.assertEqual(participant.to_dict().get("mode"), "recruit")
+        explicit = replace(participant, mode=CandidateMode.SPAWN)
+        self.assertEqual(explicit.mode, CandidateMode.SPAWN)
+        self.assertEqual(explicit.to_dict()["mode"], "spawn")
+
     def test_request_rejects_duplicate_candidate_ids(self) -> None:
         with self.assertRaisesRegex(ValueError, "duplicate candidate id"):
             CoordinationRequest(
@@ -121,6 +149,7 @@ class ModelTests(unittest.TestCase):
             with self.subTest(invalid_cost=invalid_cost):
                 with self.assertRaisesRegex(ValueError, "max_cost must be (positive|finite)"):
                     CoordinationBudget(max_cost=invalid_cost)
+        self.assertEqual(CoordinationBudget(max_cost=1e-13).max_cost, 1e-13)
 
     def test_plan_exposes_exact_selected_predicted_cost(self) -> None:
         plan = plan_with(
@@ -139,6 +168,24 @@ class ModelTests(unittest.TestCase):
                     ParticipantPlan("self", "root", "work", (), "best", (), 0.6),
                     ParticipantPlan("helper", "worker", "work", ("self",), "coverage", (), 0.5),
                 ),
+                (), (), {}, CoordinationBudget(max_cost=1.0),
+            )
+
+    def test_plan_uses_strict_decimal_cost_comparison(self) -> None:
+        exact = CoordinationPlan(
+            "rac-rge", "task-1", "trace-1", 0, frozenset(),
+            (
+                ParticipantPlan("self", "root", "work", (), "best", (), 0.6),
+                ParticipantPlan("helper", "worker", "work", ("self",), "coverage", (), 0.4),
+            ),
+            (), (), {}, CoordinationBudget(max_cost=1.0),
+        )
+        self.assertEqual(exact.total_predicted_cost, 1.0)
+
+        with self.assertRaisesRegex(ValueError, "maximum predicted cost exceeded"):
+            CoordinationPlan(
+                "rac-rge", "task-1", "trace-1", 0, frozenset(),
+                (ParticipantPlan("self", "root", "work", (), "best", (), 1.0000000000005),),
                 (), (), {}, CoordinationBudget(max_cost=1.0),
             )
 

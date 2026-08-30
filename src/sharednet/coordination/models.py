@@ -9,6 +9,8 @@ import math
 from types import MappingProxyType
 from typing import Any, Mapping
 
+from .costs import fits_cost_budget, sum_costs, to_decimal
+
 
 JsonValue = None | bool | int | float | str | tuple["JsonValue", ...] | Mapping[str, "JsonValue"]
 
@@ -160,7 +162,14 @@ class CoordinationBudget:
 
     def __post_init__(self) -> None:
         _positive_number(self.max_wall_seconds, "max_wall_seconds")
-        _positive_number(self.max_cost, "max_cost")
+        if isinstance(self.max_cost, bool) or not isinstance(self.max_cost, (int, float)):
+            raise ValueError("max_cost must be positive")
+        try:
+            decimal_cost = to_decimal(self.max_cost)
+        except ValueError as error:
+            raise ValueError("max_cost must be finite") from error
+        if decimal_cost <= 0:
+            raise ValueError("max_cost must be positive")
         for name in ("max_turns", "max_depth", "max_participants", "max_retries", "max_disclosure_bytes"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
@@ -169,6 +178,9 @@ class CoordinationBudget:
     @classmethod
     def from_dict(cls, payload: Mapping[str, object]) -> "CoordinationBudget":
         data = _mapping(payload, "budget")
+        unknown = sorted(set(data) - set(cls.__dataclass_fields__))
+        if unknown:
+            raise ValueError(f"budget.unknown field: {unknown[0]}")
         known = {field_name: data[field_name] for field_name in cls.__dataclass_fields__ if field_name in data}
         try:
             return cls(**known)
@@ -292,6 +304,9 @@ class CoordinationRequest:
         identifiers = [candidate.candidate_id for candidate in candidates]
         if len(identifiers) != len(set(identifiers)):
             raise ValueError("duplicate candidate id")
+        admitted_self = [candidate for candidate in candidates if candidate.admitted and candidate.mode is CandidateMode.SELF]
+        if len(admitted_self) > 1:
+            raise ValueError("multiple admitted SELF candidates")
         object.__setattr__(self, "candidates", candidates)
         object.__setattr__(self, "mechanism", _nonempty_string(self.mechanism, "mechanism"))
         object.__setattr__(self, "trace_id", _nonempty_string(self.trace_id, "trace_id"))
@@ -332,6 +347,7 @@ class ParticipantPlan:
     selection_reason: str
     capabilities: tuple[str, ...] = ()
     predicted_cost: float = 0
+    mode: CandidateMode = CandidateMode.RECRUIT
 
     def __post_init__(self) -> None:
         for name in ("candidate_id", "role", "assignment", "selection_reason"):
@@ -339,10 +355,17 @@ class ParticipantPlan:
         object.__setattr__(self, "dependencies", _string_tuple(self.dependencies, "dependencies", allow_empty=True))
         object.__setattr__(self, "capabilities", _string_tuple(self.capabilities, "capabilities", allow_empty=True))
         _nonnegative_number(self.predicted_cost, "predicted_cost")
+        to_decimal(self.predicted_cost)
+        if not isinstance(self.mode, CandidateMode):
+            try:
+                object.__setattr__(self, "mode", CandidateMode(self.mode))
+            except (TypeError, ValueError) as error:
+                raise ValueError("mode must be a candidate mode") from error
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "candidate_id": self.candidate_id,
+            "mode": self.mode.value,
             "role": self.role,
             "assignment": self.assignment,
             "dependencies": list(self.dependencies),
@@ -404,9 +427,7 @@ class CoordinationPlan:
             raise ValueError("duplicate participant id")
         if len(participants) > self.budget.max_participants:
             raise ValueError("maximum participant count exceeded")
-        if math.fsum(item.predicted_cost for item in participants) > self.budget.max_cost and not math.isclose(
-            math.fsum(item.predicted_cost for item in participants), self.budget.max_cost, rel_tol=0.0, abs_tol=1e-12
-        ):
+        if not fits_cost_budget(0, sum_costs(item.predicted_cost for item in participants), self.budget.max_cost):
             raise ValueError("maximum predicted cost exceeded")
         known = set(identifiers)
         for participant in participants:
@@ -458,7 +479,7 @@ class CoordinationPlan:
 
     @property
     def total_predicted_cost(self) -> float:
-        return math.fsum(item.predicted_cost for item in self.participants)
+        return float(sum_costs(item.predicted_cost for item in self.participants))
 
     @property
     def stop_reason(self) -> str | None:

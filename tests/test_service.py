@@ -24,6 +24,18 @@ def adaptive_request(*, max_retries: int = 1) -> CoordinationRequest:
     return replace(request, budget=replace(request.budget, max_retries=max_retries))
 
 
+def adaptive_request_with_costs(first_cost: float, retry_cost: float, *, max_retries: int = 1) -> CoordinationRequest:
+    request = adaptive_request(max_retries=max_retries)
+    candidates = tuple(
+        replace(
+            candidate,
+            predicted_cost=first_cost if candidate.candidate_id == "self" else retry_cost if candidate.candidate_id == "architect" else candidate.predicted_cost,
+        )
+        for candidate in request.candidates
+    )
+    return replace(request, candidates=candidates)
+
+
 def discovery_cost_replan_request() -> CoordinationRequest:
     return CoordinationRequest(
         TaskSpec("discovery-cost-replan", "Use accountable specialist output.", ("analysis",), (), {}),
@@ -90,10 +102,9 @@ class ManualClock:
 
 
 class CountingBackend:
-    mechanism_id = "counting"
-
     def __init__(self, delegate) -> None:
         self.delegate = delegate
+        self.mechanism_id = delegate.mechanism_id
         self.plan_calls = 0
         self.exclusions = []
 
@@ -131,23 +142,188 @@ class CostAwareRetryBackend:
             return CoordinationPlan(
                 self.mechanism_id, request.task.task_id, request.trace_id, 0, excluded,
                 (), (), ({"event": "planning_stopped", "reason": "cost_budget_exhausted"},),
-                {"reason": "cost_budget_exhausted"}, request.budget, TerminalStatus.ABSTAINED,
+                {"reason": "cost_budget_exhausted", "task": request.task.to_dict()}, request.budget, TerminalStatus.ABSTAINED,
             )
         participant_id = "self" if self.calls == 1 else "architect"
+        candidate = next(candidate for candidate in request.candidates if candidate.candidate_id == participant_id)
         return CoordinationPlan(
             self.mechanism_id, request.task.task_id, request.trace_id, 0, excluded,
-            (ParticipantPlan(participant_id, "root", "work", (), "selected", (), cost),),
-            (), ({"event": "planning_stopped", "reason": "coverage_complete"},), {}, request.budget,
+            (ParticipantPlan(participant_id, "root", "work", (), "selected", candidate.capabilities, cost, candidate.mode),),
+            (), ({"event": "planning_stopped", "reason": "coverage_complete"},), {"task": request.task.to_dict()}, request.budget,
         )
 
 
+class MutatingBackend:
+    """Return a structurally valid plan with one authority field forged."""
+
+    mechanism_id = "rac-adaptive"
+
+    def __init__(self, mutate) -> None:
+        from sharednet.coordination.backends.rac_adaptive import RacAdaptiveBackend
+
+        self.delegate = RacAdaptiveBackend()
+        self.mutate = mutate
+
+    def plan(self, request, *, excluded=frozenset()):
+        return self.mutate(self.delegate.plan(request, excluded=excluded), request, excluded)
+
+
 class ServiceTests(unittest.TestCase):
+    def test_execute_accepts_a_valid_tiny_cost_budget(self) -> None:
+        from sharednet.coordination.service import CoordinationService
+
+        request = CoordinationRequest(
+            TaskSpec("tiny-cost", "Analyze", ("analysis",), (), {}),
+            (Candidate("self", CandidateMode.SELF, ("analysis",), True, "trusted", 0.8, 1e-13, 0.1, 0.1),),
+            CoordinationBudget(max_cost=1e-13),
+            "rac-adaptive",
+            "trace-tiny-cost",
+        )
+        runtime = ScriptedRuntime([accepted_result])
+
+        result = CoordinationService().execute(request, runtime)
+
+        self.assertEqual(result.status, TerminalStatus.ACCEPTED)
+        self.assertEqual(runtime.calls, 1)
+
+    def test_service_rejects_authority_forgery_before_runtime(self) -> None:
+        import sharednet.coordination.service as service_module
+
+        validation_error = getattr(service_module, "PlanValidationError", None)
+        self.assertIsNotNone(validation_error, "service must expose a typed plan validation failure")
+        request = four_agent_request(mechanism="rac-adaptive", include_denied_superstar=True)
+        candidate_by_id = {candidate.candidate_id: candidate for candidate in request.candidates}
+
+        def forged_participant(candidate_id: str, *, cost: float | None = None, mode: CandidateMode | None = None, capabilities: tuple[str, ...] | None = None):
+            candidate = candidate_by_id[candidate_id]
+            return ParticipantPlan(
+                candidate.candidate_id,
+                "worker",
+                "forged work",
+                (),
+                "forged",
+                candidate.capabilities if capabilities is None else capabilities,
+                candidate.predicted_cost if cost is None else cost,
+                candidate.mode if mode is None else mode,
+            )
+
+        mutations = {
+            "unknown_participant": (
+                lambda plan, req, exc: replace(
+                    plan,
+                    participants=(ParticipantPlan("fabricated", "worker", "work", (), "forged", ("research",), 0.1, CandidateMode.RECRUIT),),
+                    edges=(),
+                ),
+                "unknown_participant:fabricated",
+            ),
+            "denied_participant": (
+                lambda plan, req, exc: replace(plan, participants=(forged_participant("denied-superstar"),), edges=()),
+                "participant_not_admitted:denied-superstar",
+            ),
+            "underreported_cost": (
+                lambda plan, req, exc: replace(plan, participants=(forged_participant("architect", cost=0.01),), edges=()),
+                "participant_cost_mismatch:architect",
+            ),
+            "mode_mismatch": (
+                lambda plan, req, exc: replace(plan, participants=(forged_participant("self", mode=CandidateMode.RECRUIT),), edges=()),
+                "participant_mode_mismatch:self",
+            ),
+            "capability_mismatch": (
+                lambda plan, req, exc: replace(plan, participants=(forged_participant("architect", capabilities=("research",)),), edges=()),
+                "participant_capabilities_mismatch:architect",
+            ),
+            "task_identity": (
+                lambda plan, req, exc: replace(plan, task_id="forged-task"),
+                "task_id_mismatch",
+            ),
+            "trace_identity": (
+                lambda plan, req, exc: replace(plan, trace_id="forged-trace"),
+                "trace_id_mismatch",
+            ),
+            "mechanism_identity": (
+                lambda plan, req, exc: replace(plan, mechanism_id="forged-mechanism"),
+                "mechanism_id_mismatch",
+            ),
+            "exclusions": (
+                lambda plan, req, exc: replace(plan, exclusions=frozenset({"architect"})),
+                "exclusions_mismatch",
+            ),
+            "budget": (
+                lambda plan, req, exc: replace(plan, budget=replace(plan.budget, max_participants=plan.budget.max_participants + 1)),
+                "budget_mismatch",
+            ),
+            "task_payload": (
+                lambda plan, req, exc: replace(plan, runtime_instructions={**plan.to_dict()["runtime_instructions"], "task": {"task_id": "forged"}}),
+                "task_payload_mismatch",
+            ),
+        }
+
+        original_get_backend = service_module.get_backend
+        try:
+            for name, (mutate, expected_reason) in mutations.items():
+                with self.subTest(name=name):
+                    runtime = ScriptedRuntime([accepted_result])
+                    service_module.get_backend = lambda mechanism, mutate=mutate: MutatingBackend(mutate)
+                    with self.assertRaises(validation_error) as raised:
+                        service_module.CoordinationService().execute(request, runtime)
+                    self.assertEqual(raised.exception.reason, expected_reason)
+                    self.assertEqual(runtime.calls, 0)
+        finally:
+            service_module.get_backend = original_get_backend
+
+    def test_post_attempt_adaptive_abstention_preserves_completed_evidence(self) -> None:
+        from sharednet.coordination.service import CoordinationService
+
+        base = linear_request()
+        request = replace(
+            base,
+            candidates=(base.candidates[0],),
+            budget=replace(base.budget, max_retries=1),
+        )
+        runtime = ScriptedRuntime([
+            lambda plan: failed_result(plan, ("self",), usage={"tokens": 7}, error="raw_failure"),
+        ])
+
+        result = CoordinationService().execute(request, runtime)
+
+        self.assertEqual(result.status, TerminalStatus.EXHAUSTED)
+        self.assertEqual(result.error, "replan_no_eligible_candidates")
+        self.assertEqual(result.plan, runtime.plans[0])
+        self.assertEqual(result.synthesis, "partial synthesis")
+        self.assertEqual(result.failed_participant_ids, ("self",))
+        self.assertEqual(result.usage, {"tokens": 7, "planned_turns": 1})
+        self.assertEqual(result.runtime_evidence["source"], "scripted")
+        terminal_replan = result.runtime_evidence["terminal_replan"]
+        self.assertEqual(terminal_replan["reason"], "no_eligible_candidates")
+        self.assertEqual(terminal_replan["plan"]["terminal_status"], "abstained")
+        self.assertEqual(len(result.attempts), 1)
+
+    def test_post_attempt_discovery_requester_exclusion_preserves_completed_evidence(self) -> None:
+        from sharednet.coordination.service import CoordinationService
+
+        request = replace(discovery_cost_replan_request(), budget=replace(discovery_cost_replan_request().budget, max_cost=1.0))
+        runtime = ScriptedRuntime([
+            lambda plan: failed_result(plan, ("self",), usage={"tokens": 5}, error="requester_failed"),
+        ])
+
+        result = CoordinationService().execute(request, runtime)
+
+        self.assertEqual(result.status, TerminalStatus.EXHAUSTED)
+        self.assertEqual(result.error, "replan_requester_excluded")
+        self.assertEqual(result.plan, runtime.plans[0])
+        self.assertEqual(result.failed_participant_ids, ("self",))
+        self.assertEqual(result.runtime_evidence["source"], "scripted")
+        self.assertEqual(result.runtime_evidence["terminal_replan"]["reason"], "requester_excluded")
+        self.assertEqual(result.runtime_evidence["terminal_replan"]["plan"]["exclusions"], ("self",))
+        self.assertEqual(result.usage, {"tokens": 5, "planned_turns": 2})
+        self.assertEqual(len(result.attempts), 1)
+
     def test_execute_reserves_failed_attempt_predicted_cost_before_exact_bound_retry(self) -> None:
         import sharednet.coordination.service as service_module
         from sharednet.coordination.service import CoordinationService
 
         backend = CostAwareRetryBackend((0.4, 0.6))
-        request = replace(adaptive_request(max_retries=1), budget=replace(adaptive_request().budget, max_cost=1.0, max_retries=1))
+        request = adaptive_request_with_costs(0.4, 0.6)
         runtime = ScriptedRuntime([lambda plan: failed_result(plan, ("self",)), accepted_result])
         original_get_backend = service_module.get_backend
         service_module.get_backend = lambda mechanism: backend
@@ -165,7 +341,7 @@ class ServiceTests(unittest.TestCase):
         from sharednet.coordination.service import CoordinationService
 
         backend = CostAwareRetryBackend((0.7, 0.4))
-        request = replace(adaptive_request(max_retries=1), budget=replace(adaptive_request().budget, max_cost=1.0, max_retries=1))
+        request = adaptive_request_with_costs(0.7, 0.4)
         runtime = ScriptedRuntime([lambda plan: failed_result(plan, ("self",)), accepted_result])
         original_get_backend = service_module.get_backend
         service_module.get_backend = lambda mechanism: backend
@@ -193,7 +369,9 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(result.status, TerminalStatus.EXHAUSTED)
         self.assertEqual(result.error, "cost_budget_exhausted")
         self.assertEqual(result.plan, runtime.plans[0])
-        self.assertEqual(result.runtime_evidence, {"source": "scripted", "attempt": 0})
+        self.assertEqual(result.runtime_evidence["source"], "scripted")
+        self.assertEqual(result.runtime_evidence["attempt"], 0)
+        self.assertEqual(result.runtime_evidence["terminal_replan"]["reason"], "cost_budget_exhausted")
         self.assertEqual(result.usage, {"tokens": 7, "planned_turns": 2})
         self.assertEqual(len(result.attempts), 1)
 
@@ -202,7 +380,7 @@ class ServiceTests(unittest.TestCase):
         from sharednet.coordination.service import CoordinationService
 
         backend = CostAwareRetryBackend((1.0,))
-        request = replace(adaptive_request(max_retries=1), budget=replace(adaptive_request().budget, max_cost=1.0, max_retries=1))
+        request = adaptive_request_with_costs(1.0, 0.1)
         runtime = ScriptedRuntime([lambda plan: failed_result(plan, ("self",))])
         original_get_backend = service_module.get_backend
         service_module.get_backend = lambda mechanism: backend
