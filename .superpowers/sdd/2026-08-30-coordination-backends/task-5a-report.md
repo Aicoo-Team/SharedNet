@@ -86,3 +86,26 @@ contained the full incident payload; compile and diff checks exited 0.
 - The task was not duplicated as a `CoordinationPlan` top-level field.
 - The byte cap measures the specified task payload, not prompt or protocol
   overhead, and applies before planning/runtime execution.
+
+## Fix round 1: accurate shared instruction type
+
+Implementation commit: `d688d760d9247141d5813717fd9f2e5e7f1b5ae1`
+(`fix: type shared plan instructions accurately`).
+
+`make_plan` now accepts `Mapping[str, JsonValue]`, matching the immutable,
+JSON-safe runtime-instruction contract and the task mapping it installs. This
+is annotation-only: no behavior changed. The existing collision regression is
+the focused behavioral coverage for that boundary; a runtime assertion of the
+annotation itself would only be a brittle source-text check.
+
+Verification:
+
+```sh
+PYTHONPATH=src python3 -m unittest tests.test_task_payload tests.test_cli -v
+PYTHONPATH=src python3 -m unittest discover -s tests -v
+PYTHONDONTWRITEBYTECODE=1 python3 -m compileall -q src tests
+git diff --check
+```
+
+Observed: focused Task 5A + CLI tests ran 8 tests with `OK`; the offline suite
+ran 85 tests with `OK`; compile and diff checks exited 0.
