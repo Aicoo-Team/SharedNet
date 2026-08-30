@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import math
 import time
 from typing import Callable, Mapping
 
@@ -26,6 +27,7 @@ class CoordinationService:
             attempt=0,
             remaining_wall_seconds=request.budget.max_wall_seconds,
             remaining_turns=request.budget.max_turns,
+            remaining_cost=request.budget.max_cost,
         )
 
     def execute(self, request: CoordinationRequest, runtime: CoordinationRuntime) -> CoordinationResult:
@@ -39,8 +41,17 @@ class CoordinationService:
         remaining_turns = request.budget.max_turns
         deadline = self._clock() + request.budget.max_wall_seconds
         remaining_wall_seconds = request.budget.max_wall_seconds
+        remaining_cost = request.budget.max_cost
 
         for attempt in range(request.budget.max_retries + 1):
+            if math.isclose(remaining_cost, 0.0, rel_tol=0.0, abs_tol=1e-12):
+                if last_completed is not None:
+                    return replace(
+                        last_completed,
+                        status=TerminalStatus.EXHAUSTED,
+                        error="cost_budget_exhausted",
+                    )
+                raise RuntimeError("initial coordination cost budget must be positive")
             plan = self._plan(
                 backend,
                 request,
@@ -48,6 +59,7 @@ class CoordinationService:
                 attempt,
                 remaining_wall_seconds=remaining_wall_seconds,
                 remaining_turns=remaining_turns,
+                remaining_cost=remaining_cost,
             )
             execution_wall_seconds = deadline - self._clock()
             if execution_wall_seconds <= 0:
@@ -91,6 +103,9 @@ class CoordinationService:
             last_completed = completed
             remaining_turns -= planned_turns
             remaining_wall_seconds = deadline - self._clock()
+            remaining_cost = math.fsum((remaining_cost, -plan.total_predicted_cost))
+            if math.isclose(remaining_cost, 0.0, rel_tol=0.0, abs_tol=1e-12):
+                remaining_cost = 0.0
 
             if remaining_wall_seconds <= 0:
                 return replace(
@@ -107,6 +122,12 @@ class CoordinationService:
             )
             if not attributable_failures:
                 return completed
+            if remaining_cost == 0:
+                return replace(
+                    completed,
+                    status=TerminalStatus.EXHAUSTED,
+                    error="cost_budget_exhausted",
+                )
             if attempt == request.budget.max_retries:
                 return replace(
                     completed,
@@ -132,12 +153,14 @@ class CoordinationService:
         *,
         remaining_wall_seconds: float,
         remaining_turns: int,
+        remaining_cost: float,
     ) -> CoordinationPlan:
         effective_budget = replace(
             request.budget,
             max_wall_seconds=remaining_wall_seconds,
             max_turns=remaining_turns,
             max_participants=min(request.budget.max_participants, remaining_turns),
+            max_cost=remaining_cost,
         )
         effective_request = replace(request, budget=effective_budget)
         return replace(backend.plan(effective_request, excluded=excluded), attempt=attempt)

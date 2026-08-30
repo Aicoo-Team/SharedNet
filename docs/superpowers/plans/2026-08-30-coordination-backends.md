@@ -16,7 +16,7 @@
 - Canonical mechanisms are ordered `discovery-and-use`, `rac-rge`, `rac-adaptive`, `peer-forum`; `rac-adpt` is an alias only.
 - Admission happens before scoring and experience never admits a candidate.
 - Candidate modes are exactly `SELF`, `RECRUIT`, and `SPAWN`.
-- Every run enforces wall-time, turn, depth, retry, participant, and disclosure limits.
+- Every run enforces wall-time, turn, depth, retry, participant, disclosure, and provider-neutral predicted-cost limits. Each runtime invocation conservatively reserves its plan's total predicted cost, even after an attributable failed attempt; replans receive only the request-wide remainder.
 - Runtime execution defaults to `read-only`, `approval=never`, `ephemeral`, and no user config.
 - Offline tests make no provider calls. The live test is gated by `RUN_CODEX_E2E=1`.
 - Borrowed RAC logic retains the upstream MIT notice and source provenance.
@@ -271,7 +271,7 @@ Expected: import failure for `sharednet.coordination.service`.
 
 - [ ] **Step 3: Implement bounded service loop**
 
-The service resolves the requested backend once, plans with an immutable `excluded` set, executes at most `max_retries + 1` attempts, aggregates usage numerically, records one `AttemptSummary` per call, and excludes only IDs the runtime attributes as failed. A non-accepted result without attributable failures returns immediately; it is not retried blindly. Exhaustion returns the last evidence with `status=EXHAUSTED` and `error="retry_budget_exhausted"`.
+The service resolves the requested backend once, plans with an immutable `excluded` set, executes at most `max_retries + 1` attempts, aggregates usage numerically, records one `AttemptSummary` per call, and excludes only IDs the runtime attributes as failed. Every runtime call conservatively reserves that plan's `total_predicted_cost`; retries receive the remaining request-wide `max_cost`, and no remaining cost returns `status=EXHAUSTED` with `error="cost_budget_exhausted"`. A non-accepted result without attributable failures returns immediately; it is not retried blindly. Other retry exhaustion returns the last evidence with `status=EXHAUSTED` and `error="retry_budget_exhausted"`.
 
 - [ ] **Step 4: Run service tests and verify GREEN**
 

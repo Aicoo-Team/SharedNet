@@ -55,24 +55,59 @@ class BackendTests(unittest.TestCase):
             plan.decision_trace,
         )
 
-    def test_discovery_omits_requester_when_specialist_alone_fits_cost_budget(self) -> None:
+    def test_discovery_chooses_lower_ranked_specialist_that_fits_required_requester(self) -> None:
         request = self._request(
             "discovery-and-use",
             (
-                self._candidate("self", ("accountability",), 0.5, 0.4, CandidateMode.SELF),
-                self._candidate("specialist", ("analysis",), 0.8, 0.7),
+                self._candidate("self", ("accountability",), 0.5, 0.3, CandidateMode.SELF),
+                self._candidate("unaffordable-best", ("analysis",), 1.0, 0.8),
+                self._candidate("affordable-second", ("analysis",), 0.8, 0.6),
             ),
             ("analysis",),
-            max_cost=1.0,
+            max_cost=0.9,
         )
 
         plan = DiscoveryAndUseBackend().plan(request)
 
-        self.assertEqual(plan.participant_ids, ("specialist",))
+        self.assertEqual(plan.participant_ids, ("self", "affordable-second"))
         self.assertIn(
-            {"event": "candidate_rejected", "candidate_id": "self", "reason": "cumulative_cost_exceeds_budget"},
+            {"event": "candidate_rejected", "candidate_id": "unaffordable-best", "reason": "cumulative_cost_exceeds_budget"},
             plan.decision_trace,
         )
+
+    def test_discovery_abstains_when_no_specialist_fits_required_requester(self) -> None:
+        request = self._request(
+            "discovery-and-use",
+            (
+                self._candidate("self", ("accountability",), 0.5, 0.3, CandidateMode.SELF),
+                self._candidate("specialist", ("analysis",), 0.8, 0.7),
+            ),
+            ("analysis",),
+            max_cost=0.9,
+        )
+
+        plan = DiscoveryAndUseBackend().plan(request)
+
+        self.assertEqual(plan.terminal_status, TerminalStatus.ABSTAINED)
+        self.assertEqual(plan.stop_reason, "cost_budget_exhausted")
+        self.assertEqual(plan.participants, ())
+
+    def test_discovery_abstains_when_participant_limit_cannot_preserve_requester(self) -> None:
+        request = self._request(
+            "discovery-and-use",
+            (
+                self._candidate("self", ("accountability",), 0.5, 0.1, CandidateMode.SELF),
+                self._candidate("specialist", ("analysis",), 0.8, 0.1),
+            ),
+            ("analysis",),
+            max_cost=1.0,
+            max_participants=1,
+        )
+
+        plan = DiscoveryAndUseBackend().plan(request)
+
+        self.assertEqual(plan.terminal_status, TerminalStatus.ABSTAINED)
+        self.assertEqual(plan.stop_reason, "participant_limit_reached")
 
     def test_every_planner_stops_at_cumulative_cost_budget(self) -> None:
         candidates = (
@@ -100,6 +135,25 @@ class BackendTests(unittest.TestCase):
             with self.subTest(mechanism=mechanism):
                 plan = backend.plan(self._request(mechanism, candidates, ("a", "b"), max_cost=1.0, max_participants=1))
                 self.assertEqual(plan.stop_reason, "participant_limit_reached")
+
+    def test_adaptive_reports_no_utility_before_cost_for_a_costly_unhelpful_candidate(self) -> None:
+        request = self._request(
+            "rac-adaptive",
+            (
+                self._candidate("self", ("a",), 0.9, 0.1, CandidateMode.SELF),
+                self._candidate("unhelpful-worker", ("b",), 0.1, 0.5),
+            ),
+            ("a", "b"),
+            max_cost=0.5,
+        )
+
+        plan = RacAdaptiveBackend().plan(request)
+
+        self.assertEqual(plan.stop_reason, "no_positive_marginal_utility")
+        self.assertIn(
+            {"event": "candidate_rejected", "candidate_id": "unhelpful-worker", "reason": "no_positive_marginal_utility"},
+            plan.decision_trace,
+        )
     def test_discovery_filters_denied_candidate_before_ranking(self) -> None:
         request = four_agent_request(mechanism="discovery-and-use", include_denied_superstar=True)
         plan = DiscoveryAndUseBackend().plan(request)

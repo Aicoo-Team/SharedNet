@@ -6,8 +6,10 @@ from dataclasses import replace
 import unittest
 
 from sharednet.coordination.models import (
+    CoordinationPlan,
     CoordinationRequest,
     CoordinationResult,
+    ParticipantPlan,
     TerminalStatus,
 )
 from tests.fixtures import four_agent_request, linear_request
@@ -95,7 +97,90 @@ class ReplanDeadlineBackend(CountingBackend):
         return plan
 
 
+class CostAwareRetryBackend:
+    mechanism_id = "cost-aware"
+
+    def __init__(self, costs: tuple[float, ...]) -> None:
+        self._costs = iter(costs)
+        self.budgets: list[float] = []
+        self.calls = 0
+
+    def plan(self, request, *, excluded=frozenset()):
+        cost = next(self._costs)
+        self.calls += 1
+        self.budgets.append(request.budget.max_cost)
+        if cost > request.budget.max_cost:
+            return CoordinationPlan(
+                self.mechanism_id, request.task.task_id, request.trace_id, 0, excluded,
+                (), (), ({"event": "planning_stopped", "reason": "cost_budget_exhausted"},),
+                {"reason": "cost_budget_exhausted"}, request.budget, TerminalStatus.ABSTAINED,
+            )
+        participant_id = "self" if self.calls == 1 else "architect"
+        return CoordinationPlan(
+            self.mechanism_id, request.task.task_id, request.trace_id, 0, excluded,
+            (ParticipantPlan(participant_id, "root", "work", (), "selected", (), cost),),
+            (), ({"event": "planning_stopped", "reason": "coverage_complete"},), {}, request.budget,
+        )
+
+
 class ServiceTests(unittest.TestCase):
+    def test_execute_reserves_failed_attempt_predicted_cost_before_exact_bound_retry(self) -> None:
+        import sharednet.coordination.service as service_module
+        from sharednet.coordination.service import CoordinationService
+
+        backend = CostAwareRetryBackend((0.4, 0.6))
+        request = replace(adaptive_request(max_retries=1), budget=replace(adaptive_request().budget, max_cost=1.0, max_retries=1))
+        runtime = ScriptedRuntime([lambda plan: failed_result(plan, ("self",)), accepted_result])
+        original_get_backend = service_module.get_backend
+        service_module.get_backend = lambda mechanism: backend
+        try:
+            result = CoordinationService().execute(request, runtime)
+        finally:
+            service_module.get_backend = original_get_backend
+
+        self.assertEqual(result.status, TerminalStatus.ACCEPTED)
+        self.assertEqual([plan.total_predicted_cost for plan in runtime.plans], [0.4, 0.6])
+        self.assertEqual(backend.budgets, [1.0, 0.6])
+
+    def test_execute_does_not_run_an_over_budget_retry_after_reservation(self) -> None:
+        import sharednet.coordination.service as service_module
+        from sharednet.coordination.service import CoordinationService
+
+        backend = CostAwareRetryBackend((0.7, 0.4))
+        request = replace(adaptive_request(max_retries=1), budget=replace(adaptive_request().budget, max_cost=1.0, max_retries=1))
+        runtime = ScriptedRuntime([lambda plan: failed_result(plan, ("self",)), accepted_result])
+        original_get_backend = service_module.get_backend
+        service_module.get_backend = lambda mechanism: backend
+        try:
+            result = CoordinationService().execute(request, runtime)
+        finally:
+            service_module.get_backend = original_get_backend
+
+        self.assertEqual(runtime.calls, 1)
+        self.assertEqual(backend.budgets[0], 1.0)
+        self.assertAlmostEqual(backend.budgets[1], 0.3)
+        self.assertEqual(result.status, TerminalStatus.ABSTAINED)
+        self.assertEqual(result.plan.stop_reason, "cost_budget_exhausted")
+
+    def test_execute_exhausts_when_a_failed_attempt_reserves_the_entire_cost_budget(self) -> None:
+        import sharednet.coordination.service as service_module
+        from sharednet.coordination.service import CoordinationService
+
+        backend = CostAwareRetryBackend((1.0,))
+        request = replace(adaptive_request(max_retries=1), budget=replace(adaptive_request().budget, max_cost=1.0, max_retries=1))
+        runtime = ScriptedRuntime([lambda plan: failed_result(plan, ("self",))])
+        original_get_backend = service_module.get_backend
+        service_module.get_backend = lambda mechanism: backend
+        try:
+            result = CoordinationService().execute(request, runtime)
+        finally:
+            service_module.get_backend = original_get_backend
+
+        self.assertEqual(runtime.calls, 1)
+        self.assertEqual(backend.calls, 1)
+        self.assertEqual(result.status, TerminalStatus.EXHAUSTED)
+        self.assertEqual(result.error, "cost_budget_exhausted")
+
     def test_plan_returns_the_initial_backend_plan(self) -> None:
         from sharednet.coordination.service import CoordinationService
 

@@ -35,11 +35,11 @@ class RacAdaptiveBackend:
             if not (set(candidate.capabilities) & uncovered):
                 trace.append({"event": "candidate_rejected", "candidate_id": candidate.candidate_id, "reason": "no_new_capability_coverage"})
                 continue
-            if not cost_fits_budget(selected_cost, candidate.predicted_cost, request.budget.max_cost):
-                trace.append({"event": "candidate_rejected", "candidate_id": candidate.candidate_id, "reason": "cumulative_cost_exceeds_budget"})
-                continue
             if candidate_utility(candidate, self.coordination_overhead) <= 0:
                 trace.append({"event": "candidate_rejected", "candidate_id": candidate.candidate_id, "reason": "no_positive_marginal_utility"})
+                continue
+            if not cost_fits_budget(selected_cost, candidate.predicted_cost, request.budget.max_cost):
+                trace.append({"event": "candidate_rejected", "candidate_id": candidate.candidate_id, "reason": "cumulative_cost_exceeds_budget"})
                 continue
             available_parents = [item for item in selected if participant_depth(item.candidate_id, participants) < request.budget.max_depth]
             if not available_parents:

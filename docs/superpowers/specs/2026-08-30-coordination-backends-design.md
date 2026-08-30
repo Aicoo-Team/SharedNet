@@ -49,7 +49,7 @@ The runtime boundary is deliberately separate:
 def execute(self, plan: CoordinationPlan) -> CoordinationResult: ...
 ```
 
-This lets tests use a deterministic fake, while the local live path uses `CodexRuntime`. Backends decide organization; the runtime only executes the already bounded plan. When a runtime returns attributable failed participant IDs, the service asks the same backend for a new plan with those IDs excluded. Each replan uses the original immutable Candidate Snapshot, consumes one explicit retry, and never admits a new candidate.
+This lets tests use a deterministic fake, while the local live path uses `CodexRuntime`. Backends decide organization; the runtime only executes the already bounded plan. When a runtime returns attributable failed participant IDs, the service asks the same backend for a new plan with those IDs excluded. Each executed attempt conservatively reserves its entire planned predicted cost, including failed attempts; each replan receives only the request-wide remaining `max_cost`. If no cost remains, execution returns `cost_budget_exhausted` without replanning. Each replan uses the original immutable Candidate Snapshot, consumes one explicit retry, and never admits a new candidate.
 
 ## Data contracts
 
@@ -81,7 +81,7 @@ peer-forum
 
 ### discovery-and-use
 
-Filter admitted, individually affordable candidates with full required-capability coverage, then rank by capability coverage multiplied by verification-backed trust, minus normalized cost, latency, and risk. Select the best candidate deterministically and add `SELF` only when it also fits the cumulative ceiling; otherwise keep the specialist alone and trace the cost rejection. This is the smallest specialist-use path and abstains explicitly when no candidate qualifies.
+Filter admitted, individually affordable candidates with full required-capability coverage, then rank by capability coverage multiplied by verification-backed trust, minus normalized cost, latency, and risk. When an admitted requester `SELF` is present, preserve its accountability: select the highest-ranked specialist whose cost plus `SELF` fits the cumulative ceiling. If none fits, abstain with `cost_budget_exhausted`; if the participant limit cannot hold the accountable pair, abstain with `participant_limit_reached`; do not silently drop `SELF`. A self-specialist can still execute alone. This is the smallest specialist-use path and abstains explicitly when no candidate qualifies.
 
 ### rac-rge
 
