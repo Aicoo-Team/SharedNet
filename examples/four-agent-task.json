@@ -1,0 +1,85 @@
+{
+  "task": {
+    "task_id": "incident-remediation-brief",
+    "goal": "Produce a prioritized remediation brief for the four supplied incident records.",
+    "required_capabilities": ["synthesis", "research", "architecture", "risk"],
+    "acceptance_criteria": [
+      "Cite all four incident records.",
+      "Prioritize remediations by customer impact and operational risk.",
+      "Identify an owner and rationale for each proposed remediation.",
+      "Separate evidence from assumptions."
+    ],
+    "input_data": {
+      "incidents": [
+        {"id": "INC-101", "summary": "Checkout requests intermittently exceeded the latency objective after a cache rollout.", "impact": "Payment retries increased for 18 minutes."},
+        {"id": "INC-102", "summary": "A deployment queue stalled while a schema migration held a shared lock.", "impact": "Three customer fixes were delayed."},
+        {"id": "INC-103", "summary": "An alert threshold suppressed a sustained increase in authorization failures.", "impact": "On-call triage started 27 minutes late."},
+        {"id": "INC-104", "summary": "A rollback left a feature flag enabled for a partner-only workflow.", "impact": "Two partners saw incomplete status updates."}
+      ]
+    }
+  },
+  "candidates": [
+    {
+      "candidate_id": "self",
+      "mode": "self",
+      "capabilities": ["synthesis"],
+      "admitted": true,
+      "admission_reason": "requester is accountable for the final brief",
+      "predicted_quality": 0.9,
+      "predicted_cost": 0.05,
+      "predicted_latency": 0.05,
+      "predicted_risk": 0.05,
+      "verified_successes": 4,
+      "verified_failures": 0
+    },
+    {
+      "candidate_id": "research-agent",
+      "mode": "recruit",
+      "capabilities": ["research"],
+      "admitted": true,
+      "admission_reason": "approved incident evidence analyst",
+      "predicted_quality": 0.8,
+      "predicted_cost": 0.1,
+      "predicted_latency": 0.1,
+      "predicted_risk": 0.1,
+      "verified_successes": 3,
+      "verified_failures": 0
+    },
+    {
+      "candidate_id": "architecture-agent",
+      "mode": "recruit",
+      "capabilities": ["architecture"],
+      "admitted": true,
+      "admission_reason": "approved systems-design reviewer",
+      "predicted_quality": 0.7,
+      "predicted_cost": 0.1,
+      "predicted_latency": 0.1,
+      "predicted_risk": 0.1,
+      "verified_successes": 2,
+      "verified_failures": 0
+    },
+    {
+      "candidate_id": "risk-agent",
+      "mode": "recruit",
+      "capabilities": ["risk"],
+      "admitted": true,
+      "admission_reason": "approved operational-risk reviewer",
+      "predicted_quality": 0.6,
+      "predicted_cost": 0.1,
+      "predicted_latency": 0.1,
+      "predicted_risk": 0.1,
+      "verified_successes": 1,
+      "verified_failures": 0
+    }
+  ],
+  "budget": {
+    "max_wall_seconds": 300,
+    "max_turns": 16,
+    "max_depth": 2,
+    "max_participants": 4,
+    "max_retries": 1,
+    "max_disclosure_bytes": 65536
+  },
+  "mechanism": "rac-rge",
+  "trace_id": "incident-remediation-brief-001"
+}

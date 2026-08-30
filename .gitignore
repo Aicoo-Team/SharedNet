@@ -1,1 +1,6 @@
 .worktrees/
+.codex-live-artifacts/
+__pycache__/
+*.pyc
+.coverage
+*.egg-info/
