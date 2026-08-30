@@ -17,6 +17,7 @@ import zipfile
 
 class PackagingTests(unittest.TestCase):
     def test_sdist_wheel_and_installed_cli_preserve_provenance(self) -> None:
+        self._require_supported_build_backend()
         checkout = Path(__file__).resolve().parents[1]
         generated_checkout_paths = (checkout / "build", checkout / "src" / "sharednet.egg-info")
         self.assertFalse(any(path.exists() for path in generated_checkout_paths))
@@ -74,6 +75,12 @@ class PackagingTests(unittest.TestCase):
             self._assert_wheel_provenance(checkout, wheels[0])
 
             venv_dir = workspace / "venv"
+            probe_cwd = workspace / "empty-probe-cwd"
+            probe_cwd.mkdir()
+            isolated_env = os.environ.copy()
+            isolated_env.pop("PYTHONPATH", None)
+            isolated_env.pop("PYTHONHOME", None)
+            isolated_env["PYTHONNOUSERSITE"] = "1"
             subprocess.run(
                 [sys.executable, "-m", "venv", str(venv_dir)],
                 check=True,
@@ -92,13 +99,32 @@ class PackagingTests(unittest.TestCase):
                     "--disable-pip-version-check",
                     str(wheels[0]),
                 ],
+                cwd=probe_cwd,
+                env=isolated_env,
                 check=True,
                 capture_output=True,
                 text=True,
             )
+            imported = subprocess.run(
+                [
+                    str(venv_python),
+                    "-c",
+                    "from pathlib import Path; import sharednet; print(Path(sharednet.__file__).resolve())",
+                ],
+                cwd=probe_cwd,
+                env=isolated_env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            imported_path = Path(imported.stdout.strip())
+            self.assertTrue(imported_path.is_relative_to(venv_dir.resolve()))
+            self.assertFalse(imported_path.is_relative_to(checkout.resolve()))
             sharednet_cli = venv_dir / ("Scripts/sharednet.exe" if os.name == "nt" else "bin/sharednet")
             result = subprocess.run(
                 [str(sharednet_cli), "coord", "list"],
+                cwd=probe_cwd,
+                env=isolated_env,
                 check=True,
                 capture_output=True,
                 text=True,
@@ -111,6 +137,23 @@ class PackagingTests(unittest.TestCase):
             self.assertEqual(listing["aliases"], {"rac-adpt": "rac-adaptive"})
 
         self.assertFalse(any(path.exists() for path in generated_checkout_paths))
+
+    def _require_supported_build_backend(self) -> None:
+        requirement = "setuptools>=77.0.0"
+        install_hint = "install the declared test extra with: python -m pip install -e '.[test]'"
+        try:
+            import setuptools
+        except ImportError as error:
+            self.skipTest(
+                f"packaging verification requires {requirement}; setuptools could not be imported ({error}); {install_hint}"
+            )
+        from setuptools._vendor.packaging.version import Version
+
+        if Version(setuptools.__version__) < Version("77.0.0"):
+            self.skipTest(
+                f"packaging verification requires {requirement}; "
+                f"current setuptools is {setuptools.__version__}; {install_hint}"
+            )
 
     @staticmethod
     def _copy_packaging_source(checkout: Path, destination: Path) -> None:

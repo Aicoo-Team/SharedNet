@@ -12,6 +12,9 @@ license-files = ["THIRD_PARTY_NOTICES.md", "LICENSES/RAC-MIT.txt"]
 [project.scripts]
 sharednet = "sharednet.cli:main"
 
+[project.optional-dependencies]
+test = ["setuptools>=77.0.0"]
+
 [tool.setuptools]
 package-dir = {"" = "src"}
 
