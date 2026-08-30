@@ -83,3 +83,39 @@ OK (skipped=2)
 ```
 
 The two explicit skips were the opt-in real-provider E2E and the unavailable local packaging prerequisite.
+
+## Final re-review hardening
+
+The final runtime review identified three remaining fail-open classes: collaboration completions did not require a strictly earlier matching start, lifecycle ordering and exactly-once child completion were not enforced, and the tool classifier was a denylist rather than a closed protocol allowlist. It also identified a working-directory edge case for explicitly configured relative Codex binaries.
+
+The re-review regressions were written and run before production edits:
+
+```text
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m unittest tests.test_codex_runtime -v
+Ran 58 tests in 0.076s
+FAILED (failures=14)
+```
+
+Those failures covered completion-only and completion-before-start calls, mismatched spawn/wait shapes, duplicate child completion across waits, final/turn ordering and duplicate turns, unknown top-level and function-call records, both configured and environment relative binaries, and the missing no-repeat-wait prompt instruction.
+
+The adapter now pairs each completed collaboration call with one unique, strictly earlier root-authored start having the same call ID, tool, sender, and compatible payload shape. Spawn prompts must match exactly; wait completions may cover a subset of their started receiver set, matching the observed native protocol. Completed wait child sets are disjoint, all collaboration proof completes before the last structured root message, and exactly one `turn.completed` follows it. Unknown JSONL records fail closed under an explicit allowlist. Path-like configured binaries are resolved before entering the empty temporary working directory, while bare PATH command names remain unchanged. The root prompt instructs it to remove completed children from later waits and never wait on a completed child twice.
+
+Fresh focused GREEN:
+
+```text
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m unittest tests.test_codex_runtime -v
+Ran 58 tests in 0.098s
+OK
+```
+
+The recorded provider artifact was replayed again without a provider call. It remained `accepted` with three exact spawned/completed/contributing child IDs, `native_proof_complete=true`, `disallowed_tool_evidence_present=false`, final message index 21, last collaboration completion index 20, and one following turn completion.
+
+Fresh complete offline verification:
+
+```text
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m unittest discover -s tests -q
+Ran 166 tests in 0.345s
+OK (skipped=2)
+```
+
+`compileall` over the runtime and tests and `git diff --check` both completed successfully with no output.

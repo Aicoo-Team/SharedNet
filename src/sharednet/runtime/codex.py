@@ -55,14 +55,26 @@ class CodexEventEvidence:
     collaboration_events: tuple[Mapping[str, Any], ...]
     disallowed_tool_events: tuple[Mapping[str, Any], ...]
     spawn_bindings: tuple[tuple[str, str], ...]
-    completed_child_messages: tuple[tuple[str, str], ...]
+    completed_child_messages: tuple[tuple[str, str, int], ...]
     root_thread_started: bool
     turn_completed: bool
     final_message_completed: bool
+    final_message_index: int | None
+    turn_completed_indices: tuple[int, ...]
+    collaboration_completion_indices: tuple[int, ...]
     invalid_spawn_sender: bool
     invalid_collaboration_evidence: bool
     disallowed_tool_evidence_present: bool
     diagnostic_events_truncated: bool
+
+
+@dataclass(frozen=True)
+class _StartedCollaborationCall:
+    tool: str
+    sender_thread_id: str
+    prompt: str | None
+    receiver_thread_ids: tuple[str, ...]
+    event_index: int
 
 
 Runner = Callable[[list[str], float], ProcessOutcome]
@@ -84,6 +96,8 @@ def build_codex_prompt(plan: CoordinationPlan, nonce: str) -> str:
         f"Issue exactly {child_count} parallel native spawn_agent calls for the remaining planned participants; "
         "do not delegate spawning to a child. Each spawn prompt must name exactly one remaining candidate and include "
         "exactly that candidate's exact marker, with no other participant marker. Wait for every child before replying. "
+        "After each completed wait, remove completed children from every later wait call. "
+        "Never wait on the same completed child twice. "
         if child_count
         else "Do not spawn any child. "
     )
@@ -107,23 +121,26 @@ def parse_codex_events(stdout: str) -> CodexEventEvidence:
     """Parse exact Codex JSONL shapes into bounded facts and private proof inputs."""
     thread_id: str | None = None
     final_message = ""
+    final_message_index: int | None = None
     usage: dict[str, int | float] = {}
     collaboration_events: list[Mapping[str, Any]] = []
     disallowed_tool_events: list[Mapping[str, Any]] = []
     spawn_bindings: list[tuple[str, str]] = []
-    completed_child_messages: list[tuple[str, str]] = []
-    started_collaboration_calls: dict[str, tuple[str, str | None]] = {}
+    completed_child_messages: list[tuple[str, str, int]] = []
+    started_collaboration_calls: dict[str, _StartedCollaborationCall] = {}
     completed_collaboration_calls: set[str] = set()
+    completed_wait_child_ids: set[str] = set()
+    turn_completed_indices: list[int] = []
+    collaboration_completion_indices: list[int] = []
     raw_event_count = 0
     root_thread_started = False
-    turn_completed = False
     final_message_completed = False
     invalid_spawn_sender = False
     invalid_collaboration_evidence = False
     disallowed_tool_evidence_present = False
     diagnostic_events_truncated = False
 
-    for line in stdout.splitlines():
+    for event_index, line in enumerate(stdout.splitlines()):
         try:
             event = json.loads(line)
         except json.JSONDecodeError:
@@ -144,12 +161,12 @@ def parse_codex_events(stdout: str) -> CodexEventEvidence:
                 if isinstance(key, str) and isinstance(value, (int, float)) and not isinstance(value, bool):
                     usage[key] = usage.get(key, 0) + value
         if event_type == "turn.completed":
-            turn_completed = True
+            turn_completed_indices.append(event_index)
 
         item = event.get("item")
         item_type = item.get("type", "") if isinstance(item, Mapping) and isinstance(item.get("type"), str) else ""
         tool = item.get("tool", "") if isinstance(item, Mapping) and isinstance(item.get("tool"), str) else ""
-        disallowed = _disallowed_tool_diagnostic(event_type, item_type, tool, item)
+        disallowed = _disallowed_event_diagnostic(event_type, item_type, tool, item)
         if disallowed is not None:
             disallowed_tool_evidence_present = True
             if len(collaboration_events) + len(disallowed_tool_events) < _MAX_RETAINED_DIAGNOSTIC_EVENTS:
@@ -166,6 +183,9 @@ def parse_codex_events(stdout: str) -> CodexEventEvidence:
             sender_thread_id = _bounded_identifier(item.get("sender_thread_id"))
             status = item.get("status")
             sender_is_root = thread_id is not None and sender_thread_id == thread_id
+            receiver_ids = _bounded_identifier_sequence(item.get("receiver_thread_ids"))
+            prompt = item.get("prompt")
+            states = item.get("agents_states")
             if not sender_is_root:
                 invalid_collaboration_evidence = True
                 if tool == "spawn_agent":
@@ -174,24 +194,58 @@ def parse_codex_events(stdout: str) -> CodexEventEvidence:
                 invalid_collaboration_evidence = True
                 continue
             if event_type == "item.started":
-                if status != "in_progress" or call_id in started_collaboration_calls:
+                if (
+                    status != "in_progress"
+                    or call_id in started_collaboration_calls
+                    or call_id in completed_collaboration_calls
+                    or not sender_is_root
+                    or receiver_ids is None
+                    or not isinstance(states, Mapping)
+                    or states
+                ):
                     invalid_collaboration_evidence = True
-                started_collaboration_calls[call_id] = (tool, sender_thread_id)
+                    continue
+                if tool == "spawn_agent":
+                    if not isinstance(prompt, str) or not prompt or receiver_ids:
+                        invalid_collaboration_evidence = True
+                        continue
+                elif prompt is not None or not receiver_ids:
+                    invalid_collaboration_evidence = True
+                    continue
+                started_collaboration_calls[call_id] = _StartedCollaborationCall(
+                    tool=tool,
+                    sender_thread_id=sender_thread_id,
+                    prompt=prompt,
+                    receiver_thread_ids=receiver_ids,
+                    event_index=event_index,
+                )
                 continue
-            if status != "completed" or call_id in completed_collaboration_calls:
+            collaboration_completion_indices.append(event_index)
+            if call_id in completed_collaboration_calls:
                 invalid_collaboration_evidence = True
                 continue
             completed_collaboration_calls.add(call_id)
             started_call = started_collaboration_calls.get(call_id)
-            if started_call is not None and started_call != (tool, sender_thread_id):
+            if (
+                status != "completed"
+                or not sender_is_root
+                or started_call is None
+                or started_call.event_index >= event_index
+                or started_call.tool != tool
+                or started_call.sender_thread_id != sender_thread_id
+            ):
                 invalid_collaboration_evidence = True
-            if not sender_is_root:
                 continue
-
-            receiver_ids = _bounded_identifier_sequence(item.get("receiver_thread_ids"))
             if tool == "spawn_agent":
-                prompt = item.get("prompt")
-                if receiver_ids is None or len(receiver_ids) != 1 or not isinstance(prompt, str) or not prompt:
+                state_ids = _bounded_identifier_sequence(list(states.keys())) if isinstance(states, Mapping) else None
+                if (
+                    receiver_ids is None
+                    or len(receiver_ids) != 1
+                    or not isinstance(prompt, str)
+                    or prompt != started_call.prompt
+                    or state_ids is None
+                    or set(state_ids) != set(receiver_ids)
+                ):
                     invalid_collaboration_evidence = True
                     continue
                 if len(spawn_bindings) >= _MAX_RETAINED_PROOF_RECORDS:
@@ -200,8 +254,14 @@ def parse_codex_events(stdout: str) -> CodexEventEvidence:
                 spawn_bindings.append((receiver_ids[0], prompt))
                 continue
 
-            states = item.get("agents_states")
-            if receiver_ids is None or not receiver_ids or not isinstance(states, Mapping):
+            if (
+                prompt is not None
+                or started_call.prompt is not None
+                or receiver_ids is None
+                or not receiver_ids
+                or not set(receiver_ids).issubset(set(started_call.receiver_thread_ids))
+                or not isinstance(states, Mapping)
+            ):
                 invalid_collaboration_evidence = True
                 continue
             state_ids = _bounded_identifier_sequence(list(states.keys()))
@@ -215,21 +275,26 @@ def parse_codex_events(stdout: str) -> CodexEventEvidence:
                 if child_status != "completed" or not isinstance(child_message, str) or not child_message:
                     invalid_collaboration_evidence = True
                     continue
+                if child_id in completed_wait_child_ids:
+                    invalid_collaboration_evidence = True
+                    continue
                 if len(completed_child_messages) >= _MAX_RETAINED_PROOF_RECORDS:
                     invalid_collaboration_evidence = True
                     continue
-                completed_child_messages.append((child_id, child_message))
+                completed_wait_child_ids.add(child_id)
+                completed_child_messages.append((child_id, child_message, event_index))
 
         message = _agent_message(event)
         if message is not None:
             final_message = message
             final_message_completed = True
+            final_message_index = event_index
 
     if set(started_collaboration_calls) - completed_collaboration_calls:
         invalid_collaboration_evidence = True
     raw_spawned_agent_ids = [child_id for child_id, _ in spawn_bindings if child_id != thread_id]
     spawned_agent_ids = tuple(dict.fromkeys(raw_spawned_agent_ids))
-    completed_child_ids = tuple(dict.fromkeys(child_id for child_id, _ in completed_child_messages))
+    completed_child_ids = tuple(child_id for child_id, _, _ in completed_child_messages)
     return CodexEventEvidence(
         thread_id=thread_id,
         spawned_agent_ids=spawned_agent_ids,
@@ -243,8 +308,11 @@ def parse_codex_events(stdout: str) -> CodexEventEvidence:
         spawn_bindings=tuple(spawn_bindings),
         completed_child_messages=tuple(completed_child_messages),
         root_thread_started=root_thread_started,
-        turn_completed=turn_completed,
+        turn_completed=bool(turn_completed_indices),
         final_message_completed=final_message_completed,
+        final_message_index=final_message_index,
+        turn_completed_indices=tuple(turn_completed_indices),
+        collaboration_completion_indices=tuple(collaboration_completion_indices),
         invalid_spawn_sender=invalid_spawn_sender,
         invalid_collaboration_evidence=invalid_collaboration_evidence,
         disallowed_tool_evidence_present=disallowed_tool_evidence_present,
@@ -367,7 +435,7 @@ class CodexRuntime:
             )
         if outcome.returncode != 0:
             return self._failure(plan, "codex_exec_nonzero_exit", evidence=runtime_evidence, usage=evidence.usage)
-        if not (evidence.root_thread_started and evidence.turn_completed and evidence.final_message_completed):
+        if not _completed_lifecycle(evidence):
             return self._failure(plan, "incomplete_codex_lifecycle", evidence=runtime_evidence, usage=evidence.usage)
         if evidence.disallowed_tool_evidence_present:
             return self._failure(
@@ -413,10 +481,10 @@ class CodexRuntime:
 
     def _resolve_binary(self) -> str:
         if self._configured_binary:
-            return self._configured_binary
+            return _absolute_if_path_like(self._configured_binary)
         environment_binary = os.environ.get("SHAREDNET_CODEX_BINARY")
         if environment_binary:
-            return environment_binary
+            return _absolute_if_path_like(environment_binary)
         for bundled_binary in _CHATGPT_CODEX_PATHS:
             if Path(bundled_binary).is_file():
                 return bundled_binary
@@ -480,6 +548,13 @@ class CodexRuntime:
             "root_thread_started": evidence.root_thread_started,
             "turn_completed": evidence.turn_completed,
             "final_message_completed": evidence.final_message_completed,
+            "final_message_index": evidence.final_message_index,
+            "turn_completed_count": len(evidence.turn_completed_indices),
+            "last_collaboration_completion_index": (
+                max(evidence.collaboration_completion_indices)
+                if evidence.collaboration_completion_indices
+                else None
+            ),
             "invalid_spawn_sender": evidence.invalid_spawn_sender,
             "invalid_collaboration_evidence": evidence.invalid_collaboration_evidence,
             "disallowed_tool_evidence_present": evidence.disallowed_tool_evidence_present,
@@ -586,6 +661,13 @@ def _event_type(event: Mapping[str, Any]) -> str:
     return value if isinstance(value, str) else ""
 
 
+def _absolute_if_path_like(binary: str) -> str:
+    separators = tuple(separator for separator in (os.sep, os.altsep) if separator)
+    if any(separator in binary for separator in separators):
+        return str(Path(binary).expanduser().resolve())
+    return binary
+
+
 def _bounded_identifier(value: object) -> str | None:
     if isinstance(value, str) and value and len(value) <= 256:
         return value
@@ -608,32 +690,23 @@ def _bounded_diagnostic_text(value: object) -> str:
     return value[:80] if isinstance(value, str) else ""
 
 
-def _disallowed_tool_diagnostic(
+def _disallowed_event_diagnostic(
     event_type: str,
     item_type: str,
     tool: str,
     item: object,
 ) -> Mapping[str, Any] | None:
-    """Classify tool evidence without retaining commands, prompts, or outputs."""
-    if item_type == "collab_tool_call" and tool in {"spawn_agent", "wait"}:
+    """Allow only observed passive lifecycle records and planned collaboration calls."""
+    passive_top_level = {"thread.started", "turn.started", "turn.completed", "error"}
+    if event_type in passive_top_level and not isinstance(item, Mapping):
         return None
-    combined = " ".join((event_type, item_type, tool)).lower()
-    tool_tokens = (
-        "collab",
-        "collaboration",
-        "command",
-        "shell",
-        "web",
-        "mcp",
-        "file_change",
-        "file_read",
-        "file_write",
-        "read_file",
-        "write_file",
-        "apply_patch",
-        "tool_call",
-    )
-    if not any(token in combined for token in tool_tokens):
+    if event_type == "item.completed" and item_type in {"agent_message", "error"} and not tool:
+        return None
+    if (
+        event_type in {"item.started", "item.completed"}
+        and item_type == "collab_tool_call"
+        and tool in {"spawn_agent", "wait"}
+    ):
         return None
     status = item.get("status") if isinstance(item, Mapping) else None
     diagnostic: dict[str, Any] = {
@@ -664,6 +737,15 @@ def _collaboration_diagnostic(
         "receiver_count": len(receivers) if isinstance(receivers, list) else 0,
         "state_count": len(states) if isinstance(states, Mapping) else 0,
     }
+
+
+def _completed_lifecycle(evidence: CodexEventEvidence) -> bool:
+    final_index = evidence.final_message_index
+    if not evidence.root_thread_started or not evidence.final_message_completed or final_index is None:
+        return False
+    if len(evidence.turn_completed_indices) != 1 or evidence.turn_completed_indices[0] <= final_index:
+        return False
+    return all(completion_index < final_index for completion_index in evidence.collaboration_completion_indices)
 
 
 def _native_coordination_proof(
@@ -698,7 +780,7 @@ def _native_coordination_proof(
         valid = False
 
     messages_by_child: dict[str, list[str]] = {}
-    for child_id, message in evidence.completed_child_messages:
+    for child_id, message, _ in evidence.completed_child_messages:
         messages_by_child.setdefault(child_id, []).append(message)
     contributing_ids: list[str] = []
     for child_id in spawned_ids:
