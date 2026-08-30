@@ -15,6 +15,11 @@ from sharednet.runtime.codex import CodexRuntime
 EXAMPLE_REQUEST = Path(__file__).resolve().parents[1] / "examples" / "four-agent-task.json"
 EXPECTED_PARTICIPANTS = ("self", "research-agent", "architecture-agent", "risk-agent")
 INCIDENT_IDS = ("INC-101", "INC-102", "INC-103", "INC-104")
+ROLE_SIGNALS = {
+    "research-agent": ("evidence", "assumption"),
+    "architecture-agent": ("owner", "remediation"),
+    "risk-agent": ("risk", "priorit"),
+}
 
 
 def load_example() -> CoordinationRequest:
@@ -37,35 +42,57 @@ class CodexLiveE2E(unittest.TestCase):
             request,
             CodexRuntime(model="gpt-5.6-luna", artifact_dir=Path(".codex-live-artifacts")),
         )
+        context = json.dumps(result.to_dict(), sort_keys=True, default=str)
 
-        self.assertEqual(result.status, TerminalStatus.ACCEPTED, result.error)
-        self.assertEqual(result.plan.participant_ids, EXPECTED_PARTICIPANTS)
-        self.assertEqual(result.plan.to_dict()["runtime_instructions"]["task"], request.task.to_dict())
-        self.assertEqual(len(result.outputs), 4)
+        self.assertEqual(result.status, TerminalStatus.ACCEPTED, context)
+        self.assertEqual(result.plan.participant_ids, EXPECTED_PARTICIPANTS, context)
+        self.assertEqual(result.plan.to_dict()["runtime_instructions"]["task"], request.task.to_dict(), context)
+        self.assertEqual(len(result.outputs), 4, context)
 
         root_thread_id = result.runtime_evidence["thread_id"]
         child_thread_ids = result.runtime_evidence["spawned_agent_ids"]
         completed_child_ids = result.runtime_evidence["completed_child_ids"]
         contributing_child_ids = result.runtime_evidence["contributing_child_ids"]
-        self.assertTrue(root_thread_id)
-        self.assertEqual(len(child_thread_ids), 3)
-        self.assertEqual(len(set(child_thread_ids)), 3)
-        self.assertNotIn(root_thread_id, child_thread_ids)
-        self.assertEqual(set(completed_child_ids), set(child_thread_ids))
-        self.assertEqual(set(contributing_child_ids), set(child_thread_ids))
+        self.assertTrue(root_thread_id, context)
+        self.assertEqual(len(child_thread_ids), 3, context)
+        self.assertEqual(len(set(child_thread_ids)), 3, context)
+        self.assertNotIn(root_thread_id, child_thread_ids, context)
+        self.assertEqual(set(completed_child_ids), set(child_thread_ids), context)
+        self.assertEqual(set(contributing_child_ids), set(child_thread_ids), context)
         self.assertEqual(
             set(result.runtime_evidence["child_participant_bindings"].values()),
             set(EXPECTED_PARTICIPANTS[1:]),
+            context,
         )
-        self.assertTrue(result.runtime_evidence["native_proof_complete"])
-        self.assertEqual(result.runtime_evidence["disallowed_tool_events"], ())
-        self.assertGreater(result.usage["input_tokens"] + result.usage["output_tokens"], 0)
+        self.assertTrue(result.runtime_evidence["native_proof_complete"], context)
+        self.assertTrue(result.runtime_evidence["child_output_proof_complete"], context)
+        self.assertEqual(result.runtime_evidence["disallowed_tool_events"], (), context)
+        self.assertGreater(result.usage["input_tokens"] + result.usage["output_tokens"], 0, context)
 
-        self.assertEqual({output.participant_id for output in result.outputs}, set(EXPECTED_PARTICIPANTS))
+        outputs = {output.participant_id: output for output in result.outputs}
+        self.assertEqual(set(outputs), set(EXPECTED_PARTICIPANTS), context)
         for output in result.outputs:
-            self.assertIn(output.marker, result.synthesis)
+            self.assertIn(output.marker, result.synthesis, context)
+            for incident_id in INCIDENT_IDS:
+                self.assertIn(incident_id, output.content, context)
         for incident_id in INCIDENT_IDS:
-            self.assertIn(incident_id, result.synthesis)
+            self.assertIn(incident_id, result.synthesis, context)
+
+        participants = {participant.candidate_id: participant for participant in result.plan.participants}
+        bindings = {
+            binding["participant_id"]: binding
+            for binding in result.runtime_evidence["child_output_bindings"]
+        }
+        self.assertEqual(set(bindings), set(EXPECTED_PARTICIPANTS[1:]), context)
+        for participant_id, signals in ROLE_SIGNALS.items():
+            binding = bindings[participant_id]
+            participant = participants[participant_id]
+            self.assertTrue(binding["output_content_match"], context)
+            self.assertEqual(binding["assignment"], participant.assignment, context)
+            self.assertEqual(tuple(binding["capabilities"]), participant.capabilities, context)
+            contribution = outputs[participant_id].content.lower()
+            for signal in signals:
+                self.assertIn(signal, contribution, context)
 
 
 if __name__ == "__main__":

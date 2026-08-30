@@ -48,7 +48,16 @@ def plan() -> CoordinationPlan:
         participants=participants,
         edges=(),
         decision_trace=(),
-        runtime_instructions={"goal": "Produce a bounded synthesis."},
+        runtime_instructions={
+            "goal": "Produce a bounded synthesis.",
+            "task": {
+                "task_id": "runtime-task",
+                "goal": "Produce a bounded synthesis.",
+                "required_capabilities": ["analysis"],
+                "acceptance_criteria": ["Ground every participant finding in the supplied record."],
+                "input_data": {"records": [{"id": "REC-1", "fact": "A bounded runtime fact."}]},
+            },
+        },
         budget=CoordinationBudget(max_participants=4),
     )
 
@@ -56,6 +65,33 @@ def plan() -> CoordinationPlan:
 def markers_for(nonce: str, target_plan: CoordinationPlan | None = None) -> list[str]:
     selected_plan = target_plan or plan()
     return [f"[[sharednet:{nonce}:{candidate_id}]]" for candidate_id in selected_plan.participant_ids]
+
+
+def expected_child_spawn_prompt(
+    target_plan: CoordinationPlan,
+    participant: ParticipantPlan,
+    marker: str,
+) -> str:
+    """Mirror the complete provider-boundary payload used by a native child."""
+    task = target_plan.to_dict()["runtime_instructions"]["task"]
+    return json.dumps(
+        {
+            "task": task,
+            "participant": {
+                "candidate_id": participant.candidate_id,
+                "role": participant.role,
+                "assignment": participant.assignment,
+                "capabilities": list(participant.capabilities),
+            },
+            "marker": marker,
+            "response_contract": {
+                "format": "marker-first-line-then-content",
+                "content": "Complete the assigned work with a nonempty contribution grounded in the task payload.",
+            },
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 def success_events(markers: list[str], target_plan: CoordinationPlan | None = None) -> list[dict[str, object]]:
@@ -72,17 +108,18 @@ def success_events(markers: list[str], target_plan: CoordinationPlan | None = No
     }
     child_ids = tuple(f"child-{index}" for index in range(1, len(participant_ids)))
     events: list[dict[str, object]] = [{"type": "thread.started", "thread_id": "thread-root"}]
-    for index, (child_id, participant_id, marker) in enumerate(
-        zip(child_ids, participant_ids[1:], markers[1:]),
+    for index, (child_id, participant, marker) in enumerate(
+        zip(child_ids, selected_plan.participants[1:], markers[1:]),
         start=1,
     ):
+        prompt = expected_child_spawn_prompt(selected_plan, participant, marker)
         item = {
             "id": f"spawn-{index}",
             "type": "collab_tool_call",
             "tool": "spawn_agent",
             "sender_thread_id": "thread-root",
             "receiver_thread_ids": [child_id],
-            "prompt": f"Your candidate_id is {participant_id}. Your exact marker is {marker}.",
+            "prompt": prompt,
             "agents_states": {child_id: {"status": "pending_init", "message": None}},
         }
         events.append({"type": "item.started", "item": {**item, "receiver_thread_ids": [], "agents_states": {}, "status": "in_progress"}})
@@ -96,7 +133,10 @@ def success_events(markers: list[str], target_plan: CoordinationPlan | None = No
             }
         )
     wait_groups = (child_ids[:1], child_ids[1:]) if len(child_ids) > 1 else (child_ids,)
-    marker_by_child = dict(zip(child_ids, markers[1:]))
+    contribution_by_child = {
+        child_id: (marker, f"Finding from {participant.candidate_id}.")
+        for child_id, participant, marker in zip(child_ids, selected_plan.participants[1:], markers[1:])
+    }
     for index, group in enumerate(wait_groups, start=1):
         if not group:
             continue
@@ -128,7 +168,7 @@ def success_events(markers: list[str], target_plan: CoordinationPlan | None = No
                     "agents_states": {
                         child_id: {
                             "status": "completed",
-                            "message": f"{marker_by_child[child_id]}\nFinding from {child_id}.",
+                            "message": "\n".join(contribution_by_child[child_id]),
                         }
                         for child_id in group
                     },
@@ -304,6 +344,48 @@ class NoParseText(str):
 
 
 class CodexRuntimeTests(unittest.TestCase):
+    def test_execute_until_preserves_the_caller_deadline_after_handoff_delay(self) -> None:
+        clock = ManualClock()
+        clock.advance(4)
+        runner = RecordingRunner(ProcessOutcome(0, success_jsonl(markers_for("nonce-1")), "", False))
+
+        def nonce_after_two_more_seconds() -> str:
+            clock.advance(2)
+            return "nonce-1"
+
+        runtime = CodexRuntime(
+            binary="/real/codex",
+            runner=runner,
+            nonce_factory=nonce_after_two_more_seconds,
+            clock=clock,
+        )
+        self.assertTrue(hasattr(runtime, "execute_until"))
+        result = runtime.execute_until(plan(), monotonic_deadline=10.0)
+
+        self.assertEqual(result.status, TerminalStatus.ACCEPTED)
+        self.assertEqual(runner.timeout, 4.0)
+
+    def test_execute_until_never_widens_the_plan_wall_budget(self) -> None:
+        clock = ManualClock()
+        runner = RecordingRunner(ProcessOutcome(0, success_jsonl(markers_for("nonce-1")), "", False))
+
+        def nonce_after_four_seconds() -> str:
+            clock.advance(4)
+            return "nonce-1"
+
+        timed_plan = replace(plan(), budget=replace(plan().budget, max_wall_seconds=10))
+        runtime = CodexRuntime(
+            binary="/real/codex",
+            runner=runner,
+            nonce_factory=nonce_after_four_seconds,
+            clock=clock,
+        )
+        self.assertTrue(hasattr(runtime, "execute_until"))
+        result = runtime.execute_until(timed_plan, monotonic_deadline=100.0)
+
+        self.assertEqual(result.status, TerminalStatus.ACCEPTED)
+        self.assertEqual(runner.timeout, 6.0)
+
     def test_setup_time_reduces_the_relative_allowance_passed_to_the_runner(self) -> None:
         clock = ManualClock()
         runner = RecordingRunner(ProcessOutcome(0, success_jsonl(markers_for("nonce-1")), "", False))
@@ -782,6 +864,42 @@ class CodexRuntimeTests(unittest.TestCase):
         self.assertEqual(result.status, TerminalStatus.FAILED)
         self.assertEqual(result.error, "missing_native_spawn_evidence")
         self.assertNotIn("child-2", result.runtime_evidence["contributing_child_ids"])
+
+    def test_spawn_prompt_must_carry_the_complete_task_and_assigned_participant(self) -> None:
+        events = success_events(markers_for("nonce-1"))
+        incomplete_prompt = json.dumps(
+            {
+                "participant": {"candidate_id": "child-a"},
+                "marker": "[[sharednet:nonce-1:child-a]]",
+            }
+        )
+        for event in events:
+            item = event.get("item")
+            if isinstance(item, dict) and item.get("id") == "spawn-1":
+                item["prompt"] = incomplete_prompt
+        runner = RecordingRunner(ProcessOutcome(0, "\n".join(json.dumps(event) for event in events), "", False))
+
+        result = CodexRuntime(binary="/real/codex", runner=runner, nonce_factory=lambda: "nonce-1").execute(plan())
+
+        self.assertEqual(result.status, TerminalStatus.FAILED)
+        self.assertEqual(result.error, "missing_native_spawn_evidence")
+
+    def test_root_cannot_fabricate_a_worker_output_not_returned_by_that_child(self) -> None:
+        events = success_events(markers_for("nonce-1"))
+        final_event = structured_final_event(events)
+        final = json.loads(final_event["item"]["text"])
+        final["outputs"][1]["content"] = "Root-fabricated finding never returned by child-a."
+        final_event["item"]["text"] = json.dumps(final)
+        runner = RecordingRunner(ProcessOutcome(0, "\n".join(json.dumps(event) for event in events), "", False))
+
+        result = CodexRuntime(binary="/real/codex", runner=runner, nonce_factory=lambda: "nonce-1").execute(plan())
+
+        self.assertEqual(result.status, TerminalStatus.FAILED)
+        self.assertEqual(result.error, "unbound_child_output")
+        binding = next(
+            item for item in result.runtime_evidence["child_output_bindings"] if item["participant_id"] == "child-a"
+        )
+        self.assertFalse(binding["output_content_match"])
 
     def test_spawn_prompt_marker_binding_cannot_be_inferred_from_final_output(self) -> None:
         events = success_events(markers_for("nonce-1"))

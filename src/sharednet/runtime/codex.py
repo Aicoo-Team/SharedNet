@@ -27,6 +27,10 @@ _DEFAULT_MAX_CAPTURE_BYTES = 1_000_000
 _MAX_RETAINED_DIAGNOSTIC_EVENTS = 128
 _MAX_RETAINED_PROOF_RECORDS = 128
 _SUCCESSFUL_SPAWN_CHILD_STATES = frozenset({"pending_init", "in_progress", "running", "completed"})
+_CHILD_RESPONSE_CONTRACT = {
+    "format": "marker-first-line-then-content",
+    "content": "Complete the assigned work with a nonempty contribution grounded in the task payload.",
+}
 
 
 class CodexUnavailable(RuntimeError):
@@ -95,11 +99,22 @@ def build_codex_prompt(plan: CoordinationPlan, nonce: str) -> str:
     markers = {participant.candidate_id: f"[[sharednet:{nonce}:{participant.candidate_id}]]" for participant in participants}
     root_id = participants[0].candidate_id
     child_count = len(participants) - 1
-    payload = {"plan": plan.to_dict(), "markers": markers}
+    payload = {
+        "plan": plan.to_dict(),
+        "markers": markers,
+        "child_response_contract": _CHILD_RESPONSE_CONTRACT,
+    }
     spawn_instruction = (
         f"Issue exactly {child_count} parallel native spawn_agent calls for the remaining planned participants; "
-        "do not delegate spawning to a child. Each spawn prompt must name exactly one remaining candidate and include "
-        "exactly that candidate's exact marker, with no other participant marker. Wait for every child before replying. "
+        "do not delegate spawning to a child. Build each spawn prompt as exactly one JSON object, with no prose or "
+        "Markdown fences, containing exactly `task`, `participant`, `marker`, and `response_contract`. Copy `task` "
+        "exactly from `plan.runtime_instructions.task`. The `participant` object must contain exactly that candidate's "
+        "`candidate_id`, `role`, `assignment`, and `capabilities` from the plan. Copy exactly that candidate's exact marker "
+        "and the supplied child response contract. JSON key order and "
+        "insignificant whitespace may vary. Each child "
+        "must return its marker as its first line and its nonempty contribution after that line. Wait for every child "
+        "before replying. In final `outputs`, copy each non-root child's contribution body exactly; do not summarize, "
+        "rewrite, or fabricate worker output. "
         "After each completed wait, remove completed children from every later wait call. "
         "Never wait on the same completed child twice. "
         if child_count
@@ -394,6 +409,20 @@ class CodexRuntime:
     def execute(self, plan: CoordinationPlan) -> CoordinationResult:
         """Execute a plan once and return typed, attributable evidence."""
         deadline = self._clock() + float(plan.budget.max_wall_seconds)
+        return self._execute_with_deadline(plan, deadline)
+
+    def execute_until(
+        self,
+        plan: CoordinationPlan,
+        *,
+        monotonic_deadline: float,
+    ) -> CoordinationResult:
+        """Execute under both the caller's absolute deadline and the plan budget."""
+        plan_deadline = self._clock() + float(plan.budget.max_wall_seconds)
+        return self._execute_with_deadline(plan, min(monotonic_deadline, plan_deadline))
+
+    def _execute_with_deadline(self, plan: CoordinationPlan, deadline: float) -> CoordinationResult:
+        """Execute one plan without resetting its already-selected absolute deadline."""
         try:
             binary = self._resolve_binary()
         except CodexUnavailable:
@@ -454,7 +483,8 @@ class CodexRuntime:
             participant.candidate_id: f"[[sharednet:{nonce}:{participant.candidate_id}]]"
             for participant in plan.participants
         }
-        native_proof = _native_coordination_proof(evidence, expected_markers)
+        expected_spawn_payloads = _expected_child_spawn_payloads(plan, expected_markers)
+        native_proof = _native_coordination_proof(evidence, expected_spawn_payloads)
         runtime_evidence = self._runtime_evidence(evidence, outcome, command)
         runtime_evidence.update(native_proof)
         runtime_evidence.update(self._persist_artifacts(plan, outcome))
@@ -496,6 +526,17 @@ class CodexRuntime:
 
         if not native_proof["native_proof_complete"]:
             return self._failure(plan, "missing_native_spawn_evidence", evidence=runtime_evidence, usage=evidence.usage)
+        child_output_proof = _child_output_proof(
+            evidence,
+            native_proof["child_participant_bindings"],
+            parsed_outputs,
+            expected_markers,
+            plan,
+        )
+        runtime_evidence.update(child_output_proof)
+        runtime_evidence["native_proof_complete"] = child_output_proof["child_output_proof_complete"]
+        if not child_output_proof["child_output_proof_complete"]:
+            return self._failure(plan, "unbound_child_output", evidence=runtime_evidence, usage=evidence.usage)
         return CoordinationResult(
             status=TerminalStatus.ACCEPTED,
             plan=plan,
@@ -793,21 +834,24 @@ def _completed_lifecycle(evidence: CodexEventEvidence) -> bool:
 
 def _native_coordination_proof(
     evidence: CodexEventEvidence,
-    expected_markers: Mapping[str, str],
+    expected_spawn_payloads: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, Any]:
-    """Bind root spawns to planned markers and completed wait messages."""
-    child_markers = dict(list(expected_markers.items())[1:])
-    required_child_ids = set(child_markers)
+    """Bind root spawns to exact planned child payloads and completed waits."""
+    required_child_ids = set(expected_spawn_payloads)
     valid = not evidence.invalid_collaboration_evidence and not evidence.disallowed_tool_evidence_present
     spawned_ids = evidence.spawned_agent_ids
     if evidence.explicit_spawn_count != len(required_child_ids) or len(spawned_ids) != len(required_child_ids):
         valid = False
 
     participant_by_child: dict[str, str] = {}
-    all_markers = tuple(expected_markers.items())
     for child_id, prompt in evidence.spawn_bindings:
-        matches = [participant_id for participant_id, marker in all_markers if marker in prompt]
-        if len(matches) != 1 or matches[0] not in required_child_ids:
+        decoded_prompt = _decode_child_spawn_prompt(prompt)
+        matches = [
+            participant_id
+            for participant_id, expected_payload in expected_spawn_payloads.items()
+            if decoded_prompt == expected_payload
+        ]
+        if len(matches) != 1:
             valid = False
             continue
         participant_id = matches[0]
@@ -828,9 +872,10 @@ def _native_coordination_proof(
     contributing_ids: list[str] = []
     for child_id in spawned_ids:
         participant_id = participant_by_child.get(child_id)
-        marker = child_markers.get(participant_id, "") if participant_id is not None else ""
+        expected_payload = expected_spawn_payloads.get(participant_id, {}) if participant_id is not None else {}
+        marker = expected_payload.get("marker", "")
         messages = messages_by_child.get(child_id, [])
-        if marker and messages and all(marker in message for message in messages):
+        if isinstance(marker, str) and marker and messages and all(_child_contribution_body(message, marker) is not None for message in messages):
             contributing_ids.append(child_id)
         else:
             valid = False
@@ -845,6 +890,94 @@ def _native_coordination_proof(
         "child_participant_bindings": participant_by_child,
         "native_proof_complete": valid,
     }
+
+
+def _expected_child_spawn_payloads(
+    plan: CoordinationPlan,
+    expected_markers: Mapping[str, str],
+) -> dict[str, Mapping[str, Any]]:
+    """Describe the exact JSON data each planned native child must receive."""
+    plan_data = plan.to_dict()
+    runtime_instructions = plan_data["runtime_instructions"]
+    task = runtime_instructions.get("task")
+    if not isinstance(task, Mapping):
+        task = {"task_id": plan.task_id, "runtime_instructions": runtime_instructions}
+    return {
+        participant.candidate_id: {
+            "task": task,
+            "participant": {
+                "candidate_id": participant.candidate_id,
+                "role": participant.role,
+                "assignment": participant.assignment,
+                "capabilities": list(participant.capabilities),
+            },
+            "marker": expected_markers[participant.candidate_id],
+            "response_contract": _CHILD_RESPONSE_CONTRACT,
+        }
+        for participant in plan.participants[1:]
+    }
+
+
+def _decode_child_spawn_prompt(prompt: str) -> Mapping[str, Any] | None:
+    try:
+        value = json.loads(prompt)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, Mapping) else None
+
+
+def _child_contribution_body(message: str, marker: str) -> str | None:
+    """Return a canonical child body only for the marker-first response contract."""
+    normalized = message.replace("\r\n", "\n").replace("\r", "\n").strip()
+    first_line, separator, body = normalized.partition("\n")
+    body = body.strip()
+    if first_line != marker or not separator or not body:
+        return None
+    return body
+
+
+def _child_output_proof(
+    evidence: CodexEventEvidence,
+    participant_by_child: Mapping[str, str],
+    outputs: Sequence[AgentOutput],
+    expected_markers: Mapping[str, str],
+    plan: CoordinationPlan,
+) -> dict[str, Any]:
+    """Bind each non-root final output to the completed native child's body."""
+    messages_by_child = {child_id: message for child_id, message, _ in evidence.completed_child_messages}
+    outputs_by_participant = {output.participant_id: output for output in outputs}
+    plans_by_participant = {participant.candidate_id: participant for participant in plan.participants}
+    bindings: list[dict[str, Any]] = []
+    valid = True
+    for child_id in evidence.spawned_agent_ids:
+        participant_id = participant_by_child.get(child_id)
+        participant = plans_by_participant.get(participant_id) if participant_id is not None else None
+        output = outputs_by_participant.get(participant_id) if participant_id is not None else None
+        marker = expected_markers.get(participant_id, "") if participant_id is not None else ""
+        message = messages_by_child.get(child_id, "")
+        body = _child_contribution_body(message, marker) if marker else None
+        output_matches = body is not None and output is not None and _normalize_contribution(output.content) == body
+        if participant is None or not output_matches:
+            valid = False
+        bindings.append(
+            {
+                "child_thread_id": child_id,
+                "participant_id": participant_id,
+                "assignment": participant.assignment if participant is not None else None,
+                "capabilities": list(participant.capabilities) if participant is not None else [],
+                "output_content_match": output_matches,
+            }
+        )
+    if len(bindings) != max(0, len(plan.participants) - 1):
+        valid = False
+    return {
+        "child_output_bindings": bindings,
+        "child_output_proof_complete": valid,
+    }
+
+
+def _normalize_contribution(value: str) -> str:
+    return value.replace("\r\n", "\n").replace("\r", "\n").strip()
 
 
 def _agent_message(event: Mapping[str, Any]) -> str | None:
