@@ -33,7 +33,11 @@ def _string_tuple(value: object, name: str, *, allow_empty: bool = False) -> tup
 def _positive_number(value: object, name: str) -> float | int:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
         raise ValueError(f"{name} must be positive")
-    if isinstance(value, float) and not math.isfinite(value):
+    try:
+        finite_value = float(value)
+    except (OverflowError, ValueError) as error:
+        raise ValueError(f"{name} must be finite") from error
+    if not math.isfinite(finite_value):
         raise ValueError(f"{name} must be finite")
     return value
 
@@ -41,7 +45,11 @@ def _positive_number(value: object, name: str) -> float | int:
 def _nonnegative_number(value: object, name: str) -> float | int:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
         raise ValueError(f"{name} must be nonnegative")
-    if isinstance(value, float) and not math.isfinite(value):
+    try:
+        finite_value = float(value)
+    except (OverflowError, ValueError) as error:
+        raise ValueError(f"{name} must be finite") from error
+    if not math.isfinite(finite_value):
         raise ValueError(f"{name} must be finite")
     return value
 
@@ -162,14 +170,8 @@ class CoordinationBudget:
 
     def __post_init__(self) -> None:
         _positive_number(self.max_wall_seconds, "max_wall_seconds")
-        if isinstance(self.max_cost, bool) or not isinstance(self.max_cost, (int, float)):
-            raise ValueError("max_cost must be positive")
-        try:
-            decimal_cost = to_decimal(self.max_cost)
-        except ValueError as error:
-            raise ValueError("max_cost must be finite") from error
-        if decimal_cost <= 0:
-            raise ValueError("max_cost must be positive")
+        _positive_number(self.max_cost, "max_cost")
+        to_decimal(self.max_cost)
         for name in ("max_turns", "max_depth", "max_participants", "max_retries", "max_disclosure_bytes"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
@@ -528,6 +530,9 @@ class AttemptSummary:
     failed_participant_ids: tuple[str, ...] = ()
     usage: Mapping[str, JsonValue] = field(default_factory=dict)
     error: str | None = None
+    outputs: tuple[AgentOutput, ...] = ()
+    synthesis: str = ""
+    runtime_evidence: Mapping[str, JsonValue] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if isinstance(self.attempt, bool) or not isinstance(self.attempt, int) or self.attempt < 0:
@@ -537,12 +542,22 @@ class AttemptSummary:
         object.__setattr__(self, "failed_participant_ids", _string_tuple(self.failed_participant_ids, "failed_participant_ids", allow_empty=True))
         if self.error is not None:
             object.__setattr__(self, "error", _nonempty_string(self.error, "error"))
+        outputs = tuple(self.outputs)
+        if not all(isinstance(item, AgentOutput) for item in outputs):
+            raise ValueError("outputs must contain AgentOutput values")
+        object.__setattr__(self, "outputs", outputs)
+        if not isinstance(self.synthesis, str):
+            raise ValueError("synthesis must be a string")
+        object.__setattr__(self, "runtime_evidence", _freeze_json(_mapping(self.runtime_evidence, "runtime_evidence"), "runtime_evidence"))
         object.__setattr__(self, "usage", _freeze_json(_mapping(self.usage, "usage"), "usage"))
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "attempt": self.attempt,
             "status": self.status.value,
+            "outputs": [item.to_dict() for item in self.outputs],
+            "synthesis": self.synthesis,
+            "runtime_evidence": _thaw_json(self.runtime_evidence),
             "failed_participant_ids": list(self.failed_participant_ids),
             "usage": _thaw_json(self.usage),
             "error": self.error,
@@ -576,6 +591,8 @@ class CoordinationResult:
         attempts = tuple(self.attempts)
         if not all(isinstance(item, AttemptSummary) for item in attempts):
             raise ValueError("attempts must contain AttemptSummary values")
+        if len(attempts) > self.plan.budget.max_retries + 1:
+            raise ValueError("attempt history exceeds plan retry bound")
         object.__setattr__(self, "attempts", attempts)
         if self.error is not None:
             object.__setattr__(self, "error", _nonempty_string(self.error, "error"))

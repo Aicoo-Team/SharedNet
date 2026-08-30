@@ -109,6 +109,9 @@ class CoordinationService:
                     failed_participant_ids=result.failed_participant_ids,
                     usage=attempt_usage,
                     error=result.error,
+                    outputs=result.outputs,
+                    synthesis=result.synthesis,
+                    runtime_evidence=result.runtime_evidence,
                 )
             )
             self._accumulate_numeric_usage(usage, attempt_usage)

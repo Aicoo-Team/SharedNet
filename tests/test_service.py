@@ -6,6 +6,7 @@ from dataclasses import replace
 import unittest
 
 from sharednet.coordination.models import (
+    AgentOutput,
     Candidate,
     CandidateMode,
     CoordinationPlan,
@@ -169,6 +170,54 @@ class MutatingBackend:
 
 
 class ServiceTests(unittest.TestCase):
+    def test_retries_preserve_complete_evidence_for_every_runtime_attempt(self) -> None:
+        from sharednet.coordination.service import CoordinationService
+
+        def first_partial(plan):
+            return CoordinationResult(
+                status=TerminalStatus.PARTIAL,
+                plan=plan,
+                outputs=(AgentOutput("self", "partial analysis", "attempt-0", {"confidence": 0.4}),),
+                synthesis="partial synthesis",
+                runtime_evidence={"provider": "codex", "events": ["child_failed"]},
+                failed_participant_ids=("self",),
+                usage={"tokens": 11},
+                error="child_failed",
+            )
+
+        def second_accepted(plan):
+            participant_id = plan.participant_ids[0]
+            return CoordinationResult(
+                status=TerminalStatus.ACCEPTED,
+                plan=plan,
+                outputs=(AgentOutput(participant_id, "final answer", "attempt-1", {"confidence": 0.9}),),
+                synthesis="final synthesis",
+                runtime_evidence={"provider": "codex", "events": ["completed"]},
+                usage={"tokens": 17},
+            )
+
+        result = CoordinationService().execute(
+            adaptive_request(max_retries=1),
+            ScriptedRuntime([first_partial, second_accepted]),
+        )
+
+        self.assertEqual(result.status, TerminalStatus.ACCEPTED)
+        self.assertEqual(result.synthesis, "final synthesis")
+        self.assertEqual(result.outputs[0].content, "final answer")
+        self.assertEqual(len(result.attempts), 2)
+        self.assertEqual(result.attempts[0].status, TerminalStatus.PARTIAL)
+        self.assertEqual(result.attempts[0].outputs[0].content, "partial analysis")
+        self.assertEqual(result.attempts[0].synthesis, "partial synthesis")
+        self.assertEqual(result.attempts[0].runtime_evidence["events"], ("child_failed",))
+        self.assertEqual(result.attempts[0].failed_participant_ids, ("self",))
+        self.assertEqual(result.attempts[0].usage, {"tokens": 11, "planned_turns": 4})
+        self.assertEqual(result.attempts[0].error, "child_failed")
+        self.assertEqual(result.attempts[1].status, TerminalStatus.ACCEPTED)
+        self.assertEqual(result.attempts[1].outputs[0].content, "final answer")
+        self.assertEqual(result.attempts[1].synthesis, "final synthesis")
+        self.assertEqual(result.attempts[1].runtime_evidence["events"], ("completed",))
+        self.assertEqual(len(result.to_dict()["attempts"]), 2)
+
     def test_execute_accepts_a_valid_tiny_cost_budget(self) -> None:
         from sharednet.coordination.service import CoordinationService
 
@@ -297,6 +346,8 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(terminal_replan["reason"], "no_eligible_candidates")
         self.assertEqual(terminal_replan["plan"]["terminal_status"], "abstained")
         self.assertEqual(len(result.attempts), 1)
+        self.assertEqual(result.attempts[0].synthesis, "partial synthesis")
+        self.assertEqual(result.attempts[0].runtime_evidence, {"source": "scripted", "attempt": 0})
 
     def test_post_attempt_discovery_requester_exclusion_preserves_completed_evidence(self) -> None:
         from sharednet.coordination.service import CoordinationService
@@ -762,6 +813,8 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(result.runtime_evidence, {"source": "scripted", "attempt": 1})
         self.assertEqual(result.usage, {"tokens": 7, "seconds": 2.0, "planned_turns": 7})
         self.assertEqual([attempt.error for attempt in result.attempts], ["participant_failed", "second_failure"])
+        self.assertEqual([attempt.synthesis for attempt in result.attempts], ["partial synthesis", "partial synthesis"])
+        self.assertEqual([attempt.runtime_evidence["attempt"] for attempt in result.attempts], [0, 1])
 
 
 if __name__ == "__main__":

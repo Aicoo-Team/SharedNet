@@ -56,3 +56,32 @@ Fresh focused regression: Ran 51 tests in 0.018s — OK
 ## Coordination note
 
 The planner worker was given the stable cost helper signatures and wired `ParticipantPlan(mode=candidate.mode)` in its separately owned common planner path. No backend, runtime, packaging, or documentation file was staged by this slice.
+
+## Evidence-lineage and numeric follow-up
+
+The final scoped re-review identified that the bounded attempt history retained status and usage but dropped each runtime result's raw outputs, partial synthesis, and provider evidence. `AttemptSummary` now immutably retains and serializes outputs, synthesis, and runtime evidence in addition to its existing failed IDs, usage, status, and error. The service populates every field before retrying, so a final accepted result carries the full evidence from earlier failed/partial attempts. `CoordinationResult` rejects attempt histories longer than `max_retries + 1`.
+
+The shared positive/nonnegative numeric validators now require every accepted `int` or `float` to convert to a finite float. This rejects values such as `10**400` at construction for wall time, max cost, candidate predictions, and participant predicted cost, before any planner/service float conversion. Exact Decimal cost comparison and valid `1e-13` budgets remain unchanged.
+
+Follow-up RED:
+
+```text
+Attempt evidence + huge numeric values:
+Ran 3 tests in 0.005s
+FAILED (failures=1, errors=2)
+
+Attempt-history bound:
+Ran 1 test in 0.001s
+FAILED (failures=1)
+```
+
+Follow-up GREEN:
+
+```text
+Focused new behaviors: Ran 4 tests in 0.009s — OK
+Fresh models/service: Ran 55 tests in 0.050s — OK
+Relevant planners: Ran 28 tests in 0.008s — OK
+Full non-runtime suite: Ran 106 tests in 0.236s — OK (skipped=1)
+```
+
+Fresh `compileall` and owned-path `git diff --check` also completed with no output.

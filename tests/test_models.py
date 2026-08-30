@@ -66,6 +66,65 @@ def plan_with(*participants: ParticipantPlan) -> CoordinationPlan:
 
 
 class ModelTests(unittest.TestCase):
+    def test_attempt_summary_preserves_immutable_runtime_evidence(self) -> None:
+        source_evidence = {"provider": {"events": ["partial"]}}
+        summary = AttemptSummary(
+            0,
+            TerminalStatus.PARTIAL,
+            ("helper",),
+            {"tokens": 5},
+            "needs_retry",
+            (AgentOutput("helper", "partial answer", "marker-1", {"source": "codex"}),),
+            "partial synthesis",
+            source_evidence,
+        )
+        source_evidence["provider"]["events"].append("mutated")
+
+        self.assertEqual(summary.outputs[0].content, "partial answer")
+        self.assertEqual(summary.synthesis, "partial synthesis")
+        self.assertEqual(summary.runtime_evidence["provider"]["events"], ("partial",))
+        self.assertEqual(
+            summary.to_dict(),
+            {
+                "attempt": 0,
+                "status": "partial",
+                "outputs": [
+                    {
+                        "participant_id": "helper",
+                        "content": "partial answer",
+                        "marker": "marker-1",
+                        "evidence": {"source": "codex"},
+                    }
+                ],
+                "synthesis": "partial synthesis",
+                "runtime_evidence": {"provider": {"events": ["partial"]}},
+                "failed_participant_ids": ["helper"],
+                "usage": {"tokens": 5},
+                "error": "needs_retry",
+            },
+        )
+
+    def test_numeric_contracts_reject_values_that_cannot_be_finite_floats(self) -> None:
+        huge = 10**400
+
+        with self.assertRaisesRegex(ValueError, "max_cost must be finite"):
+            CoordinationBudget(max_cost=huge)
+        with self.assertRaisesRegex(ValueError, "max_wall_seconds must be finite"):
+            CoordinationBudget(max_wall_seconds=huge)
+        with self.assertRaisesRegex(ValueError, "predicted_cost must be finite"):
+            candidate("huge-cost", predicted_cost=huge)
+        with self.assertRaisesRegex(ValueError, "predicted_quality must be finite"):
+            candidate("huge-quality", predicted_quality=huge)
+        with self.assertRaisesRegex(ValueError, "predicted_cost must be finite"):
+            ParticipantPlan("helper", "worker", "work", (), "selected", (), huge)
+
+    def test_result_rejects_attempt_history_beyond_plan_retry_bound(self) -> None:
+        plan = plan_with()
+        attempts = tuple(AttemptSummary(index, TerminalStatus.FAILED) for index in range(3))
+
+        with self.assertRaisesRegex(ValueError, "attempt history exceeds plan retry bound"):
+            CoordinationResult(TerminalStatus.FAILED, plan, attempts=attempts)
+
     def test_decimal_cost_utilities_enforce_exact_bounds(self) -> None:
         from sharednet.coordination.costs import fits_cost_budget, remaining_cost, sum_costs, to_decimal
 
