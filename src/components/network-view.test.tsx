@@ -57,9 +57,11 @@ describe("SharedNet Network", () => {
     expect(within(connectedPrincipal).getByText("@aicoo/vercel")).toBeTruthy();
     expect(within(connectedPrincipal).getByText("@aicoo/quality")).toBeTruthy();
     expect(screen.getByText("@xisen ↔ @aicoo")).toBeTruthy();
-    expect(screen.getByText("Intra-Principal boundary")).toBeTruthy();
-    expect(screen.getByText("Cross-Principal connection")).toBeTruthy();
-    expect(screen.getByText("Task recruitment")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Network" })).toBeTruthy();
+    expect(screen.queryByText("The network around you.")).toBeNull();
+    expect(screen.queryByText("Intra-Principal boundary")).toBeNull();
+    expect(screen.queryByText("Cross-Principal connection")).toBeNull();
+    expect(screen.queryByText("Task recruitment")).toBeNull();
   });
 
   it("reveals AgentCard runtime metadata and usage without a fourth page", () => {
@@ -90,6 +92,6 @@ describe("SharedNet Network", () => {
     fireEvent.click(screen.getByRole("button", { name: "Deny recruitment" }));
     expect(within(connectedPrincipal).getAllByText("DECLINED")).toHaveLength(5);
     expect(within(connectedPrincipal).queryByText("TASK")).toBeNull();
-    expect(screen.getByText("Denied · 5 Agents")).toBeTruthy();
+    expect(screen.getByText("5 declined")).toBeTruthy();
   });
 });

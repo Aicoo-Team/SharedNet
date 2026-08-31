@@ -32,15 +32,9 @@ export function AppShell({ children }: { children: ReactNode }) {
       </a>
       <header className="app-header">
         <div className="header-inner">
-          <div className="brand-cluster" aria-label="SharedNet demo">
-            <span className="brand-mark" aria-hidden="true">
-              <i />
-              <i />
-              <i />
-            </span>
-            <span className="brand-name">SharedNet</span>
-            <span className="demo-label">DEMO NETWORK</span>
-          </div>
+          <Link className="brand-name" href="/chat">
+            SharedNet
+          </Link>
 
           <nav className="primary-nav" aria-label="Primary">
             {navigation.map((item) => {
@@ -61,7 +55,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                   {item.label}
                   {item.href === "/decisions" && pendingCount > 0 ? (
                     <span className="decision-count" data-count={pendingCount}>
-                      {pendingCount} pending
+                      {pendingCount}
                     </span>
                   ) : null}
                 </Link>
@@ -69,37 +63,12 @@ export function AppShell({ children }: { children: ReactNode }) {
             })}
           </nav>
 
-          <details className="usage-details">
-            <summary
-              aria-label={`Open platform usage ledger: ${formatTokenCount(usage.totalTokens)} tokens, $${usage.costUsd.toFixed(2)}`}
-            >
-              <span data-compact={formatTokenCount(usage.totalTokens)}>
-                {formatTokenCount(usage.totalTokens)} tokens
-              </span>
-              <strong>${usage.costUsd.toFixed(2)}</strong>
-            </summary>
-            <div className="usage-popover">
-              <p className="eyebrow">Platform usage · demo</p>
-              <dl>
-                <div>
-                  <dt>Input</dt>
-                  <dd>{usage.inputTokens.toLocaleString()}</dd>
-                </div>
-                <div>
-                  <dt>Output</dt>
-                  <dd>{usage.outputTokens.toLocaleString()}</dd>
-                </div>
-                <div>
-                  <dt>Cached</dt>
-                  <dd>{usage.cachedTokens.toLocaleString()}</dd>
-                </div>
-                <div>
-                  <dt>Normalized cost</dt>
-                  <dd>${usage.costUsd.toFixed(3)}</dd>
-                </div>
-              </dl>
-            </div>
-          </details>
+          <p
+            className="usage-ledger"
+            aria-label={`Platform usage: ${formatTokenCount(usage.totalTokens)} tokens, $${usage.costUsd.toFixed(2)}`}
+          >
+            {formatTokenCount(usage.totalTokens)} · ${usage.costUsd.toFixed(2)}
+          </p>
         </div>
       </header>
       <main id="main-content">{children}</main>

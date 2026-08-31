@@ -10,7 +10,7 @@ vi.mock("next/navigation", () => ({
 describe("SharedNet application shell", () => {
   beforeEach(() => window.localStorage.clear());
 
-  it("keeps the product frame to three destinations and exposes network state", () => {
+  it("keeps the product frame to three quiet destinations and one compact ledger", () => {
     render(
       <SharedNetDemoProvider>
         <AppShell>
@@ -33,12 +33,11 @@ describe("SharedNet application shell", () => {
       "href",
       "/decisions",
     );
-    expect(screen.getByText("DEMO NETWORK")).toBeTruthy();
-    expect(screen.getByText("2 pending")).toBeTruthy();
-    expect(screen.getByText("15.7k tokens")).toBeTruthy();
-    expect(screen.getByText("$0.08")).toBeTruthy();
+    expect(screen.queryByText("DEMO NETWORK")).toBeNull();
+    expect(screen.getByText("2", { selector: ".decision-count" })).toBeTruthy();
     expect(
-      screen.getByLabelText("Open platform usage ledger: 15.7k tokens, $0.08"),
-    ).toBeTruthy();
+      screen.getByLabelText("Platform usage: 15.7k tokens, $0.08"),
+    ).toHaveTextContent("15.7k · $0.08");
+    expect(screen.queryByText("Normalized cost")).toBeNull();
   });
 });

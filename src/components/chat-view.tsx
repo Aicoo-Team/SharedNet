@@ -1,17 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { ArrowRight, Check, CornerDownLeft, ExternalLink } from "lucide-react";
-import { type FormEvent, useMemo, useRef, useState } from "react";
+import { type FormEvent, useMemo, useState } from "react";
 import { useSharedNetDemo } from "@/src/context/sharednet-demo-context";
 import {
   aggregateUsage,
   type TranscriptMessage,
 } from "@/src/domain/network-demo";
 import { formatTokenCount } from "./app-shell";
-
-const EXAMPLE_PROMPT =
-  "Build and launch a customer feedback website. Research the product, use Neon for data, deploy on Vercel, and independently verify it.";
 
 function MessageBlock({ message }: { message: TranscriptMessage }) {
   const { state } = useSharedNetDemo();
@@ -46,9 +42,6 @@ function MessageBlock({ message }: { message: TranscriptMessage }) {
 
   return (
     <article className={`transcript-entry transcript-${message.kind}`}>
-      <div className="entry-gutter" aria-hidden="true">
-        <span>{message.kind === "plan" ? "P" : message.kind === "result" ? "R" : "·"}</span>
-      </div>
       <div className="entry-body">
         <p className="entry-author">
           {agent?.handle ?? "SharedNet"}
@@ -68,7 +61,7 @@ function MessageBlock({ message }: { message: TranscriptMessage }) {
         {message.kind === "coordination" ? (
           <div className="candidate-world" aria-label="Selected Agent organization">
             <div>
-              <p className="candidate-label">Your Principal · accountable</p>
+              <p className="candidate-label">Your Principal</p>
               <ul>
                 {involvedAgents
                   .filter((candidate) => candidate.principalId === "principal-xisen")
@@ -78,7 +71,7 @@ function MessageBlock({ message }: { message: TranscriptMessage }) {
               </ul>
             </div>
             <div>
-              <p className="candidate-label">Aicoo · requested specialists</p>
+              <p className="candidate-label">Aicoo · requested</p>
               <ul>
                 {involvedAgents
                   .filter((candidate) => candidate.principalId === "principal-aicoo")
@@ -92,11 +85,11 @@ function MessageBlock({ message }: { message: TranscriptMessage }) {
 
         {message.kind === "work" && message.contributions ? (
           <section className="work-ledger" aria-label="Agent work ledger">
-            <header>
-              <p>Agent</p>
-              <p>Accepted contribution</p>
-              <p>State</p>
-            </header>
+            <div className="work-ledger-head" aria-hidden="true">
+              <span>Agent</span>
+              <span>Contribution</span>
+              <span>State</span>
+            </div>
             <ul>
               {message.contributions.map((contribution) => {
                 const contributor = state.agents.find(
@@ -109,15 +102,12 @@ function MessageBlock({ message }: { message: TranscriptMessage }) {
                       <strong>{contributor.handle}</strong>
                       <span>
                         {contributor.principalId === "principal-xisen"
-                          ? "Your Principal"
-                          : "Aicoo · external"}
+                          ? "yours"
+                          : "Aicoo"}
                       </span>
                     </div>
                     <p>{contribution.output}</p>
-                    <span className="work-state">
-                      <Check aria-hidden="true" size={12} />
-                      simulated
-                    </span>
+                    <span className="work-state">simulated</span>
                   </li>
                 );
               })}
@@ -125,35 +115,10 @@ function MessageBlock({ message }: { message: TranscriptMessage }) {
           </section>
         ) : null}
 
-        {message.kind === "result" ? (
-          <div className="result-preview" aria-label="Demo website preview">
-            <div className="preview-browser-bar">
-              <span />
-              <span />
-              <span />
-              <p>feedback.example</p>
-            </div>
-            <div className="preview-site">
-              <div>
-                <p className="preview-brand">Signalboard</p>
-                <p className="preview-kicker">Customer feedback, in one clear queue.</p>
-              </div>
-              <div className="preview-items" aria-hidden="true">
-                <i />
-                <i />
-                <i />
-              </div>
-            </div>
-            <p className="preview-disclaimer">
-              Simulated handoff · no external runtime or provider was invoked
-            </p>
-          </div>
-        ) : null}
-
         {message.actionHref && actionLabel ? (
           <Link className="text-action" href={message.actionHref}>
             {actionLabel}
-            <ArrowRight aria-hidden="true" size={15} strokeWidth={1.8} />
+            <span aria-hidden="true">→</span>
           </Link>
         ) : null}
       </div>
@@ -164,7 +129,6 @@ function MessageBlock({ message }: { message: TranscriptMessage }) {
 export function ChatView() {
   const { state, submitPrompt, resetDemo } = useSharedNetDemo();
   const [draft, setDraft] = useState("");
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const latestTask = state.tasks.at(-1);
   const taskUsage = useMemo(
     () =>
@@ -183,11 +147,6 @@ export function ChatView() {
     setDraft("");
   }
 
-  function useExample() {
-    setDraft(EXAMPLE_PROMPT);
-    textareaRef.current?.focus();
-  }
-
   const composer = (
     <form className="chat-composer" onSubmit={handleSubmit}>
       <label className="sr-only" htmlFor="task-prompt">
@@ -195,7 +154,6 @@ export function ChatView() {
       </label>
       <textarea
         id="task-prompt"
-        ref={textareaRef}
         value={draft}
         onChange={(event) => setDraft(event.target.value)}
         onKeyDown={(event) => {
@@ -204,15 +162,12 @@ export function ChatView() {
           }
         }}
         placeholder="Describe an outcome…"
-        rows={3}
+        rows={4}
       />
       <div className="composer-footer">
-        <p>
-          <CornerDownLeft aria-hidden="true" size={13} />
-          ⌘ Enter
-        </p>
+        <span>⌘ Enter</span>
         <button type="submit" disabled={!draft.trim()} aria-label="Send task">
-          <ArrowRight aria-hidden="true" size={19} />
+          <span aria-hidden="true">→</span>
         </button>
       </div>
     </form>
@@ -222,23 +177,8 @@ export function ChatView() {
     return (
       <section className="chat-empty page-frame">
         <div className="chat-empty-inner">
-          <p className="eyebrow">Website launch V1 · one outcome</p>
           <h1>What do you want done?</h1>
-          <p className="chat-empty-copy">
-            This canonical website-launch flow lets your Planning Agent decide what
-            to do itself, what to parallelize, and when the network is worth involving.
-          </p>
           {composer}
-          <button
-            className="example-prompt"
-            type="button"
-            onClick={useExample}
-            aria-label="Try a website launch"
-          >
-            <span>Try a website launch</span>
-            Build, connect Neon, deploy to Vercel, verify
-            <ExternalLink aria-hidden="true" size={14} />
-          </button>
         </div>
       </section>
     );
@@ -246,10 +186,9 @@ export function ChatView() {
 
   return (
     <section className="chat-thread">
-      <div className="thread-heading">
-        <p className="eyebrow">Task thread · simulated execution</p>
+      <header className="thread-heading">
         <h1>{latestTask?.prompt}</h1>
-      </div>
+      </header>
 
       <div className="transcript" aria-live="polite">
         {state.messages.map((message) => (
@@ -259,37 +198,18 @@ export function ChatView() {
 
       {latestTask ? (
         <section className="task-usage" aria-labelledby="task-usage-title">
+          <p id="task-usage-title">Task usage</p>
           <div>
-            <p className="eyebrow" id="task-usage-title">
-              Task usage
-            </p>
             <strong>{formatTokenCount(taskUsage.totalTokens)} tokens</strong>
+            <span>${taskUsage.costUsd.toFixed(2)}</span>
           </div>
-          <dl>
-            <div>
-              <dt>Input</dt>
-              <dd>{taskUsage.inputTokens.toLocaleString()}</dd>
-            </div>
-            <div>
-              <dt>Output</dt>
-              <dd>{taskUsage.outputTokens.toLocaleString()}</dd>
-            </div>
-            <div>
-              <dt>Cached</dt>
-              <dd>{taskUsage.cachedTokens.toLocaleString()}</dd>
-            </div>
-            <div>
-              <dt>Cost</dt>
-              <dd>${taskUsage.costUsd.toFixed(2)}</dd>
-            </div>
-          </dl>
         </section>
       ) : null}
 
       <div className="thread-reset-wrap">
         <button type="button" className="text-action" onClick={resetDemo}>
-          Start another website launch
-          <ArrowRight aria-hidden="true" size={15} strokeWidth={1.8} />
+          New task
+          <span aria-hidden="true">→</span>
         </button>
       </div>
     </section>

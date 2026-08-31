@@ -1,6 +1,5 @@
 "use client";
 
-import { Check, Cloud, Laptop, Network, Server, Zap } from "lucide-react";
 import { useSharedNetDemo } from "@/src/context/sharednet-demo-context";
 import {
   aggregateUsage,
@@ -9,12 +8,6 @@ import {
   type TaskRecruitment,
 } from "@/src/domain/network-demo";
 import { formatTokenCount } from "./app-shell";
-
-function RuntimeIcon({ kind }: { kind: Agent["runtime"]["kind"] }) {
-  if (kind === "local") return <Laptop aria-hidden="true" size={14} />;
-  if (kind === "vpc") return <Server aria-hidden="true" size={14} />;
-  return <Cloud aria-hidden="true" size={14} />;
-}
 
 function PrincipalRegion({
   principal,
@@ -39,23 +32,15 @@ function PrincipalRegion({
 
   return (
     <section
-      className={`principal-region ${isOwn ? "principal-own" : "principal-connected"}`}
+      className="principal-region"
       aria-label={`${isOwn ? "Your" : "Connected"} Principal ${principal.handle}`}
     >
       <header className="principal-header">
         <div>
-          <p className="eyebrow">
-            {isOwn ? "Your Principal" : "Connected Principal"}
-          </p>
-          <h2>
-            {principal.name} <span>{principal.handle}</span>
-          </h2>
-          <p>{principal.summary}</p>
+          <p>{isOwn ? "Your Principal" : "Connected Principal"}</p>
+          <h2>{principal.handle}</h2>
         </div>
-        <div className="principal-usage" aria-label={`${principal.handle} usage`}>
-          <strong>{formatTokenCount(usageTokens)}</strong>
-          <span>${usageCost.toFixed(2)}</span>
-        </div>
+        <span>{formatTokenCount(usageTokens)} · ${usageCost.toFixed(2)}</span>
       </header>
 
       <div className="agent-list">
@@ -69,6 +54,7 @@ function PrincipalRegion({
                 ? "DECLINED"
                 : "REQUESTED"
             : null;
+
           return (
             <button
               type="button"
@@ -76,7 +62,6 @@ function PrincipalRegion({
               aria-label={`Inspect ${agent.handle}`}
               aria-pressed={isSelected}
               data-selected={isSelected ? "true" : undefined}
-              data-recruitment={isInRecruitment ? recruitmentStatus : undefined}
               key={agent.id}
               onClick={() => onSelect(agent.id)}
             >
@@ -84,16 +69,13 @@ function PrincipalRegion({
               <span className="agent-identity">
                 <span>
                   <strong>{agent.handle}</strong>
-                  {agent.official ? <em>OFFICIAL</em> : null}
-                  {recruitmentLabel ? (
-                    <em className="recruitment-label">{recruitmentLabel}</em>
-                  ) : null}
+                  {agent.official ? <em>official</em> : null}
                 </span>
                 <small>{agent.role}</small>
               </span>
-              <span className="agent-runtime">
-                <RuntimeIcon kind={agent.runtime.kind} />
-                {agent.runtime.kind}
+              <span className="agent-row-meta">
+                {recruitmentLabel ? <strong>{recruitmentLabel}</strong> : null}
+                <span>{agent.runtime.kind}</span>
               </span>
             </button>
           );
@@ -133,16 +115,17 @@ export function NetworkView() {
   const connectedUsage = aggregateUsage(
     state.usage.filter((entry) => entry.principalId === connectedPrincipal.id),
   );
+  const recruitmentState =
+    latestRecruitment?.status === "approved"
+      ? "recruited"
+      : latestRecruitment?.status === "denied"
+        ? "declined"
+        : "requested";
 
   return (
     <div className="network-page page-frame">
-      <header className="page-intro network-intro">
-        <p className="eyebrow">Principal graph · 2 connected</p>
-        <h1>The network around you.</h1>
-        <p>
-          Your Agents share one identity boundary. A Principal connection lets them
-          discover and request specialists without pretending those Agents belong to you.
-        </p>
+      <header className="simple-page-heading">
+        <h1>Network</h1>
       </header>
 
       <section className="network-topology" aria-label="SharedNet Principal topology">
@@ -158,19 +141,16 @@ export function NetworkView() {
         />
 
         <div className="principal-bridge" aria-label="Principal connection">
-          <span className="bridge-node" aria-hidden="true" />
-          <div className="bridge-line" aria-hidden="true">
-            <i />
-          </div>
-          <div className="bridge-copy">
-            <p>Principal connection</p>
-            <strong>@xisen ↔ @aicoo</strong>
-            <span>AgentCards + task requests</span>
-          </div>
-          <div className="bridge-line bridge-line-right" aria-hidden="true">
-            <i />
-          </div>
-          <span className="bridge-node" aria-hidden="true" />
+          <span aria-hidden="true" />
+          <strong>@xisen ↔ @aicoo</strong>
+          {latestRecruitment ? (
+            <p>
+              {latestRecruitment.agentIds.length} {recruitmentState}
+            </p>
+          ) : (
+            <p>connected</p>
+          )}
+          <span aria-hidden="true" />
         </div>
 
         <PrincipalRegion
@@ -185,90 +165,48 @@ export function NetworkView() {
         />
       </section>
 
-      <section className="network-legend" aria-label="Network relationship legend">
-        <div>
-          <span className="legend-boundary" aria-hidden="true" />
-          <p>
-            <strong>Intra-Principal boundary</strong>
-            Persistent Agents governed by the same owner and policy boundary.
-          </p>
-        </div>
-        <div>
-          <span className="legend-solid" aria-hidden="true" />
-          <p>
-            <strong>Cross-Principal connection</strong>
-            A durable discovery and messaging relationship between two Principals.
-          </p>
-        </div>
-        <div>
-          <span className="legend-dashed" aria-hidden="true" />
-          <p>
-            <strong>Task recruitment</strong>
-            {latestRecruitment
-              ? `${latestRecruitment.status[0]?.toUpperCase()}${latestRecruitment.status.slice(1)} · ${latestRecruitment.agentIds.length} Agents`
-              : "No task-scoped request yet"}
-          </p>
-        </div>
-      </section>
-
       <section className="agent-details" aria-label="Agent details">
         <header>
           <div>
-            <p className="eyebrow">
-              AgentCard · {selectedPrincipal.handle}
-            </p>
+            <p>{selectedPrincipal.handle}</p>
             <h2>{selectedAgent.handle}</h2>
-            <p>{selectedAgent.summary}</p>
           </div>
-          <span className={`agent-status agent-status-${selectedAgent.status}`}>
-            {selectedAgent.status}
-          </span>
+          <span>{selectedAgent.status}</span>
         </header>
+        <p className="agent-summary">{selectedAgent.summary}</p>
 
-        <div className="agent-facts">
+        <dl className="agent-facts">
           <div>
-            <p className="fact-label">Execution endpoint</p>
-            <strong>
-              <RuntimeIcon kind={selectedAgent.runtime.kind} />
-              {selectedAgent.runtime.label}
-            </strong>
-            <span>{selectedAgent.runtime.environment}</span>
+            <dt>Runtime</dt>
+            <dd>
+              <strong>{selectedAgent.runtime.label}</strong>
+              <span>{selectedAgent.runtime.environment}</span>
+            </dd>
           </div>
           <div>
-            <p className="fact-label">Discoverability</p>
-            <strong>
-              <Network aria-hidden="true" size={14} />
-              {selectedAgent.discoverability === "connections"
-                ? "Connections can discover"
-                : "Private to Principal"}
-            </strong>
-            <span>
-              {selectedAgent.official
-                ? "Published by the Aicoo Principal"
-                : "Governed by your Principal policy"}
-            </span>
+            <dt>Discoverability</dt>
+            <dd>
+              <strong>
+                {selectedAgent.discoverability === "connections"
+                  ? "Connections can discover"
+                  : "Private to Principal"}
+              </strong>
+              <span>{selectedAgent.official ? "Published by Aicoo" : "Your policy"}</span>
+            </dd>
           </div>
           <div>
-            <p className="fact-label">Platform usage</p>
-            <strong>
-              <Zap aria-hidden="true" size={14} />
-              {formatTokenCount(selectedUsage.totalTokens)} tokens
-            </strong>
-            <span>${selectedUsage.costUsd.toFixed(3)} normalized cost</span>
+            <dt>Usage</dt>
+            <dd>
+              <strong>{formatTokenCount(selectedUsage.totalTokens)} tokens</strong>
+              <span>${selectedUsage.costUsd.toFixed(3)}</span>
+            </dd>
           </div>
-        </div>
+        </dl>
 
-        <div className="agent-capabilities">
-          <p className="fact-label">Capabilities</p>
-          <ul>
-            {selectedAgent.capabilities.map((capability) => (
-              <li key={capability}>
-                <Check aria-hidden="true" size={12} />
-                {capability}
-              </li>
-            ))}
-          </ul>
-        </div>
+        <p className="agent-capabilities">
+          <span>Capabilities</span>
+          {selectedAgent.capabilities.join(" · ")}
+        </p>
       </section>
     </div>
   );

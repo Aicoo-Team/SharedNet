@@ -43,10 +43,9 @@ describe("SharedNet Chat", () => {
     expect(screen.getByRole("heading", { name: "What do you want done?" })).toBeTruthy();
     expect(screen.getByLabelText("What do you want done?")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Send task" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Try a website launch" })).toBeTruthy();
-    expect(screen.getByText(/canonical website-launch flow/i)).toBeTruthy();
-    expect(screen.queryByText("Shape the product")).toBeNull();
-    expect(screen.queryByText("Requirement readiness")).toBeNull();
+    expect(screen.getAllByRole("textbox")).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: "Try a website launch" })).toBeNull();
+    expect(screen.queryByText(/canonical website-launch flow/i)).toBeNull();
   });
 
   it("plans and forms a mixed-Principal organization inside the conversation", () => {
@@ -73,6 +72,7 @@ describe("SharedNet Chat", () => {
     );
     expect(screen.getByText("36.6k tokens")).toBeTruthy();
     expect(screen.getByText("$0.21")).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "Demo website preview" })).toBeNull();
     expect(
       screen.getByRole("heading", {
         level: 1,

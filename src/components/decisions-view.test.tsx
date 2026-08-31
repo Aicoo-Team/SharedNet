@@ -41,9 +41,11 @@ describe("SharedNet Decisions", () => {
     expect(screen.getByRole("heading", { name: "Connect Neon and Vercel for launch?" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Approve demo scopes" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Review access" })).toBeNull();
+    expect(screen.getByRole("heading", { level: 1, name: "Decisions" })).toBeTruthy();
+    expect(screen.queryByText("Only the decisions that need you.")).toBeNull();
   });
 
-  it("moves a resolved decision into the audit section instead of deleting it", () => {
+  it("moves a resolved decision into collapsed history instead of deleting it", () => {
     renderDecisions();
     const pending = screen.getByRole("region", { name: "Pending decisions" });
     const title = "Aicoo wants to use your Research Agent";
@@ -51,11 +53,14 @@ describe("SharedNet Decisions", () => {
     fireEvent.click(within(pending).getByRole("button", { name: "Allow once" }));
 
     expect(within(pending).queryByRole("heading", { name: title })).toBeNull();
-    const resolved = screen.getByRole("region", { name: "Resolved decisions" });
-    expect(within(resolved).getByRole("heading", { name: title })).toBeTruthy();
-    expect(within(resolved).getByText("Approved")).toBeTruthy();
+    const history = screen.getByText("History", { selector: "summary *" }).closest("details");
+    expect(history).not.toHaveAttribute("open");
     expect(document.activeElement).toBe(
       within(pending).getByRole("button", { name: "Run in Cloud" }),
     );
+    fireEvent.click(screen.getByText("History", { selector: "summary *" }));
+    const resolved = screen.getByRole("region", { name: "Resolved decisions" });
+    expect(within(resolved).getByRole("heading", { name: title })).toBeTruthy();
+    expect(within(resolved).getByText("Approved")).toBeTruthy();
   });
 });

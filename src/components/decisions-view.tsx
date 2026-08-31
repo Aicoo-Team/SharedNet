@@ -1,12 +1,5 @@
 "use client";
 
-import {
-  ArrowDownToLine,
-  GitFork,
-  KeyRound,
-  ShieldCheck,
-  UserRoundPlus,
-} from "lucide-react";
 import { useEffect, useState } from "react";
 import { useSharedNetDemo } from "@/src/context/sharednet-demo-context";
 import { type Decision, type DecisionType } from "@/src/domain/network-demo";
@@ -17,13 +10,6 @@ const decisionLabels: Record<DecisionType, string> = {
   authorization: "Authorization",
   plan: "Plan choice",
 };
-
-function DecisionIcon({ type }: { type: DecisionType }) {
-  if (type === "recruitment") return <UserRoundPlus aria-hidden="true" size={17} />;
-  if (type === "inbound_use") return <ArrowDownToLine aria-hidden="true" size={17} />;
-  if (type === "authorization") return <KeyRound aria-hidden="true" size={17} />;
-  return <GitFork aria-hidden="true" size={17} />;
-}
 
 function DecisionRow({
   decision,
@@ -39,33 +25,17 @@ function DecisionRow({
   const requester = state.agents.find(
     (agent) => agent.id === decision.requestedByAgentId,
   );
-  const subjects = decision.subjectAgentIds
-    .map((agentId) => state.agents.find((agent) => agent.id === agentId))
-    .filter((agent) => agent !== undefined);
   const isPending = decision.status === "pending";
 
   return (
     <article className="decision-row" data-status={decision.status}>
-      <div className="decision-type">
-        <DecisionIcon type={decision.type} />
-        <span>{decisionLabels[decision.type]}</span>
-      </div>
-
       <div className="decision-content">
-        <p className="decision-requester">Requested by {requester?.handle}</p>
-        <h2>{decision.title}</h2>
-        <p className="decision-description">{decision.description}</p>
-
-        <div className="decision-subjects" aria-label="Agents in scope">
-          {subjects.map((agent) => (
-            <span key={agent.id}>{agent.handle}</span>
-          ))}
-        </div>
-
-        <p className="decision-consequence">
-          <strong>What changes</strong>
-          {decision.consequence}
+        <p className="decision-meta">
+          <span>{decisionLabels[decision.type]}</span>
+          <span>requested by {requester?.handle}</span>
         </p>
+        <h2>{decision.title}</h2>
+        <p className="decision-consequence">{decision.consequence}</p>
       </div>
 
       <div className="decision-resolution">
@@ -90,12 +60,8 @@ function DecisionRow({
           <div
             className={`resolution-stamp resolution-${decision.status}`}
             id={`decision-resolution-${decision.id}`}
-            tabIndex={-1}
           >
-            <ShieldCheck aria-hidden="true" size={16} />
-            <strong>
-              {decision.status === "approved" ? "Approved" : "Denied"}
-            </strong>
+            <strong>{decision.status === "approved" ? "Approved" : "Denied"}</strong>
             <span>Recorded in audit log</span>
           </div>
         )}
@@ -103,6 +69,7 @@ function DecisionRow({
     </article>
   );
 }
+
 export function DecisionsView() {
   const { state, resolveDecision } = useSharedNetDemo();
   const [lastResolvedDecisionId, setLastResolvedDecisionId] = useState<string | null>(
@@ -116,10 +83,10 @@ export function DecisionsView() {
     const nextPendingAction = document.querySelector<HTMLButtonElement>(
       '[data-decision-list="pending"] .decision-approve',
     );
-    const resolvedStatus = document.getElementById(
-      `decision-resolution-${lastResolvedDecisionId}`,
+    const historySummary = document.querySelector<HTMLElement>(
+      ".decision-history summary",
     );
-    (nextPendingAction ?? resolvedStatus)?.focus();
+    (nextPendingAction ?? historySummary)?.focus();
     setLastResolvedDecisionId(null);
   }, [lastResolvedDecisionId, pending.length]);
 
@@ -133,33 +100,12 @@ export function DecisionsView() {
 
   return (
     <div className="decisions-page page-frame">
-      <header className="page-intro decisions-intro">
-        <p className="eyebrow">Authority inbox</p>
-        <h1>Only the decisions that need you.</h1>
-        <p>
-          Agents coordinate routine work themselves. SharedNet stops here when another
-          Principal, a provider, or a material plan change needs your authority.
-        </p>
+      <header className="simple-page-heading decisions-heading">
+        <h1>Decisions</h1>
+        <span>{pending.length} pending</span>
       </header>
 
-      <div className="decision-summary-line" aria-live="polite">
-        <p>
-          <strong>{pending.length}</strong> moments need your authority
-        </p>
-        <span aria-hidden="true" />
-        <p>
-          <strong>{resolved.length}</strong> resolved and retained
-        </p>
-      </div>
-
       <section className="decision-section" aria-label="Pending decisions">
-        <header className="section-heading">
-          <div>
-            <p className="eyebrow">Pending</p>
-            <h2>Needs a human boundary</h2>
-          </div>
-          <span>{pending.length}</span>
-        </header>
         <div className="decision-list" data-decision-list="pending">
           {pending.length > 0 ? (
             pending.map((decision) => (
@@ -175,33 +121,27 @@ export function DecisionsView() {
         </div>
       </section>
 
-      <section
-        className="decision-section resolved-section"
-        aria-label="Resolved decisions"
-      >
-        <header className="section-heading">
-          <div>
-            <p className="eyebrow">Resolved</p>
-            <h2>Decision audit</h2>
-          </div>
+      <details className="decision-history">
+        <summary>
+          <span>History</span>
           <span>{resolved.length}</span>
-        </header>
-        <div className="decision-list">
-          {resolved.length > 0 ? (
-            resolved.map((decision) => (
-              <DecisionRow
-                key={decision.id}
-                decision={decision}
-                onResolve={handleResolve}
-              />
-            ))
-          ) : (
-            <p className="empty-decisions">
-              Resolutions stay here with their original scope and rationale.
-            </p>
-          )}
-        </div>
-      </section>
+        </summary>
+        <section aria-label="Resolved decisions">
+          <div className="decision-list">
+            {resolved.length > 0 ? (
+              resolved.map((decision) => (
+                <DecisionRow
+                  key={decision.id}
+                  decision={decision}
+                  onResolve={handleResolve}
+                />
+              ))
+            ) : (
+              <p className="empty-decisions">No decisions resolved yet.</p>
+            )}
+          </div>
+        </section>
+      </details>
     </div>
   );
 }
