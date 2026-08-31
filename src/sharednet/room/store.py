@@ -6,14 +6,19 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 import hashlib
 import hmac
+import json
 from pathlib import Path
 import secrets
 import sqlite3
 
 from .errors import RoomError
 from .models import (
+    CoordinationTag,
     Membership,
     MembershipStatus,
+    Message,
+    MessagePage,
+    ResolutionState,
     Room,
     RoomStatus,
     RoomSummary,
@@ -137,6 +142,68 @@ class RoomStore:
 
                 CREATE INDEX IF NOT EXISTS room_memberships_agent_idx
                     ON room_memberships(agent_id, room_id);
+
+                CREATE TABLE IF NOT EXISTS messages (
+                    message_id TEXT PRIMARY KEY,
+                    room_id TEXT NOT NULL,
+                    sequence INTEGER NOT NULL CHECK (sequence >= 1),
+                    sender_principal_id TEXT NOT NULL,
+                    sender_agent_id TEXT NOT NULL,
+                    sender_runtime_id TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    reply_to TEXT,
+                    tags_json TEXT NOT NULL,
+                    attachment_ids_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    resolution_state TEXT NOT NULL
+                        CHECK (resolution_state IN ('not_required', 'pending', 'resolved', 'rejected')),
+                    UNIQUE (room_id, sequence),
+                    FOREIGN KEY (room_id) REFERENCES rooms(room_id),
+                    FOREIGN KEY (sender_principal_id) REFERENCES principals(principal_id),
+                    FOREIGN KEY (sender_agent_id, sender_principal_id)
+                        REFERENCES agents(agent_id, principal_id),
+                    FOREIGN KEY (sender_runtime_id) REFERENCES runtime_registrations(runtime_id),
+                    FOREIGN KEY (reply_to) REFERENCES messages(message_id)
+                );
+
+                CREATE INDEX IF NOT EXISTS messages_room_sequence_idx
+                    ON messages(room_id, sequence);
+
+                CREATE TABLE IF NOT EXISTS message_obligations (
+                    obligation_id TEXT PRIMARY KEY,
+                    message_id TEXT NOT NULL,
+                    tag_raw TEXT NOT NULL,
+                    tag_kind TEXT NOT NULL
+                        CHECK (tag_kind IN ('human_review', 'verification', 'delegation')),
+                    target_id TEXT,
+                    created_at TEXT NOT NULL,
+                    UNIQUE (message_id, tag_raw),
+                    FOREIGN KEY (message_id) REFERENCES messages(message_id)
+                );
+
+                CREATE INDEX IF NOT EXISTS message_obligations_message_idx
+                    ON message_obligations(message_id);
+
+                CREATE TABLE IF NOT EXISTS message_resolutions (
+                    resolution_id TEXT PRIMARY KEY,
+                    obligation_id TEXT NOT NULL UNIQUE,
+                    message_id TEXT NOT NULL,
+                    resolver_principal_id TEXT NOT NULL,
+                    resolver_agent_id TEXT NOT NULL,
+                    resolver_runtime_id TEXT NOT NULL,
+                    outcome TEXT NOT NULL CHECK (outcome IN ('fulfilled', 'rejected')),
+                    evidence TEXT,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (obligation_id) REFERENCES message_obligations(obligation_id),
+                    FOREIGN KEY (message_id) REFERENCES messages(message_id),
+                    FOREIGN KEY (resolver_principal_id) REFERENCES principals(principal_id),
+                    FOREIGN KEY (resolver_agent_id, resolver_principal_id)
+                        REFERENCES agents(agent_id, principal_id),
+                    FOREIGN KEY (resolver_runtime_id) REFERENCES runtime_registrations(runtime_id)
+                );
+
+                CREATE INDEX IF NOT EXISTS message_resolutions_message_idx
+                    ON message_resolutions(message_id);
                 """
             )
 
@@ -445,6 +512,294 @@ class RoomStore:
                 (room_id,),
             ).fetchone()
             return self._room(updated_row)
+
+    def post_message(
+        self,
+        identity: RuntimeIdentity,
+        room_id: str,
+        content: str,
+        reply_to: str | None,
+        tags: tuple[CoordinationTag, ...],
+        attachment_ids: tuple[str, ...],
+    ) -> Message:
+        message_id = _new_id("message_")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._require_identity(connection, identity)
+            room_row = self._room_row(connection, room_id)
+            self._require_active_membership(connection, identity, room_id)
+            if room_row["status"] == RoomStatus.CLOSED.value:
+                raise _error("room_closed", "room is closed", 409)
+            if reply_to is not None:
+                reply_row = connection.execute(
+                    "SELECT room_id FROM messages WHERE message_id = ?",
+                    (reply_to,),
+                ).fetchone()
+                if reply_row is None or reply_row["room_id"] != room_id:
+                    raise _error("invalid_reply", "reply must reference a message in the same room", 400)
+
+            sequence = connection.execute(
+                "SELECT COALESCE(MAX(sequence), 0) + 1 FROM messages WHERE room_id = ?",
+                (room_id,),
+            ).fetchone()[0]
+            created_at = self.clock()
+            state = ResolutionState.PENDING if tags else ResolutionState.NOT_REQUIRED
+            message = Message(
+                message_id=message_id,
+                room_id=room_id,
+                sequence=sequence,
+                sender=identity,
+                content=content,
+                reply_to=reply_to,
+                tags=tags,
+                attachment_ids=attachment_ids,
+                created_at=created_at,
+                resolution_state=state,
+            )
+            tags_json = json.dumps(
+                [tag.to_dict() for tag in message.tags],
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            attachments_json = json.dumps(list(message.attachment_ids), separators=(",", ":"))
+            serialized_created_at = _timestamp(created_at)
+            connection.execute(
+                """
+                INSERT INTO messages(
+                    message_id, room_id, sequence,
+                    sender_principal_id, sender_agent_id, sender_runtime_id,
+                    content, reply_to, tags_json, attachment_ids_json,
+                    created_at, resolution_state
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    message.message_id,
+                    message.room_id,
+                    message.sequence,
+                    identity.principal_id,
+                    identity.agent_id,
+                    identity.runtime_id,
+                    message.content,
+                    message.reply_to,
+                    tags_json,
+                    attachments_json,
+                    serialized_created_at,
+                    state.value,
+                ),
+            )
+            for tag in message.tags:
+                connection.execute(
+                    """
+                    INSERT INTO message_obligations(
+                        obligation_id, message_id, tag_raw, tag_kind, target_id, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        _new_id("obligation_"),
+                        message.message_id,
+                        tag.raw,
+                        tag.kind,
+                        tag.target_id,
+                        serialized_created_at,
+                    ),
+                )
+            connection.execute(
+                "UPDATE rooms SET latest_sequence = ?, updated_at = ? WHERE room_id = ?",
+                (message.sequence, serialized_created_at, room_id),
+            )
+        return message
+
+    def retrieve_messages(
+        self,
+        identity: RuntimeIdentity,
+        room_id: str,
+        after_sequence: int,
+        limit: int,
+    ) -> MessagePage:
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._require_identity(connection, identity)
+            self._room_row(connection, room_id)
+            self._require_active_membership(connection, identity, room_id)
+            rows = connection.execute(
+                """
+                SELECT * FROM messages
+                WHERE room_id = ? AND sequence > ?
+                ORDER BY sequence ASC
+                LIMIT ?
+                """,
+                (room_id, after_sequence, limit),
+            ).fetchall()
+            messages = tuple(self._message(row) for row in rows)
+            if messages:
+                greatest_sequence = messages[-1].sequence
+                connection.execute(
+                    """
+                    UPDATE room_memberships
+                    SET last_read_sequence = MAX(last_read_sequence, ?)
+                    WHERE room_id = ? AND agent_id = ? AND principal_id = ?
+                    """,
+                    (greatest_sequence, room_id, identity.agent_id, identity.principal_id),
+                )
+                next_sequence = greatest_sequence
+            else:
+                next_sequence = after_sequence
+        return MessagePage(messages, format_cursor(next_sequence), limit)
+
+    def resolve_message(
+        self,
+        identity: RuntimeIdentity,
+        room_id: str,
+        message_id: str,
+        outcome: str,
+        evidence: str | None,
+    ) -> Message:
+        if outcome not in ("fulfilled", "rejected"):
+            raise _error("invalid_outcome", "outcome must be fulfilled or rejected", 400)
+        if evidence is not None and (not isinstance(evidence, str) or len(evidence) > 100000):
+            raise _error("invalid_evidence", "evidence must be text of at most 100000 characters", 400)
+
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._require_identity(connection, identity)
+            room_row = self._room_row(connection, room_id)
+            self._require_active_membership(connection, identity, room_id)
+            message_row = connection.execute(
+                "SELECT * FROM messages WHERE message_id = ? AND room_id = ?",
+                (message_id, room_id),
+            ).fetchone()
+            if message_row is None:
+                raise _error("message_not_found", "message does not exist in this room", 404)
+            if message_row["resolution_state"] != ResolutionState.PENDING.value:
+                raise _error("message_already_resolved", "message resolution is already terminal", 409)
+
+            pending_rows = connection.execute(
+                """
+                SELECT o.*
+                FROM message_obligations AS o
+                LEFT JOIN message_resolutions AS r ON r.obligation_id = o.obligation_id
+                WHERE o.message_id = ? AND r.resolution_id IS NULL
+                ORDER BY o.rowid
+                """,
+                (message_id,),
+            ).fetchall()
+            eligible = [
+                row
+                for row in pending_rows
+                if self._can_resolve_obligation(identity, room_row, message_row, row)
+            ]
+            if not eligible:
+                raise _error(
+                    "resolver_not_authorized",
+                    "resolver is not authorized for a pending obligation",
+                    403,
+                )
+
+            resolved_at = self.clock()
+            serialized_resolved_at = _timestamp(resolved_at)
+            for obligation_row in eligible:
+                connection.execute(
+                    """
+                    INSERT INTO message_resolutions(
+                        resolution_id, obligation_id, message_id,
+                        resolver_principal_id, resolver_agent_id, resolver_runtime_id,
+                        outcome, evidence, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        _new_id("resolution_"),
+                        obligation_row["obligation_id"],
+                        message_id,
+                        identity.principal_id,
+                        identity.agent_id,
+                        identity.runtime_id,
+                        outcome,
+                        evidence,
+                        serialized_resolved_at,
+                    ),
+                )
+
+            aggregate_rows = connection.execute(
+                """
+                SELECT r.outcome
+                FROM message_obligations AS o
+                LEFT JOIN message_resolutions AS r ON r.obligation_id = o.obligation_id
+                WHERE o.message_id = ?
+                """,
+                (message_id,),
+            ).fetchall()
+            outcomes = [row["outcome"] for row in aggregate_rows]
+            if "rejected" in outcomes:
+                state = ResolutionState.REJECTED
+            elif outcomes and all(value == "fulfilled" for value in outcomes):
+                state = ResolutionState.RESOLVED
+            else:
+                state = ResolutionState.PENDING
+            connection.execute(
+                "UPDATE messages SET resolution_state = ? WHERE message_id = ?",
+                (state.value, message_id),
+            )
+            updated_row = connection.execute(
+                "SELECT * FROM messages WHERE message_id = ?",
+                (message_id,),
+            ).fetchone()
+            return self._message(updated_row)
+
+    @staticmethod
+    def _can_resolve_obligation(
+        identity: RuntimeIdentity,
+        room_row: sqlite3.Row,
+        message_row: sqlite3.Row,
+        obligation_row: sqlite3.Row,
+    ) -> bool:
+        if obligation_row["tag_kind"] == "human_review":
+            return (
+                identity.principal_id == room_row["creator_principal_id"]
+                and identity.agent_id != message_row["sender_agent_id"]
+            )
+        if obligation_row["tag_kind"] == "verification":
+            return identity.agent_id != message_row["sender_agent_id"]
+        return (
+            identity.agent_id == obligation_row["target_id"]
+            or identity.principal_id == obligation_row["target_id"]
+        )
+
+    def _require_active_membership(
+        self,
+        connection: sqlite3.Connection,
+        identity: RuntimeIdentity,
+        room_id: str,
+    ) -> sqlite3.Row:
+        row = connection.execute(
+            """
+            SELECT * FROM room_memberships
+            WHERE room_id = ? AND agent_id = ? AND principal_id = ? AND status = ?
+            """,
+            (room_id, identity.agent_id, identity.principal_id, MembershipStatus.ACTIVE.value),
+        ).fetchone()
+        if row is None:
+            raise _error("not_a_room_member", "active room membership is required", 403)
+        return row
+
+    @staticmethod
+    def _message(row: sqlite3.Row) -> Message:
+        tags = tuple(CoordinationTag(**item) for item in json.loads(row["tags_json"]))
+        return Message(
+            message_id=row["message_id"],
+            room_id=row["room_id"],
+            sequence=row["sequence"],
+            sender=RuntimeIdentity(
+                row["sender_principal_id"],
+                row["sender_agent_id"],
+                row["sender_runtime_id"],
+            ),
+            content=row["content"],
+            reply_to=row["reply_to"],
+            tags=tags,
+            attachment_ids=tuple(json.loads(row["attachment_ids_json"])),
+            created_at=_parse_timestamp(row["created_at"]),
+            resolution_state=ResolutionState(row["resolution_state"]),
+        )
 
     def _room_row(self, connection: sqlite3.Connection, room_id: str) -> sqlite3.Row:
         row = connection.execute("SELECT * FROM rooms WHERE room_id = ?", (room_id,)).fetchone()
