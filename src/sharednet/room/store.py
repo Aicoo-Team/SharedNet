@@ -402,7 +402,9 @@ class RoomStore:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             self._require_identity(connection, identity)
-            self._room_row(connection, room_id)
+            room_row = self._room_row(connection, room_id)
+            if room_row["status"] == RoomStatus.CLOSED.value:
+                raise _error("room_closed", "room is closed", 409)
             membership_row = connection.execute(
                 "SELECT * FROM room_memberships WHERE room_id = ? AND agent_id = ? AND principal_id = ?",
                 (room_id, identity.agent_id, identity.principal_id),

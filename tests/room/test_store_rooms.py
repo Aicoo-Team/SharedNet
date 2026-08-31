@@ -127,6 +127,11 @@ class RoomStoreTests(unittest.TestCase):
 
         first_join = self.store.join_room(peer, room.room_id)
         self.assertEqual(self.store.join_room(peer, room.room_id), first_join)
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            membership_id_before_leave = connection.execute(
+                "SELECT membership_id FROM room_memberships WHERE room_id = ? AND agent_id = ?",
+                (room.room_id, peer.agent_id),
+            ).fetchone()[0]
         left = self.store.leave_room(peer, room.room_id)
         self.assertEqual(left.status, MembershipStatus.LEFT)
         self.assertIsNotNone(left.left_at)
@@ -139,11 +144,11 @@ class RoomStoreTests(unittest.TestCase):
         self.assertIsNone(rejoined.left_at)
         self.assertGreater(rejoined.joined_at, first_join.joined_at)
         with closing(sqlite3.connect(self.database_path)) as connection:
-            count = connection.execute(
-                "SELECT COUNT(*) FROM room_memberships WHERE room_id = ? AND agent_id = ?",
+            rows = connection.execute(
+                "SELECT membership_id FROM room_memberships WHERE room_id = ? AND agent_id = ?",
                 (room.room_id, peer.agent_id),
-            ).fetchone()[0]
-        self.assertEqual(count, 1)
+            ).fetchall()
+        self.assertEqual(rows, [(membership_id_before_leave,)])
 
     def test_list_rooms_includes_active_and_left_membership_state(self) -> None:
         identity, _ = self.register("principal_alice", "agent_owner", "runtime_owner")
@@ -178,6 +183,21 @@ class RoomStoreTests(unittest.TestCase):
         self.assertEqual({item.agent_id for item in readable_memberships}, {"agent_owner", "agent_peer"})
         self.assert_room_error("room_closed", 409, lambda: self.store.join_room(late_peer, room.room_id))
         self.assert_room_error("room_closed", 409, lambda: self.store.close_room(owner, room.room_id))
+
+    def test_closed_room_rejects_leave_and_preserves_member_history_access(self) -> None:
+        owner, _ = self.register("principal_alice", "agent_owner", "runtime_owner")
+        peer, _ = self.register("principal_bob", "agent_peer", "runtime_peer")
+        room = self.store.create_room(owner, "Planning", None, "anyone_with_id")
+        self.store.join_room(peer, room.room_id)
+        self.store.close_room(owner, room.room_id)
+
+        self.assert_room_error("room_closed", 409, lambda: self.store.leave_room(peer, room.room_id))
+
+        readable_room, memberships = self.store.get_room(peer, room.room_id)
+        peer_membership = next(item for item in memberships if item.agent_id == peer.agent_id)
+        self.assertEqual(readable_room.status, RoomStatus.CLOSED)
+        self.assertEqual(peer_membership.status, MembershipStatus.ACTIVE)
+        self.assertIsNone(peer_membership.left_at)
 
     def test_missing_rooms_and_unregistered_identity_fail_closed(self) -> None:
         identity, _ = self.register("principal_alice", "agent_owner", "runtime_owner")
