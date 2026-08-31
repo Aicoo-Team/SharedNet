@@ -8,7 +8,15 @@ from typing import BinaryIO
 
 from .blobs import LocalBlobStore
 from .errors import RoomError
-from .models import Artifact, Message, MessagePage, RuntimeIdentity, normalize_tags, parse_cursor
+from .models import (
+    Artifact,
+    Message,
+    MessagePage,
+    RuntimeIdentity,
+    normalize_tags,
+    parse_cursor,
+    validate_filename,
+)
 from .store import RoomStore
 
 
@@ -78,17 +86,7 @@ class RoomService:
         media_type: str,
         chunks: AsyncIterable[bytes],
     ) -> Artifact:
-        if (
-            not isinstance(filename, str)
-            or not 1 <= len(filename) <= 255
-            or filename in (".", "..")
-            or "/" in filename
-            or "\\" in filename
-        ):
-            raise _error(
-                "invalid_filename",
-                "filename must be a basename of 1 to 255 characters",
-            )
+        filename = validate_filename(filename)
         if not isinstance(media_type, str) or _MEDIA_TYPE.fullmatch(media_type) is None:
             raise _error("invalid_media_type", "media_type must be an ASCII type/subtype")
 

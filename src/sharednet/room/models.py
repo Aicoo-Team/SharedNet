@@ -44,6 +44,23 @@ def _identifier(value: object, name: str) -> str:
     return value
 
 
+def validate_filename(value: object) -> str:
+    if (
+        not isinstance(value, str)
+        or not 1 <= len(value) <= 255
+        or value in (".", "..")
+        or "/" in value
+        or "\\" in value
+        or not value.strip()
+        or not value.isprintable()
+    ):
+        raise _error(
+            "invalid_filename",
+            "filename must be a printable basename of 1 to 255 characters with non-whitespace content",
+        )
+    return value
+
+
 def _timestamp(value: object, name: str) -> datetime:
     if not isinstance(value, datetime):
         raise _error("invalid_timestamp", f"{name} must be a datetime")
@@ -335,8 +352,7 @@ class Artifact:
     def __post_init__(self) -> None:
         object.__setattr__(self, "artifact_id", _identifier(self.artifact_id, "artifact_id"))
         object.__setattr__(self, "room_id", _identifier(self.room_id, "room_id"))
-        if not isinstance(self.filename, str) or not 1 <= len(self.filename) <= 255 or self.filename in (".", "..") or "/" in self.filename or "\\" in self.filename:
-            raise _error("invalid_filename", "filename must be a basename of 1 to 255 characters")
+        object.__setattr__(self, "filename", validate_filename(self.filename))
         if not isinstance(self.media_type, str) or not self.media_type.strip():
             raise _error("invalid_media_type", "media_type must be nonempty")
         if isinstance(self.size_bytes, bool) or not isinstance(self.size_bytes, int) or self.size_bytes < 0:

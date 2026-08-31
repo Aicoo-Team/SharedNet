@@ -199,6 +199,47 @@ class RoomArtifactTests(unittest.TestCase):
             lambda: self.blob_store.open_blob("../../rooms.sqlite3"),
         )
 
+    def test_upload_rejects_control_and_whitespace_filenames_before_streaming(self) -> None:
+        owner = self.register("principal_owner", "agent_owner", "runtime_owner")
+        room = self.create_room(owner)
+
+        for filename in (
+            "nul\x00.bin",
+            "line\r\nbreak.bin",
+            "delete\x7f.bin",
+            "zero\u200bwidth.bin",
+            "   ",
+        ):
+            consumed = False
+
+            async def observed_stream():
+                nonlocal consumed
+                consumed = True
+                yield b"must not be stored"
+
+            with self.subTest(filename=repr(filename)):
+                self.assert_room_error(
+                    "invalid_filename",
+                    400,
+                    lambda filename=filename: asyncio.run(
+                        self.service.upload_artifact(
+                            owner,
+                            room.room_id,
+                            filename,
+                            "application/octet-stream",
+                            observed_stream(),
+                        )
+                    ),
+                )
+                self.assertFalse(consumed)
+
+        self.assertEqual(self.artifact_count(), 0)
+        self.assertEqual(list((self.blob_path / ".tmp").glob("*")), [])
+        self.assertEqual(
+            [path for path in (self.blob_path / "sha256").rglob("*") if path.is_file()],
+            [],
+        )
+
     def test_media_type_accepts_ascii_vendor_suffix_and_rejects_unsafe_values_before_streaming(self) -> None:
         owner = self.register("principal_owner", "agent_owner", "runtime_owner")
         room = self.create_room(owner)

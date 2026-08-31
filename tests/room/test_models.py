@@ -149,6 +149,38 @@ class RoomModelTests(unittest.TestCase):
         with self.assertRaisesRegex(RoomError, "invalid_filename"):
             Artifact("artifact_1", "room_1", "../brief.pdf", "application/pdf", 1, "a" * 64, NOW)
 
+    def test_artifact_filename_rejects_controls_and_whitespace_but_preserves_printable_unicode(self) -> None:
+        artifact = Artifact(
+            "artifact_1",
+            "room_1",
+            "报告 ①.pdf",
+            "application/pdf",
+            1,
+            "a" * 64,
+            NOW,
+        )
+        self.assertEqual(artifact.filename, "报告 ①.pdf")
+        for filename in (
+            "nul\x00.bin",
+            "line\r\nbreak.bin",
+            "delete\x7f.bin",
+            "zero\u200bwidth.bin",
+            "   ",
+        ):
+            with self.subTest(filename=repr(filename)):
+                with self.assertRaises(RoomError) as caught:
+                    Artifact(
+                        "artifact_1",
+                        "room_1",
+                        filename,
+                        "application/pdf",
+                        1,
+                        "a" * 64,
+                        NOW,
+                    )
+                self.assertEqual(caught.exception.code, "invalid_filename")
+                self.assertEqual(caught.exception.status_code, 400)
+
     def test_limit_and_cursor_nonnegative_constraints_fail_closed(self) -> None:
         with self.assertRaisesRegex(RoomError, "invalid_limit"):
             MessagePage(messages=(), next_cursor="cursor_0", limit=101)
