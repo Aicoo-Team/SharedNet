@@ -16,6 +16,7 @@ from sharednet.room.models import (
     Obligation,
     ResolutionState,
     Room,
+    RoomSummary,
     RoomStatus,
     RuntimeIdentity,
     RuntimeRegistration,
@@ -105,6 +106,38 @@ class RoomModelTests(unittest.TestCase):
         self.assertEqual(message.to_dict()["tags"][0]["kind"], "human_review")
         self.assertEqual(artifact.to_dict()["filename"], "brief.pdf")
         self.assertEqual(page.to_dict()["next_cursor"], "cursor_1")
+
+    def test_room_summary_validates_and_serializes_listing_state(self) -> None:
+        summary = RoomSummary(
+            room_id="room_1",
+            name="Planning",
+            status=RoomStatus.OPEN,
+            membership_status=MembershipStatus.LEFT,
+            latest_activity_at=NOW,
+            unread_count=3,
+            latest_cursor="cursor_7",
+            last_read_cursor="cursor_4",
+        )
+
+        self.assertEqual(
+            summary.to_dict(),
+            {
+                "room_id": "room_1",
+                "name": "Planning",
+                "status": "open",
+                "membership_status": "left",
+                "latest_activity_at": "2026-08-31T12:00:00+00:00",
+                "unread_count": 3,
+                "latest_cursor": "cursor_7",
+                "last_read_cursor": "cursor_4",
+            },
+        )
+        with self.assertRaisesRegex(RoomError, "invalid_identifier"):
+            RoomSummary("1room", "Planning", RoomStatus.OPEN, MembershipStatus.ACTIVE, NOW, 0, "cursor_0", "cursor_0")
+        with self.assertRaisesRegex(RoomError, "invalid_unread_count"):
+            RoomSummary("room_1", "Planning", RoomStatus.OPEN, MembershipStatus.ACTIVE, NOW, -1, "cursor_0", "cursor_0")
+        with self.assertRaisesRegex(RoomError, "invalid_cursor"):
+            RoomSummary("room_1", "Planning", RoomStatus.OPEN, MembershipStatus.ACTIVE, NOW, 0, "cursor_1", "bad")
 
     def test_models_reject_invalid_identifiers_and_content_shapes(self) -> None:
         with self.assertRaisesRegex(RoomError, "invalid_identifier"):

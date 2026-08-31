@@ -206,6 +206,42 @@ class Room:
 
 
 @dataclass(frozen=True)
+class RoomSummary:
+    room_id: str
+    name: str
+    status: RoomStatus
+    membership_status: MembershipStatus
+    latest_activity_at: datetime
+    unread_count: int
+    latest_cursor: str
+    last_read_cursor: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "room_id", _identifier(self.room_id, "room_id"))
+        if not isinstance(self.name, str) or not 1 <= len(self.name.strip()) <= 200:
+            raise _error("invalid_name", "room name must be 1 to 200 trimmed characters")
+        object.__setattr__(self, "name", self.name.strip())
+        object.__setattr__(self, "status", _enum(self.status, RoomStatus, "status"))
+        object.__setattr__(
+            self,
+            "membership_status",
+            _enum(self.membership_status, MembershipStatus, "membership_status"),
+        )
+        object.__setattr__(
+            self,
+            "latest_activity_at",
+            _timestamp(self.latest_activity_at, "latest_activity_at"),
+        )
+        if isinstance(self.unread_count, bool) or not isinstance(self.unread_count, int) or self.unread_count < 0:
+            raise _error("invalid_unread_count", "unread_count must be nonnegative")
+        parse_cursor(self.latest_cursor)
+        parse_cursor(self.last_read_cursor)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {name: _to_dict(getattr(self, name)) for name in self.__dataclass_fields__}
+
+
+@dataclass(frozen=True)
 class Membership:
     room_id: str
     principal_id: str
