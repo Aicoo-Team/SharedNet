@@ -56,6 +56,13 @@ class RoomMessageTests(unittest.TestCase):
         self.assertEqual(caught.exception.status_code, status_code)
         return caught.exception
 
+    def resolution_count(self, message_id: str) -> int:
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            return connection.execute(
+                "SELECT COUNT(*) FROM message_resolutions WHERE message_id = ?",
+                (message_id,),
+            ).fetchone()[0]
+
     def test_active_membership_guards_reads_and_posts_but_closed_history_remains_readable(self) -> None:
         owner = self.register("principal_owner", "agent_owner", "runtime_owner")
         departed = self.register("principal_peer", "agent_departed", "runtime_departed")
@@ -290,10 +297,31 @@ class RoomMessageTests(unittest.TestCase):
             lambda: self.service.resolve_message(sibling, room.room_id, message.message_id, "fulfilled"),
         )
 
-    def test_verification_requires_a_different_agent_than_the_sender(self) -> None:
+    def test_resolution_requires_active_membership_even_when_resolver_predicate_matches(self) -> None:
+        sender = self.register("principal_sender", "agent_sender", "runtime_sender")
+        departed = self.register("principal_departed", "agent_departed", "runtime_departed")
+        never_joined = self.register("principal_outside", "agent_outside", "runtime_outside")
+        room = self.create_room(sender)
+        self.store.join_room(departed, room.room_id)
+        self.store.leave_room(departed, room.room_id)
+        message = self.service.post_message(sender, room.room_id, "verify", tags=("verification-required",))
+
+        for identity in (departed, never_joined):
+            self.assert_room_error(
+                "not_a_room_member",
+                403,
+                lambda identity=identity: self.service.resolve_message(
+                    identity, room.room_id, message.message_id, "fulfilled"
+                ),
+            )
+            stored = self.service.retrieve_messages(sender, room.room_id).messages[0]
+            self.assertEqual(stored.resolution_state, ResolutionState.PENDING)
+            self.assertEqual(self.resolution_count(message.message_id), 0)
+
+    def test_verification_allows_a_different_agent_under_a_different_principal(self) -> None:
         sender = self.register("principal_owner", "agent_sender", "runtime_sender")
         sender_other_runtime = self.register("principal_owner", "agent_sender", "runtime_sender_two")
-        verifier = self.register("principal_owner", "agent_verifier", "runtime_verifier")
+        verifier = self.register("principal_external", "agent_verifier", "runtime_verifier")
         room = self.create_room(sender)
         self.store.join_room(verifier, room.room_id)
         message = self.service.post_message(sender, room.room_id, "verify", tags=("verification-required",))
@@ -311,10 +339,13 @@ class RoomMessageTests(unittest.TestCase):
     def test_delegation_accepts_exact_agent_or_an_agent_under_the_target_principal(self) -> None:
         sender = self.register("principal_sender", "agent_sender", "runtime_sender")
         exact_target = self.register("principal_exact", "agent_exact", "runtime_exact")
+        exact_target_sibling = self.register(
+            "principal_exact", "agent_exact_sibling", "runtime_exact_sibling"
+        )
         principal_target = self.register("principal_target", "agent_principal_child", "runtime_principal_child")
         wrong = self.register("principal_wrong", "agent_wrong", "runtime_wrong")
         room = self.create_room(sender)
-        for identity in (exact_target, principal_target, wrong):
+        for identity in (exact_target, exact_target_sibling, principal_target, wrong):
             self.store.join_room(identity, room.room_id)
 
         agent_message = self.service.post_message(
@@ -329,6 +360,18 @@ class RoomMessageTests(unittest.TestCase):
             403,
             lambda: self.service.resolve_message(wrong, room.room_id, agent_message.message_id, "fulfilled"),
         )
+        self.assert_room_error(
+            "resolver_not_authorized",
+            403,
+            lambda: self.service.resolve_message(
+                exact_target_sibling, room.room_id, agent_message.message_id, "fulfilled"
+            ),
+        )
+        self.assertEqual(
+            self.service.retrieve_messages(sender, room.room_id).messages[0].resolution_state,
+            ResolutionState.PENDING,
+        )
+        self.assertEqual(self.resolution_count(agent_message.message_id), 0)
         self.assertEqual(
             self.service.resolve_message(exact_target, room.room_id, agent_message.message_id, "fulfilled").resolution_state,
             ResolutionState.RESOLVED,
