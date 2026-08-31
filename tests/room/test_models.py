@@ -8,10 +8,12 @@ import unittest
 from sharednet.room.errors import RoomError
 from sharednet.room.models import (
     Artifact,
+    CoordinationTag,
     Membership,
     MembershipStatus,
     Message,
     MessagePage,
+    Obligation,
     ResolutionState,
     Room,
     RoomStatus,
@@ -42,6 +44,30 @@ class RoomModelTests(unittest.TestCase):
             normalize_tags(["verification-required", "verification-required"])
         with self.assertRaisesRegex(RoomError, "invalid_tag"):
             normalize_tags(["custom-code:run"])
+
+    def test_coordination_tag_rejects_inconsistent_public_construction(self) -> None:
+        with self.assertRaisesRegex(RoomError, "invalid_tag"):
+            CoordinationTag("custom-code:run", "human_review")
+        with self.assertRaisesRegex(RoomError, "invalid_tag"):
+            CoordinationTag("human-review-required", "delegation", "agent_reviewer")
+        with self.assertRaisesRegex(RoomError, "invalid_tag"):
+            Obligation("obligation_1", "message_1", CoordinationTag("delegate-to:agent_reviewer", "verification"), NOW)
+
+    def test_message_rejects_duplicate_directly_constructed_tags(self) -> None:
+        tag = CoordinationTag("verification-required", "verification")
+        with self.assertRaisesRegex(RoomError, "duplicate_tag"):
+            Message(
+                "message_1",
+                "room_1",
+                1,
+                RuntimeIdentity("principal_alpha", "agent_1", "runtime_1"),
+                "Please verify this.",
+                None,
+                (tag, tag),
+                (),
+                NOW,
+                ResolutionState.PENDING,
+            )
 
     def test_records_serialize_to_json_ready_mappings(self) -> None:
         identity = RuntimeIdentity("principal_alpha", "agent_writer", "runtime_1")

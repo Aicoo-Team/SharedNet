@@ -84,12 +84,19 @@ class CoordinationTag:
     def __post_init__(self) -> None:
         if not isinstance(self.raw, str):
             raise _error("invalid_tag", "tag must be a string")
-        if self.kind not in ("human_review", "verification", "delegation"):
-            raise _error("invalid_tag", "tag kind is invalid")
-        if self.kind == "delegation":
-            object.__setattr__(self, "target_id", _identifier(self.target_id, "tag target"))
-        elif self.target_id is not None:
-            raise _error("invalid_tag", "only delegation tags may have a target")
+        if self.kind == "human_review" and self.raw == "human-review-required" and self.target_id is None:
+            return
+        if self.kind == "verification" and self.raw == "verification-required" and self.target_id is None:
+            return
+        if self.kind == "delegation" and self.raw.startswith("delegate-to:"):
+            target_id = self.raw.removeprefix("delegate-to:")
+            if self.target_id == target_id:
+                try:
+                    object.__setattr__(self, "target_id", _identifier(target_id, "tag target"))
+                    return
+                except RoomError:
+                    pass
+        raise _error("invalid_tag", "tag variant is invalid")
 
     def to_dict(self) -> dict[str, str | None]:
         return {"raw": self.raw, "kind": self.kind, "target_id": self.target_id}
@@ -249,6 +256,8 @@ class Message:
             object.__setattr__(self, "reply_to", _identifier(self.reply_to, "reply_to"))
         if not isinstance(self.tags, tuple) or not all(isinstance(tag, CoordinationTag) for tag in self.tags):
             raise _error("invalid_tag", "tags must be normalized coordination tags")
+        if len({tag.raw for tag in self.tags}) != len(self.tags):
+            raise _error("duplicate_tag", "tags must be unique")
         if not isinstance(self.attachment_ids, tuple):
             raise _error("invalid_attachment", "attachment_ids must be a tuple")
         object.__setattr__(self, "attachment_ids", tuple(_identifier(value, "artifact_id") for value in self.attachment_ids))
