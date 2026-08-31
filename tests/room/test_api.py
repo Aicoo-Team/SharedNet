@@ -96,6 +96,103 @@ class RoomApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, status_code, response.text)
         self.assertEqual(response.json(), {"error": {"code": code, "message": message}})
 
+    def test_app_exposes_exact_frozen_route_and_method_table(self) -> None:
+        expected = {
+            ("GET", "/healthz"),
+            ("POST", "/v1/runtimes/register"),
+            ("POST", "/v1/rooms"),
+            ("POST", "/v1/rooms/{room_id}/memberships"),
+            ("GET", "/v1/rooms"),
+            ("GET", "/v1/rooms/{room_id}"),
+            ("DELETE", "/v1/rooms/{room_id}/membership"),
+            ("POST", "/v1/rooms/{room_id}/close"),
+            ("POST", "/v1/rooms/{room_id}/messages"),
+            ("GET", "/v1/rooms/{room_id}/messages"),
+            ("POST", "/v1/rooms/{room_id}/messages/{message_id}/resolve"),
+            ("POST", "/v1/rooms/{room_id}/artifacts"),
+            ("GET", "/v1/rooms/{room_id}/artifacts/{artifact_id}"),
+        }
+        app = self.app()
+        with TestClient(app):
+            actual = {
+                (method, route.path)
+                for route in app.routes
+                for method in getattr(route, "methods", ())
+            }
+        self.assertEqual(actual, expected)
+
+    def test_protected_json_routes_authenticate_before_malformed_body(self) -> None:
+        with TestClient(self.app()) as client:
+            _, valid_token = self.register(
+                client, "principal_alice", "agent_alpha", "runtime_alpha"
+            )
+            protected_routes = (
+                "/v1/rooms",
+                "/v1/rooms/room_missing/messages",
+                "/v1/rooms/room_missing/messages/message_missing/resolve",
+            )
+            invalid_credentials = (
+                {},
+                {"Authorization": "Basic malformed"},
+                auth("unknown-token"),
+            )
+            for route in protected_routes:
+                for credentials in invalid_credentials:
+                    with self.subTest(route=route, credentials=credentials):
+                        response = client.post(
+                            route,
+                            headers={**credentials, "Content-Type": "application/json"},
+                            content=b'{"malformed":',
+                        )
+                        self.assert_error(
+                            response,
+                            401,
+                            "invalid_runtime_token",
+                            "runtime token is invalid",
+                        )
+                        self.assertEqual(response.headers["www-authenticate"], "Bearer")
+
+            accepted_auth = client.post(
+                "/v1/rooms",
+                headers={**auth(valid_token), "Content-Type": "application/json"},
+                content=b'{"malformed":',
+            )
+            self.assert_error(
+                accepted_auth,
+                400,
+                "invalid_request",
+                "request validation failed",
+            )
+
+    def test_invalid_utf8_json_uses_stable_validation_error(self) -> None:
+        with TestClient(self.app()) as client:
+            invalid_registration = client.post(
+                "/v1/runtimes/register",
+                headers={"Content-Type": "application/json"},
+                content=b'{"principal_id":"principal_\xff","agent_id":"agent_bad"}',
+            )
+            self.assert_error(
+                invalid_registration,
+                400,
+                "invalid_request",
+                "request validation failed",
+            )
+
+            _, token = self.register(
+                client, "principal_alice", "agent_alpha", "runtime_alpha"
+            )
+            invalid_protected_body = client.post(
+                "/v1/rooms",
+                headers={**auth(token), "Content-Type": "application/json"},
+                content=b'{"name":"\xff"}',
+            )
+            self.assert_error(
+                invalid_protected_body,
+                400,
+                "invalid_request",
+                "request validation failed",
+            )
+
     def test_health_registration_validation_and_bearer_contract(self) -> None:
         with TestClient(self.app()) as client:
             health = client.get("/healthz")

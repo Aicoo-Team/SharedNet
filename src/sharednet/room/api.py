@@ -9,9 +9,11 @@ from typing import BinaryIO
 from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, Request, status
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict
+from starlette.exceptions import HTTPException
 
 from .blobs import LocalBlobStore
 from .errors import RoomError
@@ -68,7 +70,7 @@ def _error_response(error: RoomError) -> JSONResponse:
     )
 
 
-def _authenticate(request: Request) -> RuntimeIdentity:
+def _authenticate_header(request: Request) -> RuntimeIdentity:
     authorization = request.headers.get("authorization")
     if authorization is None:
         raise _INVALID_TOKEN
@@ -76,6 +78,13 @@ def _authenticate(request: Request) -> RuntimeIdentity:
     if len(parts) != 2 or parts[0] != "Bearer" or not parts[1]:
         raise _INVALID_TOKEN
     return request.app.state.store.authenticate_runtime(parts[1])
+
+
+def _authenticate(request: Request) -> RuntimeIdentity:
+    identity = getattr(request.state, "identity", None)
+    if not isinstance(identity, RuntimeIdentity):
+        raise _INVALID_TOKEN
+    return identity
 
 
 def _read_chunks(stream: BinaryIO) -> Iterator[bytes]:
@@ -114,7 +123,22 @@ def create_room_app(
         app.state.service = RoomService(store, blob_store)
         yield
 
-    app = FastAPI(lifespan=lifespan)
+    app = FastAPI(
+        lifespan=lifespan,
+        openapi_url=None,
+        docs_url=None,
+        redoc_url=None,
+    )
+
+    @app.middleware("http")
+    async def authenticate_protected_request(request: Request, call_next):
+        if request.url.path in ("/healthz", "/v1/runtimes/register"):
+            return await call_next(request)
+        try:
+            request.state.identity = _authenticate_header(request)
+        except RoomError as error:
+            return _error_response(error)
+        return await call_next(request)
 
     @app.exception_handler(RoomError)
     def room_error_handler(request: Request, error: RoomError) -> JSONResponse:
@@ -126,6 +150,15 @@ def create_room_app(
         error: RequestValidationError,
     ) -> JSONResponse:
         return JSONResponse(status_code=400, content=_INVALID_REQUEST_BODY)
+
+    @app.exception_handler(HTTPException)
+    async def framework_http_error_handler(
+        request: Request,
+        error: HTTPException,
+    ):
+        if error.status_code == 400:
+            return JSONResponse(status_code=400, content=_INVALID_REQUEST_BODY)
+        return await http_exception_handler(request, error)
 
     @app.get("/healthz")
     def health() -> dict[str, str]:
