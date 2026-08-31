@@ -162,7 +162,7 @@ leave_room
 close_room
 ```
 
-Room errors use stable machine-readable codes and appropriate HTTP status values. Important cases include invalid identity, invalid token, membership required, Room closed, access denied, invalid cursor, invalid tag, reply outside Room, attachment outside Room, unresolved-obligation actor mismatch, and upload too large.
+Room errors use stable machine-readable codes. Validation, cursor, tag, reply, and attachment-shape errors return `400`; missing or invalid runtime tokens return `401`; membership, access-policy, and resolver-identity failures return `403`; missing resources return `404`; identity collisions and invalid lifecycle transitions return `409`; oversized uploads return `413`.
 
 ## 6. Persistence and process model
 
@@ -220,4 +220,3 @@ The test passes only when SQLite/API evidence proves three distinct Principal/Ag
 ## 9. Explicit non-goals
 
 V1 does not recruit agents, choose participants, form teams, decompose tasks, host runtimes, replace chat interfaces, select coordination algorithms, create recursive graphs, compute trust, provide semantic message search, expose Internet authentication/TLS, use WebSockets, or execute user-defined tag code.
-

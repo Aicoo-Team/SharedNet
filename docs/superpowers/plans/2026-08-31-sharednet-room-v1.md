@@ -167,7 +167,7 @@ git commit -m "feat: persist Room identities and membership"
 
 **Interfaces:**
 - Consumes: `RoomStore`, authenticated identity, cursor and tag helpers.
-- Produces `RoomService(store: RoomStore, blob_store: BlobStore | None = None)`.
+- Produces `RoomService(store: RoomStore)`; Task 4 extends the constructor with artifact storage.
 - Produces methods:
 
 ```python
@@ -224,11 +224,12 @@ git commit -m "feat: add ordered Room messaging"
 
 **Interfaces:**
 - Produces `LocalBlobStore(root: Path, max_upload_bytes: int = 268_435_456)`.
-- Produces `store_stream(chunks: Iterable[bytes]) -> StoredBlob` and `open_blob(sha256: str) -> BinaryIO`.
+- Produces `async store_stream(chunks: AsyncIterable[bytes]) -> StoredBlob` and `open_blob(sha256: str) -> BinaryIO`.
+- Extends the service constructor to `RoomService(store: RoomStore, blob_store: LocalBlobStore)`.
 - Produces service methods:
 
 ```python
-upload_artifact(identity, room_id, filename, media_type, chunks) -> Artifact
+async upload_artifact(identity, room_id, filename, media_type, chunks: AsyncIterable[bytes]) -> Artifact
 open_artifact(identity, room_id, artifact_id) -> tuple[Artifact, BinaryIO]
 ```
 
@@ -237,7 +238,10 @@ open_artifact(identity, room_id, artifact_id) -> tuple[Artifact, BinaryIO]
 Cover multi-chunk streaming, 256 MiB configurable ceiling via a small test limit, temporary-file cleanup on failure, SHA-256 correctness, physical deduplication, basename validation, Room membership, closed-Room rejection, cross-Room attachment rejection, download integrity, and metadata/blob survival after new store/service instances are constructed.
 
 ```python
-artifact = service.upload_artifact(alpha, room_id, "brief.bin", "application/octet-stream", [b"abc", b"def"])
+async def chunks():
+    for chunk in (b"abc", b"def"):
+        yield chunk
+artifact = asyncio.run(service.upload_artifact(alpha, room_id, "brief.bin", "application/octet-stream", chunks()))
 self.assertEqual(artifact.sha256, hashlib.sha256(b"abcdef").hexdigest())
 metadata, stream = service.open_artifact(beta, room_id, artifact.artifact_id)
 with stream:
@@ -252,7 +256,7 @@ Expected: `LocalBlobStore` and artifact methods are missing.
 
 - [ ] **Step 3: Implement blob and metadata persistence**
 
-Write uploads under `<root>/.tmp/<random>`, hash and count each chunk before writing, fail as soon as the configured ceiling is crossed, `fsync`, then atomically replace into `<root>/sha256/<first-two>/<digest>`. Add `artifacts` and `message_artifacts` tables. Insert artifact metadata only after the completed blob exists; remove unreferenced temporary files in `finally`.
+Write uploads under `<root>/.tmp/<random>`, hash and count each asynchronously received chunk before writing, fail as soon as the configured ceiling is crossed, `fsync`, then atomically replace into `<root>/sha256/<first-two>/<digest>`. Add `artifacts` and `message_artifacts` tables. Insert artifact metadata only after the completed blob exists; remove unreferenced temporary files in `finally`.
 
 - [ ] **Step 4: Run focused tests and confirm GREEN**
 
@@ -297,7 +301,7 @@ Expected: `sharednet.room.api` is missing.
 
 - [ ] **Step 3: Implement the app factory and routes**
 
-Use synchronous FastAPI route functions around the synchronous domain service. Read upload bodies with `async for chunk in request.stream()` and pass chunks through a bounded bridge that does not concatenate the body. Return `StreamingResponse` for downloads. Initialize schema in the app lifespan and use `TestClient` as a context manager.
+Use synchronous FastAPI route functions around synchronous service methods and one asynchronous upload route that awaits `RoomService.upload_artifact(..., request.stream())` without concatenating the body. Return `StreamingResponse` for downloads. Initialize schema in the app lifespan and use `TestClient` as a context manager.
 
 - [ ] **Step 4: Run focused tests and confirm GREEN**
 
@@ -357,42 +361,44 @@ git commit -m "feat: add Room client commands"
 **Files:**
 - Create: `.agents/skills/sharednet-room/SKILL.md`
 - Create: `.agents/skills/sharednet-room/references/command-contract.md`
-- Test: `tests/room/test_skill.py`
+- Create: `.agents/skills/sharednet-room/evals/evals.json`
 
 **Interfaces:**
 - Consumes: exact `sharednet room` CLI commands from Task 6.
 - Produces: a discoverable skill named `sharednet-room` with agent behavior matching section 7 of the design spec.
 
-- [ ] **Step 1: Write the failing skill contract test**
+- [ ] **Step 1: Record failing skill behavior evaluations**
 
-```python
-skill = Path(".agents/skills/sharednet-room/SKILL.md").read_text()
-self.assertIn("name: sharednet-room", skill)
-for command in ("list", "build", "join", "retrieve", "post", "upload", "leave", "close"):
-    self.assertIn(f"sharednet room {command}", skill)
-self.assertIn("Never recruit", skill)
+```json
+{
+  "evals": [
+    {"prompt": "Create a product-design Room", "expected": "lists existing Rooms before build and returns the exact Room ID"},
+    {"prompt": "Join room_7F3K", "expected": "joins once, retrieves history, and preserves the returned cursor"},
+    {"prompt": "Find another agent and invite it", "expected": "does not recruit or invite without an explicit human-provided participant action"}
+  ]
+}
 ```
 
-- [ ] **Step 2: Run the skill test and confirm RED**
+- [ ] **Step 2: Run the skill-creator validation/evaluation workflow and confirm RED**
 
-Run: `PYTHONPATH=src python3 -m unittest -v tests.room.test_skill`
+Run the validator and baseline evaluations prescribed by the `skill-creator` skill.
 
-Expected: skill file is missing.
+Expected: validation/evaluations fail because the skill is missing.
 
 - [ ] **Step 3: Create the concise skill and command reference**
 
 Keep `SKILL.md` focused on routing and behavioral rules. Put exact flags, JSON outputs, cursor handling, reply/tag examples, artifact workflow, and error recovery in `references/command-contract.md`. Do not duplicate server authorization logic in the skill.
 
-- [ ] **Step 4: Run focused tests and confirm GREEN**
+- [ ] **Step 4: Run validation and behavior evaluations and confirm GREEN**
 
-Run: `PYTHONPATH=src python3 -m unittest -v tests.room.test_skill`
+Run the validator and the three behavior evaluations again.
 
-Expected: skill contract passes.
+Expected: the skill is structurally valid and the connected agent follows all three expected behaviors using the real Room CLI.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add .agents/skills/sharednet-room tests/room/test_skill.py
+git add .agents/skills/sharednet-room
 git commit -m "feat: teach Codex to use SharedNet Rooms"
 ```
 
@@ -523,4 +529,3 @@ git status --short
 git add README.md docs pyproject.toml src tests .agents examples
 git commit -m "feat: ship SharedNet Room V1"
 ```
-
