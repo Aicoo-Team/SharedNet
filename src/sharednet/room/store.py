@@ -13,6 +13,7 @@ import sqlite3
 
 from .errors import RoomError
 from .models import (
+    Artifact,
     CoordinationTag,
     Membership,
     MembershipStatus,
@@ -168,6 +169,40 @@ class RoomStore:
 
                 CREATE INDEX IF NOT EXISTS messages_room_sequence_idx
                     ON messages(room_id, sequence);
+
+                CREATE TABLE IF NOT EXISTS artifacts (
+                    artifact_id TEXT PRIMARY KEY,
+                    room_id TEXT NOT NULL,
+                    uploader_principal_id TEXT NOT NULL,
+                    uploader_agent_id TEXT NOT NULL,
+                    uploader_runtime_id TEXT NOT NULL,
+                    filename TEXT NOT NULL,
+                    media_type TEXT NOT NULL,
+                    size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
+                    sha256 TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (room_id) REFERENCES rooms(room_id),
+                    FOREIGN KEY (uploader_principal_id) REFERENCES principals(principal_id),
+                    FOREIGN KEY (uploader_agent_id, uploader_principal_id)
+                        REFERENCES agents(agent_id, principal_id),
+                    FOREIGN KEY (uploader_runtime_id) REFERENCES runtime_registrations(runtime_id)
+                );
+
+                CREATE INDEX IF NOT EXISTS artifacts_room_idx
+                    ON artifacts(room_id, created_at, artifact_id);
+
+                CREATE TABLE IF NOT EXISTS message_artifacts (
+                    message_id TEXT NOT NULL,
+                    artifact_id TEXT NOT NULL,
+                    position INTEGER NOT NULL CHECK (position >= 0),
+                    PRIMARY KEY (message_id, artifact_id),
+                    UNIQUE (message_id, position),
+                    FOREIGN KEY (message_id) REFERENCES messages(message_id),
+                    FOREIGN KEY (artifact_id) REFERENCES artifacts(artifact_id)
+                );
+
+                CREATE INDEX IF NOT EXISTS message_artifacts_artifact_idx
+                    ON message_artifacts(artifact_id, message_id);
 
                 CREATE TABLE IF NOT EXISTS message_obligations (
                     obligation_id TEXT PRIMARY KEY,
@@ -537,6 +572,25 @@ class RoomStore:
                 ).fetchone()
                 if reply_row is None or reply_row["room_id"] != room_id:
                     raise _error("invalid_reply", "reply must reference a message in the same room", 400)
+            seen_attachment_ids: set[str] = set()
+            for attachment_id in attachment_ids:
+                if not isinstance(attachment_id, str) or attachment_id in seen_attachment_ids:
+                    raise _error(
+                        "invalid_attachment",
+                        "attachments must be unique artifacts in the same room",
+                        400,
+                    )
+                seen_attachment_ids.add(attachment_id)
+                artifact_row = connection.execute(
+                    "SELECT room_id FROM artifacts WHERE artifact_id = ?",
+                    (attachment_id,),
+                ).fetchone()
+                if artifact_row is None or artifact_row["room_id"] != room_id:
+                    raise _error(
+                        "invalid_attachment",
+                        "attachment must reference an artifact in the same room",
+                        400,
+                    )
 
             sequence = connection.execute(
                 "SELECT COALESCE(MAX(sequence), 0) + 1 FROM messages WHERE room_id = ?",
@@ -587,6 +641,14 @@ class RoomStore:
                     state.value,
                 ),
             )
+            for position, attachment_id in enumerate(message.attachment_ids):
+                connection.execute(
+                    """
+                    INSERT INTO message_artifacts(message_id, artifact_id, position)
+                    VALUES (?, ?, ?)
+                    """,
+                    (message.message_id, attachment_id, position),
+                )
             for tag in message.tags:
                 connection.execute(
                     """
@@ -608,6 +670,90 @@ class RoomStore:
                 (message.sequence, serialized_created_at, room_id),
             )
         return message
+
+    def require_artifact_upload_access(
+        self,
+        identity: RuntimeIdentity,
+        room_id: str,
+    ) -> None:
+        with self._connect() as connection:
+            self._require_identity(connection, identity)
+            room_row = self._room_row(connection, room_id)
+            self._require_active_membership(connection, identity, room_id)
+            if room_row["status"] == RoomStatus.CLOSED.value:
+                raise _error("room_closed", "room is closed", 409)
+
+    def create_artifact(
+        self,
+        identity: RuntimeIdentity,
+        room_id: str,
+        filename: str,
+        media_type: str,
+        size_bytes: int,
+        sha256: str,
+    ) -> Artifact:
+        artifact_id = _new_id("artifact_")
+        created_at = self.clock()
+        artifact = Artifact(
+            artifact_id=artifact_id,
+            room_id=room_id,
+            filename=filename,
+            media_type=media_type,
+            size_bytes=size_bytes,
+            sha256=sha256,
+            created_at=created_at,
+        )
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._require_identity(connection, identity)
+            room_row = self._room_row(connection, room_id)
+            self._require_active_membership(connection, identity, room_id)
+            if room_row["status"] == RoomStatus.CLOSED.value:
+                raise _error("room_closed", "room is closed", 409)
+            connection.execute(
+                """
+                INSERT INTO artifacts(
+                    artifact_id, room_id,
+                    uploader_principal_id, uploader_agent_id, uploader_runtime_id,
+                    filename, media_type, size_bytes, sha256, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    artifact.artifact_id,
+                    artifact.room_id,
+                    identity.principal_id,
+                    identity.agent_id,
+                    identity.runtime_id,
+                    artifact.filename,
+                    artifact.media_type,
+                    artifact.size_bytes,
+                    artifact.sha256,
+                    _timestamp(artifact.created_at),
+                ),
+            )
+        return artifact
+
+    def get_artifact(
+        self,
+        identity: RuntimeIdentity,
+        room_id: str,
+        artifact_id: str,
+    ) -> Artifact:
+        with self._connect() as connection:
+            self._require_identity(connection, identity)
+            self._room_row(connection, room_id)
+            self._require_active_membership(connection, identity, room_id)
+            row = connection.execute(
+                "SELECT * FROM artifacts WHERE artifact_id = ? AND room_id = ?",
+                (artifact_id, room_id),
+            ).fetchone()
+            if row is None:
+                raise _error(
+                    "artifact_not_found",
+                    "artifact does not exist in this room",
+                    404,
+                )
+        return self._artifact(row)
 
     def retrieve_messages(
         self,
@@ -799,6 +945,18 @@ class RoomStore:
             attachment_ids=tuple(json.loads(row["attachment_ids_json"])),
             created_at=_parse_timestamp(row["created_at"]),
             resolution_state=ResolutionState(row["resolution_state"]),
+        )
+
+    @staticmethod
+    def _artifact(row: sqlite3.Row) -> Artifact:
+        return Artifact(
+            artifact_id=row["artifact_id"],
+            room_id=row["room_id"],
+            filename=row["filename"],
+            media_type=row["media_type"],
+            size_bytes=row["size_bytes"],
+            sha256=row["sha256"],
+            created_at=_parse_timestamp(row["created_at"]),
         )
 
     def _room_row(self, connection: sqlite3.Connection, room_id: str) -> sqlite3.Row:

@@ -1,10 +1,21 @@
-"""Application service for Room messaging and obligation resolution."""
+"""Application service for Room messaging, artifacts, and obligations."""
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterable
+import re
+from typing import BinaryIO
+
+from .blobs import LocalBlobStore
 from .errors import RoomError
-from .models import Message, MessagePage, RuntimeIdentity, normalize_tags, parse_cursor
+from .models import Artifact, Message, MessagePage, RuntimeIdentity, normalize_tags, parse_cursor
 from .store import RoomStore
+
+
+_MEDIA_TYPE = re.compile(
+    r"[A-Za-z0-9!#$%&'*+.^_`|~-]+/[A-Za-z0-9!#$%&'*+.^_`|~-]+",
+    re.ASCII,
+)
 
 
 def _error(code: str, message: str) -> RoomError:
@@ -12,8 +23,9 @@ def _error(code: str, message: str) -> RoomError:
 
 
 class RoomService:
-    def __init__(self, store: RoomStore) -> None:
+    def __init__(self, store: RoomStore, blob_store: LocalBlobStore) -> None:
         self.store = store
+        self.blob_store = blob_store
 
     def post_message(
         self,
@@ -57,3 +69,45 @@ class RoomService:
         evidence: str | None = None,
     ) -> Message:
         return self.store.resolve_message(identity, room_id, message_id, outcome, evidence)
+
+    async def upload_artifact(
+        self,
+        identity: RuntimeIdentity,
+        room_id: str,
+        filename: str,
+        media_type: str,
+        chunks: AsyncIterable[bytes],
+    ) -> Artifact:
+        if (
+            not isinstance(filename, str)
+            or not 1 <= len(filename) <= 255
+            or filename in (".", "..")
+            or "/" in filename
+            or "\\" in filename
+        ):
+            raise _error(
+                "invalid_filename",
+                "filename must be a basename of 1 to 255 characters",
+            )
+        if not isinstance(media_type, str) or _MEDIA_TYPE.fullmatch(media_type) is None:
+            raise _error("invalid_media_type", "media_type must be an ASCII type/subtype")
+
+        self.store.require_artifact_upload_access(identity, room_id)
+        stored_blob = await self.blob_store.store_stream(chunks)
+        return self.store.create_artifact(
+            identity,
+            room_id,
+            filename,
+            media_type,
+            stored_blob.size_bytes,
+            stored_blob.sha256,
+        )
+
+    def open_artifact(
+        self,
+        identity: RuntimeIdentity,
+        room_id: str,
+        artifact_id: str,
+    ) -> tuple[Artifact, BinaryIO]:
+        artifact = self.store.get_artifact(identity, room_id, artifact_id)
+        return artifact, self.blob_store.open_blob(artifact.sha256)

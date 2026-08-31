@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
@@ -11,6 +12,7 @@ import tempfile
 import threading
 import unittest
 
+from sharednet.room.blobs import LocalBlobStore
 from sharednet.room.errors import RoomError
 from sharednet.room.models import ResolutionState, RuntimeIdentity
 from sharednet.room.service import RoomService
@@ -37,10 +39,12 @@ class RoomMessageTests(unittest.TestCase):
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary_directory.cleanup)
         self.database_path = Path(self.temporary_directory.name) / "rooms.sqlite3"
+        self.blob_path = Path(self.temporary_directory.name) / "blobs"
         self.clock = ThreadSafeSteppingClock()
         self.store = RoomStore(self.database_path, clock=self.clock)
         self.store.initialize()
-        self.service = RoomService(self.store)
+        self.blob_store = LocalBlobStore(self.blob_path)
+        self.service = RoomService(self.store, self.blob_store)
 
     def register(self, principal_id: str, agent_id: str, runtime_id: str) -> RuntimeIdentity:
         registration, _ = self.store.register_runtime(principal_id, agent_id, runtime_id)
@@ -48,6 +52,20 @@ class RoomMessageTests(unittest.TestCase):
 
     def create_room(self, owner: RuntimeIdentity):
         return self.store.create_room(owner, "Coordination", None, "anyone_with_id")
+
+    def upload(self, identity: RuntimeIdentity, room_id: str, filename: str, content: bytes):
+        async def chunks():
+            yield content
+
+        return asyncio.run(
+            self.service.upload_artifact(
+                identity,
+                room_id,
+                filename,
+                "application/octet-stream",
+                chunks(),
+            )
+        )
 
     def assert_room_error(self, code: str, status_code: int, operation) -> RoomError:
         with self.assertRaises(RoomError) as caught:
@@ -145,7 +163,9 @@ class RoomMessageTests(unittest.TestCase):
         self.assertEqual(sorted(message.sequence for message in posted), [1, 2])
         restarted = RoomStore(self.database_path, clock=self.clock)
         restarted.initialize()
-        page = RoomService(restarted).retrieve_messages(owner, room.room_id)
+        page = RoomService(restarted, LocalBlobStore(self.blob_path)).retrieve_messages(
+            owner, room.room_id
+        )
         self.assertEqual([message.sequence for message in page.messages], [1, 2])
         self.assertEqual({message.content for message in page.messages}, {"alpha", "beta"})
 
@@ -169,12 +189,14 @@ class RoomMessageTests(unittest.TestCase):
     def test_sender_provenance_and_message_payload_are_persisted_immutably(self) -> None:
         owner = self.register("principal_owner", "agent_owner", "runtime_owner")
         room = self.create_room(owner)
+        first_artifact = self.upload(owner, room.room_id, "one.bin", b"one")
+        second_artifact = self.upload(owner, room.room_id, "two.bin", b"two")
 
         message = self.service.post_message(
             owner,
             room.room_id,
             "  immutable body  ",
-            attachment_ids=("artifact_one", "artifact_two"),
+            attachment_ids=(first_artifact.artifact_id, second_artifact.artifact_id),
         )
 
         self.assertEqual(message.sender, owner)
@@ -190,7 +212,13 @@ class RoomMessageTests(unittest.TestCase):
             ).fetchone()
         self.assertEqual(
             row,
-            ("principal_owner", "agent_owner", "runtime_owner", "immutable body", '["artifact_one","artifact_two"]'),
+            (
+                "principal_owner",
+                "agent_owner",
+                "runtime_owner",
+                "immutable body",
+                f'["{first_artifact.artifact_id}","{second_artifact.artifact_id}"]',
+            ),
         )
 
     def test_valid_tags_create_canonical_obligations_without_changing_membership(self) -> None:
