@@ -95,6 +95,7 @@ export interface Decision {
   denyLabel: string;
   createdAt: string;
   resolvedAt?: string;
+  resolutionNote?: string;
 }
 
 export interface UsageEntry {
@@ -695,6 +696,7 @@ export function resolveDecision(
   state: SharedNetDemoState,
   decisionId: string,
   outcome: Exclude<DecisionStatus, "pending">,
+  resolutionNote?: string,
 ): SharedNetDemoState {
   const decision = state.decisions.find((candidate) => candidate.id === decisionId);
   if (!decision || decision.status !== "pending") return state;
@@ -704,7 +706,14 @@ export function resolveDecision(
   ).toISOString();
   const decisions = state.decisions.map((candidate) =>
     candidate.id === decisionId
-      ? { ...candidate, status: outcome, resolvedAt }
+      ? {
+          ...candidate,
+          status: outcome,
+          resolvedAt,
+          ...(resolutionNote?.trim()
+            ? { resolutionNote: resolutionNote.trim() }
+            : {}),
+        }
       : candidate,
   );
 
@@ -888,7 +897,8 @@ function isDecision(value: unknown): value is Decision {
     hasString(value, "approveLabel") &&
     hasString(value, "denyLabel") &&
     hasString(value, "createdAt") &&
-    hasOptionalString(value, "resolvedAt")
+    hasOptionalString(value, "resolvedAt") &&
+    hasOptionalString(value, "resolutionNote")
   );
 }
 

@@ -35,6 +35,7 @@ interface SharedNetDemoContextValue {
   resolveDecision: (
     decisionId: string,
     outcome: Exclude<DecisionStatus, "pending">,
+    resolutionNote?: string,
   ) => void;
   selectAgent: (agentId: string) => void;
   resetDemo: () => void;
@@ -78,8 +79,14 @@ export function SharedNetDemoProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const resolveDecision = useCallback(
-    (decisionId: string, outcome: Exclude<DecisionStatus, "pending">) => {
-      setState((current) => resolveDecisionInState(current, decisionId, outcome));
+    (
+      decisionId: string,
+      outcome: Exclude<DecisionStatus, "pending">,
+      resolutionNote?: string,
+    ) => {
+      setState((current) =>
+        resolveDecisionInState(current, decisionId, outcome, resolutionNote),
+      );
     },
     [],
   );

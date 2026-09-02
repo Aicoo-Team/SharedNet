@@ -1,217 +1,189 @@
 "use client";
 
 import Link from "next/link";
-import { type FormEvent, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { useSharedNetDemo } from "@/src/context/sharednet-demo-context";
-import {
-  aggregateUsage,
-  type TranscriptMessage,
-} from "@/src/domain/network-demo";
+import { aggregateUsage } from "@/src/domain/network-demo";
 import { formatTokenCount } from "./app-shell";
 
-function MessageBlock({ message }: { message: TranscriptMessage }) {
-  const { state } = useSharedNetDemo();
-  const agent = state.agents.find((candidate) => candidate.id === message.agentId);
-  const involvedAgents = (message.agentIds ?? [])
-    .map((agentId) => state.agents.find((candidate) => candidate.id === agentId))
-    .filter((candidate) => candidate !== undefined);
-  const pendingTaskDecisions = state.decisions.filter(
-    (decision) => decision.taskId === message.taskId && decision.status === "pending",
-  ).length;
-  const content =
-    message.kind === "result"
-      ? pendingTaskDecisions > 0
-        ? `The implementation package is ready to review. ${pendingTaskDecisions} authority ${pendingTaskDecisions === 1 ? "decision remains" : "decisions remain"} before SharedNet could recruit external runtimes or touch provider accounts.`
-        : "The implementation package is ready, and all authority decisions for this task are resolved. The audit remains available in Decisions."
-      : message.content;
-  const actionLabel =
-    message.kind === "result"
-      ? pendingTaskDecisions > 0
-        ? `Review ${pendingTaskDecisions} ${pendingTaskDecisions === 1 ? "decision" : "decisions"}`
-        : "View decision audit"
-      : message.actionLabel;
-
-  if (message.kind === "user") {
-    return (
-      <article className="transcript-entry transcript-user">
-        <p className="entry-author">You</p>
-        <p className="user-prompt">{message.content}</p>
-      </article>
-    );
-  }
-
-  return (
-    <article className={`transcript-entry transcript-${message.kind}`}>
-      <div className="entry-body">
-        <p className="entry-author">
-          {agent?.handle ?? "SharedNet"}
-          <span>{message.kind}</span>
-        </p>
-        {message.title ? <h2>{message.title}</h2> : null}
-        <p className="entry-copy">{content}</p>
-
-        {message.details ? (
-          <ol className="entry-details">
-            {message.details.map((detail) => (
-              <li key={detail}>{detail}</li>
-            ))}
-          </ol>
-        ) : null}
-
-        {message.kind === "coordination" ? (
-          <div className="candidate-world" aria-label="Selected Agent organization">
-            <div>
-              <p className="candidate-label">Your Principal</p>
-              <ul>
-                {involvedAgents
-                  .filter((candidate) => candidate.principalId === "principal-xisen")
-                  .map((candidate) => (
-                    <li key={candidate.id}>{candidate.handle}</li>
-                  ))}
-              </ul>
-            </div>
-            <div>
-              <p className="candidate-label">Aicoo · requested</p>
-              <ul>
-                {involvedAgents
-                  .filter((candidate) => candidate.principalId === "principal-aicoo")
-                  .map((candidate) => (
-                    <li key={candidate.id}>{candidate.handle}</li>
-                  ))}
-              </ul>
-            </div>
-          </div>
-        ) : null}
-
-        {message.kind === "work" && message.contributions ? (
-          <section className="work-ledger" aria-label="Agent work ledger">
-            <div className="work-ledger-head" aria-hidden="true">
-              <span>Agent</span>
-              <span>Contribution</span>
-              <span>State</span>
-            </div>
-            <ul>
-              {message.contributions.map((contribution) => {
-                const contributor = state.agents.find(
-                  (candidate) => candidate.id === contribution.agentId,
-                );
-                if (!contributor) return null;
-                return (
-                  <li key={contribution.agentId}>
-                    <div>
-                      <strong>{contributor.handle}</strong>
-                      <span>
-                        {contributor.principalId === "principal-xisen"
-                          ? "yours"
-                          : "Aicoo"}
-                      </span>
-                    </div>
-                    <p>{contribution.output}</p>
-                    <span className="work-state">simulated</span>
-                  </li>
-                );
-              })}
-            </ul>
-          </section>
-        ) : null}
-
-        {message.actionHref && actionLabel ? (
-          <Link className="text-action" href={message.actionHref}>
-            {actionLabel}
-            <span aria-hidden="true">→</span>
-          </Link>
-        ) : null}
-      </div>
-    </article>
-  );
+function roomNumber(index: number): string {
+  return String(index + 1).padStart(2, "0");
 }
 
 export function ChatView() {
-  const { state, submitPrompt, resetDemo } = useSharedNetDemo();
+  const { state, submitPrompt } = useSharedNetDemo();
   const [draft, setDraft] = useState("");
-  const latestTask = state.tasks.at(-1);
-  const taskUsage = useMemo(
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(
+    state.tasks.at(-1)?.id ?? null,
+  );
+
+  useEffect(() => {
+    if (state.tasks.length === 0) {
+      setSelectedTaskId(null);
+      return;
+    }
+    if (!state.tasks.some((task) => task.id === selectedTaskId)) {
+      setSelectedTaskId(state.tasks.at(-1)?.id ?? null);
+    }
+  }, [selectedTaskId, state.tasks]);
+
+  const selectedTask =
+    state.tasks.find((task) => task.id === selectedTaskId) ?? state.tasks.at(-1);
+  const selectedAgents = selectedTask
+    ? selectedTask.selectedAgentIds
+        .map((agentId) => state.agents.find((agent) => agent.id === agentId))
+        .filter((agent) => agent !== undefined)
+    : [];
+  const selectedMessages = selectedTask
+    ? state.messages.filter((message) => message.taskId === selectedTask.id)
+    : [];
+  const workMessage = selectedMessages.find((message) => message.kind === "work");
+  const pendingCount = selectedTask
+    ? state.decisions.filter(
+        (decision) =>
+          decision.taskId === selectedTask.id && decision.status === "pending",
+      ).length
+    : 0;
+  const principalCount = new Set(selectedAgents.map((agent) => agent.principalId)).size;
+  const usage = useMemo(
     () =>
       aggregateUsage(
-        latestTask
-          ? state.usage.filter((entry) => entry.taskId === latestTask.id)
+        selectedTask
+          ? state.usage.filter((entry) => entry.taskId === selectedTask.id)
           : [],
       ),
-    [latestTask, state.usage],
+    [selectedTask, state.usage],
   );
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!draft.trim()) return;
-    submitPrompt(draft);
+    const prompt = draft.trim();
+    if (!prompt) return;
+    const nextTaskId = `task-network-${state.tasks.length + 1}`;
+    submitPrompt(prompt);
+    setSelectedTaskId(nextTaskId);
     setDraft("");
   }
 
   const composer = (
-    <form className="chat-composer" onSubmit={handleSubmit}>
+    <form className="room-composer" onSubmit={handleSubmit}>
       <label className="sr-only" htmlFor="task-prompt">
         What do you want done?
       </label>
       <textarea
         id="task-prompt"
-        value={draft}
         onChange={(event) => setDraft(event.target.value)}
         onKeyDown={(event) => {
           if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+            event.preventDefault();
             event.currentTarget.form?.requestSubmit();
           }
         }}
-        placeholder="Describe an outcome…"
-        rows={4}
+        placeholder="Type here…"
+        rows={3}
+        value={draft}
       />
-      <div className="composer-footer">
-        <span>⌘ Enter</span>
-        <button type="submit" disabled={!draft.trim()} aria-label="Send task">
-          <span aria-hidden="true">→</span>
-        </button>
-      </div>
+      <button aria-label="Send task" disabled={!draft.trim()} type="submit">
+        <span aria-hidden="true">↑</span>
+      </button>
     </form>
   );
 
-  if (state.messages.length === 0) {
-    return (
-      <section className="chat-empty page-frame">
-        <div className="chat-empty-inner">
-          <h1>What do you want done?</h1>
-          {composer}
-        </div>
-      </section>
-    );
+  if (state.tasks.length === 0) {
+    return <section className="chat-room-empty">{composer}</section>;
   }
 
   return (
-    <section className="chat-thread">
-      <header className="thread-heading">
-        <h1>{latestTask?.prompt}</h1>
-      </header>
+    <div className="rooms-workspace">
+      <aside className="rooms-sidebar">
+        <p>Rooms</p>
+        <nav aria-label="Rooms">
+          {state.tasks.map((task, index) => (
+            <button
+              aria-current={task.id === selectedTask?.id ? "true" : undefined}
+              aria-label={`Open room ${roomNumber(index)}: ${task.prompt}`}
+              key={task.id}
+              onClick={() => setSelectedTaskId(task.id)}
+              type="button"
+            >
+              <span>{roomNumber(index)}</span>
+              <strong>{task.prompt}</strong>
+            </button>
+          ))}
+        </nav>
+      </aside>
 
-      <div className="transcript" aria-live="polite">
-        {state.messages.map((message) => (
-          <MessageBlock key={message.id} message={message} />
-        ))}
-      </div>
+      <section className="room-canvas" aria-live="polite">
+        {selectedTask ? (
+          <>
+            <header className="room-heading">
+              <div>
+                <p>Room {roomNumber(state.tasks.indexOf(selectedTask))}</p>
+                <h1>{selectedTask.prompt}</h1>
+              </div>
+              <p className="room-usage">
+                {formatTokenCount(usage.totalTokens)} tokens · ${usage.costUsd.toFixed(2)}
+              </p>
+            </header>
 
-      {latestTask ? (
-        <section className="task-usage" aria-labelledby="task-usage-title">
-          <p id="task-usage-title">Task usage</p>
-          <div>
-            <strong>{formatTokenCount(taskUsage.totalTokens)} tokens</strong>
-            <span>${taskUsage.costUsd.toFixed(2)}</span>
-          </div>
-        </section>
-      ) : null}
+            <div className="room-center-stage">
+              {composer}
 
-      <div className="thread-reset-wrap">
-        <button type="button" className="text-action" onClick={resetDemo}>
-          New task
-          <span aria-hidden="true">→</span>
-        </button>
-      </div>
-    </section>
+              <section
+                aria-label="Agents assembled for this room"
+                className="room-assembly"
+              >
+                <p className="assembly-summary">
+                  {selectedAgents.length} Agents assembled · {principalCount} Principals
+                </p>
+                <div className="assembled-principals">
+                  {state.principals.map((principal) => {
+                    const principalAgents = selectedAgents.filter(
+                      (agent) => agent.principalId === principal.id,
+                    );
+                    if (principalAgents.length === 0) return null;
+
+                    return (
+                      <section key={principal.id}>
+                        <p>{principal.handle}</p>
+                        <ul>
+                          {principalAgents.map((agent) => (
+                            <li key={agent.id}>{agent.handle}</li>
+                          ))}
+                        </ul>
+                      </section>
+                    );
+                  })}
+                </div>
+              </section>
+            </div>
+
+            <footer className="room-footer">
+              <details>
+                <summary>Agent work · {workMessage?.contributions?.length ?? 0}</summary>
+                <ol>
+                  {(workMessage?.contributions ?? []).map((contribution) => {
+                    const agent = state.agents.find(
+                      (candidate) => candidate.id === contribution.agentId,
+                    );
+                    return (
+                      <li key={contribution.agentId}>
+                        <span>{agent?.handle}</span>
+                        <p>{contribution.output}</p>
+                      </li>
+                    );
+                  })}
+                </ol>
+              </details>
+              {pendingCount > 0 ? (
+                <Link href="/decisions">{pendingCount} decisions need you →</Link>
+              ) : (
+                <span>All decisions recorded</span>
+              )}
+            </footer>
+          </>
+        ) : null}
+      </section>
+    </div>
   );
 }

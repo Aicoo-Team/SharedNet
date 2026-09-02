@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import "@fontsource-variable/albert-sans";
 import "@fontsource-variable/anybody";
 import "./globals.css";
+import "./product-shell.css";
 import { AppShell } from "@/src/components/app-shell";
 import { SharedNetDemoProvider } from "@/src/context/sharednet-demo-context";
 

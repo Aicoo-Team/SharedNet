@@ -1,9 +1,6 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it } from "vitest";
-import {
-  SharedNetDemoProvider,
-  useSharedNetDemo,
-} from "@/src/context/sharednet-demo-context";
+import { SharedNetDemoProvider } from "@/src/context/sharednet-demo-context";
 import { NetworkView } from "./network-view";
 
 function renderNetwork() {
@@ -14,84 +11,63 @@ function renderNetwork() {
   );
 }
 
-function RecruitmentHarness() {
-  const { state, submitPrompt, resolveDecision } = useSharedNetDemo();
-  const recruitmentDecision = state.decisions.find(
-    (decision) => decision.type === "recruitment" && decision.status === "pending",
-  );
-  return (
-    <>
-      <button type="button" onClick={() => submitPrompt("Build a website")}>Seed task</button>
-      <button
-        type="button"
-        disabled={!recruitmentDecision}
-        onClick={() =>
-          recruitmentDecision && resolveDecision(recruitmentDecision.id, "denied")
-        }
-      >
-        Deny recruitment
-      </button>
-      <NetworkView />
-    </>
-  );
-}
-
 describe("SharedNet Network", () => {
   beforeEach(() => window.localStorage.clear());
 
-  it("makes Principal ownership and the cross-Principal boundary explicit", () => {
+  it("renders the intra-Principal relationship matrix with weighted line multiplicity", () => {
     renderNetwork();
 
-    const ownPrincipal = screen.getByRole("region", {
-      name: "Your Principal @xisen",
-    });
-    const connectedPrincipal = screen.getByRole("region", {
-      name: "Connected Principal @aicoo",
-    });
-
-    expect(within(ownPrincipal).getByText("@xisen/planner")).toBeTruthy();
-    expect(within(ownPrincipal).getByText("@xisen/codex")).toBeTruthy();
-    expect(within(connectedPrincipal).getByText("@aicoo/web-builder")).toBeTruthy();
-    expect(within(connectedPrincipal).getByText("@aicoo/design-engineer")).toBeTruthy();
-    expect(within(connectedPrincipal).getByText("@aicoo/neon")).toBeTruthy();
-    expect(within(connectedPrincipal).getByText("@aicoo/vercel")).toBeTruthy();
-    expect(within(connectedPrincipal).getByText("@aicoo/quality")).toBeTruthy();
-    expect(screen.getByText("@xisen ↔ @aicoo")).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Network" })).toBeTruthy();
-    expect(screen.queryByText("The network around you.")).toBeNull();
-    expect(screen.queryByText("Intra-Principal boundary")).toBeNull();
-    expect(screen.queryByText("Cross-Principal connection")).toBeNull();
-    expect(screen.queryByText("Task recruitment")).toBeNull();
-  });
-
-  it("reveals AgentCard runtime metadata and usage without a fourth page", () => {
-    renderNetwork();
-
-    fireEvent.click(screen.getByRole("button", { name: "Inspect @aicoo/neon" }));
-
-    const details = screen.getByRole("region", { name: "Agent details" });
-    expect(within(details).getByRole("heading", { name: "@aicoo/neon" })).toBeTruthy();
-    expect(within(details).getByText("Aicoo Cloud")).toBeTruthy();
-    expect(within(details).getByText("Provider-isolated sandbox")).toBeTruthy();
-    expect(within(details).getByText("Connections can discover")).toBeTruthy();
-  });
-
-  it("keeps task recruitment separate from connection state and labels its outcome", () => {
-    render(
-      <SharedNetDemoProvider>
-        <RecruitmentHarness />
-      </SharedNetDemoProvider>,
+    const graph = screen.getByRole("region", { name: "Relationship graph" });
+    expect(screen.getByRole("button", { name: "Intra-Principal" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
     );
-    fireEvent.click(screen.getByRole("button", { name: "Seed task" }));
+    expect(screen.getByRole("button", { name: "Cross-Principal" })).toBeTruthy();
+    expect(within(graph).getByText("Same Principal ID")).toBeTruthy();
+    expect(
+      graph.querySelectorAll(
+        '[data-edge-id="planner-codex"][data-edge-kind="shared-room"]',
+      ),
+    ).toHaveLength(3);
+    expect(
+      graph.querySelectorAll(
+        '[data-edge-id="planner-codex"][data-edge-kind="delegation"]',
+      ),
+    ).toHaveLength(2);
+    expect(screen.getByText("dotted · rooms together")).toBeTruthy();
+    expect(screen.getByText("solid · direct delegation")).toBeTruthy();
+  });
 
-    const connectedPrincipal = screen.getByRole("region", {
-      name: "Connected Principal @aicoo",
-    });
-    expect(within(connectedPrincipal).getAllByText("REQUESTED")).toHaveLength(5);
+  it("shows identity metadata in a closable Agent Card", () => {
+    renderNetwork();
 
-    fireEvent.click(screen.getByRole("button", { name: "Deny recruitment" }));
-    expect(within(connectedPrincipal).getAllByText("DECLINED")).toHaveLength(5);
-    expect(within(connectedPrincipal).queryByText("TASK")).toBeNull();
-    expect(screen.getByText("5 declined")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Inspect @xisen/codex" }));
+
+    const card = screen.getByRole("region", { name: "Agent Card" });
+    expect(within(card).getByText("principal-xisen")).toBeTruthy();
+    expect(within(card).getByText("agent-xisen-codex")).toBeTruthy();
+    expect(within(card).getByText("runtime-local-xisen-codex")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Close Agent Card" }));
+    expect(screen.queryByRole("region", { name: "Agent Card" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Open Agent Card" })).toBeTruthy();
+  });
+
+  it("switches to cross-Principal memory without losing Agent selection", () => {
+    renderNetwork();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cross-Principal" }));
+    const graph = screen.getByRole("region", { name: "Relationship graph" });
+    expect(within(graph).getByText("Different Principal IDs")).toBeTruthy();
+    expect(within(graph).getByRole("button", { name: "Inspect @xisen/planner" })).toBeTruthy();
+    expect(within(graph).getByRole("button", { name: "Inspect @aicoo/web-builder" })).toBeTruthy();
+    expect(graph.querySelectorAll('[data-scope="cross"]')).not.toHaveLength(0);
+
+    fireEvent.click(within(graph).getByRole("button", { name: "Inspect @aicoo/web-builder" }));
+    expect(
+      within(screen.getByRole("region", { name: "Agent Card" })).getByText(
+        "principal-aicoo",
+      ),
+    ).toBeTruthy();
   });
 });

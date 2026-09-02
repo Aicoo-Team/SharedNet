@@ -1,9 +1,6 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it } from "vitest";
-import {
-  SharedNetDemoProvider,
-  useSharedNetDemo,
-} from "@/src/context/sharednet-demo-context";
+import { SharedNetDemoProvider } from "@/src/context/sharednet-demo-context";
 import { ChatView } from "./chat-view";
 
 function renderChat() {
@@ -14,41 +11,21 @@ function renderChat() {
   );
 }
 
-function ResolvedTaskHarness() {
-  const { state, resolveDecision } = useSharedNetDemo();
-  return (
-    <>
-      <ChatView />
-      <button
-        type="button"
-        onClick={() => {
-          const taskId = state.tasks.at(-1)?.id;
-          state.decisions
-            .filter((decision) => decision.taskId === taskId)
-            .forEach((decision) => resolveDecision(decision.id, "approved"));
-        }}
-      >
-        Resolve launch decisions
-      </button>
-    </>
-  );
-}
-
 describe("SharedNet Chat", () => {
   beforeEach(() => window.localStorage.clear());
 
-  it("starts with one quiet typing surface instead of a staged questionnaire", () => {
+  it("starts as an empty room canvas with one centered typing surface", () => {
     renderChat();
 
-    expect(screen.getByRole("heading", { name: "What do you want done?" })).toBeTruthy();
     expect(screen.getByLabelText("What do you want done?")).toBeTruthy();
+    expect(screen.getByPlaceholderText("Type here…")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Send task" })).toBeTruthy();
     expect(screen.getAllByRole("textbox")).toHaveLength(1);
-    expect(screen.queryByRole("button", { name: "Try a website launch" })).toBeNull();
-    expect(screen.queryByText(/canonical website-launch flow/i)).toBeNull();
+    expect(screen.queryByRole("navigation", { name: "Rooms" })).toBeNull();
+    expect(screen.queryByText("Active task")).toBeNull();
   });
 
-  it("plans and forms a mixed-Principal organization inside the conversation", () => {
+  it("turns a submitted outcome into a Room and assembles its Agents first", () => {
     renderChat();
     fireEvent.change(screen.getByLabelText("What do you want done?"), {
       target: {
@@ -57,48 +34,48 @@ describe("SharedNet Chat", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Send task" }));
 
+    const rooms = screen.getByRole("navigation", { name: "Rooms" });
     expect(
-      screen.getByRole("heading", { name: "I’ll organize this as one launch task." }),
-    ).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Candidate world formed" })).toBeTruthy();
-    expect(screen.getAllByText("@aicoo/web-builder").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("@xisen/codex").length).toBeGreaterThan(0);
-    const workLedger = screen.getByRole("region", { name: "Agent work ledger" });
-    expect(within(workLedger).getByText("@aicoo/neon")).toBeTruthy();
-    expect(within(workLedger).getByText("Database schema and migration plan")).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Review 2 decisions" })).toHaveAttribute(
-      "href",
-      "/decisions",
-    );
-    expect(screen.getByText("36.6k tokens")).toBeTruthy();
-    expect(screen.getByText("$0.21")).toBeTruthy();
-    expect(screen.queryByRole("region", { name: "Demo website preview" })).toBeNull();
-    expect(
-      screen.getByRole("heading", {
-        level: 1,
-        name: "Build and launch a customer feedback website with Neon and Vercel.",
+      within(rooms).getByRole("button", {
+        name: "Open room 01: Build and launch a customer feedback website with Neon and Vercel.",
       }),
-    ).toBeTruthy();
-    expect(screen.queryByText("Continue the task")).toBeNull();
+    ).toHaveAttribute("aria-current", "true");
+
+    const assembly = screen.getByRole("region", {
+      name: "Agents assembled for this room",
+    });
+    expect(within(assembly).getByText("@xisen/planner")).toBeTruthy();
+    expect(within(assembly).getByText("@xisen/codex")).toBeTruthy();
+    expect(within(assembly).getByText("@aicoo/web-builder")).toBeTruthy();
+    expect(within(assembly).getByText("@aicoo/quality")).toBeTruthy();
+    expect(screen.getByText("9 Agents assembled · 2 Principals")).toBeTruthy();
+    expect(screen.getAllByRole("textbox")).toHaveLength(1);
   });
 
-  it("derives result copy and the decision action from current authority state", () => {
-    render(
-      <SharedNetDemoProvider>
-        <ResolvedTaskHarness />
-      </SharedNetDemoProvider>,
-    );
+  it("keeps every submitted outcome as a selectable past Room", () => {
+    renderChat();
     fireEvent.change(screen.getByLabelText("What do you want done?"), {
-      target: { value: "Build a website" },
+      target: { value: "Build the API first" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Send task" }));
-    fireEvent.click(screen.getByRole("button", { name: "Resolve launch decisions" }));
+    fireEvent.change(screen.getByLabelText("What do you want done?"), {
+      target: { value: "Prepare launch verification" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send task" }));
 
-    expect(screen.queryByRole("link", { name: "Review 2 decisions" })).toBeNull();
-    expect(screen.getByRole("link", { name: "View decision audit" })).toHaveAttribute(
-      "href",
-      "/decisions",
+    const rooms = screen.getByRole("navigation", { name: "Rooms" });
+    expect(within(rooms).getAllByRole("button")).toHaveLength(2);
+    fireEvent.click(
+      within(rooms).getByRole("button", {
+        name: "Open room 01: Build the API first",
+      }),
     );
-    expect(screen.getByText(/all authority decisions for this task are resolved/i)).toBeTruthy();
+
+    expect(screen.getByRole("heading", { name: "Build the API first" })).toBeTruthy();
+    expect(
+      within(rooms).getByRole("button", {
+        name: "Open room 01: Build the API first",
+      }),
+    ).toHaveAttribute("aria-current", "true");
   });
 });

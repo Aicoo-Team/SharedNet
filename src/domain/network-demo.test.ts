@@ -121,12 +121,18 @@ describe("SharedNet network demo domain", () => {
       (decision) => decision.type === "inbound_use",
     );
 
-    const next = resolveDecision(state, pending!.id, "approved");
+    const next = resolveDecision(
+      state,
+      pending!.id,
+      "approved",
+      "Research the auth boundary first.",
+    );
 
     expect(next.decisions.find((decision) => decision.id === pending!.id)).toEqual(
       expect.objectContaining({
         status: "approved",
         resolvedAt: "2026-08-30T10:05:00.000Z",
+        resolutionNote: "Research the auth boundary first.",
       }),
     );
     expect(next.events.at(-1)).toEqual(

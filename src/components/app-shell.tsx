@@ -3,7 +3,6 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
-import { aggregateUsage } from "@/src/domain/network-demo";
 import { useSharedNetDemo } from "@/src/context/sharednet-demo-context";
 
 const navigation = [
@@ -20,58 +19,55 @@ export function formatTokenCount(value: number): string {
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const { state } = useSharedNetDemo();
-  const usage = aggregateUsage(state.usage);
   const pendingCount = state.decisions.filter(
     (decision) => decision.status === "pending",
   ).length;
 
+  if (pathname === "/") return <>{children}</>;
+
   return (
-    <div className="app-shell">
+    <div className="product-window">
       <a className="skip-link" href="#main-content">
         Skip to content
       </a>
-      <header className="app-header">
-        <div className="header-inner">
-          <Link className="brand-name" href="/chat">
-            SharedNet
-          </Link>
 
-          <nav className="primary-nav" aria-label="Primary">
-            {navigation.map((item) => {
-              const isActive = pathname === item.href;
-              return (
-                <Link
-                  className="nav-link"
-                  data-active={isActive ? "true" : undefined}
-                  href={item.href}
-                  key={item.href}
-                  aria-label={
-                    item.href === "/decisions" && pendingCount > 0
-                      ? `Decisions, ${pendingCount} pending`
-                      : undefined
-                  }
-                  aria-current={isActive ? "page" : undefined}
-                >
+      <aside className="product-rail">
+        <nav aria-label="Primary surfaces">
+          {navigation.map((item) => {
+            const isActive = pathname === item.href;
+            const isDecisions = item.href === "/decisions";
+            const accessibleLabel =
+              isDecisions && pendingCount > 0
+                ? `Decisions, ${pendingCount} pending`
+                : item.label;
+
+            return (
+              <Link
+                aria-current={isActive ? "page" : undefined}
+                aria-label={accessibleLabel}
+                className="rail-destination"
+                data-active={isActive ? "true" : undefined}
+                href={item.href}
+                key={item.href}
+              >
+                <span className="rail-dot" aria-hidden="true" />
+                <span className="rail-tooltip" aria-hidden="true">
                   {item.label}
-                  {item.href === "/decisions" && pendingCount > 0 ? (
-                    <span className="decision-count" data-count={pendingCount}>
-                      {pendingCount}
-                    </span>
-                  ) : null}
-                </Link>
-              );
-            })}
-          </nav>
+                </span>
+                {isDecisions && pendingCount > 0 ? (
+                  <span className="rail-decision-badge" aria-hidden="true">
+                    {pendingCount}
+                  </span>
+                ) : null}
+              </Link>
+            );
+          })}
+        </nav>
+      </aside>
 
-          <p
-            className="usage-ledger"
-            aria-label={`Platform usage: ${formatTokenCount(usage.totalTokens)} tokens, $${usage.costUsd.toFixed(2)}`}
-          >
-            {formatTokenCount(usage.totalTokens)} · ${usage.costUsd.toFixed(2)}
-          </p>
-        </div>
-      </header>
-      <main id="main-content">{children}</main>
+      <main className="product-surface" id="main-content">
+        {children}
+      </main>
     </div>
   );
 }
