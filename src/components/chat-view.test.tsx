@@ -1,4 +1,8 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -48,6 +52,14 @@ const INSTANCE_ID = "i_8pQ2Km7XaN" as InstanceId;
 const SECOND_INSTANCE_ID = "i_9ReviewNow" as InstanceId;
 const FIRST_MESSAGE_ID = "message_launch.7" as MessageId;
 const REPLY_MESSAGE_ID = "message_launch.12" as MessageId;
+const PRODUCT_SHELL_CSS = readFileSync(
+  resolve(process.cwd(), "app/product-shell.css"),
+  "utf8",
+);
+const ORIGINAL_SHOW_MODAL = Object.getOwnPropertyDescriptor(
+  window.HTMLDialogElement.prototype,
+  "showModal",
+);
 
 const roomSummary: RoomSummary = {
   description: "Coordinate the production launch",
@@ -149,6 +161,18 @@ const roomDetail: RoomDetail = {
 };
 
 const DRAFT = "Review the release evidence before launch.";
+const NEWER_DRAFT = "Preserve this newer handoff draft.";
+
+function deferredClipboardWrite() {
+  let resolve!: () => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<void>((resolvePromise, rejectPromise) => {
+    resolve = () => resolvePromise();
+    reject = (reason) => rejectPromise(reason);
+  });
+
+  return { promise, reject, resolve };
+}
 
 function emptyInstruction(draft: string): string {
   return `Build a SharedNet Room from your local Agent. Use this draft as the initial brief, post it locally as the Room's first plain-text message, and return the new Room ID:\n\n${draft}`;
@@ -199,11 +223,26 @@ describe("SharedNet Rooms", () => {
       configurable: true,
       value: { writeText },
     });
+    Object.defineProperty(window.HTMLDialogElement.prototype, "showModal", {
+      configurable: true,
+      value(this: HTMLDialogElement) {
+        this.setAttribute("open", "");
+      },
+    });
   });
 
   afterEach(() => {
     cleanup();
     vi.unstubAllGlobals();
+    if (ORIGINAL_SHOW_MODAL) {
+      Object.defineProperty(
+        window.HTMLDialogElement.prototype,
+        "showModal",
+        ORIGINAL_SHOW_MODAL,
+      );
+    } else {
+      Reflect.deleteProperty(window.HTMLDialogElement.prototype, "showModal");
+    }
   });
 
   it("keeps the Rooms sidebar and local handoff composer visible when no Rooms exist", () => {
@@ -229,6 +268,23 @@ describe("SharedNet Rooms", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Loading rooms…");
     expect(screen.queryByText("No rooms yet")).toBeNull();
     expect(screen.getByRole("navigation", { name: "Rooms" })).toBeVisible();
+  });
+
+  it("reports Rooms unavailable when stale state has no last-good list", () => {
+    renderChat({
+      error: "Room list refresh failed.",
+      rooms: [],
+      selectedRoom: null,
+      selectedRoomId: null,
+      status: "stale",
+    });
+
+    const rooms = screen.getByRole("navigation", { name: "Rooms" });
+    expect(within(rooms).getByRole("status")).toHaveTextContent(
+      "Rooms unavailable while SharedNet data is stale.",
+    );
+    expect(within(rooms).queryByText("No rooms yet")).toBeNull();
+    expect(within(rooms).queryByText("Loading rooms…")).toBeNull();
   });
 
   it("renders durable Room summaries with exact status, sequence, activity, and selection", () => {
@@ -312,6 +368,25 @@ describe("SharedNet Rooms", () => {
     expect(provenance).toHaveTextContent(`Instance${INSTANCE_ID}`);
   });
 
+  it("keeps exact Room and provenance IDs visibly wrappable", () => {
+    renderChat();
+
+    expect(screen.getByText(ROOM_ID)).toHaveClass("room-canonical-id");
+    const provenance = within(
+      screen.getByRole("article", { name: "Message 7" }),
+    ).getByLabelText("Sender provenance");
+    for (const id of [PRINCIPAL_ID, AGENT_ID, RUNTIME_ID, INSTANCE_ID]) {
+      expect(within(provenance).getByText(id)).toHaveClass("room-canonical-id");
+    }
+
+    const canonicalIdRule = PRODUCT_SHELL_CSS.match(
+      /\.room-canonical-id\s*\{([^}]*)\}/,
+    )?.[1];
+    expect(canonicalIdRule).toContain("overflow-wrap: anywhere;");
+    expect(canonicalIdRule).toContain("white-space: normal;");
+    expect(canonicalIdRule).not.toContain("text-overflow: ellipsis;");
+  });
+
   it("links a reply to the exact parent message ID", () => {
     renderChat();
 
@@ -340,6 +415,21 @@ describe("SharedNet Rooms", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Loading Room history…");
     expect(screen.queryByRole("list", { name: "Room messages" })).toBeNull();
     expect(screen.queryByText("No messages yet")).toBeNull();
+  });
+
+  it("reports selected Room history unavailable when stale state has no detail", () => {
+    renderChat({
+      error: "Room history refresh failed.",
+      selectedRoom: null,
+      status: "stale",
+    });
+
+    expect(screen.getByText("Room history unavailable while SharedNet data is stale.")).toHaveAttribute(
+      "role",
+      "status",
+    );
+    expect(screen.queryByText("Loading Room history…")).toBeNull();
+    expect(screen.queryByRole("list", { name: "Room messages" })).toBeNull();
   });
 
   it("builds the no-selection instruction and leaves the draft unsubmitted", () => {
@@ -372,6 +462,60 @@ describe("SharedNet Rooms", () => {
     expect(instructionValue).toContain("message ID/cursor");
   });
 
+  it("opens a native modal with initial focus contained over an inert background", async () => {
+    renderChat();
+    const trigger = screen.getByRole("button", { name: "Continue locally" });
+    trigger.focus();
+
+    enterDraftAndContinue();
+
+    const dialog = screen.getByRole("dialog", {
+      name: "Continue in SharedNet Local",
+    });
+    const primaryAction = within(dialog).getByRole("button", {
+      name: "Copy instructions",
+    });
+    const workspace = trigger.closest(".rooms-workspace");
+    await waitFor(() => expect(primaryAction).toHaveFocus());
+    expect(dialog.tagName).toBe("DIALOG");
+    expect(dialog).toHaveAttribute("open");
+    expect(dialog).toContainElement(document.activeElement as HTMLElement);
+    expect(workspace).toHaveAttribute("inert");
+    expect(dialog.closest("[inert]")).toBeNull();
+  });
+
+  it("closes the modal on Escape and restores focus to its Continue locally trigger", async () => {
+    renderChat();
+    const trigger = screen.getByRole("button", { name: "Continue locally" });
+    trigger.focus();
+    enterDraftAndContinue();
+
+    const dialog = screen.getByRole("dialog", {
+      name: "Continue in SharedNet Local",
+    });
+    const primaryAction = within(dialog).getByRole("button", {
+      name: "Copy instructions",
+    });
+    await waitFor(() => expect(primaryAction).toHaveFocus());
+
+    fireEvent.keyDown(primaryAction, { code: "Escape", key: "Escape" });
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(trigger).toHaveFocus();
+    expect(trigger.closest(".rooms-workspace")).not.toHaveAttribute("inert");
+    expect(screen.getByLabelText("What do you want done?")).toHaveValue(DRAFT);
+  });
+
+  it("retains a visible composer focus indicator under product-window specificity", () => {
+    const focusWithinRule = PRODUCT_SHELL_CSS.match(
+      /\.room-composer:focus-within\s*\{([^}]*)\}/,
+    )?.[1];
+    expect(focusWithinRule).toContain("outline: 2px solid");
+    expect(PRODUCT_SHELL_CSS).not.toMatch(
+      /\.product-window \.room-composer:focus-within[^{]*\{[^}]*outline:\s*none;/,
+    );
+  });
+
   it("copies instructions through Clipboard and clears the draft only after success", async () => {
     renderChat();
     enterDraftAndContinue();
@@ -402,6 +546,63 @@ describe("SharedNet Rooms", () => {
     expect(
       screen.getByRole("dialog", { name: "Continue in SharedNet Local" }),
     ).toBeVisible();
+  });
+
+  it("ignores delayed Clipboard success from a closed dialog revision", async () => {
+    const staleWrite = deferredClipboardWrite();
+    writeText.mockReturnValueOnce(staleWrite.promise);
+    renderChat();
+    enterDraftAndContinue();
+    fireEvent.click(screen.getByRole("button", { name: "Copy instructions" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    fireEvent.change(screen.getByLabelText("What do you want done?"), {
+      target: { value: NEWER_DRAFT },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Continue locally" }));
+    expect(
+      screen.getByLabelText("Local Agent instructions").textContent,
+    ).toBe(selectedInstruction(NEWER_DRAFT));
+
+    await act(async () => {
+      staleWrite.resolve();
+      await staleWrite.promise;
+    });
+
+    expect(screen.getByLabelText("What do you want done?")).toHaveValue(
+      NEWER_DRAFT,
+    );
+    expect(screen.queryByText("Copied to clipboard.")).toBeNull();
+    expect(screen.getByRole("button", { name: "Copy instructions" })).toBeVisible();
+  });
+
+  it("ignores delayed Clipboard failure from a closed dialog revision", async () => {
+    const staleWrite = deferredClipboardWrite();
+    writeText.mockReturnValueOnce(staleWrite.promise);
+    renderChat();
+    enterDraftAndContinue();
+    fireEvent.click(screen.getByRole("button", { name: "Copy instructions" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    fireEvent.change(screen.getByLabelText("What do you want done?"), {
+      target: { value: NEWER_DRAFT },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Continue locally" }));
+
+    await act(async () => {
+      staleWrite.reject(new Error("Old Clipboard denial"));
+      await staleWrite.promise.catch(() => undefined);
+    });
+
+    expect(screen.getByLabelText("What do you want done?")).toHaveValue(
+      NEWER_DRAFT,
+    );
+    expect(
+      screen.queryByText("Clipboard access failed. Copy the instructions manually."),
+    ).toBeNull();
+    expect(screen.getByRole("button", { name: "Copy instructions" })).toBeVisible();
   });
 
   it("closes the dialog without clearing an uncopied draft", () => {

@@ -1,11 +1,16 @@
 "use client";
 
-import { type FormEvent, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import { useSharedNet } from "@/src/context/sharednet-context";
 import type { RoomId } from "@/src/sharednet/contracts";
 
 type CopyState = "idle" | "copied" | "error";
+
+type LocalInstruction = {
+  revision: number;
+  text: string;
+};
 
 function buildLocalInstruction(draft: string, roomId: RoomId | null): string {
   if (roomId === null) {
@@ -26,7 +31,13 @@ export function ChatView() {
   } = useSharedNet();
   const [copyState, setCopyState] = useState<CopyState>("idle");
   const [draft, setDraft] = useState("");
-  const [instruction, setInstruction] = useState<string | null>(null);
+  const [instruction, setInstruction] = useState<LocalInstruction | null>(null);
+  const continueButtonRef = useRef<HTMLButtonElement>(null);
+  const copyOperationRevisionRef = useRef(0);
+  const copyButtonRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const instructionRevisionRef = useRef(0);
+  const restoreFocusRef = useRef(false);
   const selectedSummary = rooms.find((room) => room.room_id === selectedRoomId);
   const detail =
     selectedRoom?.room.room_id === selectedRoomId ? selectedRoom : null;
@@ -38,15 +49,38 @@ export function ChatView() {
     [detail],
   );
 
+  useEffect(() => {
+    if (instruction !== null) {
+      const dialog = dialogRef.current;
+      if (dialog && !dialog.open) dialog.showModal();
+      copyButtonRef.current?.focus();
+      return;
+    }
+
+    if (restoreFocusRef.current) {
+      restoreFocusRef.current = false;
+      continueButtonRef.current?.focus();
+    }
+  }, [instruction]);
+
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const nextDraft = draft.trim();
     if (!nextDraft) return;
+    const revision = instructionRevisionRef.current + 1;
+    instructionRevisionRef.current = revision;
+    copyOperationRevisionRef.current += 1;
     setCopyState("idle");
-    setInstruction(buildLocalInstruction(nextDraft, selectedRoomId));
+    setInstruction({
+      revision,
+      text: buildLocalInstruction(nextDraft, selectedRoomId),
+    });
   }
 
   function closeDialog(clearDraft: boolean) {
+    instructionRevisionRef.current += 1;
+    copyOperationRevisionRef.current += 1;
+    restoreFocusRef.current = true;
     setInstruction(null);
     setCopyState("idle");
     if (clearDraft) setDraft("");
@@ -54,13 +88,28 @@ export function ChatView() {
 
   async function copyInstruction() {
     if (instruction === null) return;
+    const instructionAtStart = instruction;
+    const operationRevision = copyOperationRevisionRef.current + 1;
+    copyOperationRevisionRef.current = operationRevision;
     setCopyState("idle");
 
     try {
-      await navigator.clipboard.writeText(instruction);
+      await navigator.clipboard.writeText(instructionAtStart.text);
+      if (
+        instructionRevisionRef.current !== instructionAtStart.revision ||
+        copyOperationRevisionRef.current !== operationRevision
+      ) {
+        return;
+      }
       setDraft("");
       setCopyState("copied");
     } catch {
+      if (
+        instructionRevisionRef.current !== instructionAtStart.revision ||
+        copyOperationRevisionRef.current !== operationRevision
+      ) {
+        return;
+      }
       setCopyState("error");
     }
   }
@@ -86,6 +135,7 @@ export function ChatView() {
       <button
         aria-label="Continue locally"
         disabled={!draft.trim()}
+        ref={continueButtonRef}
         type="submit"
       >
         <span aria-hidden="true">↑</span>
@@ -100,7 +150,11 @@ export function ChatView() {
   ) : null;
 
   return (
-    <div className="rooms-workspace">
+    <>
+      <div
+        className="rooms-workspace"
+        inert={instruction !== null ? true : undefined}
+      >
       <aside className="rooms-sidebar">
         <p>Rooms</p>
         <nav aria-label="Rooms">
@@ -125,6 +179,10 @@ export function ChatView() {
             <p className="rooms-empty-copy" role="status">
               Loading rooms…
             </p>
+          ) : status === "stale" ? (
+            <p className="rooms-empty-copy" role="status">
+              Rooms unavailable while SharedNet data is stale.
+            </p>
           ) : (
             <p className="rooms-empty-copy">No rooms yet</p>
           )}
@@ -137,7 +195,7 @@ export function ChatView() {
             <div>
               <p>{detail?.room.status ?? selectedSummary?.status ?? "Room"}</p>
               <h1>{detail?.room.name ?? selectedSummary?.name ?? "Room"}</h1>
-              <code>{selectedRoomId}</code>
+              <code className="room-canonical-id">{selectedRoomId}</code>
             </div>
             {detail ? (
               <div className="room-facts" aria-label="Room facts">
@@ -162,7 +220,9 @@ export function ChatView() {
           <div className="room-history">
             {detail === null ? (
               <p className="room-history-state" role="status">
-                Loading Room history…
+                {status === "stale"
+                  ? "Room history unavailable while SharedNet data is stale."
+                  : "Loading Room history…"}
               </p>
             ) : orderedMessages.length === 0 ? (
               <p className="room-history-state">No messages yet</p>
@@ -188,19 +248,27 @@ export function ChatView() {
                       >
                         <div>
                           <dt>Principal</dt>
-                          <dd>{message.sender.principal_id}</dd>
+                          <dd className="room-canonical-id">
+                            {message.sender.principal_id}
+                          </dd>
                         </div>
                         <div>
                           <dt>Agent</dt>
-                          <dd>{message.sender.agent_id}</dd>
+                          <dd className="room-canonical-id">
+                            {message.sender.agent_id}
+                          </dd>
                         </div>
                         <div>
                           <dt>Runtime</dt>
-                          <dd>{message.sender.runtime_id}</dd>
+                          <dd className="room-canonical-id">
+                            {message.sender.runtime_id}
+                          </dd>
                         </div>
                         <div>
                           <dt>Instance</dt>
-                          <dd>{message.sender.instance_id ?? "Unavailable"}</dd>
+                          <dd className="room-canonical-id">
+                            {message.sender.instance_id ?? "Unavailable"}
+                          </dd>
                         </div>
                       </dl>
                     </article>
@@ -218,51 +286,62 @@ export function ChatView() {
           {composer}
         </section>
       )}
+      </div>
 
       {instruction !== null ? (
-        <div className="room-handoff-backdrop">
-          <section
-            aria-labelledby="room-handoff-title"
-            aria-modal="true"
-            className="room-handoff-dialog"
-            role="dialog"
-          >
-            <header>
-              <p>Read-only handoff</p>
-              <h2 id="room-handoff-title">Continue in SharedNet Local</h2>
-            </header>
-            <p>
-              Copy these instructions to a local Agent. Nothing has been submitted
-              from this browser.
+        <dialog
+          aria-labelledby="room-handoff-title"
+          aria-modal="true"
+          className="room-handoff-dialog"
+          onCancel={(event) => {
+            event.preventDefault();
+            closeDialog(false);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              event.preventDefault();
+              closeDialog(false);
+            }
+          }}
+          ref={dialogRef}
+        >
+          <header>
+            <p>Read-only handoff</p>
+            <h2 id="room-handoff-title">Continue in SharedNet Local</h2>
+          </header>
+          <p>
+            Copy these instructions to a local Agent. Nothing has been submitted
+            from this browser.
+          </p>
+          <pre aria-label="Local Agent instructions">{instruction.text}</pre>
+          {copyState === "copied" ? (
+            <p className="room-copy-state room-copy-success" role="status">
+              Copied to clipboard.
             </p>
-            <pre aria-label="Local Agent instructions">{instruction}</pre>
-            {copyState === "copied" ? (
-              <p className="room-copy-state room-copy-success" role="status">
-                Copied to clipboard.
-              </p>
-            ) : copyState === "error" ? (
-              <p className="room-copy-state room-copy-error" role="alert">
-                Clipboard access failed. Copy the instructions manually.
-              </p>
-            ) : null}
-            <div className="room-handoff-actions">
-              <button onClick={() => closeDialog(false)} type="button">
-                Close
-              </button>
-              <button onClick={() => closeDialog(true)} type="button">
-                Close and clear
-              </button>
-              <button
-                className="room-copy-button"
-                onClick={() => void copyInstruction()}
-                type="button"
-              >
-                {copyState === "copied" ? "Copied" : "Copy instructions"}
-              </button>
-            </div>
-          </section>
-        </div>
+          ) : copyState === "error" ? (
+            <p className="room-copy-state room-copy-error" role="alert">
+              Clipboard access failed. Copy the instructions manually.
+            </p>
+          ) : null}
+          <div className="room-handoff-actions">
+            <button onClick={() => closeDialog(false)} type="button">
+              Close
+            </button>
+            <button onClick={() => closeDialog(true)} type="button">
+              Close and clear
+            </button>
+            <button
+              autoFocus
+              className="room-copy-button"
+              onClick={() => void copyInstruction()}
+              ref={copyButtonRef}
+              type="button"
+            >
+              {copyState === "copied" ? "Copied" : "Copy instructions"}
+            </button>
+          </div>
+        </dialog>
       ) : null}
-    </div>
+    </>
   );
 }

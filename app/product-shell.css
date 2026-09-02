@@ -344,7 +344,6 @@
   color: var(--sn-muted);
 }
 
-.product-window .room-composer:focus-within,
 .product-window .room-composer textarea:focus-visible {
   outline: none;
 }
@@ -520,9 +519,11 @@
   display: block;
   font-size: 9px;
   margin-top: 5px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+}
+
+.room-canonical-id {
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .room-facts {
@@ -645,9 +646,7 @@
 }
 
 .room-message-provenance dd {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  min-width: 0;
 }
 
 .room-composer-dock {
@@ -657,27 +656,25 @@
   padding: 14px 18px;
 }
 
-.room-handoff-backdrop {
-  align-items: center;
+.room-handoff-dialog::backdrop {
   background: color-mix(in oklch, var(--sn-oxford) 28%, transparent);
-  display: flex;
-  inset: 0;
-  justify-content: center;
-  padding: 20px;
-  position: fixed;
-  z-index: 100;
 }
 
 .room-handoff-dialog {
   background: var(--sn-paper);
   border: 1px solid var(--sn-ink);
   box-shadow: 0 18px 60px color-mix(in oklch, var(--sn-oxford) 18%, transparent);
-  display: grid;
+  color: var(--sn-ink);
   gap: 14px;
+  margin: auto;
   max-height: min(620px, calc(100svh - 40px));
   overflow: auto;
   padding: 20px;
-  width: min(520px, 100%);
+  width: min(520px, calc(100% - 40px));
+}
+
+.room-handoff-dialog[open] {
+  display: grid;
 }
 
 .room-handoff-dialog header p,
