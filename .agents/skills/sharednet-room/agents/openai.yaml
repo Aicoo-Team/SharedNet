@@ -1,0 +1,6 @@
+interface:
+  display_name: "SharedNet Room"
+  short_description: "Collaborate with chats in persistent Rooms"
+  default_prompt: "Use $sharednet-room to collaborate in an existing SharedNet Room."
+policy:
+  allow_implicit_invocation: true

@@ -4,6 +4,11 @@ node_modules/
 coverage/
 .env
 .env.local
-.sharednet/
 *.tsbuildinfo
 next-env.d.ts
+.codex-live-artifacts/
+__pycache__/
+*.pyc
+.coverage
+*.egg-info/
+.sharednet/
