@@ -9,6 +9,7 @@
   },
   "scripts": {
     "auth:migrate": "node --experimental-strip-types scripts/migrate-auth.mjs",
+    "demo:seed": "node --experimental-strip-types scripts/seed-demo-account.mjs",
     "dev": "next dev --webpack -p 3001",
     "build": "next build --webpack",
     "start": "next start -p 3001",
