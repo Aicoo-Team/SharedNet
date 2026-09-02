@@ -2,9 +2,14 @@
 
 import { useEffect, useState } from "react";
 import { useSharedNetDemo } from "@/src/context/sharednet-demo-context";
-import type { Decision } from "@/src/domain/network-demo";
+import {
+  getDecisionResponseMode,
+  type Decision,
+} from "@/src/domain/network-demo";
 
 function DecisionHistoryItem({ decision }: { decision: Decision }) {
+  const responseMode = getDecisionResponseMode(decision);
+
   return (
     <article className="decision-history-item">
       <div>
@@ -15,7 +20,11 @@ function DecisionHistoryItem({ decision }: { decision: Decision }) {
         ) : null}
       </div>
       <span data-status={decision.status}>
-        {decision.status === "approved" ? "Approved" : "Denied"}
+        {decision.status === "approved"
+          ? responseMode === "text"
+            ? "Answered"
+            : "Approved"
+          : "Denied"}
       </span>
     </article>
   );
@@ -30,8 +39,12 @@ export function DecisionsView() {
   );
   const [historyOpen, setHistoryOpen] = useState(false);
   const [instruction, setInstruction] = useState("");
+  const [answer, setAnswer] = useState("");
   const selectedDecision =
     pending.find((decision) => decision.id === selectedDecisionId) ?? pending[0];
+  const selectedResponseMode = selectedDecision
+    ? getDecisionResponseMode(selectedDecision)
+    : null;
 
   useEffect(() => {
     if (pending.length === 0) {
@@ -55,7 +68,17 @@ export function DecisionsView() {
   }
 
   function approveAll() {
-    pending.forEach((decision) => resolveDecision(decision.id, "approved"));
+    pending
+      .filter((decision) => getDecisionResponseMode(decision) === "approval")
+      .forEach((decision) => resolveDecision(decision.id, "approved"));
+  }
+
+  function submitAnswer() {
+    if (!selectedDecision || selectedResponseMode !== "text" || !answer.trim()) {
+      return;
+    }
+    resolveDecision(selectedDecision.id, "approved", answer);
+    setAnswer("");
   }
 
   return (
@@ -98,58 +121,83 @@ export function DecisionsView() {
                 <small>{selectedDecision.consequence}</small>
               </div>
 
-              <div className="decision-controls">
-                <button
-                  aria-label="Deny"
-                  className="decision-control decision-control-deny"
-                  onClick={() => resolveSelected("denied")}
-                  type="button"
-                >
-                  <span aria-hidden="true" />
-                  Deny
-                </button>
-                <button
-                  aria-label="Approve once"
-                  className="decision-control decision-control-once"
-                  onClick={() => resolveSelected("approved")}
-                  type="button"
-                >
-                  <span aria-hidden="true" />
-                  Approve once
-                </button>
-                <button
-                  aria-label="Approve all pending"
-                  className="decision-control decision-control-all"
-                  onClick={approveAll}
-                  type="button"
-                >
-                  <span aria-hidden="true" />
-                  Approve all
-                </button>
-              </div>
+              {selectedResponseMode === "approval" ? (
+                <>
+                  <div className="decision-controls">
+                    <button
+                      aria-label="Deny"
+                      className="decision-control decision-control-deny"
+                      onClick={() => resolveSelected("denied")}
+                      type="button"
+                    >
+                      <span aria-hidden="true" />
+                      Deny
+                    </button>
+                    <button
+                      aria-label="Approve once"
+                      className="decision-control decision-control-once"
+                      onClick={() => resolveSelected("approved")}
+                      type="button"
+                    >
+                      <span aria-hidden="true" />
+                      Approve once
+                    </button>
+                    <button
+                      aria-label="Approve all pending"
+                      className="decision-control decision-control-all"
+                      onClick={approveAll}
+                      type="button"
+                    >
+                      <span aria-hidden="true" />
+                      Approve all
+                    </button>
+                  </div>
 
-              <div className="decision-instruction">
-                <label className="sr-only" htmlFor="decision-instruction">
-                  Give SharedNet an instruction before continuing
-                </label>
-                <input
-                  id="decision-instruction"
-                  onChange={(event) => setInstruction(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") applyInstruction();
-                  }}
-                  placeholder="Work on A first…"
-                  value={instruction}
-                />
-                <button
-                  aria-label="Apply instruction"
-                  disabled={!instruction.trim()}
-                  onClick={applyInstruction}
-                  type="button"
-                >
-                  →
-                </button>
-              </div>
+                  <div className="decision-instruction">
+                    <label className="sr-only" htmlFor="decision-instruction">
+                      Give SharedNet an instruction before continuing
+                    </label>
+                    <input
+                      id="decision-instruction"
+                      onChange={(event) => setInstruction(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") applyInstruction();
+                      }}
+                      placeholder="Work on A first…"
+                      value={instruction}
+                    />
+                    <button
+                      aria-label="Apply instruction"
+                      disabled={!instruction.trim()}
+                      onClick={applyInstruction}
+                      type="button"
+                    >
+                      →
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <div className="decision-text-answer">
+                  <label htmlFor="decision-answer">Your answer</label>
+                  <div>
+                    <textarea
+                      id="decision-answer"
+                      onChange={(event) => setAnswer(event.target.value)}
+                      placeholder="Write your answer…"
+                      rows={4}
+                      value={answer}
+                    />
+                    <button
+                      aria-label="Submit answer"
+                      disabled={!answer.trim()}
+                      onClick={submitAnswer}
+                      type="button"
+                    >
+                      Submit answer
+                    </button>
+                  </div>
+                </div>
+              )}
             </article>
           </>
         ) : (

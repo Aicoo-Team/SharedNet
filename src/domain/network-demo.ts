@@ -7,6 +7,7 @@ export type DecisionType =
   | "authorization"
   | "plan";
 export type DecisionStatus = "pending" | "approved" | "denied";
+export type DecisionResponseMode = "approval" | "text";
 export type MessageKind = "user" | "plan" | "coordination" | "work" | "result";
 
 export interface Principal {
@@ -91,6 +92,7 @@ export interface Decision {
   requestedByAgentId: string;
   subjectAgentIds: string[];
   status: DecisionStatus;
+  responseMode?: DecisionResponseMode;
   approveLabel: string;
   denyLabel: string;
   createdAt: string;
@@ -383,6 +385,7 @@ const initialDecisions: Decision[] = [
     requestedByAgentId: "agent-aicoo-web-builder",
     subjectAgentIds: ["agent-xisen-research"],
     status: "pending",
+    responseMode: "approval",
     approveLabel: "Allow once",
     denyLabel: "Decline",
     createdAt: "2026-08-30T10:04:00.000Z",
@@ -398,6 +401,7 @@ const initialDecisions: Decision[] = [
     requestedByAgentId: "agent-xisen-planner",
     subjectAgentIds: ["agent-xisen-reviewer"],
     status: "pending",
+    responseMode: "text",
     approveLabel: "Run in Cloud",
     denyLabel: "Keep local",
     createdAt: "2026-08-30T10:05:00.000Z",
@@ -536,6 +540,7 @@ export function submitChatPrompt(
       requestedByAgentId: "agent-xisen-planner",
       subjectAgentIds: EXTERNAL_AGENT_IDS,
       status: "pending",
+      responseMode: "approval",
       approveLabel: "Recruit Agents",
       denyLabel: "Use mine only",
       createdAt: timestamp(sequence, 2),
@@ -552,6 +557,7 @@ export function submitChatPrompt(
       requestedByAgentId: "agent-xisen-planner",
       subjectAgentIds: ["agent-aicoo-neon", "agent-aicoo-vercel"],
       status: "pending",
+      responseMode: "approval",
       approveLabel: "Approve demo scopes",
       denyLabel: "Keep as preview",
       createdAt: timestamp(sequence, 3),
@@ -753,6 +759,12 @@ export function resolveDecision(
   };
 }
 
+export function getDecisionResponseMode(
+  decision: Decision,
+): DecisionResponseMode {
+  return decision.responseMode ?? (decision.type === "plan" ? "text" : "approval");
+}
+
 export function selectAgent(
   state: SharedNetDemoState,
   agentId: string,
@@ -894,6 +906,8 @@ function isDecision(value: unknown): value is Decision {
     hasString(value, "requestedByAgentId") &&
     isStringArray(value.subjectAgentIds) &&
     isOneOf(value.status, ["pending", "approved", "denied"]) &&
+    (value.responseMode === undefined ||
+      isOneOf(value.responseMode, ["approval", "text"])) &&
     hasString(value, "approveLabel") &&
     hasString(value, "denyLabel") &&
     hasString(value, "createdAt") &&

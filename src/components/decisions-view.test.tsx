@@ -55,11 +55,39 @@ describe("SharedNet Decisions", () => {
     ).toBeTruthy();
   });
 
-  it("can approve every pending decision from the green control", () => {
+  it("presents text decisions as an answer field instead of approval controls", () => {
+    renderDecisions();
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Open decision 2: Move the verification pass to Cloud?",
+      }),
+    );
+
+    expect(screen.queryByRole("button", { name: "Approve once" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Deny" })).toBeNull();
+    fireEvent.change(screen.getByPlaceholderText("Write your answer…"), {
+      target: { value: "Run browser checks in Cloud after the local unit suite." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Submit answer" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show past decisions" }));
+
+    const resolved = screen.getByRole("region", { name: "Resolved decisions" });
+    expect(
+      within(resolved).getByText(
+        "Run browser checks in Cloud after the local unit suite.",
+      ),
+    ).toBeTruthy();
+    expect(within(resolved).getByText("Answered")).toBeTruthy();
+  });
+
+  it("approves all approval requests without answering text decisions", () => {
     renderDecisions();
     fireEvent.click(screen.getByRole("button", { name: "Approve all pending" }));
 
-    expect(screen.getByText("No decisions need you.")).toBeTruthy();
+    expect(
+      screen.getByRole("heading", { name: "Move the verification pass to Cloud?" }),
+    ).toBeTruthy();
+    expect(screen.getByPlaceholderText("Write your answer…")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Approve once" })).toBeNull();
   });
 });

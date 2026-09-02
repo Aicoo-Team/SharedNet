@@ -14,14 +14,16 @@ function renderChat() {
 describe("SharedNet Chat", () => {
   beforeEach(() => window.localStorage.clear());
 
-  it("starts as an empty room canvas with one centered typing surface", () => {
+  it("keeps the Rooms sidebar visible beside the empty typing surface", () => {
     renderChat();
 
+    const rooms = screen.getByRole("navigation", { name: "Rooms" });
     expect(screen.getByLabelText("What do you want done?")).toBeTruthy();
     expect(screen.getByPlaceholderText("Type here…")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Send task" })).toBeTruthy();
     expect(screen.getAllByRole("textbox")).toHaveLength(1);
-    expect(screen.queryByRole("navigation", { name: "Rooms" })).toBeNull();
+    expect(within(rooms).getByText("No rooms yet")).toBeTruthy();
+    expect(within(rooms).queryByRole("button")).toBeNull();
     expect(screen.queryByText("Active task")).toBeNull();
   });
 

@@ -13,7 +13,8 @@ pnpm install
 pnpm dev
 ```
 
-Open [http://localhost:3000/chat](http://localhost:3000/chat).
+Open [http://localhost:3001/chat](http://localhost:3001/chat). Port 3001 is
+intentional: the local SharedNet Rooms service may already own port 3000.
 
 If Node 23 or an older Corepack installation produces a signature/key error, switch to Node 24 and install pnpm independently. For example, on this Mac with Homebrew:
 
@@ -27,7 +28,7 @@ pnpm dev
 If dependencies are already installed, this also starts the app without Corepack:
 
 ```bash
-./node_modules/.bin/next dev
+./node_modules/.bin/next dev --webpack -p 3001
 ```
 
 Useful checks:

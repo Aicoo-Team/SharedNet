@@ -89,32 +89,32 @@ export function ChatView() {
     </form>
   );
 
-  if (state.tasks.length === 0) {
-    return <section className="chat-room-empty">{composer}</section>;
-  }
-
   return (
     <div className="rooms-workspace">
       <aside className="rooms-sidebar">
         <p>Rooms</p>
         <nav aria-label="Rooms">
-          {state.tasks.map((task, index) => (
-            <button
-              aria-current={task.id === selectedTask?.id ? "true" : undefined}
-              aria-label={`Open room ${roomNumber(index)}: ${task.prompt}`}
-              key={task.id}
-              onClick={() => setSelectedTaskId(task.id)}
-              type="button"
-            >
-              <span>{roomNumber(index)}</span>
-              <strong>{task.prompt}</strong>
-            </button>
-          ))}
+          {state.tasks.length > 0 ? (
+            state.tasks.map((task, index) => (
+              <button
+                aria-current={task.id === selectedTask?.id ? "true" : undefined}
+                aria-label={`Open room ${roomNumber(index)}: ${task.prompt}`}
+                key={task.id}
+                onClick={() => setSelectedTaskId(task.id)}
+                type="button"
+              >
+                <span>{roomNumber(index)}</span>
+                <strong>{task.prompt}</strong>
+              </button>
+            ))
+          ) : (
+            <p className="rooms-empty-copy">No rooms yet</p>
+          )}
         </nav>
       </aside>
 
-      <section className="room-canvas" aria-live="polite">
-        {selectedTask ? (
+      {selectedTask ? (
+        <section className="room-canvas" aria-live="polite">
           <>
             <header className="room-heading">
               <div>
@@ -182,8 +182,10 @@ export function ChatView() {
               )}
             </footer>
           </>
-        ) : null}
-      </section>
+        </section>
+      ) : (
+        <section className="chat-room-empty">{composer}</section>
+      )}
     </div>
   );
 }

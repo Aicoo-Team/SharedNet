@@ -4,5 +4,6 @@ node_modules/
 coverage/
 .env
 .env.local
+.sharednet/
 *.tsbuildinfo
 next-env.d.ts
