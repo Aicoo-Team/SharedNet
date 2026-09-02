@@ -69,7 +69,7 @@ class RoomStoreTests(unittest.TestCase):
             self.assertEqual(connection.execute("PRAGMA journal_mode").fetchone()[0], "wal")
 
         generated, _ = self.store.register_runtime("principal_alice", "agent_beta", None)
-        self.assertRegex(generated.identity.runtime_id, r"^runtime_[a-z0-9_]+$")
+        self.assertRegex(generated.identity.runtime_id, r"^r_[0-9A-Za-z]{10}$")
         self.assert_room_error("invalid_runtime_token", 401, lambda: self.store.authenticate_runtime("not-a-token"))
 
     def test_registration_rejects_agent_remapping_runtime_collision_and_invalid_requested_id(self) -> None:

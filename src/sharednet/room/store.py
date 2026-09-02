@@ -11,6 +11,7 @@ from pathlib import Path
 import secrets
 import sqlite3
 
+from ..identity import new_runtime_id
 from .errors import RoomError
 from .models import (
     Artifact,
@@ -248,7 +249,7 @@ class RoomStore:
         agent_id: str,
         requested_runtime_id: str | None,
     ) -> tuple[RuntimeRegistration, str]:
-        runtime_id = requested_runtime_id if requested_runtime_id is not None else _new_id("runtime_")
+        runtime_id = requested_runtime_id if requested_runtime_id is not None else new_runtime_id()
         identity = RuntimeIdentity(principal_id, agent_id, runtime_id)
         created_at = self.clock()
         raw_token = secrets.token_urlsafe(32)
