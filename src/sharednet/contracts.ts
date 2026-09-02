@@ -8,6 +8,7 @@ export type PrincipalId = BrandedId<"PrincipalId">;
 export type AgentId = BrandedId<"AgentId">;
 export type RuntimeId = BrandedId<"RuntimeId">;
 export type InstanceId = BrandedId<"InstanceId">;
+export type PairingId = BrandedId<"PairingId">;
 export type RoomId = BrandedId<"RoomId">;
 export type MessageId = BrandedId<"MessageId">;
 export type DecisionId = BrandedId<"DecisionId">;
@@ -229,6 +230,22 @@ function isTimestamp(value: unknown): value is string {
 
 function isIdentifier(value: unknown): value is OpaqueId {
   return isString(value) && IDENTIFIER.test(value);
+}
+
+function parseBrandedIdentifier<Id extends string>(value: unknown): Id | null {
+  return isString(value) && IDENTIFIER.test(value) ? (value as Id) : null;
+}
+
+export function parsePairingId(value: unknown): PairingId | null {
+  return parseBrandedIdentifier<PairingId>(value);
+}
+
+export function parseRoomId(value: unknown): RoomId | null {
+  return parseBrandedIdentifier<RoomId>(value);
+}
+
+export function parseDecisionId(value: unknown): DecisionId | null {
+  return parseBrandedIdentifier<DecisionId>(value);
 }
 
 function isPrincipalId(value: unknown): value is PrincipalId {
@@ -468,10 +485,16 @@ function isCoordinationTagProjection(
   ) {
     return false;
   }
-  if (value.kind === "delegation") return isIdentifier(value.target_id);
+  if (value.kind === "human_review") {
+    return value.raw === "@human-review" && value.target_id === null;
+  }
+  if (value.kind === "verification") {
+    return value.raw === "@verification" && value.target_id === null;
+  }
   return (
-    (value.kind === "human_review" || value.kind === "verification") &&
-    value.target_id === null
+    value.kind === "delegation" &&
+    isIdentifier(value.target_id) &&
+    value.raw === `@delegate:${value.target_id}`
   );
 }
 

@@ -1,19 +1,41 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  expectTypeOf,
+  it,
+  vi,
+} from "vitest";
 
 vi.mock("server-only", () => ({}));
 
 import {
   getSharedNetServerClient,
   SharedNetApiError,
+  type SharedNetServerClient,
 } from "./server-client";
+import {
+  isRoomMessage,
+  parseDecisionId,
+  parsePairingId,
+  parseRoomId,
+  type DecisionId,
+  type PairingId,
+  type RoomId,
+} from "./contracts";
 
 const NOW = "2026-09-03T05:00:00+00:00";
 const PRINCIPAL_ID = "p_15COsXY9aK";
 const AGENT_ID = "a_7Qm2Zx8WpL";
 const RUNTIME_ID = "r_4Nk8Vm2QaT";
 const INSTANCE_ID = "i_8pQ2Km7XaN";
-const ROOM_ID = "room_planning";
-const DECISION_ID = "decision_region";
+const PAIRING_ID = parsePairingId("pairing_launch")!;
+const ROOM_ID = parseRoomId("room_planning")!;
+const DECISION_ID = parseDecisionId("decision_region")!;
+const PAIRING_PATH_ID = parsePairingId("pairing.launch:1")!;
+const ROOM_PATH_ID = parseRoomId("room.launch:1")!;
+const DECISION_PATH_ID = parseDecisionId("decision.launch:1")!;
 
 const actor = {
   agent_id: AGENT_ID,
@@ -179,6 +201,7 @@ describe("SharedNetServerClient", () => {
           "X-SharedNet-Console-Token": "console-test",
         }),
         method: "GET",
+        redirect: "error",
         signal: expect.any(AbortSignal),
       }),
     );
@@ -207,20 +230,20 @@ describe("SharedNetServerClient", () => {
       principal_id: PRINCIPAL_ID,
     });
     await expect(
-      client.claimPairing("auth/user 1", "pairing/launch 1"),
+      client.claimPairing("auth/user 1", PAIRING_PATH_ID),
     ).resolves.toEqual(decision);
     await expect(client.listRooms("auth/user 1")).resolves.toEqual({
       rooms: [roomSummary],
     });
     await expect(
-      client.getRoom("auth/user 1", "room/launch 1"),
+      client.getRoom("auth/user 1", ROOM_PATH_ID),
     ).resolves.toEqual(roomDetail);
     await expect(client.getNetwork("auth/user 1")).resolves.toEqual(network);
     await expect(client.listDecisions("auth/user 1")).resolves.toEqual({
       decisions: [decision],
     });
     await expect(
-      client.resolveDecision("auth/user 1", "decision/launch 1", {
+      client.resolveDecision("auth/user 1", DECISION_PATH_ID, {
         outcome: "answered",
         responseText: "Singapore",
       }),
@@ -238,7 +261,7 @@ describe("SharedNetServerClient", () => {
         undefined,
       ],
       [
-        "http://127.0.0.1:8765/v1/console/accounts/auth%2Fuser%201/pairings/pairing%2Flaunch%201/claim",
+        "http://127.0.0.1:8765/v1/console/accounts/auth%2Fuser%201/pairings/pairing.launch%3A1/claim",
         "POST",
         undefined,
       ],
@@ -248,7 +271,7 @@ describe("SharedNetServerClient", () => {
         undefined,
       ],
       [
-        "http://127.0.0.1:8765/v1/console/accounts/auth%2Fuser%201/rooms/room%2Flaunch%201",
+        "http://127.0.0.1:8765/v1/console/accounts/auth%2Fuser%201/rooms/room.launch%3A1",
         "GET",
         undefined,
       ],
@@ -263,7 +286,7 @@ describe("SharedNetServerClient", () => {
         undefined,
       ],
       [
-        "http://127.0.0.1:8765/v1/console/accounts/auth%2Fuser%201/decisions/decision%2Flaunch%201/resolve",
+        "http://127.0.0.1:8765/v1/console/accounts/auth%2Fuser%201/decisions/decision.launch%3A1/resolve",
         "POST",
         JSON.stringify({ outcome: "answered", response_text: "Singapore" }),
       ],
@@ -315,7 +338,7 @@ describe("SharedNetServerClient", () => {
     fetchMock.mockResolvedValue(jsonResponse(responseBody));
     const client = getSharedNetServerClient();
     const call = {
-      claimPairing: () => client.claimPairing("auth-user-1", "pairing_1"),
+      claimPairing: () => client.claimPairing("auth-user-1", PAIRING_ID),
       getNetwork: () => client.getNetwork("auth-user-1"),
       getRoom: () => client.getRoom("auth-user-1", ROOM_ID),
       listDecisions: () => client.listDecisions("auth-user-1"),
@@ -345,4 +368,140 @@ describe("SharedNetServerClient", () => {
       expect(fetchMock).not.toHaveBeenCalled();
     },
   );
+
+  it.each([
+    "ftp://127.0.0.1:8765",
+    "http://user:password@127.0.0.1:8765",
+    "http://127.0.0.1:8765/v1",
+    "http://127.0.0.1:8765/?tenant=one",
+    "http://127.0.0.1:8765/#console",
+    "not a URL",
+  ])("rejects non-origin SharedNet API URL %s", (apiUrl) => {
+    vi.stubEnv("SHAREDNET_API_URL", apiUrl);
+
+    expect(() => getSharedNetServerClient()).toThrow(
+      "SHAREDNET_API_URL must be an HTTP(S) origin without credentials, path, query, or fragment",
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("maps timeout failures without exposing transport details", async () => {
+    fetchMock.mockRejectedValue(
+      new DOMException(
+        "console-test timed out at http://127.0.0.1:8765",
+        "TimeoutError",
+      ),
+    );
+
+    const error = await getSharedNetServerClient()
+      .listRooms("auth-user-1")
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(SharedNetApiError);
+    expect(error).toMatchObject({
+      code: "sharednet_api_timeout",
+      message: "SharedNet API request timed out",
+      status: 504,
+    });
+    expect(String(error)).not.toContain("console-test");
+    expect(String(error)).not.toContain("127.0.0.1");
+  });
+
+  it("maps other transport failures without exposing transport details", async () => {
+    fetchMock.mockRejectedValue(
+      new TypeError(
+        "fetch failed for console-test at http://127.0.0.1:8765",
+      ),
+    );
+
+    const error = await getSharedNetServerClient()
+      .listRooms("auth-user-1")
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(SharedNetApiError);
+    expect(error).toMatchObject({
+      code: "sharednet_api_unavailable",
+      message: "SharedNet API is unavailable",
+      status: 502,
+    });
+    expect(String(error)).not.toContain("console-test");
+    expect(String(error)).not.toContain("127.0.0.1");
+  });
+});
+
+describe("untrusted route ID parsers", () => {
+  it.each([
+    ["pairing", parsePairingId, "pairing_demo"],
+    ["room", parseRoomId, "room.demo:one"],
+    ["decision", parseDecisionId, "decision-demo_1"],
+  ] as const)("brands a valid %s ID", (_kind, parse, value) => {
+    expect(parse(value)).toBe(value);
+  });
+
+  it.each([parsePairingId, parseRoomId, parseDecisionId])(
+    "rejects malformed untrusted route IDs",
+    (parse) => {
+      expect(parse(undefined)).toBeNull();
+      expect(parse(42)).toBeNull();
+      expect(parse("")).toBeNull();
+      expect(parse("_missing-prefix-character")).toBeNull();
+      expect(parse("room/with-a-slash")).toBeNull();
+      expect(parse(`room_${"a".repeat(128)}`)).toBeNull();
+    },
+  );
+
+  it("exposes branded route ID parameters on the server client", () => {
+    expectTypeOf<
+      Parameters<SharedNetServerClient["claimPairing"]>[1]
+    >().toEqualTypeOf<PairingId>();
+    expectTypeOf<
+      Parameters<SharedNetServerClient["getRoom"]>[1]
+    >().toEqualTypeOf<RoomId>();
+    expectTypeOf<
+      Parameters<SharedNetServerClient["resolveDecision"]>[1]
+    >().toEqualTypeOf<DecisionId>();
+  });
+});
+
+describe("coordination-tag response validation", () => {
+  it("accepts the canonical coordination-tag variants", () => {
+    expect(
+      isRoomMessage({
+        ...roomDetail.messages[0],
+        tags: [
+          { kind: "human_review", raw: "@human-review", target_id: null },
+          { kind: "verification", raw: "@verification", target_id: null },
+          {
+            kind: "delegation",
+            raw: "@delegate:agent_target",
+            target_id: "agent_target",
+          },
+        ],
+      }),
+    ).toBe(true);
+  });
+
+  it.each([
+    { kind: "human_review", raw: "@verification", target_id: null },
+    { kind: "human_review", raw: "human-review-required", target_id: null },
+    { kind: "verification", raw: "@human-review", target_id: null },
+    { kind: "verification", raw: "verification-required", target_id: null },
+    {
+      kind: "delegation",
+      raw: "@delegate:agent_other",
+      target_id: "agent_target",
+    },
+    {
+      kind: "delegation",
+      raw: "delegate-to:agent_target",
+      target_id: "agent_target",
+    },
+  ])("rejects a non-canonical coordination tag %#", (tag) => {
+    expect(
+      isRoomMessage({
+        ...roomDetail.messages[0],
+        tags: [tag],
+      }),
+    ).toBe(false);
+  });
 });

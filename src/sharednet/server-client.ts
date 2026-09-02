@@ -2,6 +2,7 @@ import "server-only";
 
 import {
   type DecisionListResponse,
+  type DecisionId,
   type DecisionProjection,
   type DecisionResolution,
   isDecisionListResponse,
@@ -11,8 +12,10 @@ import {
   isRoomDetail,
   isRoomListResponse,
   type NetworkProjection,
+  type PairingId,
   type ProvisionAccountResponse,
   type RoomDetail,
+  type RoomId,
   type RoomListResponse,
 } from "./contracts";
 
@@ -40,6 +43,34 @@ function requiredEnvironmentValue(
     throw new Error(`${name} must be configured for the SharedNet server client`);
   }
   return value;
+}
+
+function sharedNetApiOrigin(): string {
+  const value = requiredEnvironmentValue("SHAREDNET_API_URL");
+  let url: URL;
+
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error(
+      "SHAREDNET_API_URL must be an HTTP(S) origin without credentials, path, query, or fragment",
+    );
+  }
+
+  if (
+    (url.protocol !== "http:" && url.protocol !== "https:") ||
+    url.username !== "" ||
+    url.password !== "" ||
+    url.pathname !== "/" ||
+    url.search !== "" ||
+    url.hash !== ""
+  ) {
+    throw new Error(
+      "SHAREDNET_API_URL must be an HTTP(S) origin without credentials, path, query, or fragment",
+    );
+  }
+
+  return url.origin;
 }
 
 function isApiErrorPayload(
@@ -73,6 +104,15 @@ function pathSegment(value: string): string {
   return encodeURIComponent(value);
 }
 
+function isTimeoutError(value: unknown): boolean {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "name" in value &&
+    value.name === "TimeoutError"
+  );
+}
+
 export class SharedNetServerClient {
   readonly #apiUrl: string;
   readonly #consoleToken: string;
@@ -92,7 +132,7 @@ export class SharedNetServerClient {
 
   async claimPairing(
     authUserId: string,
-    pairingId: string,
+    pairingId: PairingId,
   ): Promise<DecisionProjection> {
     return this.#request(
       "POST",
@@ -109,7 +149,7 @@ export class SharedNetServerClient {
     );
   }
 
-  async getRoom(authUserId: string, roomId: string): Promise<RoomDetail> {
+  async getRoom(authUserId: string, roomId: RoomId): Promise<RoomDetail> {
     return this.#request(
       "GET",
       `${this.#accountPath(authUserId)}/rooms/${pathSegment(roomId)}`,
@@ -135,7 +175,7 @@ export class SharedNetServerClient {
 
   async resolveDecision(
     authUserId: string,
-    decisionId: string,
+    decisionId: DecisionId,
     resolution: DecisionResolution,
   ): Promise<DecisionProjection> {
     const body = {
@@ -162,17 +202,34 @@ export class SharedNetServerClient {
     isExpectedResponse: ResponsePredicate<T>,
     body?: object,
   ): Promise<T> {
-    const response = await fetch(`${this.#apiUrl}${path}`, {
-      body: body === undefined ? undefined : JSON.stringify(body),
-      cache: "no-store",
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-        "X-SharedNet-Console-Token": this.#consoleToken,
-      },
-      method,
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
+    let response: Response;
+    try {
+      response = await fetch(`${this.#apiUrl}${path}`, {
+        body: body === undefined ? undefined : JSON.stringify(body),
+        cache: "no-store",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          "X-SharedNet-Console-Token": this.#consoleToken,
+        },
+        method,
+        redirect: "error",
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
+    } catch (error) {
+      if (isTimeoutError(error)) {
+        throw new SharedNetApiError(
+          "sharednet_api_timeout",
+          504,
+          "SharedNet API request timed out",
+        );
+      }
+      throw new SharedNetApiError(
+        "sharednet_api_unavailable",
+        502,
+        "SharedNet API is unavailable",
+      );
+    }
 
     let payload: unknown;
     try {
@@ -210,7 +267,7 @@ export class SharedNetServerClient {
 
 export function getSharedNetServerClient(): SharedNetServerClient {
   return new SharedNetServerClient(
-    requiredEnvironmentValue("SHAREDNET_API_URL"),
+    sharedNetApiOrigin(),
     requiredEnvironmentValue("SHAREDNET_CONSOLE_TOKEN"),
   );
 }
