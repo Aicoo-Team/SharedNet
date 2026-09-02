@@ -75,8 +75,10 @@ export function SharedNetProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const bootstrapCompleteRef = useRef(false);
+  const bootstrapRequestRef = useRef<Promise<void> | null>(null);
   const generationRef = useRef(0);
   const mountedRef = useRef(false);
+  const mutationAbortControllerRef = useRef<AbortController | null>(null);
   const refreshInFlightRef = useRef(false);
   const roomsRef = useRef<RoomSummary[]>([]);
   const selectedRoomIdRef = useRef<RoomId | null>(null);
@@ -91,13 +93,26 @@ export function SharedNetProvider({ children }: { children: ReactNode }) {
 
     try {
       if (!bootstrapCompleteRef.current) {
-        await requestJson(
-          "/api/sharednet/bootstrap",
-          isProvisionAccountResponse,
-          { method: "POST", signal: controller.signal },
-        );
+        let bootstrapRequest = bootstrapRequestRef.current;
+        if (bootstrapRequest === null) {
+          bootstrapRequest = requestJson(
+            "/api/sharednet/bootstrap",
+            isProvisionAccountResponse,
+            { method: "POST" },
+          ).then(() => {
+            bootstrapCompleteRef.current = true;
+          });
+          bootstrapRequestRef.current = bootstrapRequest;
+        }
+        try {
+          await bootstrapRequest;
+        } catch (cause) {
+          if (bootstrapRequestRef.current === bootstrapRequest) {
+            bootstrapRequestRef.current = null;
+          }
+          throw cause;
+        }
         if (!mountedRef.current || generation !== generationRef.current) return;
-        bootstrapCompleteRef.current = true;
       }
 
       const roomListRequest = requestJson(
@@ -219,6 +234,14 @@ export function SharedNetProvider({ children }: { children: ReactNode }) {
 
   const resolveDecision = useCallback(
     async (decisionId: DecisionId, resolution: DecisionResolution) => {
+      const mutationController = mutationAbortControllerRef.current;
+      if (
+        !mountedRef.current ||
+        mutationController === null ||
+        mutationController.signal.aborted
+      ) {
+        return;
+      }
       const body = {
         outcome: resolution.outcome,
         ...(resolution.responseText === undefined
@@ -232,8 +255,16 @@ export function SharedNetProvider({ children }: { children: ReactNode }) {
           body: JSON.stringify(body),
           headers: { "Content-Type": "application/json" },
           method: "PATCH",
+          signal: mutationController.signal,
         },
       );
+      if (
+        !mountedRef.current ||
+        mutationAbortControllerRef.current !== mutationController ||
+        mutationController.signal.aborted
+      ) {
+        return;
+      }
       await refresh();
     },
     [refresh],
@@ -241,17 +272,34 @@ export function SharedNetProvider({ children }: { children: ReactNode }) {
 
   const claimPairing = useCallback(
     async (pairingId: PairingId) => {
+      const mutationController = mutationAbortControllerRef.current;
+      if (
+        !mountedRef.current ||
+        mutationController === null ||
+        mutationController.signal.aborted
+      ) {
+        return;
+      }
       await requestJson(
         `/api/sharednet/pairings/${encodeURIComponent(pairingId)}/claim`,
         isDecisionProjection,
-        { method: "POST" },
+        { method: "POST", signal: mutationController.signal },
       );
+      if (
+        !mountedRef.current ||
+        mutationAbortControllerRef.current !== mutationController ||
+        mutationController.signal.aborted
+      ) {
+        return;
+      }
       await refresh();
     },
     [refresh],
   );
 
   useEffect(() => {
+    const mutationController = new AbortController();
+    mutationAbortControllerRef.current = mutationController;
     mountedRef.current = true;
     void refresh();
     let pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -278,6 +326,10 @@ export function SharedNetProvider({ children }: { children: ReactNode }) {
     startPolling();
     return () => {
       mountedRef.current = false;
+      mutationController.abort();
+      if (mutationAbortControllerRef.current === mutationController) {
+        mutationAbortControllerRef.current = null;
+      }
       abortControllerRef.current?.abort();
       stopPolling();
       document.removeEventListener("visibilitychange", handleVisibilityChange);

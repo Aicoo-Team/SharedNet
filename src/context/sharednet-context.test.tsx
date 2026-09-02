@@ -207,6 +207,40 @@ function StateProbe() {
   );
 }
 
+function MutationProbe({
+  kind,
+  onMutation,
+}: {
+  kind: "claim" | "resolve";
+  onMutation: (mutation: Promise<void>) => void;
+}) {
+  const state = useSharedNet();
+
+  return (
+    <>
+      <span>{state.status}</span>
+      <button
+        onClick={() => {
+          const mutation =
+            kind === "resolve"
+              ? state.resolveDecision(parsedDecisionId, {
+                  outcome: "approved",
+                  responseText: "Ship it",
+                })
+              : state.claimPairing(parsedPairingId);
+          onMutation(mutation);
+        }}
+        type="button"
+      >
+        Start mutation
+      </button>
+      <button onClick={() => void state.refresh()} type="button">
+        Refresh projections
+      </button>
+    </>
+  );
+}
+
 function successfulFetch(input: RequestInfo | URL): Promise<Response> {
   const path = String(input);
   if (path === "/api/sharednet/bootstrap") {
@@ -317,6 +351,103 @@ describe("SharedNetProvider", () => {
     decisions.resolve(Response.json({ decisions: [] }));
 
     expect(await screen.findByText(PRINCIPAL_ID)).toBeVisible();
+  });
+
+  it("shares one in-flight bootstrap across overlapping refreshes", async () => {
+    const bootstrap = deferred<Response>();
+    const fetchMock = vi.fn(
+      (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+        const path = String(input);
+        if (path === "/api/sharednet/bootstrap") {
+          return new Promise((resolve, reject) => {
+            init?.signal?.addEventListener(
+              "abort",
+              () => reject(new DOMException("Aborted", "AbortError")),
+              { once: true },
+            );
+            void bootstrap.promise.then(resolve, reject);
+          });
+        }
+        if (path === "/api/sharednet/rooms") {
+          return Promise.resolve(Response.json({ rooms: [] }));
+        }
+        if (path === "/api/sharednet/network") {
+          return Promise.resolve(Response.json(network));
+        }
+        if (path === "/api/sharednet/decisions") {
+          return Promise.resolve(Response.json({ decisions: [] }));
+        }
+        return Promise.reject(
+          new Error(`Unexpected Dashboard request: ${path}`),
+        );
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <SharedNetProvider>
+        <StateProbe />
+      </SharedNetProvider>,
+    );
+
+    expect(
+      fetchMock.mock.calls.filter(
+        ([input]) => String(input) === "/api/sharednet/bootstrap",
+      ),
+    ).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+
+    expect(
+      fetchMock.mock.calls.filter(
+        ([input]) => String(input) === "/api/sharednet/bootstrap",
+      ),
+    ).toHaveLength(1);
+
+    bootstrap.resolve(Response.json({ principal_id: PRINCIPAL_ID }));
+    expect(await screen.findByText(PRINCIPAL_ID)).toBeVisible();
+    expect(screen.getByText("ready")).toBeVisible();
+  });
+
+  it("retries bootstrap after a genuine failed attempt", async () => {
+    let bootstrapCalls = 0;
+    const fetchMock = vi.fn((input: RequestInfo | URL): Promise<Response> => {
+      const path = String(input);
+      if (path === "/api/sharednet/bootstrap") {
+        bootstrapCalls += 1;
+        return Promise.resolve(
+          bootstrapCalls === 1
+            ? new Response(null, { status: 503 })
+            : Response.json({ principal_id: PRINCIPAL_ID }),
+        );
+      }
+      if (path === "/api/sharednet/rooms") {
+        return Promise.resolve(Response.json({ rooms: [] }));
+      }
+      if (path === "/api/sharednet/network") {
+        return Promise.resolve(Response.json(network));
+      }
+      if (path === "/api/sharednet/decisions") {
+        return Promise.resolve(Response.json({ decisions: [] }));
+      }
+      return Promise.reject(new Error(`Unexpected Dashboard request: ${path}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <SharedNetProvider>
+        <StateProbe />
+      </SharedNetProvider>,
+    );
+
+    expect(await screen.findByText("stale")).toBeVisible();
+    expect(bootstrapCalls).toBe(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+
+    expect(await screen.findByText(PRINCIPAL_ID)).toBeVisible();
+    expect(screen.getByText("ready")).toBeVisible();
+    expect(bootstrapCalls).toBe(2);
   });
 
   it("loads detail for the first room returned by the scoped list", async () => {
@@ -786,6 +917,153 @@ describe("SharedNetProvider", () => {
     });
     await flushMicrotasks();
     expect(fetchMock).toHaveBeenCalledTimes(10);
+  });
+
+  it.each([
+    [
+      "resolveDecision",
+      "resolve" as const,
+      `/api/sharednet/decisions/${DECISION_ID}`,
+      resolvedDecision,
+    ],
+    [
+      "claimPairing",
+      "claim" as const,
+      "/api/sharednet/pairings/pairing.launch%3A1/claim",
+      decision,
+    ],
+  ])(
+    "aborts %s on provider unmount without starting refresh reads",
+    async (_label, kind, mutationPath, mutationResult) => {
+      const mutationResponse = deferred<Response>();
+      let mutationInit: RequestInit | undefined;
+      let mutationPromise: Promise<void> | null = null;
+      let providerUnmounted = false;
+      let postUnmountProjectionReads = 0;
+      const projectionPaths = new Set([
+        "/api/sharednet/rooms",
+        "/api/sharednet/network",
+        "/api/sharednet/decisions",
+      ]);
+      const fetchMock = vi.fn(
+        (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+          const path = String(input);
+          if (projectionPaths.has(path) && providerUnmounted) {
+            postUnmountProjectionReads += 1;
+          }
+          if (path === "/api/sharednet/bootstrap") {
+            return Promise.resolve(Response.json({ principal_id: PRINCIPAL_ID }));
+          }
+          if (path === "/api/sharednet/rooms") {
+            return Promise.resolve(Response.json({ rooms: [] }));
+          }
+          if (path === "/api/sharednet/network") {
+            return Promise.resolve(Response.json(network));
+          }
+          if (path === "/api/sharednet/decisions") {
+            return Promise.resolve(Response.json({ decisions: [] }));
+          }
+          if (path === mutationPath) {
+            mutationInit = init;
+            return mutationResponse.promise;
+          }
+          return Promise.reject(
+            new Error(`Unexpected Dashboard request: ${path}`),
+          );
+        },
+      );
+      vi.stubGlobal("fetch", fetchMock);
+
+      const view = render(
+        <SharedNetProvider>
+          <MutationProbe
+            kind={kind}
+            onMutation={(mutation) => {
+              mutationPromise = mutation;
+            }}
+          />
+        </SharedNetProvider>,
+      );
+
+      expect(await screen.findByText("ready")).toBeVisible();
+      fireEvent.click(screen.getByRole("button", { name: "Start mutation" }));
+      await waitFor(() => expect(mutationPromise).not.toBeNull());
+      const pendingMutation = mutationPromise;
+      if (pendingMutation === null) throw new Error("Mutation did not start");
+
+      providerUnmounted = true;
+      view.unmount();
+      mutationResponse.resolve(Response.json(mutationResult));
+      await act(async () => {
+        await pendingMutation;
+      });
+
+      expect.soft(mutationInit?.signal).toBeInstanceOf(AbortSignal);
+      expect.soft(mutationInit?.signal?.aborted).toBe(true);
+      expect.soft(postUnmountProjectionReads).toBe(0);
+    },
+  );
+
+  it("keeps an in-flight mutation alive across an ordinary refresh", async () => {
+    const mutationResponse = deferred<Response>();
+    let mutationInit: RequestInit | undefined;
+    let mutationPromise: Promise<void> | null = null;
+    let networkReads = 0;
+    const fetchMock = vi.fn(
+      (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+        const path = String(input);
+        if (path === "/api/sharednet/bootstrap") {
+          return Promise.resolve(Response.json({ principal_id: PRINCIPAL_ID }));
+        }
+        if (path === "/api/sharednet/rooms") {
+          return Promise.resolve(Response.json({ rooms: [] }));
+        }
+        if (path === "/api/sharednet/network") {
+          networkReads += 1;
+          return Promise.resolve(Response.json(network));
+        }
+        if (path === "/api/sharednet/decisions") {
+          return Promise.resolve(Response.json({ decisions: [] }));
+        }
+        if (path === `/api/sharednet/decisions/${DECISION_ID}`) {
+          mutationInit = init;
+          return mutationResponse.promise;
+        }
+        return Promise.reject(new Error(`Unexpected Dashboard request: ${path}`));
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <SharedNetProvider>
+        <MutationProbe
+          kind="resolve"
+          onMutation={(mutation) => {
+            mutationPromise = mutation;
+          }}
+        />
+      </SharedNetProvider>,
+    );
+
+    expect(await screen.findByText("ready")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Start mutation" }));
+    await waitFor(() => expect(mutationPromise).not.toBeNull());
+    const pendingMutation = mutationPromise;
+    if (pendingMutation === null) throw new Error("Mutation did not start");
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Refresh projections" }),
+    );
+    await waitFor(() => expect(networkReads).toBe(2));
+    const abortedByRefresh = mutationInit?.signal?.aborted;
+
+    mutationResponse.resolve(Response.json(resolvedDecision));
+    await act(async () => {
+      await pendingMutation;
+    });
+
+    expect(mutationInit?.signal).toBeInstanceOf(AbortSignal);
+    expect(abortedByRefresh).toBe(false);
   });
 
   it("resolves a durable decision and then refreshes projections", async () => {
