@@ -8,6 +8,7 @@ import ipaddress
 import json
 import os
 from pathlib import Path
+import shutil
 import sys
 import time
 from typing import Sequence
@@ -98,6 +99,18 @@ def _parser() -> argparse.ArgumentParser:
     get_decision.add_argument("decision_id")
     get_decision.add_argument("--session", default=".sharednet/instance-session.json")
     get_decision.add_argument("--timeout", type=_positive_float, default=30.0)
+
+    local = namespaces.add_parser("local")
+    local_commands = local.add_subparsers(dest="command", required=True)
+    run_local = local_commands.add_parser("run")
+    run_local.add_argument("--config", default=".sharednet/local.json")
+    install_service = local_commands.add_parser("install-service")
+    install_service.add_argument("--config", default=".sharednet/local.json")
+    install_service.add_argument("--executable")
+    install_service.add_argument("--plist")
+    for command_name in ("start-service", "stop-service", "status"):
+        command = local_commands.add_parser(command_name)
+        command.add_argument("--plist")
 
     coord = namespaces.add_parser("coord")
     coord_commands = coord.add_subparsers(dest="command", required=True)
@@ -381,11 +394,17 @@ def _run_agent(arguments: argparse.Namespace) -> int:
     from .control.client import ControlClient
     from .control.models import ControlError
     from .control.session import AccountSessionFile, AgentStateFile, InstanceSessionFile
+    from .local.service import LocalConfig
 
     account = AccountSessionFile(arguments.account_session).load()
     client = ControlClient(account.api_url, arguments.timeout)
     agent_file = AgentStateFile(arguments.agent_state)
     instance_file = InstanceSessionFile(arguments.instance_session)
+    local_config_path = instance_file.path.parent / "local.json"
+    if os.path.lexists(local_config_path):
+        local_config = LocalConfig.load(local_config_path)
+    else:
+        local_config = LocalConfig(instances=())
     if os.path.lexists(instance_file.path):
         raise ControlError(
             "session_exists",
@@ -464,11 +483,13 @@ def _run_agent(arguments: argparse.Namespace) -> int:
         except Exception:
             pass
         raise
+    local_config.with_instance(instance_file.path).save(local_config_path)
     _emit(
         {
             "status": "connected",
             "identity": identity,
             "instance_session": str(instance_file.path),
+            "local_config": str(local_config_path),
             "expires_at": instance.get("expires_at"),
         }
     )
@@ -511,6 +532,61 @@ def _run_decision(arguments: argparse.Namespace) -> int:
     else:
         raise ValueError("unknown Decision command")
     _emit(payload)
+    return 0
+
+
+def _run_local(arguments: argparse.Namespace) -> int:
+    from .control.models import ControlError
+    from .local.launchd import install_launch_agent, launchctl
+    from .local.service import LocalConfig, LocalConnector, control_client_factory
+
+    if arguments.command == "run":
+        config = LocalConfig.load(arguments.config)
+        connector = LocalConnector(
+            control_client_factory,
+            config,
+            config_path=arguments.config,
+        )
+        _emit({"status": "running", "configured_instances": len(config.instances)})
+        try:
+            connector.run_forever()
+        except KeyboardInterrupt:
+            pass
+        _emit({"status": "stopped"})
+        return 0
+
+    plist_path = Path(arguments.plist).expanduser() if arguments.plist else None
+    if arguments.command == "install-service":
+        executable_value = arguments.executable or shutil.which("sharednet")
+        if executable_value is None:
+            raise ControlError(
+                "sharednet_executable_not_found",
+                "SharedNet executable was not found; pass --executable",
+                400,
+            )
+        installed = install_launch_agent(
+            Path(executable_value),
+            Path(arguments.config),
+            plist_path,
+        )
+        _emit({"status": "installed", "plist": str(installed)})
+        return 0
+
+    command = {
+        "start-service": "start",
+        "stop-service": "stop",
+        "status": "status",
+    }.get(arguments.command)
+    if command is None:
+        raise ControlError("invalid_local_command", "Local command is invalid", 400)
+    completed = launchctl(command, plist_path)
+    if completed.returncode != 0:
+        raise ControlError(
+            "launchctl_failed",
+            f"SharedNet Local {command} failed",
+            409,
+        )
+    _emit({"status": "ok", "command": command})
     return 0
 
 
@@ -628,7 +704,7 @@ def _run_room(arguments: argparse.Namespace) -> int:
 
 
 def _reject_token_arguments(arguments: Sequence[str]) -> None:
-    if arguments and arguments[0] in {"room", "login", "agent", "instance", "decision"} and any(
+    if arguments and arguments[0] in {"room", "login", "agent", "instance", "decision", "local"} and any(
         item == "--token" or item.startswith("--token=") for item in arguments
     ):
         from .room.errors import RoomError
@@ -645,7 +721,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     raw_arguments = list(sys.argv[1:] if argv is None else argv)
     is_local_protocol = bool(
         raw_arguments
-        and raw_arguments[0] in {"room", "login", "agent", "instance", "decision"}
+        and raw_arguments[0] in {"room", "login", "agent", "instance", "decision", "local"}
     )
     try:
         _reject_token_arguments(raw_arguments)
@@ -658,6 +734,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _run_instance(arguments)
         if arguments.namespace == "decision":
             return _run_decision(arguments)
+        if arguments.namespace == "local":
+            return _run_local(arguments)
         if arguments.namespace == "coord":
             return _run_coord(arguments)
         if arguments.namespace == "room":

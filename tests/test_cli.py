@@ -17,6 +17,7 @@ from fastapi import FastAPI, Request
 
 from sharednet.coordination.models import CoordinationResult, TerminalStatus
 from sharednet.control.session import AccountSessionFile, AgentStateFile, InstanceSessionFile
+from sharednet.local.service import LocalConfig
 from sharednet.room.client import RoomSessionFile
 
 from tests.room.test_client import LiveServer, room_server
@@ -505,6 +506,8 @@ class LocalIdentityCliTests(unittest.TestCase):
         self.assertEqual(AgentStateFile(agent_path).load().agent_id, "a_7Qm2Zx8WpL")
         self.assertEqual(InstanceSessionFile(instance_path).load().instance_id, "i_8pQ2Km7XaN")
         self.assertEqual(json.loads(stdout)["identity"]["instance_id"], "i_8pQ2Km7XaN")
+        local_config = LocalConfig.load(state_root / "local.json")
+        self.assertEqual(local_config.instances[0].session_path, instance_path.resolve())
 
     def test_room_commands_send_instance_scope_from_the_new_session(self) -> None:
         observed_authorization: list[str | None] = []
@@ -590,6 +593,23 @@ class LocalIdentityCliTests(unittest.TestCase):
         self.assertEqual(decision[0], 0, decision[2])
         self.assertEqual(observed, [("heartbeat", "instance-secret"), ("decision", "instance-secret")])
         self.assertNotIn("instance-secret", "".join(heartbeat[1:] + decision[1:]))
+
+    def test_local_run_loads_path_only_config_without_exposing_session_contents(self) -> None:
+        config_path = self.root / ".sharednet" / "local.json"
+        LocalConfig(instances=()).save(config_path)
+        observed: list[LocalConfig] = []
+
+        def run_once(connector) -> None:
+            observed.append(connector.config)
+
+        with patch("sharednet.local.service.LocalConnector.run_forever", run_once):
+            code, stdout, stderr = self.invoke(
+                "local", "run", "--config", str(config_path)
+            )
+
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(len(observed), 1)
+        self.assertNotIn("token", stdout + stderr)
 
 
 if __name__ == "__main__":
