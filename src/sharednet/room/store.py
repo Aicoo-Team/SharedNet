@@ -245,6 +245,34 @@ class RoomStore:
                     ON message_resolutions(message_id);
                 """
             )
+            self._add_nullable_column(
+                connection,
+                "rooms",
+                "creator_instance_id",
+                "TEXT",
+            )
+            self._add_nullable_column(
+                connection,
+                "messages",
+                "sender_instance_id",
+                "TEXT",
+            )
+
+    @staticmethod
+    def _add_nullable_column(
+        connection: sqlite3.Connection,
+        table_name: str,
+        column_name: str,
+        column_type: str,
+    ) -> None:
+        columns = {
+            row["name"]
+            for row in connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+        }
+        if column_name not in columns:
+            connection.execute(
+                f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"
+            )
 
     def register_runtime(
         self,
