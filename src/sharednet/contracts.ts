@@ -486,15 +486,15 @@ function isCoordinationTagProjection(
     return false;
   }
   if (value.kind === "human_review") {
-    return value.raw === "@human-review" && value.target_id === null;
+    return value.raw === "human-review-required" && value.target_id === null;
   }
   if (value.kind === "verification") {
-    return value.raw === "@verification" && value.target_id === null;
+    return value.raw === "verification-required" && value.target_id === null;
   }
   return (
     value.kind === "delegation" &&
     isIdentifier(value.target_id) &&
-    value.raw === `@delegate:${value.target_id}`
+    value.raw === `delegate-to:${value.target_id}`
   );
 }
 

@@ -464,16 +464,24 @@ describe("untrusted route ID parsers", () => {
 });
 
 describe("coordination-tag response validation", () => {
-  it("accepts the canonical coordination-tag variants", () => {
+  it("accepts the existing Room API coordination-tag wire format", () => {
     expect(
       isRoomMessage({
         ...roomDetail.messages[0],
         tags: [
-          { kind: "human_review", raw: "@human-review", target_id: null },
-          { kind: "verification", raw: "@verification", target_id: null },
+          {
+            kind: "human_review",
+            raw: "human-review-required",
+            target_id: null,
+          },
+          {
+            kind: "verification",
+            raw: "verification-required",
+            target_id: null,
+          },
           {
             kind: "delegation",
-            raw: "@delegate:agent_target",
+            raw: "delegate-to:agent_target",
             target_id: "agent_target",
           },
         ],
@@ -482,18 +490,18 @@ describe("coordination-tag response validation", () => {
   });
 
   it.each([
-    { kind: "human_review", raw: "@verification", target_id: null },
-    { kind: "human_review", raw: "human-review-required", target_id: null },
-    { kind: "verification", raw: "@human-review", target_id: null },
-    { kind: "verification", raw: "verification-required", target_id: null },
+    { kind: "human_review", raw: "@human-review", target_id: null },
+    { kind: "human_review", raw: "verification-required", target_id: null },
+    { kind: "verification", raw: "@verification", target_id: null },
+    { kind: "verification", raw: "human-review-required", target_id: null },
     {
       kind: "delegation",
-      raw: "@delegate:agent_other",
+      raw: "@delegate:agent_target",
       target_id: "agent_target",
     },
     {
       kind: "delegation",
-      raw: "delegate-to:agent_target",
+      raw: "delegate-to:agent_other",
       target_id: "agent_target",
     },
   ])("rejects a non-canonical coordination tag %#", (tag) => {
