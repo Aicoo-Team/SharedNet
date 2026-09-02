@@ -16,7 +16,8 @@ from pathlib import Path
 import secrets
 import sqlite3
 
-from ..identity import new_agent_id, new_instance_id, new_principal_id, new_runtime_id
+from ..identity import is_typed_id, new_agent_id, new_instance_id, new_principal_id, new_runtime_id
+from ..room.models import RuntimeIdentity
 from ..room.store import RoomStore
 from .models import (
     ActorIdentity,
@@ -529,6 +530,109 @@ class ControlStore:
         with self._connect() as connection:
             row = self._authenticate_runtime_in_connection(connection, runtime_token)
             return self._runtime_binding(row)
+
+    def authenticate_legacy_instance(
+        self,
+        runtime_token: str,
+        *,
+        lease_seconds: int = 90,
+    ) -> RuntimeIdentity:
+        """Upgrade one pre-V1 Runtime bearer to a reusable compatibility Instance."""
+
+        if not isinstance(runtime_token, str) or not runtime_token:
+            raise _error("invalid_runtime_token", "runtime token is invalid", 401)
+        now = self.clock()
+        expires_at = now + timedelta(seconds=lease_seconds)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            runtime = self._authenticate_runtime_in_connection(connection, runtime_token)
+            if all(
+                is_typed_id(runtime[field], prefix)
+                for field, prefix in (
+                    ("principal_id", "p"),
+                    ("agent_id", "a"),
+                    ("runtime_id", "r"),
+                )
+            ):
+                raise _error(
+                    "invalid_instance_token",
+                    "modern Runtime credentials cannot be used as Instance credentials",
+                    401,
+                )
+
+            existing = connection.execute(
+                """
+                SELECT * FROM agent_instances
+                WHERE runtime_id = ? AND runtime_type = 'legacy-compatibility'
+                ORDER BY started_at ASC
+                LIMIT 1
+                """,
+                (runtime["runtime_id"],),
+            ).fetchone()
+            if existing is not None:
+                if existing["credential_status"] != "active":
+                    raise _error(
+                        "invalid_instance_token",
+                        "compatibility Instance credential is revoked",
+                        401,
+                    )
+                if existing["status"] == InstanceStatus.ENDED.value:
+                    raise _error("instance_ended", "compatibility Instance has ended", 409)
+                connection.execute(
+                    """
+                    UPDATE agent_instances
+                    SET last_seen_at = ?, expires_at = ?
+                    WHERE instance_id = ?
+                    """,
+                    (_timestamp(now), _timestamp(expires_at), existing["instance_id"]),
+                )
+                return RuntimeIdentity(
+                    runtime["principal_id"],
+                    runtime["agent_id"],
+                    runtime["runtime_id"],
+                    existing["instance_id"],
+                )
+
+            for _ in range(_GENERATED_ID_ATTEMPTS):
+                instance_id = new_instance_id()
+                if connection.execute(
+                    "SELECT 1 FROM agent_instances WHERE instance_id = ?",
+                    (instance_id,),
+                ).fetchone() is not None:
+                    continue
+                connection.execute(
+                    """
+                    INSERT INTO agent_instances(
+                        instance_id, principal_id, agent_id, runtime_id, token_hash,
+                        credential_status, provider_session_id, runtime_type,
+                        workspace_label, capabilities_json, status, started_at,
+                        last_seen_at, expires_at, ended_at, revoked_at
+                    ) VALUES (?, ?, ?, ?, ?, 'active', NULL, 'legacy-compatibility',
+                              ?, '[]', 'online', ?, ?, ?, NULL, NULL)
+                    """,
+                    (
+                        instance_id,
+                        runtime["principal_id"],
+                        runtime["agent_id"],
+                        runtime["runtime_id"],
+                        _hash_secret(runtime_token),
+                        runtime["workspace_label"],
+                        _timestamp(now),
+                        _timestamp(now),
+                        _timestamp(expires_at),
+                    ),
+                )
+                return RuntimeIdentity(
+                    runtime["principal_id"],
+                    runtime["agent_id"],
+                    runtime["runtime_id"],
+                    instance_id,
+                )
+        raise _error(
+            "instance_id_conflict",
+            "could not allocate a compatibility Instance ID",
+            409,
+        )
 
     def start_instance(
         self,

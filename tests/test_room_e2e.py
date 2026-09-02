@@ -33,11 +33,25 @@ IDENTITY_C = {
 }
 
 
+def assert_compatibility_identity(
+    testcase: unittest.TestCase,
+    actual: dict[str, str],
+    expected_runtime: dict[str, str],
+) -> None:
+    for key, value in expected_runtime.items():
+        testcase.assertEqual(actual[key], value)
+    testcase.assertRegex(actual["instance_id"], r"^i_[0-9A-Za-z]{10}$")
+
+
 class _LiveRoomServer:
     """Run a real Room daemon on an OS-assigned loopback socket."""
 
     def __init__(self, database_path: Path, blob_path: Path) -> None:
-        app = create_room_app(database_path, blob_path)
+        app = create_room_app(
+            database_path,
+            blob_path,
+            enable_legacy_registration=True,
+        )
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.socket.bind(("127.0.0.1", 0))
@@ -157,7 +171,7 @@ class ThreeRuntimeRoomE2ETests(unittest.TestCase):
                     "Three independently identified Codex runtimes collaborate here.",
                 )
                 room_id = room["room_id"]
-                self.assertEqual(room["creator"], IDENTITY_A)
+                assert_compatibility_identity(self, room["creator"], IDENTITY_A)
                 self.assertEqual(room["status"], "open")
                 self.assertEqual(client_b.list_rooms(), {"rooms": []})
                 self.assertEqual(client_c.list_rooms(), {"rooms": []})
@@ -178,7 +192,7 @@ class ThreeRuntimeRoomE2ETests(unittest.TestCase):
                     attachment_ids=[artifact["artifact_id"]],
                 )
                 self.assertEqual(first["sequence"], 1)
-                self.assertEqual(first["sender"], IDENTITY_A)
+                assert_compatibility_identity(self, first["sender"], IDENTITY_A)
                 self.assertEqual(first["reply_to"], None)
                 self.assertEqual(first["attachment_ids"], [artifact["artifact_id"]])
 
@@ -254,7 +268,7 @@ class ThreeRuntimeRoomE2ETests(unittest.TestCase):
                     reply_to=first["message_id"],
                 )
                 self.assertEqual(second["sequence"], 2)
-                self.assertEqual(second["sender"], IDENTITY_B)
+                assert_compatibility_identity(self, second["sender"], IDENTITY_B)
                 self.assertEqual(second["reply_to"], first["message_id"])
                 self.assert_summary(
                     client_c,
@@ -286,7 +300,7 @@ class ThreeRuntimeRoomE2ETests(unittest.TestCase):
                     reply_to=second["message_id"],
                 )
                 self.assertEqual(third["sequence"], 3)
-                self.assertEqual(third["sender"], IDENTITY_C)
+                assert_compatibility_identity(self, third["sender"], IDENTITY_C)
                 self.assertEqual(third["reply_to"], second["message_id"])
 
                 history_a = client_a.retrieve_messages(room_id)
@@ -298,10 +312,12 @@ class ThreeRuntimeRoomE2ETests(unittest.TestCase):
                     [message["sequence"] for message in history_a["messages"]],
                     [1, 2, 3],
                 )
-                self.assertEqual(
-                    [message["sender"] for message in history_a["messages"]],
-                    [IDENTITY_A, IDENTITY_B, IDENTITY_C],
-                )
+                for message, expected in zip(
+                    history_a["messages"],
+                    (IDENTITY_A, IDENTITY_B, IDENTITY_C),
+                    strict=True,
+                ):
+                    assert_compatibility_identity(self, message["sender"], expected)
                 self.assertEqual(
                     [message["reply_to"] for message in history_a["messages"]],
                     [None, first["message_id"], second["message_id"]],

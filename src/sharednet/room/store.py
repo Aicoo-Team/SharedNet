@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from ..control.models import ActorIdentity
 
-from ..identity import new_runtime_id
+from ..identity import is_typed_id, new_runtime_id
 from .errors import RoomError
 from .models import (
     Artifact,
@@ -1007,10 +1007,24 @@ class RoomStore:
                 row["sender_agent_id"],
                 row["sender_runtime_id"],
             )
-        else:
+        elif all(
+            is_typed_id(row[field], prefix)
+            for field, prefix in (
+                ("sender_principal_id", "p"),
+                ("sender_agent_id", "a"),
+                ("sender_runtime_id", "r"),
+            )
+        ):
             from ..control.models import ActorIdentity
 
             identity = ActorIdentity(
+                row["sender_principal_id"],
+                row["sender_agent_id"],
+                row["sender_runtime_id"],
+                row["sender_instance_id"],
+            )
+        else:
+            identity = RuntimeIdentity(
                 row["sender_principal_id"],
                 row["sender_agent_id"],
                 row["sender_runtime_id"],
@@ -1055,10 +1069,24 @@ class RoomStore:
                 row["creator_agent_id"],
                 row["creator_runtime_id"],
             )
-        else:
+        elif all(
+            is_typed_id(row[field], prefix)
+            for field, prefix in (
+                ("creator_principal_id", "p"),
+                ("creator_agent_id", "a"),
+                ("creator_runtime_id", "r"),
+            )
+        ):
             from ..control.models import ActorIdentity
 
             identity = ActorIdentity(
+                row["creator_principal_id"],
+                row["creator_agent_id"],
+                row["creator_runtime_id"],
+                row["creator_instance_id"],
+            )
+        else:
+            identity = RuntimeIdentity(
                 row["creator_principal_id"],
                 row["creator_agent_id"],
                 row["creator_runtime_id"],

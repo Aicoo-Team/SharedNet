@@ -172,13 +172,23 @@ class RuntimeIdentity:
     principal_id: str
     agent_id: str
     runtime_id: str
+    instance_id: str | None = None
 
     def __post_init__(self) -> None:
         for name in ("principal_id", "agent_id", "runtime_id"):
             object.__setattr__(self, name, _identifier(getattr(self, name), name))
+        if self.instance_id is not None:
+            object.__setattr__(self, "instance_id", _identifier(self.instance_id, "instance_id"))
 
     def to_dict(self) -> dict[str, str]:
-        return {"principal_id": self.principal_id, "agent_id": self.agent_id, "runtime_id": self.runtime_id}
+        result = {
+            "principal_id": self.principal_id,
+            "agent_id": self.agent_id,
+            "runtime_id": self.runtime_id,
+        }
+        if self.instance_id is not None:
+            result["instance_id"] = self.instance_id
+        return result
 
 
 def _is_room_identity(value: object) -> bool:

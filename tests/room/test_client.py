@@ -85,6 +85,7 @@ def room_server(root: Path, *, max_upload_bytes: int = 268_435_456) -> LiveServe
             root / "room.sqlite3",
             root / "blobs",
             max_upload_bytes,
+            enable_legacy_registration=True,
         )
     )
 
@@ -326,7 +327,11 @@ class RoomClientTests(unittest.TestCase):
 
     def test_upload_uses_fixed_length_and_only_bounded_reads(self) -> None:
         observed_lengths: list[str | None] = []
-        app = create_room_app(self.root / "room.sqlite3", self.root / "blobs")
+        app = create_room_app(
+            self.root / "room.sqlite3",
+            self.root / "blobs",
+            enable_legacy_registration=True,
+        )
 
         @app.middleware("http")
         async def observe_length(request: Request, call_next):

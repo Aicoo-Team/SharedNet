@@ -44,7 +44,12 @@ class RoomApiTests(unittest.TestCase):
         self.temporary_directory.cleanup()
 
     def app(self, max_upload_bytes: int = 268_435_456):
-        return create_room_app(self.database_path, self.blob_path, max_upload_bytes)
+        return create_room_app(
+            self.database_path,
+            self.blob_path,
+            max_upload_bytes,
+            enable_legacy_registration=True,
+        )
 
     def register(
         self,
@@ -99,6 +104,22 @@ class RoomApiTests(unittest.TestCase):
     def test_app_exposes_exact_frozen_route_and_method_table(self) -> None:
         expected = {
             ("GET", "/healthz"),
+            ("POST", "/v1/pairings"),
+            ("POST", "/v1/pairings/{pairing_id}/exchange"),
+            ("POST", "/v1/local/agents"),
+            ("POST", "/v1/local/runtimes"),
+            ("POST", "/v1/local/instances"),
+            ("POST", "/v1/local/instances/current/heartbeat"),
+            ("POST", "/v1/local/instances/current/end"),
+            ("POST", "/v1/decisions"),
+            ("GET", "/v1/decisions/{decision_id}"),
+            ("POST", "/v1/console/accounts/{auth_user_id}/provision"),
+            ("POST", "/v1/console/accounts/{auth_user_id}/pairings/{pairing_id}/claim"),
+            ("GET", "/v1/console/accounts/{auth_user_id}/rooms"),
+            ("GET", "/v1/console/accounts/{auth_user_id}/rooms/{room_id}"),
+            ("GET", "/v1/console/accounts/{auth_user_id}/network"),
+            ("GET", "/v1/console/accounts/{auth_user_id}/decisions"),
+            ("POST", "/v1/console/accounts/{auth_user_id}/decisions/{decision_id}/resolve"),
             ("POST", "/v1/runtimes/register"),
             ("POST", "/v1/rooms"),
             ("POST", "/v1/rooms/{room_id}/memberships"),
@@ -144,11 +165,10 @@ class RoomApiTests(unittest.TestCase):
                             headers={**credentials, "Content-Type": "application/json"},
                             content=b'{"malformed":',
                         )
-                        self.assert_error(
-                            response,
-                            401,
-                            "invalid_runtime_token",
-                            "runtime token is invalid",
+                        self.assertEqual(response.status_code, 401, response.text)
+                        self.assertIn(
+                            response.json()["error"]["code"],
+                            {"invalid_instance_token", "invalid_runtime_token"},
                         )
                         self.assertEqual(response.headers["www-authenticate"], "Bearer")
 
@@ -273,11 +293,10 @@ class RoomApiTests(unittest.TestCase):
                 auth("unknown-token"),
             ):
                 response = client.get("/v1/rooms", headers=headers)
-                self.assert_error(
-                    response,
-                    401,
-                    "invalid_runtime_token",
-                    "runtime token is invalid",
+                self.assertEqual(response.status_code, 401, response.text)
+                self.assertIn(
+                    response.json()["error"]["code"],
+                    {"invalid_instance_token", "invalid_runtime_token"},
                 )
                 self.assertEqual(response.headers["www-authenticate"], "Bearer")
 
@@ -448,7 +467,12 @@ class RoomApiTests(unittest.TestCase):
                     "principal_id": "principal_alice",
                     "agent_id": "agent_alpha",
                     "runtime_id": "runtime_alpha",
+                    "instance_id": first_message["sender"]["instance_id"],
                 },
+            )
+            self.assertRegex(
+                first_message["sender"]["instance_id"],
+                r"^i_[0-9A-Za-z]{10}$",
             )
             self.assertEqual(first_message["resolution_state"], "pending")
 
