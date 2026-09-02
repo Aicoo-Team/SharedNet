@@ -8,24 +8,31 @@ Neon adapter while SQLite remains the V1 local/demo persistence implementation.
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
+import json
 from pathlib import Path
 import secrets
 import sqlite3
 
-from ..identity import new_principal_id
+from ..identity import new_agent_id, new_instance_id, new_principal_id, new_runtime_id
 from ..room.store import RoomStore
 from .models import (
     ActorIdentity,
+    AgentBinding,
+    AgentInstance,
     ConnectorSession,
     ControlError,
     DecisionMode,
     DecisionStatus,
     HumanDecision,
+    InstanceSession,
+    InstanceStatus,
     PairingChallenge,
     PairingStatus,
+    RuntimeBinding,
+    RuntimeSession,
 )
 
 
@@ -171,6 +178,8 @@ class ControlStore:
                     agent_id TEXT NOT NULL,
                     runtime_id TEXT NOT NULL,
                     token_hash TEXT NOT NULL UNIQUE,
+                    credential_status TEXT NOT NULL DEFAULT 'active'
+                        CHECK (credential_status IN ('active', 'revoked')),
                     provider_session_id TEXT,
                     runtime_type TEXT NOT NULL,
                     workspace_label TEXT,
@@ -180,6 +189,7 @@ class ControlStore:
                     last_seen_at TEXT NOT NULL,
                     expires_at TEXT NOT NULL,
                     ended_at TEXT,
+                    revoked_at TEXT,
                     FOREIGN KEY (principal_id) REFERENCES principals(principal_id),
                     FOREIGN KEY (agent_id, principal_id) REFERENCES agents(agent_id, principal_id),
                     FOREIGN KEY (runtime_id) REFERENCES runtime_registrations(runtime_id)
@@ -222,6 +232,58 @@ class ControlStore:
                 CREATE INDEX IF NOT EXISTS human_decisions_target_idx
                     ON human_decisions(target_principal_id, status, created_at);
                 """
+            )
+            self._add_column_if_missing(
+                connection,
+                "runtime_registrations",
+                "runtime_kind",
+                "TEXT",
+            )
+            self._add_column_if_missing(
+                connection,
+                "runtime_registrations",
+                "workspace_label",
+                "TEXT",
+            )
+            self._add_column_if_missing(
+                connection,
+                "runtime_registrations",
+                "credential_status",
+                "TEXT NOT NULL DEFAULT 'active'",
+            )
+            self._add_column_if_missing(
+                connection,
+                "runtime_registrations",
+                "revoked_at",
+                "TEXT",
+            )
+            self._add_column_if_missing(
+                connection,
+                "agent_instances",
+                "credential_status",
+                "TEXT NOT NULL DEFAULT 'active'",
+            )
+            self._add_column_if_missing(
+                connection,
+                "agent_instances",
+                "revoked_at",
+                "TEXT",
+            )
+
+    @staticmethod
+    def _add_column_if_missing(
+        connection: sqlite3.Connection,
+        table_name: str,
+        column_name: str,
+        declaration: str,
+    ) -> None:
+        columns = {
+            row["name"]
+            for row in connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+        }
+        if column_name not in columns:
+            connection.execute(
+                f"ALTER TABLE {table_name} ADD COLUMN {column_name} {declaration}"
             )
 
     @staticmethod
@@ -290,6 +352,421 @@ class ControlStore:
                 validated_user_id,
                 self.clock(),
             )
+
+    @staticmethod
+    def _matching_token_row(
+        rows: list[sqlite3.Row],
+        raw_token: str,
+    ) -> sqlite3.Row | None:
+        candidate_hash = _hash_secret(raw_token)
+        match = None
+        for row in rows:
+            if hmac.compare_digest(row["token_hash"], candidate_hash):
+                match = row
+        return match
+
+    def _authenticate_connector_in_connection(
+        self,
+        connection: sqlite3.Connection,
+        connector_token: str,
+    ) -> sqlite3.Row:
+        rows = connection.execute(
+            """
+            SELECT * FROM principal_connector_credentials
+            WHERE status = 'active'
+            """
+        ).fetchall()
+        match = self._matching_token_row(rows, connector_token)
+        if match is None:
+            raise _error(
+                "invalid_connector_token",
+                "connector credential is invalid or revoked",
+                401,
+            )
+        return match
+
+    def authenticate_connector(self, connector_token: str) -> str:
+        if not isinstance(connector_token, str) or not connector_token:
+            raise _error("invalid_connector_token", "connector credential is invalid", 401)
+        with self._connect() as connection:
+            return self._authenticate_connector_in_connection(
+                connection,
+                connector_token,
+            )["principal_id"]
+
+    def create_agent(
+        self,
+        connector_token: str,
+        diagnostic_label: str,
+        capabilities: tuple[str, ...],
+    ) -> AgentBinding:
+        created_at = self.clock()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            credential = self._authenticate_connector_in_connection(
+                connection,
+                connector_token,
+            )
+            principal_id = credential["principal_id"]
+            for _ in range(_GENERATED_ID_ATTEMPTS):
+                agent_id = new_agent_id()
+                if connection.execute(
+                    "SELECT 1 FROM agents WHERE agent_id = ?",
+                    (agent_id,),
+                ).fetchone() is not None:
+                    continue
+                serialized = _timestamp(created_at)
+                connection.execute(
+                    "INSERT INTO agents(agent_id, principal_id, created_at) VALUES (?, ?, ?)",
+                    (agent_id, principal_id, serialized),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO agent_profiles(
+                        agent_id, seed_key, diagnostic_label, role, summary,
+                        runtime_kind, capabilities_json, discoverability,
+                        official, created_at
+                    ) VALUES (?, NULL, ?, 'Local agent', '', 'unregistered', ?, 0, 0, ?)
+                    """,
+                    (
+                        agent_id,
+                        diagnostic_label,
+                        json.dumps(capabilities, separators=(",", ":")),
+                        serialized,
+                    ),
+                )
+                return AgentBinding(
+                    principal_id,
+                    agent_id,
+                    diagnostic_label,
+                    capabilities,
+                    created_at,
+                )
+        raise _error("agent_id_conflict", "could not allocate a unique Agent ID", 409)
+
+    def register_runtime(
+        self,
+        connector_token: str,
+        agent_id: str,
+        runtime_kind: str,
+        workspace_label: str | None,
+    ) -> RuntimeSession:
+        created_at = self.clock()
+        runtime_token = secrets.token_urlsafe(32)
+        token_hash = _hash_secret(runtime_token)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            credential = self._authenticate_connector_in_connection(
+                connection,
+                connector_token,
+            )
+            principal_id = credential["principal_id"]
+            agent = connection.execute(
+                "SELECT 1 FROM agents WHERE agent_id = ? AND principal_id = ?",
+                (agent_id, principal_id),
+            ).fetchone()
+            if agent is None:
+                raise _error("agent_not_found", "Agent was not found", 404)
+
+            for _ in range(_GENERATED_ID_ATTEMPTS):
+                runtime_id = new_runtime_id()
+                if connection.execute(
+                    "SELECT 1 FROM runtime_registrations WHERE runtime_id = ?",
+                    (runtime_id,),
+                ).fetchone() is not None:
+                    continue
+                connection.execute(
+                    """
+                    INSERT INTO runtime_registrations(
+                        runtime_id, principal_id, agent_id, token_hash, created_at,
+                        runtime_kind, workspace_label, credential_status, revoked_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', NULL)
+                    """,
+                    (
+                        runtime_id,
+                        principal_id,
+                        agent_id,
+                        token_hash,
+                        _timestamp(created_at),
+                        runtime_kind,
+                        workspace_label,
+                    ),
+                )
+                return RuntimeSession(
+                    principal_id=principal_id,
+                    agent_id=agent_id,
+                    runtime_id=runtime_id,
+                    runtime_kind=runtime_kind,
+                    workspace_label=workspace_label,
+                    created_at=created_at,
+                    runtime_token=runtime_token,
+                )
+        raise _error("runtime_id_conflict", "could not allocate a unique Runtime ID", 409)
+
+    def _authenticate_runtime_in_connection(
+        self,
+        connection: sqlite3.Connection,
+        runtime_token: str,
+    ) -> sqlite3.Row:
+        rows = connection.execute(
+            """
+            SELECT * FROM runtime_registrations
+            WHERE credential_status = 'active'
+            """
+        ).fetchall()
+        match = self._matching_token_row(rows, runtime_token)
+        if match is None:
+            raise _error(
+                "invalid_runtime_token",
+                "Runtime credential is invalid or revoked",
+                401,
+            )
+        return match
+
+    def authenticate_runtime(self, runtime_token: str) -> RuntimeBinding:
+        if not isinstance(runtime_token, str) or not runtime_token:
+            raise _error("invalid_runtime_token", "Runtime credential is invalid", 401)
+        with self._connect() as connection:
+            row = self._authenticate_runtime_in_connection(connection, runtime_token)
+            return self._runtime_binding(row)
+
+    def start_instance(
+        self,
+        runtime_token: str,
+        provider_session_id: str | None,
+        lease_seconds: int,
+    ) -> InstanceSession:
+        started_at = self.clock()
+        expires_at = started_at + timedelta(seconds=lease_seconds)
+        instance_token = secrets.token_urlsafe(32)
+        token_hash = _hash_secret(instance_token)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            runtime = self._authenticate_runtime_in_connection(connection, runtime_token)
+            profile = connection.execute(
+                "SELECT capabilities_json FROM agent_profiles WHERE agent_id = ?",
+                (runtime["agent_id"],),
+            ).fetchone()
+            capabilities = tuple(json.loads(profile["capabilities_json"])) if profile else ()
+            for _ in range(_GENERATED_ID_ATTEMPTS):
+                instance_id = new_instance_id()
+                if connection.execute(
+                    "SELECT 1 FROM agent_instances WHERE instance_id = ?",
+                    (instance_id,),
+                ).fetchone() is not None:
+                    continue
+                connection.execute(
+                    """
+                    INSERT INTO agent_instances(
+                        instance_id, principal_id, agent_id, runtime_id, token_hash,
+                        credential_status, provider_session_id, runtime_type,
+                        workspace_label, capabilities_json, status, started_at,
+                        last_seen_at, expires_at, ended_at, revoked_at
+                    ) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, 'online', ?, ?, ?, NULL, NULL)
+                    """,
+                    (
+                        instance_id,
+                        runtime["principal_id"],
+                        runtime["agent_id"],
+                        runtime["runtime_id"],
+                        token_hash,
+                        provider_session_id,
+                        runtime["runtime_kind"] or "legacy",
+                        runtime["workspace_label"],
+                        json.dumps(capabilities, separators=(",", ":")),
+                        _timestamp(started_at),
+                        _timestamp(started_at),
+                        _timestamp(expires_at),
+                    ),
+                )
+                return InstanceSession(
+                    ActorIdentity(
+                        runtime["principal_id"],
+                        runtime["agent_id"],
+                        runtime["runtime_id"],
+                        instance_id,
+                    ),
+                    instance_token,
+                    started_at,
+                    expires_at,
+                )
+        raise _error("instance_id_conflict", "could not allocate a unique Instance ID", 409)
+
+    def _instance_row_for_token(
+        self,
+        connection: sqlite3.Connection,
+        instance_token: str,
+        *,
+        require_active_credential: bool = True,
+    ) -> sqlite3.Row:
+        query = "SELECT * FROM agent_instances"
+        if require_active_credential:
+            query += " WHERE credential_status = 'active'"
+        rows = connection.execute(query).fetchall()
+        match = self._matching_token_row(rows, instance_token)
+        if match is None:
+            raise _error(
+                "invalid_instance_token",
+                "Instance credential is invalid or revoked",
+                401,
+            )
+        return match
+
+    def authenticate_instance(self, instance_token: str) -> ActorIdentity:
+        if not isinstance(instance_token, str) or not instance_token:
+            raise _error("invalid_instance_token", "Instance credential is invalid", 401)
+        now = self.clock()
+        with self._connect() as connection:
+            row = self._instance_row_for_token(connection, instance_token)
+            if row["status"] == InstanceStatus.ENDED.value:
+                raise _error("instance_ended", "Instance has ended", 409)
+            if _parse_timestamp(row["expires_at"]) <= now:
+                raise _error("instance_expired", "Instance lease has expired", 401)
+            return ActorIdentity(
+                row["principal_id"],
+                row["agent_id"],
+                row["runtime_id"],
+                row["instance_id"],
+            )
+
+    def heartbeat_instance(
+        self,
+        instance_token: str,
+        lease_seconds: int,
+    ) -> AgentInstance:
+        now = self.clock()
+        expires_at = now + timedelta(seconds=lease_seconds)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = self._instance_row_for_token(connection, instance_token)
+            if row["status"] == InstanceStatus.ENDED.value:
+                raise _error("instance_ended", "Instance has ended", 409)
+            if _parse_timestamp(row["expires_at"]) <= now:
+                raise _error("instance_expired", "Instance lease has expired", 401)
+            connection.execute(
+                """
+                UPDATE agent_instances
+                SET last_seen_at = ?, expires_at = ?
+                WHERE instance_id = ?
+                """,
+                (_timestamp(now), _timestamp(expires_at), row["instance_id"]),
+            )
+            return self._instance_by_id(connection, row["instance_id"])
+
+    def end_instance(self, instance_token: str) -> AgentInstance:
+        now = self.clock()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = self._instance_row_for_token(connection, instance_token)
+            if row["status"] != InstanceStatus.ENDED.value:
+                connection.execute(
+                    """
+                    UPDATE agent_instances
+                    SET status = 'ended', ended_at = ?
+                    WHERE instance_id = ?
+                    """,
+                    (_timestamp(now), row["instance_id"]),
+                )
+            return self._instance_by_id(connection, row["instance_id"])
+
+    def get_instance(self, instance_id: str) -> AgentInstance:
+        with self._connect() as connection:
+            return self._instance_by_id(connection, instance_id)
+
+    def revoke_connector(self, connector_token: str) -> None:
+        now = self.clock()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = self._authenticate_connector_in_connection(connection, connector_token)
+            connection.execute(
+                """
+                UPDATE principal_connector_credentials
+                SET status = 'revoked', revoked_at = ?
+                WHERE credential_id = ?
+                """,
+                (_timestamp(now), row["credential_id"]),
+            )
+
+    def revoke_runtime(self, runtime_token: str) -> None:
+        now = self.clock()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = self._authenticate_runtime_in_connection(connection, runtime_token)
+            connection.execute(
+                """
+                UPDATE runtime_registrations
+                SET credential_status = 'revoked', revoked_at = ?
+                WHERE runtime_id = ?
+                """,
+                (_timestamp(now), row["runtime_id"]),
+            )
+
+    def revoke_instance(self, instance_token: str) -> None:
+        now = self.clock()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = self._instance_row_for_token(connection, instance_token)
+            connection.execute(
+                """
+                UPDATE agent_instances
+                SET credential_status = 'revoked', revoked_at = ?
+                WHERE instance_id = ?
+                """,
+                (_timestamp(now), row["instance_id"]),
+            )
+
+    @staticmethod
+    def _runtime_binding(row: sqlite3.Row) -> RuntimeBinding:
+        return RuntimeBinding(
+            principal_id=row["principal_id"],
+            agent_id=row["agent_id"],
+            runtime_id=row["runtime_id"],
+            runtime_kind=row["runtime_kind"] or "legacy",
+            workspace_label=row["workspace_label"],
+            created_at=_parse_timestamp(row["created_at"]),
+        )
+
+    def _instance_by_id(
+        self,
+        connection: sqlite3.Connection,
+        instance_id: str,
+    ) -> AgentInstance:
+        row = connection.execute(
+            "SELECT * FROM agent_instances WHERE instance_id = ?",
+            (instance_id,),
+        ).fetchone()
+        if row is None:
+            raise _error("instance_not_found", "Instance was not found", 404)
+        expires_at = _parse_timestamp(row["expires_at"])
+        presence = (
+            "online"
+            if row["status"] == InstanceStatus.ONLINE.value
+            and row["credential_status"] == "active"
+            and expires_at > self.clock()
+            else "offline"
+        )
+        return AgentInstance(
+            identity=ActorIdentity(
+                row["principal_id"],
+                row["agent_id"],
+                row["runtime_id"],
+                row["instance_id"],
+            ),
+            provider_session_id=row["provider_session_id"],
+            runtime_type=row["runtime_type"],
+            workspace_label=row["workspace_label"],
+            capabilities=tuple(json.loads(row["capabilities_json"])),
+            status=InstanceStatus(row["status"]),
+            presence=presence,
+            started_at=_parse_timestamp(row["started_at"]),
+            last_seen_at=_parse_timestamp(row["last_seen_at"]),
+            expires_at=expires_at,
+            ended_at=(
+                _parse_timestamp(row["ended_at"])
+                if row["ended_at"] is not None
+                else None
+            ),
+        )
 
     def create_pairing_challenge(
         self,
