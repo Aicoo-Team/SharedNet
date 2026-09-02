@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import closing
 import json
 from pathlib import Path
 import sqlite3
@@ -88,6 +89,8 @@ TRUTHFUL_EMPTY_TABLES = (
     "human_decisions",
 )
 
+FIXTURE_TIMESTAMP = "2026-09-03T00:00:00+00:00"
+
 
 class DemoSeedStoreTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -100,13 +103,99 @@ class DemoSeedStoreTests(unittest.TestCase):
         self.temporary_directory.cleanup()
 
     def rows(self, query: str, parameters: tuple[object, ...] = ()) -> list[sqlite3.Row]:
-        with sqlite3.connect(self.database_path) as connection:
+        with closing(sqlite3.connect(self.database_path)) as connection:
             connection.row_factory = sqlite3.Row
             return connection.execute(query, parameters).fetchall()
 
     def count(self, table_name: str) -> int:
-        with sqlite3.connect(self.database_path) as connection:
+        with closing(sqlite3.connect(self.database_path)) as connection:
             return int(connection.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0])
+
+    def insert_principal_fixture(
+        self,
+        principal_id: str,
+        *,
+        auth_user_id: str | None = None,
+        seed_key: str | None = None,
+    ) -> None:
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
+            connection.execute("PRAGMA foreign_keys=ON")
+            connection.execute(
+                "INSERT INTO principals(principal_id, created_at) VALUES (?, ?)",
+                (principal_id, FIXTURE_TIMESTAMP),
+            )
+            if auth_user_id is not None:
+                connection.execute(
+                    """
+                    INSERT INTO account_principals(auth_user_id, principal_id, created_at)
+                    VALUES (?, ?, ?)
+                    """,
+                    (auth_user_id, principal_id, FIXTURE_TIMESTAMP),
+                )
+            if seed_key is not None:
+                connection.execute(
+                    """
+                    INSERT INTO principal_profiles(
+                        principal_id, seed_key, diagnostic_label, kind, summary, created_at
+                    ) VALUES (?, ?, 'fixture', 'fixture', 'fixture', ?)
+                    """,
+                    (principal_id, seed_key, FIXTURE_TIMESTAMP),
+                )
+
+    def insert_agent_fixture(
+        self,
+        agent_id: str,
+        principal_id: str,
+        seed_key: str,
+    ) -> None:
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
+            connection.execute("PRAGMA foreign_keys=ON")
+            connection.execute(
+                "INSERT INTO agents(agent_id, principal_id, created_at) VALUES (?, ?, ?)",
+                (agent_id, principal_id, FIXTURE_TIMESTAMP),
+            )
+            connection.execute(
+                """
+                INSERT INTO agent_profiles(
+                    agent_id, seed_key, diagnostic_label, role, summary,
+                    runtime_kind, capabilities_json, discoverability,
+                    official, created_at
+                ) VALUES (?, ?, 'fixture', 'fixture', 'fixture',
+                          'template', '[]', 1, 1, ?)
+                """,
+                (agent_id, seed_key, FIXTURE_TIMESTAMP),
+            )
+
+    def seed_state(self) -> dict[str, tuple[tuple[object, ...], ...]]:
+        table_names = (
+            "account_principals",
+            "principals",
+            "principal_profiles",
+            "agents",
+            "agent_profiles",
+            "principal_connections",
+        )
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            return {
+                table_name: tuple(
+                    tuple(row)
+                    for row in connection.execute(
+                        f"SELECT * FROM {table_name} ORDER BY 1"
+                    ).fetchall()
+                )
+                for table_name in table_names
+            }
+
+    def assert_stable_demo_seed_conflict(self, auth_user_id: str) -> None:
+        try:
+            self.store.seed_demo_account(auth_user_id)
+        except Exception as error:
+            if not isinstance(error, ControlError):
+                self.fail(f"expected ControlError, got {type(error).__name__}: {error}")
+            self.assertEqual(error.code, "demo_seed_conflict")
+            self.assertEqual(error.status_code, 409)
+            return
+        self.fail("expected demo_seed_conflict")
 
     def test_seed_is_idempotent_and_returns_only_opaque_public_ids(self) -> None:
         first = self.store.seed_demo_account("auth-user-1")
@@ -222,7 +311,7 @@ class DemoSeedStoreTests(unittest.TestCase):
 
     def test_seed_refreshes_the_global_aicoo_principal_profile(self) -> None:
         seeded = self.store.seed_demo_account("auth-user-1")
-        with sqlite3.connect(self.database_path) as connection:
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
             connection.execute(
                 """
                 UPDATE principal_profiles
@@ -316,6 +405,142 @@ class DemoSeedStoreTests(unittest.TestCase):
             "principal_connections",
         ):
             self.assertEqual(self.count(table_name), 0, table_name)
+
+    def test_seed_rejects_an_account_mapped_aicoo_principal_and_rolls_back(self) -> None:
+        self.insert_principal_fixture(
+            "p_AAAAAAAAAA",
+            auth_user_id="auth-aicoo-owner",
+            seed_key="demo.aicoo.principal",
+        )
+        before = self.seed_state()
+
+        self.assert_stable_demo_seed_conflict("auth-user-1")
+
+        self.assertEqual(self.seed_state(), before)
+
+    def test_seed_rejects_a_legacy_owner_principal_and_rolls_back(self) -> None:
+        self.insert_principal_fixture(
+            "principal_owner_legacy",
+            auth_user_id="auth-user-1",
+        )
+        before = self.seed_state()
+
+        self.assert_stable_demo_seed_conflict("auth-user-1")
+
+        self.assertEqual(self.seed_state(), before)
+
+    def test_seed_rejects_a_legacy_aicoo_principal_and_rolls_back(self) -> None:
+        self.insert_principal_fixture(
+            "principal_aicoo_legacy",
+            seed_key="demo.aicoo.principal",
+        )
+        before = self.seed_state()
+
+        self.assert_stable_demo_seed_conflict("auth-user-1")
+
+        self.assertEqual(self.seed_state(), before)
+
+    def test_seed_rejects_a_legacy_reused_agent_and_rolls_back(self) -> None:
+        self.insert_principal_fixture(
+            "p_AAAAAAAAAA",
+            seed_key="demo.aicoo.principal",
+        )
+        self.insert_agent_fixture(
+            "agent_web_builder_legacy",
+            "p_AAAAAAAAAA",
+            "demo.aicoo.web-builder",
+        )
+        before = self.seed_state()
+
+        self.assert_stable_demo_seed_conflict("auth-user-1")
+
+        self.assertEqual(self.seed_state(), before)
+
+    def test_principal_seed_key_collision_is_a_stable_conflict_and_rolls_back(
+        self,
+    ) -> None:
+        self.insert_principal_fixture(
+            "p_BBBBBBBBBB",
+            seed_key="demo.owner.p_AAAAAAAAAA.principal",
+        )
+        before = self.seed_state()
+
+        with patch(
+            "sharednet.control.store.new_principal_id",
+            return_value="p_AAAAAAAAAA",
+        ):
+            self.assert_stable_demo_seed_conflict("auth-user-1")
+
+        self.assertEqual(self.seed_state(), before)
+
+    def test_seed_canonicalizes_a_lone_reverse_connection_without_duplication(
+        self,
+    ) -> None:
+        seeded = self.store.seed_demo_account("auth-user-1")
+        canonical_left, canonical_right = sorted(
+            (seeded["principal_id"], seeded["connected_principal_id"])
+        )
+        original = self.rows(
+            """
+            SELECT connection_id, created_at
+            FROM principal_connections
+            """
+        )[0]
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
+            connection.execute(
+                """
+                UPDATE principal_connections
+                SET left_principal_id = ?, right_principal_id = ?
+                WHERE connection_id = ?
+                """,
+                (canonical_right, canonical_left, original["connection_id"]),
+            )
+
+        repeated = self.store.seed_demo_account("auth-user-1")
+        connections = self.rows(
+            """
+            SELECT connection_id, left_principal_id, right_principal_id, created_at
+            FROM principal_connections
+            """
+        )
+
+        self.assertEqual(repeated, seeded)
+        self.assertEqual(len(connections), 1)
+        self.assertEqual(connections[0]["connection_id"], original["connection_id"])
+        self.assertEqual(connections[0]["left_principal_id"], canonical_left)
+        self.assertEqual(connections[0]["right_principal_id"], canonical_right)
+        self.assertEqual(connections[0]["created_at"], original["created_at"])
+
+    def test_seed_rejects_both_connection_orientations_without_deleting_history(
+        self,
+    ) -> None:
+        seeded = self.store.seed_demo_account("auth-user-1")
+        canonical_left, canonical_right = sorted(
+            (seeded["principal_id"], seeded["connected_principal_id"])
+        )
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
+            connection.execute("PRAGMA foreign_keys=ON")
+            connection.execute(
+                """
+                INSERT INTO principal_connections(
+                    connection_id, left_principal_id, right_principal_id, created_at
+                ) VALUES ('connection_reverse', ?, ?, ?)
+                """,
+                (canonical_right, canonical_left, FIXTURE_TIMESTAMP),
+            )
+            connection.execute(
+                """
+                UPDATE principal_profiles
+                SET summary = 'must survive rollback'
+                WHERE principal_id = ?
+                """,
+                (seeded["connected_principal_id"],),
+            )
+        before = self.seed_state()
+
+        self.assert_stable_demo_seed_conflict("auth-user-1")
+
+        self.assertEqual(self.seed_state(), before)
 
 
 class DemoSeedApiTests(unittest.TestCase):

@@ -136,6 +136,16 @@ def _error(code: str, message: str, status_code: int) -> ControlError:
     return ControlError(code, message, status_code)
 
 
+def _require_demo_seed_id(value: object, prefix: str, identity_name: str) -> str:
+    if not is_typed_id(value, prefix):
+        raise _error(
+            "demo_seed_conflict",
+            f"demo seed {identity_name} identity is not an opaque SharedNet ID",
+            409,
+        )
+    return str(value)
+
+
 class _ConnectionContext:
     def __init__(self, database_path: Path) -> None:
         self.connection = sqlite3.connect(database_path)
@@ -436,26 +446,44 @@ class ControlStore:
         summary: str,
         created_at: str,
     ) -> None:
-        connection.execute(
-            """
-            INSERT INTO principal_profiles(
-                principal_id, seed_key, diagnostic_label, kind, summary, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(principal_id) DO UPDATE SET
-                seed_key = excluded.seed_key,
-                diagnostic_label = excluded.diagnostic_label,
-                kind = excluded.kind,
-                summary = excluded.summary
-            """,
-            (
-                principal_id,
-                seed_key,
-                diagnostic_label,
-                kind,
-                summary,
-                created_at,
-            ),
-        )
+        _require_demo_seed_id(principal_id, "p", "Principal")
+        seed_owner = connection.execute(
+            "SELECT principal_id FROM principal_profiles WHERE seed_key = ?",
+            (seed_key,),
+        ).fetchone()
+        if seed_owner is not None and seed_owner["principal_id"] != principal_id:
+            raise _error(
+                "demo_seed_conflict",
+                "demo Principal seed key belongs to another Principal",
+                409,
+            )
+        try:
+            connection.execute(
+                """
+                INSERT INTO principal_profiles(
+                    principal_id, seed_key, diagnostic_label, kind, summary, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(principal_id) DO UPDATE SET
+                    seed_key = excluded.seed_key,
+                    diagnostic_label = excluded.diagnostic_label,
+                    kind = excluded.kind,
+                    summary = excluded.summary
+                """,
+                (
+                    principal_id,
+                    seed_key,
+                    diagnostic_label,
+                    kind,
+                    summary,
+                    created_at,
+                ),
+            )
+        except sqlite3.IntegrityError:
+            raise _error(
+                "demo_seed_conflict",
+                "demo Principal profile conflicts with existing data",
+                409,
+            ) from None
 
     @staticmethod
     def _seed_agent_in_connection(
@@ -471,6 +499,7 @@ class ControlStore:
         official: int,
         created_at: str,
     ) -> str:
+        _require_demo_seed_id(principal_id, "p", "Principal")
         existing = connection.execute(
             """
             SELECT agent.agent_id, agent.principal_id
@@ -482,7 +511,17 @@ class ControlStore:
         ).fetchone()
         serialized_capabilities = json.dumps(capabilities, separators=(",", ":"))
         if existing is not None:
-            if existing["principal_id"] != principal_id:
+            existing_agent_id = _require_demo_seed_id(
+                existing["agent_id"],
+                "a",
+                "Agent",
+            )
+            existing_principal_id = _require_demo_seed_id(
+                existing["principal_id"],
+                "p",
+                "Principal",
+            )
+            if existing_principal_id != principal_id:
                 raise _error(
                     "demo_seed_conflict",
                     "demo Agent seed key belongs to another Principal",
@@ -503,13 +542,13 @@ class ControlStore:
                     serialized_capabilities,
                     discoverability,
                     official,
-                    existing["agent_id"],
+                    existing_agent_id,
                 ),
             )
-            return existing["agent_id"]
+            return existing_agent_id
 
         for _ in range(_GENERATED_ID_ATTEMPTS):
-            agent_id = new_agent_id()
+            agent_id = _require_demo_seed_id(new_agent_id(), "a", "Agent")
             if connection.execute(
                 "SELECT 1 FROM agents WHERE agent_id = ?",
                 (agent_id,),
@@ -544,6 +583,90 @@ class ControlStore:
 
         raise _error("agent_id_conflict", "could not allocate a unique Agent ID", 409)
 
+    @staticmethod
+    def _seed_principal_connection_in_connection(
+        connection: sqlite3.Connection,
+        principal_id: str,
+        connected_principal_id: str,
+        created_at: str,
+    ) -> int:
+        left_principal_id, right_principal_id = sorted(
+            (
+                _require_demo_seed_id(principal_id, "p", "Principal"),
+                _require_demo_seed_id(
+                    connected_principal_id,
+                    "p",
+                    "Principal",
+                ),
+            )
+        )
+        if left_principal_id == right_principal_id:
+            raise _error(
+                "demo_seed_conflict",
+                "demo Principal connection cannot connect a Principal to itself",
+                409,
+            )
+
+        existing = connection.execute(
+            """
+            SELECT connection_id, left_principal_id, right_principal_id
+            FROM principal_connections
+            WHERE (left_principal_id = ? AND right_principal_id = ?)
+               OR (left_principal_id = ? AND right_principal_id = ?)
+            ORDER BY connection_id
+            """,
+            (
+                left_principal_id,
+                right_principal_id,
+                right_principal_id,
+                left_principal_id,
+            ),
+        ).fetchall()
+        if len(existing) > 1:
+            raise _error(
+                "demo_seed_conflict",
+                "demo Principal connection exists in both orientations",
+                409,
+            )
+        if existing:
+            row = existing[0]
+            if row["left_principal_id"] != left_principal_id:
+                try:
+                    connection.execute(
+                        """
+                        UPDATE principal_connections
+                        SET left_principal_id = ?, right_principal_id = ?
+                        WHERE connection_id = ?
+                        """,
+                        (
+                            left_principal_id,
+                            right_principal_id,
+                            row["connection_id"],
+                        ),
+                    )
+                except sqlite3.IntegrityError:
+                    raise _error(
+                        "demo_seed_conflict",
+                        "demo Principal connection conflicts with existing data",
+                        409,
+                    ) from None
+            return 1
+
+        connection.execute(
+            """
+            INSERT INTO principal_connections(
+                connection_id, left_principal_id, right_principal_id, created_at
+            ) VALUES (?, ?, ?, ?)
+            """,
+            (
+                _new_id("connection_"),
+                left_principal_id,
+                right_principal_id,
+                created_at,
+            ),
+        )
+        return 1
+
     def seed_demo_account(self, auth_user_id: str) -> dict[str, object]:
         """Seed truthful account-scoped profiles in one idempotent transaction."""
 
@@ -552,10 +675,39 @@ class ControlStore:
         serialized_created_at = _timestamp(created_at)
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            principal_id = self._provision_principal_in_connection(
-                connection,
-                validated_user_id,
-                created_at,
+            aicoo = connection.execute(
+                """
+                SELECT principal_id
+                FROM principal_profiles
+                WHERE seed_key = 'demo.aicoo.principal'
+                """
+            ).fetchone()
+            connected_principal_id: str | None = None
+            if aicoo is not None:
+                connected_principal_id = _require_demo_seed_id(
+                    aicoo["principal_id"],
+                    "p",
+                    "Aicoo Principal",
+                )
+                account_owner = connection.execute(
+                    "SELECT 1 FROM account_principals WHERE principal_id = ?",
+                    (connected_principal_id,),
+                ).fetchone()
+                if account_owner is not None:
+                    raise _error(
+                        "demo_seed_conflict",
+                        "Aicoo demo Principal is mapped to an account",
+                        409,
+                    )
+
+            principal_id = _require_demo_seed_id(
+                self._provision_principal_in_connection(
+                    connection,
+                    validated_user_id,
+                    created_at,
+                ),
+                "p",
+                "owner Principal",
             )
             self._seed_principal_profile_in_connection(
                 connection,
@@ -567,17 +719,13 @@ class ControlStore:
                 serialized_created_at,
             )
 
-            aicoo = connection.execute(
-                """
-                SELECT principal_id
-                FROM principal_profiles
-                WHERE seed_key = 'demo.aicoo.principal'
-                """
-            ).fetchone()
-            if aicoo is None:
-                connected_principal_id = ""
+            if connected_principal_id is None:
                 for _ in range(_GENERATED_ID_ATTEMPTS):
-                    candidate = new_principal_id()
+                    candidate = _require_demo_seed_id(
+                        new_principal_id(),
+                        "p",
+                        "Aicoo Principal",
+                    )
                     if connection.execute(
                         "SELECT 1 FROM principals WHERE principal_id = ?",
                         (candidate,),
@@ -589,14 +737,12 @@ class ControlStore:
                         (connected_principal_id, serialized_created_at),
                     )
                     break
-                if not connected_principal_id:
+                if connected_principal_id is None:
                     raise _error(
                         "principal_id_conflict",
                         "could not allocate a unique Principal ID",
                         409,
                     )
-            else:
-                connected_principal_id = aicoo["principal_id"]
             self._seed_principal_profile_in_connection(
                 connection,
                 connected_principal_id,
@@ -645,33 +791,11 @@ class ControlStore:
                     )
                 )
 
-            left_principal_id, right_principal_id = sorted(
-                (principal_id, connected_principal_id)
-            )
-            connection.execute(
-                """
-                INSERT INTO principal_connections(
-                    connection_id, left_principal_id, right_principal_id, created_at
-                ) VALUES (?, ?, ?, ?)
-                ON CONFLICT(left_principal_id, right_principal_id) DO NOTHING
-                """,
-                (
-                    _new_id("connection_"),
-                    left_principal_id,
-                    right_principal_id,
-                    serialized_created_at,
-                ),
-            )
-
-            connection_count = int(
-                connection.execute(
-                    """
-                    SELECT COUNT(*)
-                    FROM principal_connections
-                    WHERE left_principal_id = ? AND right_principal_id = ?
-                    """,
-                    (left_principal_id, right_principal_id),
-                ).fetchone()[0]
+            connection_count = self._seed_principal_connection_in_connection(
+                connection,
+                principal_id,
+                connected_principal_id,
+                serialized_created_at,
             )
             return {
                 "principal_id": principal_id,
