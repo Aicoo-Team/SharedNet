@@ -15,7 +15,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 const testDirectory = mkdtempSync(join(tmpdir(), "sharednet-better-auth-"));
 const databasePath = join(testDirectory, "auth.sqlite");
-const baseURL = "http://localhost:3001";
+const baseURL = "http://127.0.0.1:3001";
 
 type AuthModule = typeof import("../../lib/auth");
 

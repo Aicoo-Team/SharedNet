@@ -10,11 +10,22 @@ Requirements: Node.js 22.13+ (or an even-numbered Node 24/26 release) and pnpm 1
 
 ```bash
 pnpm install
+mkdir -p .sharednet
+chmod 700 .sharednet
+export BETTER_AUTH_DATABASE_PATH="$PWD/.sharednet/sharednet.db"
+export BETTER_AUTH_URL='http://127.0.0.1:3001'
+export BETTER_AUTH_SECRET='replace-with-a-random-secret-at-least-32-characters'
+pnpm auth:migrate
 pnpm dev
 ```
 
-Open [http://localhost:3001/chat](http://localhost:3001/chat). Port 3001 is
-intentional: the local SharedNet Rooms service may already own port 3000.
+Open [http://127.0.0.1:3001/chat](http://127.0.0.1:3001/chat). Port 3001 is
+intentional: the local SharedNet Rooms service may already own port 3000. The
+migration command is safe to run again: it uses the same Better Auth
+configuration as the Web server, creates a missing SQLite database with
+owner-only permissions, and fails before opening the database if any required
+variable is unset. Keep `BETTER_AUTH_SECRET` out of source control and terminal
+output.
 
 If Node 23 or an older Corepack installation produces a signature/key error, switch to Node 24 and install pnpm independently. For example, on this Mac with Homebrew:
 

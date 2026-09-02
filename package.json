@@ -8,6 +8,7 @@
     "node": "^22.13.0 || ^24.0.0 || ^26.0.0"
   },
   "scripts": {
+    "auth:migrate": "node --experimental-strip-types scripts/migrate-auth.mjs",
     "dev": "next dev --webpack -p 3001",
     "build": "next build --webpack",
     "start": "next start -p 3001",

@@ -20,14 +20,14 @@ describe("authentication proxy", () => {
 
   it("redirects a request without a database-backed session to login", async () => {
     getSession.mockResolvedValue(null);
-    const request = new NextRequest("http://localhost:3001/chat");
+    const request = new NextRequest("http://127.0.0.1:3001/chat");
 
     const response = await proxy(request);
+    const location = new URL(response.headers.get("location")!);
 
     expect(response.status).toBe(307);
-    expect(response.headers.get("location")).toBe(
-      "http://localhost:3001/login?next=%2Fchat",
-    );
+    expect(location.pathname).toBe("/login");
+    expect(location.searchParams.get("next")).toBe("/chat");
     expect(getSession).toHaveBeenCalledWith({
       headers: request.headers,
       query: { disableRefresh: true },
@@ -55,13 +55,41 @@ describe("authentication proxy", () => {
       session: { id: "session_1" },
       user: { id: "user_1" },
     });
-    const request = new NextRequest("http://localhost:3001/decisions");
+    const request = new NextRequest("http://127.0.0.1:3001/decisions");
 
     const response = await proxy(request);
 
     expect(response.status).toBe(200);
     expect(response.headers.get("x-middleware-next")).toBe("1");
     expect(response.headers.get("location")).toBeNull();
+  });
+
+  it("protects the human protocol page while leaving only the Agent skill document public", async () => {
+    getSession.mockResolvedValue(null);
+
+    const pageResponse = await proxy(
+      new NextRequest("http://127.0.0.1:3001/protocol"),
+    );
+    const nestedResponse = await proxy(
+      new NextRequest("http://127.0.0.1:3001/protocol/skill.md/notes"),
+    );
+
+    expect(pageResponse.status).toBe(307);
+    expect(
+      new URL(pageResponse.headers.get("location")!).searchParams.get("next"),
+    ).toBe("/protocol");
+    expect(nestedResponse.status).toBe(307);
+
+    getSession.mockClear();
+
+    const skillResponse = await proxy(
+      new NextRequest("http://127.0.0.1:3001/protocol/skill.md"),
+    );
+
+    expect(skillResponse.status).toBe(200);
+    expect(skillResponse.headers.get("x-middleware-next")).toBe("1");
+    expect(skillResponse.headers.get("location")).toBeNull();
+    expect(getSession).not.toHaveBeenCalled();
   });
 
   it("matches only the authenticated app surfaces", () => {
