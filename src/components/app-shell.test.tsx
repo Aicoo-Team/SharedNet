@@ -136,11 +136,11 @@ describe("SharedNet application shell", () => {
 
     const navigation = screen.getByRole("navigation", { name: "Primary surfaces" });
     expect(navigation.querySelectorAll("a")).toHaveLength(3);
-    expect(screen.getByRole("link", { name: "Chat" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Rooms" })).toHaveAttribute(
       "href",
       "/chat",
     );
-    expect(screen.getByRole("link", { name: "Chat" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Rooms" })).toHaveAttribute(
       "aria-current",
       "page",
     );
