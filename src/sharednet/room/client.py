@@ -101,6 +101,8 @@ class RoomClient:
         base_url: str,
         token: str | None = None,
         timeout: float = _DEFAULT_TIMEOUT,
+        *,
+        auth_scheme: str = "Bearer",
     ) -> None:
         self.base_url = normalize_base_url(base_url)
         if (
@@ -112,6 +114,9 @@ class RoomClient:
             raise RoomError("invalid_timeout", "timeout must be a positive number", 400)
         self.timeout = float(timeout)
         self.token = None if token is None else _validate_token(token)
+        if auth_scheme not in {"Bearer", "Connector", "Runtime", "Instance"}:
+            raise RoomError("invalid_auth_scheme", "authorization scheme is invalid", 400)
+        self.auth_scheme = auth_scheme
         self._opener: OpenerDirector = build_opener(ProxyHandler({}), _RejectRedirects())
 
     @staticmethod
@@ -135,7 +140,7 @@ class RoomClient:
             path = f"{path}?{urlencode(query)}"
         request_headers = dict(headers or {})
         if protected and self.token is not None:
-            request_headers["Authorization"] = f"Bearer {self.token}"
+            request_headers["Authorization"] = f"{self.auth_scheme} {self.token}"
         if payload is not None:
             data = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
             request_headers["Content-Type"] = "application/json"
@@ -443,6 +448,7 @@ class RoomSession:
     base_url: str
     runtime_token: str
     identity: dict[str, str]
+    auth_scheme: str = "Bearer"
 
 
 def _fsync_directory(path: Path) -> None:
@@ -551,11 +557,37 @@ class RoomSessionFile:
             os.close(descriptor)
         try:
             payload = json.loads(raw.decode("utf-8"))
-            if not isinstance(payload, dict) or set(payload) != {
-                "base_url",
-                "runtime_token",
-                "identity",
+            if not isinstance(payload, dict):
+                raise RoomError("invalid_session", "Room session payload is invalid", 400)
+            if set(payload) == {
+                "version",
+                "api_url",
+                "principal_id",
+                "agent_id",
+                "runtime_id",
+                "instance_id",
+                "instance_token",
             }:
+                from ..control.models import ActorIdentity, ControlError
+
+                if payload["version"] != 1 or isinstance(payload["version"], bool):
+                    raise RoomError("invalid_session", "Room session payload is invalid", 400)
+                try:
+                    identity = ActorIdentity(
+                        payload["principal_id"],
+                        payload["agent_id"],
+                        payload["runtime_id"],
+                        payload["instance_id"],
+                    ).to_dict()
+                except ControlError as error:
+                    raise RoomError("invalid_session", "Room session identity is invalid", 400) from error
+                return RoomSession(
+                    normalize_base_url(payload["api_url"]),
+                    _validate_token(payload["instance_token"]),
+                    identity,
+                    "Instance",
+                )
+            if set(payload) != {"base_url", "runtime_token", "identity"}:
                 raise RoomError("invalid_session", "Room session payload is invalid", 400)
             return RoomSession(
                 normalize_base_url(payload["base_url"]),

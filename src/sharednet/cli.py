@@ -9,11 +9,13 @@ import json
 import os
 from pathlib import Path
 import sys
+import time
 from typing import Sequence
 
 
 DEFAULT_MODEL = "gpt-5.6-luna"
 DEFAULT_ROOM_URL = "http://127.0.0.1:8765"
+DEFAULT_WEB_URL = "http://127.0.0.1:3001"
 
 
 class _ArgumentParser(argparse.ArgumentParser):
@@ -46,6 +48,56 @@ def _add_connection_arguments(command: argparse.ArgumentParser) -> None:
 def _parser() -> argparse.ArgumentParser:
     parser = _ArgumentParser(prog="sharednet")
     namespaces = parser.add_subparsers(dest="namespace", required=True)
+
+    login = namespaces.add_parser("login")
+    login.add_argument("--api", default=DEFAULT_ROOM_URL)
+    login.add_argument("--web", default=DEFAULT_WEB_URL)
+    login.add_argument("--account-session", default=".sharednet/account-session.json")
+    login.add_argument("--timeout", type=_positive_float, default=30.0)
+    login.add_argument("--wait-seconds", type=_positive_float, default=600.0)
+    login.add_argument("--poll-interval", type=_positive_float, default=0.5)
+
+    agent = namespaces.add_parser("agent")
+    agent_commands = agent.add_subparsers(dest="command", required=True)
+    connect = agent_commands.add_parser("connect")
+    connect.add_argument(
+        "--runtime-kind",
+        choices=("codex", "claude-code", "custom"),
+        required=True,
+    )
+    connect.add_argument("--workspace", required=True)
+    connect.add_argument("--label")
+    connect.add_argument("--provider-session-id")
+    connect.add_argument("--account-session", default=".sharednet/account-session.json")
+    connect.add_argument("--agent-state", default=".sharednet/agent-state.json")
+    connect.add_argument("--instance-session", default=".sharednet/instance-session.json")
+    connect.add_argument("--lease-seconds", type=_positive_int, default=90)
+    connect.add_argument("--timeout", type=_positive_float, default=30.0)
+
+    instance = namespaces.add_parser("instance")
+    instance_commands = instance.add_subparsers(dest="command", required=True)
+    heartbeat = instance_commands.add_parser("heartbeat")
+    heartbeat.add_argument("--session", default=".sharednet/instance-session.json")
+    heartbeat.add_argument("--lease-seconds", type=_positive_int, default=90)
+    heartbeat.add_argument("--timeout", type=_positive_float, default=30.0)
+    end = instance_commands.add_parser("end")
+    end.add_argument("--session", default=".sharednet/instance-session.json")
+    end.add_argument("--timeout", type=_positive_float, default=30.0)
+
+    decision = namespaces.add_parser("decision")
+    decision_commands = decision.add_subparsers(dest="command", required=True)
+    request_decision = decision_commands.add_parser("request")
+    request_decision.add_argument("--mode", choices=("approval", "text"), required=True)
+    request_decision.add_argument("--title", required=True)
+    request_decision.add_argument("--description", required=True)
+    request_decision.add_argument("--consequence")
+    request_decision.add_argument("--room-id")
+    request_decision.add_argument("--session", default=".sharednet/instance-session.json")
+    request_decision.add_argument("--timeout", type=_positive_float, default=30.0)
+    get_decision = decision_commands.add_parser("get")
+    get_decision.add_argument("decision_id")
+    get_decision.add_argument("--session", default=".sharednet/instance-session.json")
+    get_decision.add_argument("--timeout", type=_positive_float, default=30.0)
 
     coord = namespaces.add_parser("coord")
     coord_commands = coord.add_subparsers(dest="command", required=True)
@@ -150,7 +202,11 @@ def _request_for(arguments: argparse.Namespace):
 
 
 def _emit(payload: object, stream: object | None = None) -> None:
-    print(json.dumps(payload, sort_keys=True), file=sys.stdout if stream is None else stream)
+    print(
+        json.dumps(payload, sort_keys=True),
+        file=sys.stdout if stream is None else stream,
+        flush=True,
+    )
 
 
 def _run_coord(arguments: argparse.Namespace) -> int:
@@ -210,20 +266,252 @@ def _room_client(arguments: argparse.Namespace, *, registration: bool = False):
         base_url = session.base_url if session is not None else DEFAULT_ROOM_URL
     base_url = normalize_base_url(base_url)
 
-    environment_token = os.environ.get("SHAREDNET_RUNTIME_TOKEN")
+    environment_instance_token = os.environ.get("SHAREDNET_INSTANCE_TOKEN")
+    environment_runtime_token = os.environ.get("SHAREDNET_RUNTIME_TOKEN")
     token: str | None = None
+    auth_scheme = "Bearer"
     if not registration:
-        if environment_token is not None:
-            token = environment_token
+        if environment_instance_token is not None:
+            token = environment_instance_token
+            auth_scheme = "Instance"
+        elif environment_runtime_token is not None:
+            token = environment_runtime_token
         elif session is not None and session.base_url == base_url:
             token = session.runtime_token
+            auth_scheme = session.auth_scheme
         if token is None and not has_url_override:
             raise RoomError(
                 "missing_runtime_token",
-                "set SHAREDNET_RUNTIME_TOKEN or register a Room session for this URL",
+                "connect an Instance session or set SHAREDNET_INSTANCE_TOKEN",
                 401,
             )
-    return RoomClient(base_url, token, arguments.timeout), session_path
+    return (
+        RoomClient(
+            base_url,
+            token,
+            arguments.timeout,
+            auth_scheme=auth_scheme,
+        ),
+        session_path,
+    )
+
+
+def _required_string(payload: object, field: str) -> str:
+    if not isinstance(payload, dict) or not isinstance(payload.get(field), str) or not payload[field]:
+        from .room.errors import RoomError
+
+        raise RoomError("invalid_response", f"response {field} is invalid", 502)
+    return payload[field]
+
+
+def _required_identity(payload: object) -> dict[str, str]:
+    if not isinstance(payload, dict) or not isinstance(payload.get("identity"), dict):
+        from .room.errors import RoomError
+
+        raise RoomError("invalid_response", "response identity is invalid", 502)
+    identity = payload["identity"]
+    result: dict[str, str] = {}
+    for field in ("principal_id", "agent_id", "runtime_id", "instance_id"):
+        value = identity.get(field)
+        if not isinstance(value, str) or not value:
+            from .room.errors import RoomError
+
+            raise RoomError("invalid_response", f"response identity {field} is invalid", 502)
+        result[field] = value
+    return result
+
+
+def _run_login(arguments: argparse.Namespace) -> int:
+    from .control.client import ControlClient
+    from .control.models import ControlError
+    from .control.session import AccountSessionFile
+    from .room.errors import RoomError
+
+    account_path = Path(arguments.account_session)
+    if os.path.lexists(account_path):
+        raise ControlError(
+            "session_exists",
+            "Account session file already exists; remove it explicitly before pairing again",
+            409,
+        )
+    client = ControlClient(arguments.api, arguments.timeout)
+    pairing = client.create_pairing(arguments.web)
+    pairing_id = _required_string(pairing, "pairing_id")
+    pairing_secret = _required_string(pairing, "pairing_secret")
+    verification_url = _required_string(pairing, "verification_url")
+    _emit(
+        {
+            "status": "authorization_required",
+            "pairing_id": pairing_id,
+            "verification_url": verification_url,
+        }
+    )
+
+    deadline = time.monotonic() + arguments.wait_seconds
+    while True:
+        try:
+            connected = client.exchange_pairing(pairing_id, pairing_secret)
+            break
+        except RoomError as error:
+            if error.code != "pairing_not_approved":
+                raise
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RoomError(
+                    "pairing_timeout",
+                    "pairing was not approved before the local wait expired",
+                    408,
+                ) from error
+            time.sleep(min(arguments.poll_interval, remaining))
+
+    principal_id = _required_string(connected, "principal_id")
+    connector_token = _required_string(connected, "connector_token")
+    AccountSessionFile(account_path).save(client.base_url, principal_id, connector_token)
+    _emit(
+        {
+            "status": "connected",
+            "principal_id": principal_id,
+            "account_session": str(account_path),
+        }
+    )
+    return 0
+
+
+def _run_agent(arguments: argparse.Namespace) -> int:
+    from .control.client import ControlClient
+    from .control.models import ControlError
+    from .control.session import AccountSessionFile, AgentStateFile, InstanceSessionFile
+
+    account = AccountSessionFile(arguments.account_session).load()
+    client = ControlClient(account.api_url, arguments.timeout)
+    agent_file = AgentStateFile(arguments.agent_state)
+    instance_file = InstanceSessionFile(arguments.instance_session)
+    if os.path.lexists(instance_file.path):
+        raise ControlError(
+            "session_exists",
+            "Instance session file already exists; choose a new path for a new conversation",
+            409,
+        )
+
+    if os.path.lexists(agent_file.path):
+        state = agent_file.load()
+        if state.principal_id != account.principal_id or state.api_url != account.api_url:
+            raise ControlError(
+                "agent_state_mismatch",
+                "Agent state belongs to another SharedNet Principal or API",
+                409,
+            )
+    else:
+        workspace = Path(arguments.workspace).expanduser().resolve()
+        if not workspace.is_dir():
+            raise ControlError("invalid_workspace", "workspace must be an existing directory", 400)
+        labels = {"codex": "Codex", "claude-code": "Claude Code", "custom": "Custom Agent"}
+        agent = client.create_agent(
+            account.connector_token,
+            arguments.label or labels[arguments.runtime_kind],
+            ("rooms", "decisions"),
+        )
+        agent_id = _required_string(agent, "agent_id")
+        agent_principal_id = _required_string(agent, "principal_id")
+        if agent_principal_id != account.principal_id:
+            raise ControlError("invalid_response", "Agent Principal does not match account", 502)
+        runtime = client.register_runtime(
+            account.connector_token,
+            agent_id,
+            arguments.runtime_kind,
+            str(workspace),
+        )
+        runtime_principal_id = _required_string(runtime, "principal_id")
+        runtime_agent_id = _required_string(runtime, "agent_id")
+        runtime_id = _required_string(runtime, "runtime_id")
+        runtime_token = _required_string(runtime, "runtime_token")
+        if runtime_principal_id != account.principal_id or runtime_agent_id != agent_id:
+            raise ControlError("invalid_response", "Runtime identity does not match Agent", 502)
+        agent_file.save(
+            account.api_url,
+            account.principal_id,
+            agent_id,
+            runtime_id,
+            runtime_token,
+        )
+        state = agent_file.load()
+
+    instance = client.start_instance(
+        state.runtime_token,
+        arguments.provider_session_id,
+        arguments.lease_seconds,
+    )
+    identity = _required_identity(instance)
+    if (
+        identity["principal_id"] != state.principal_id
+        or identity["agent_id"] != state.agent_id
+        or identity["runtime_id"] != state.runtime_id
+    ):
+        raise ControlError("invalid_response", "Instance identity does not match Runtime", 502)
+    instance_token = _required_string(instance, "instance_token")
+    try:
+        instance_file.save(
+            state.api_url,
+            identity["principal_id"],
+            identity["agent_id"],
+            identity["runtime_id"],
+            identity["instance_id"],
+            instance_token,
+        )
+    except Exception:
+        try:
+            client.end_instance(instance_token)
+        except Exception:
+            pass
+        raise
+    _emit(
+        {
+            "status": "connected",
+            "identity": identity,
+            "instance_session": str(instance_file.path),
+            "expires_at": instance.get("expires_at"),
+        }
+    )
+    return 0
+
+
+def _run_instance(arguments: argparse.Namespace) -> int:
+    from .control.client import ControlClient
+    from .control.session import InstanceSessionFile
+
+    session = InstanceSessionFile(arguments.session).load()
+    client = ControlClient(session.api_url, arguments.timeout)
+    if arguments.command == "heartbeat":
+        payload = client.heartbeat_instance(session.instance_token, arguments.lease_seconds)
+    elif arguments.command == "end":
+        payload = client.end_instance(session.instance_token)
+    else:
+        raise ValueError("unknown Instance command")
+    _emit(payload)
+    return 0
+
+
+def _run_decision(arguments: argparse.Namespace) -> int:
+    from .control.client import ControlClient
+    from .control.session import InstanceSessionFile
+
+    session = InstanceSessionFile(arguments.session).load()
+    client = ControlClient(session.api_url, arguments.timeout)
+    if arguments.command == "request":
+        payload = client.request_decision(
+            session.instance_token,
+            arguments.mode,
+            arguments.title,
+            arguments.description,
+            arguments.consequence,
+            arguments.room_id,
+        )
+    elif arguments.command == "get":
+        payload = client.get_decision(session.instance_token, arguments.decision_id)
+    else:
+        raise ValueError("unknown Decision command")
+    _emit(payload)
+    return 0
 
 
 def _is_loopback_host(host: str) -> bool:
@@ -340,14 +628,14 @@ def _run_room(arguments: argparse.Namespace) -> int:
 
 
 def _reject_token_arguments(arguments: Sequence[str]) -> None:
-    if arguments and arguments[0] == "room" and any(
+    if arguments and arguments[0] in {"room", "login", "agent", "instance", "decision"} and any(
         item == "--token" or item.startswith("--token=") for item in arguments
     ):
         from .room.errors import RoomError
 
         raise RoomError(
             "token_argument_forbidden",
-            "bearer tokens must be provided through SHAREDNET_RUNTIME_TOKEN",
+            "credentials must use an owner-only session file; legacy clients may use SHAREDNET_RUNTIME_TOKEN",
             400,
         )
 
@@ -355,20 +643,32 @@ def _reject_token_arguments(arguments: Sequence[str]) -> None:
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the selected namespace and return a conventional process exit code."""
     raw_arguments = list(sys.argv[1:] if argv is None else argv)
-    is_room = bool(raw_arguments and raw_arguments[0] == "room")
+    is_local_protocol = bool(
+        raw_arguments
+        and raw_arguments[0] in {"room", "login", "agent", "instance", "decision"}
+    )
     try:
         _reject_token_arguments(raw_arguments)
         arguments = _parser().parse_args(raw_arguments)
+        if arguments.namespace == "login":
+            return _run_login(arguments)
+        if arguments.namespace == "agent":
+            return _run_agent(arguments)
+        if arguments.namespace == "instance":
+            return _run_instance(arguments)
+        if arguments.namespace == "decision":
+            return _run_decision(arguments)
         if arguments.namespace == "coord":
             return _run_coord(arguments)
         if arguments.namespace == "room":
             return _run_room(arguments)
         raise ValueError("unknown namespace")
     except Exception as error:
-        if is_room:
+        if is_local_protocol:
+            from .control.models import ControlError
             from .room.errors import RoomError
 
-            if isinstance(error, RoomError):
+            if isinstance(error, (RoomError, ControlError)):
                 room_error = error
             elif isinstance(error, (OSError, ValueError, json.JSONDecodeError)):
                 room_error = RoomError("invalid_arguments", str(error), 400)

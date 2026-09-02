@@ -16,6 +16,7 @@ from unittest.mock import patch
 from fastapi import FastAPI, Request
 
 from sharednet.coordination.models import CoordinationResult, TerminalStatus
+from sharednet.control.session import AccountSessionFile, AgentStateFile, InstanceSessionFile
 from sharednet.room.client import RoomSessionFile
 
 from tests.room.test_client import LiveServer, room_server
@@ -31,7 +32,12 @@ def run_cli(
     extra_environment: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     environment = os.environ.copy()
-    for name in ("SHAREDNET_ROOM_URL", "SHAREDNET_RUNTIME_TOKEN", "SHAREDNET_ROOM_SESSION"):
+    for name in (
+        "SHAREDNET_ROOM_URL",
+        "SHAREDNET_RUNTIME_TOKEN",
+        "SHAREDNET_INSTANCE_TOKEN",
+        "SHAREDNET_ROOM_SESSION",
+    ):
         environment.pop(name, None)
     if extra_environment:
         environment.update(extra_environment)
@@ -378,6 +384,212 @@ class RoomCliParserTests(unittest.TestCase):
             completed = run_cli("room", "list", cwd=root)
         self.assertEqual(completed.returncode, 2)
         self.assertEqual(json.loads(completed.stderr)["error"]["code"], "missing_runtime_token")
+
+
+class LocalIdentityCliTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory(prefix="sharednet-local-cli-")
+        self.root = Path(self.temporary_directory.name)
+
+    def tearDown(self) -> None:
+        self.temporary_directory.cleanup()
+
+    @staticmethod
+    def invoke(*arguments: str) -> tuple[int, str, str]:
+        from sharednet import cli
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code = cli.main(list(arguments))
+        return code, stdout.getvalue(), stderr.getvalue()
+
+    def test_login_prints_verification_but_never_pairing_or_connector_secrets(self) -> None:
+        account_path = self.root / ".sharednet" / "account.json"
+
+        class FakeClient:
+            def __init__(self, base_url: str, timeout: float = 30.0) -> None:
+                self.base_url = base_url
+
+            def create_pairing(self, web_base_url: str):
+                return {
+                    "pairing_id": "pairing_demo",
+                    "pairing_secret": "pairing-secret",
+                    "verification_url": f"{web_base_url}/decisions?pairing=pairing_demo",
+                }
+
+            def exchange_pairing(self, pairing_id: str, pairing_secret: str):
+                self.pairing_secret = pairing_secret
+                return {
+                    "principal_id": "p_15COsXY9aK",
+                    "connector_token": "connector-secret",
+                }
+
+        with patch("sharednet.control.client.ControlClient", FakeClient):
+            code, stdout, stderr = self.invoke(
+                "login",
+                "--api",
+                "http://127.0.0.1:8765",
+                "--web",
+                "http://127.0.0.1:3001",
+                "--account-session",
+                str(account_path),
+            )
+
+        self.assertEqual(code, 0, stderr)
+        self.assertIn("decisions?pairing=pairing_demo", stdout)
+        self.assertNotIn("pairing-secret", stdout + stderr)
+        self.assertNotIn("connector-secret", stdout + stderr)
+        self.assertEqual(AccountSessionFile(account_path).load().connector_token, "connector-secret")
+
+    def test_agent_connect_persists_server_ids_and_never_prints_credentials(self) -> None:
+        state_root = self.root / ".sharednet"
+        account_path = state_root / "account.json"
+        agent_path = state_root / "agent.json"
+        instance_path = state_root / "instance.json"
+        AccountSessionFile(account_path).save(
+            "http://127.0.0.1:8765", "p_15COsXY9aK", "connector-secret"
+        )
+
+        class FakeClient:
+            def __init__(self, base_url: str, timeout: float = 30.0) -> None:
+                self.base_url = base_url
+
+            def create_agent(self, connector_token: str, label: str, capabilities):
+                return {"principal_id": "p_15COsXY9aK", "agent_id": "a_7Qm2Zx8WpL"}
+
+            def register_runtime(
+                self, connector_token: str, agent_id: str, runtime_kind: str, workspace: str
+            ):
+                return {
+                    "principal_id": "p_15COsXY9aK",
+                    "agent_id": "a_7Qm2Zx8WpL",
+                    "runtime_id": "r_4Nk8Vm2QaT",
+                    "runtime_token": "runtime-secret",
+                }
+
+            def start_instance(
+                self, runtime_token: str, provider_session_id: str | None, lease_seconds: int
+            ):
+                return {
+                    "identity": {
+                        "principal_id": "p_15COsXY9aK",
+                        "agent_id": "a_7Qm2Zx8WpL",
+                        "runtime_id": "r_4Nk8Vm2QaT",
+                        "instance_id": "i_8pQ2Km7XaN",
+                    },
+                    "instance_token": "instance-secret",
+                    "expires_at": "2026-09-03T00:00:00+00:00",
+                }
+
+        with patch("sharednet.control.client.ControlClient", FakeClient):
+            code, stdout, stderr = self.invoke(
+                "agent",
+                "connect",
+                "--runtime-kind",
+                "codex",
+                "--workspace",
+                str(self.root),
+                "--account-session",
+                str(account_path),
+                "--agent-state",
+                str(agent_path),
+                "--instance-session",
+                str(instance_path),
+            )
+
+        self.assertEqual(code, 0, stderr)
+        self.assertNotIn("connector-secret", stdout + stderr)
+        self.assertNotIn("runtime-secret", stdout + stderr)
+        self.assertNotIn("instance-secret", stdout + stderr)
+        self.assertEqual(AgentStateFile(agent_path).load().agent_id, "a_7Qm2Zx8WpL")
+        self.assertEqual(InstanceSessionFile(instance_path).load().instance_id, "i_8pQ2Km7XaN")
+        self.assertEqual(json.loads(stdout)["identity"]["instance_id"], "i_8pQ2Km7XaN")
+
+    def test_room_commands_send_instance_scope_from_the_new_session(self) -> None:
+        observed_authorization: list[str | None] = []
+        app = FastAPI(openapi_url=None, docs_url=None, redoc_url=None)
+
+        @app.get("/v1/rooms")
+        def rooms(request: Request):
+            observed_authorization.append(request.headers.get("authorization"))
+            return {"rooms": []}
+
+        with LiveServer(app) as server:
+            session_path = self.root / ".sharednet" / "instance.json"
+            InstanceSessionFile(session_path).save(
+                server.url,
+                "p_15COsXY9aK",
+                "a_7Qm2Zx8WpL",
+                "r_4Nk8Vm2QaT",
+                "i_8pQ2Km7XaN",
+                "instance-secret",
+            )
+            completed = run_cli(
+                "room",
+                "list",
+                "--session",
+                str(session_path),
+                cwd=self.root,
+            )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(observed_authorization, ["Instance instance-secret"])
+        self.assertNotIn("instance-secret", completed.stdout + completed.stderr)
+
+    def test_instance_and_decision_commands_use_the_saved_instance_credential(self) -> None:
+        session_path = self.root / ".sharednet" / "instance.json"
+        InstanceSessionFile(session_path).save(
+            "http://127.0.0.1:8765",
+            "p_15COsXY9aK",
+            "a_7Qm2Zx8WpL",
+            "r_4Nk8Vm2QaT",
+            "i_8pQ2Km7XaN",
+            "instance-secret",
+        )
+        observed: list[tuple[str, str]] = []
+
+        class FakeClient:
+            def __init__(self, base_url: str, timeout: float = 30.0) -> None:
+                pass
+
+            def heartbeat_instance(self, token: str, lease_seconds: int):
+                observed.append(("heartbeat", token))
+                return {"presence": "online"}
+
+            def request_decision(
+                self,
+                token: str,
+                mode: str,
+                title: str,
+                description: str,
+                consequence: str | None,
+                room_id: str | None,
+            ):
+                observed.append(("decision", token))
+                return {"decision_id": "decision_demo", "status": "pending"}
+
+        with patch("sharednet.control.client.ControlClient", FakeClient):
+            heartbeat = self.invoke(
+                "instance", "heartbeat", "--session", str(session_path)
+            )
+            decision = self.invoke(
+                "decision",
+                "request",
+                "--mode",
+                "approval",
+                "--title",
+                "Deploy?",
+                "--description",
+                "Approve deployment",
+                "--session",
+                str(session_path),
+            )
+
+        self.assertEqual(heartbeat[0], 0, heartbeat[2])
+        self.assertEqual(decision[0], 0, decision[2])
+        self.assertEqual(observed, [("heartbeat", "instance-secret"), ("decision", "instance-secret")])
+        self.assertNotIn("instance-secret", "".join(heartbeat[1:] + decision[1:]))
 
 
 if __name__ == "__main__":
