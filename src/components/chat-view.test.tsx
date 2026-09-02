@@ -1,83 +1,463 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it } from "vitest";
-import { SharedNetDemoProvider } from "@/src/context/sharednet-demo-context";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import type {
+  AgentId,
+  InstanceId,
+  MessageId,
+  PrincipalId,
+  RoomCursor,
+  RoomDetail,
+  RoomId,
+  RoomSummary,
+  RuntimeId,
+} from "@/src/sharednet/contracts";
+
 import { ChatView } from "./chat-view";
 
-function renderChat() {
-  return render(
-    <SharedNetDemoProvider>
-      <ChatView />
-    </SharedNetDemoProvider>,
-  );
+type SharedNetState = ReturnType<
+  (typeof import("@/src/context/sharednet-context"))["useSharedNet"]
+>;
+
+const contextMocks = vi.hoisted(() => ({
+  useSharedNet: vi.fn(),
+}));
+
+vi.mock("@/src/context/sharednet-context", () => ({
+  useSharedNet: contextMocks.useSharedNet,
+}));
+
+const NOW = "2026-09-03T05:12:00+00:00";
+const EARLIER = "2026-09-03T04:45:00+00:00";
+const ROOM_ID = "room_Launch:Alpha.7" as RoomId;
+const SECOND_ROOM_ID = "room_Review:Beta.2" as RoomId;
+const PRINCIPAL_ID = "p_15COsXY9aK" as PrincipalId;
+const SECOND_PRINCIPAL_ID = "p_3SecondOne" as PrincipalId;
+const AGENT_ID = "a_7Qm2Zx8WpL" as AgentId;
+const SECOND_AGENT_ID = "a_2ReviewBot" as AgentId;
+const RUNTIME_ID = "r_4Nk8Vm2QaT" as RuntimeId;
+const SECOND_RUNTIME_ID = "r_6ReviewRun" as RuntimeId;
+const INSTANCE_ID = "i_8pQ2Km7XaN" as InstanceId;
+const SECOND_INSTANCE_ID = "i_9ReviewNow" as InstanceId;
+const FIRST_MESSAGE_ID = "message_launch.7" as MessageId;
+const REPLY_MESSAGE_ID = "message_launch.12" as MessageId;
+
+const roomSummary: RoomSummary = {
+  description: "Coordinate the production launch",
+  latest_cursor: "cursor_12" as RoomCursor,
+  latest_sequence: 12,
+  member_count: 2,
+  name: "Launch readiness",
+  owner_agent_ids: [AGENT_ID],
+  room_id: ROOM_ID,
+  status: "open",
+  updated_at: NOW,
+};
+
+const secondRoomSummary: RoomSummary = {
+  description: "Review launch evidence",
+  latest_cursor: "cursor_3" as RoomCursor,
+  latest_sequence: 3,
+  member_count: 1,
+  name: "Evidence review",
+  owner_agent_ids: [SECOND_AGENT_ID],
+  room_id: SECOND_ROOM_ID,
+  status: "closed",
+  updated_at: EARLIER,
+};
+
+const roomDetail: RoomDetail = {
+  memberships: [
+    {
+      agent_id: AGENT_ID,
+      joined_at: EARLIER,
+      last_read_sequence: 12,
+      left_at: null,
+      principal_id: PRINCIPAL_ID,
+      room_id: ROOM_ID,
+      status: "active",
+    },
+    {
+      agent_id: SECOND_AGENT_ID,
+      joined_at: EARLIER,
+      last_read_sequence: 10,
+      left_at: null,
+      principal_id: SECOND_PRINCIPAL_ID,
+      room_id: ROOM_ID,
+      status: "active",
+    },
+  ],
+  messages: [
+    {
+      attachment_ids: [],
+      content: "Verification is complete.",
+      created_at: NOW,
+      message_id: REPLY_MESSAGE_ID,
+      reply_to: FIRST_MESSAGE_ID,
+      resolution_state: "not_required",
+      room_id: ROOM_ID,
+      sender: {
+        agent_id: SECOND_AGENT_ID,
+        instance_id: SECOND_INSTANCE_ID,
+        principal_id: SECOND_PRINCIPAL_ID,
+        runtime_id: SECOND_RUNTIME_ID,
+      },
+      sequence: 12,
+      tags: [],
+    },
+    {
+      attachment_ids: [],
+      content: "Please verify the launch checklist.",
+      created_at: EARLIER,
+      message_id: FIRST_MESSAGE_ID,
+      reply_to: null,
+      resolution_state: "not_required",
+      room_id: ROOM_ID,
+      sender: {
+        agent_id: AGENT_ID,
+        instance_id: INSTANCE_ID,
+        principal_id: PRINCIPAL_ID,
+        runtime_id: RUNTIME_ID,
+      },
+      sequence: 7,
+      tags: [],
+    },
+  ],
+  next_cursor: "cursor_12" as RoomCursor,
+  room: {
+    access_policy: "principal_only",
+    created_at: EARLIER,
+    creator: {
+      agent_id: AGENT_ID,
+      instance_id: INSTANCE_ID,
+      principal_id: PRINCIPAL_ID,
+      runtime_id: RUNTIME_ID,
+    },
+    description: roomSummary.description,
+    name: roomSummary.name,
+    room_id: ROOM_ID,
+    status: "open",
+    updated_at: NOW,
+  },
+};
+
+const DRAFT = "Review the release evidence before launch.";
+
+function emptyInstruction(draft: string): string {
+  return `Build a SharedNet Room from your local Agent. Use this draft as the initial brief, post it locally as the Room's first plain-text message, and return the new Room ID:\n\n${draft}`;
 }
 
-describe("SharedNet Chat", () => {
-  beforeEach(() => window.localStorage.clear());
+function selectedInstruction(draft: string): string {
+  return `Use SharedNet Room ${ROOM_ID}. Join it if needed, retrieve its current history first, then post this draft locally as a plain-text message from your current local Agent Instance. Return the resulting message ID/cursor:\n\n${draft}`;
+}
 
-  it("keeps the Rooms sidebar visible beside the empty typing surface", () => {
-    renderChat();
+function makeState(overrides: Partial<SharedNetState> = {}): SharedNetState {
+  return {
+    claimPairing: vi.fn(async () => undefined),
+    decisions: [],
+    error: null,
+    network: null,
+    principal: null,
+    refresh: vi.fn(async () => undefined),
+    resolveDecision: vi.fn(async () => undefined),
+    rooms: [roomSummary, secondRoomSummary],
+    selectRoom: vi.fn(),
+    selectedRoom: roomDetail,
+    selectedRoomId: ROOM_ID,
+    status: "ready",
+    ...overrides,
+  };
+}
+
+function renderChat(overrides: Partial<SharedNetState> = {}) {
+  const state = makeState(overrides);
+  contextMocks.useSharedNet.mockReturnValue(state);
+  return { state, ...render(<ChatView />) };
+}
+
+function enterDraftAndContinue(draft = DRAFT) {
+  fireEvent.change(screen.getByLabelText("What do you want done?"), {
+    target: { value: draft },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Continue locally" }));
+}
+
+describe("SharedNet Rooms", () => {
+  let writeText: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(window.navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  it("keeps the Rooms sidebar and local handoff composer visible when no Rooms exist", () => {
+    renderChat({ rooms: [], selectedRoom: null, selectedRoomId: null });
 
     const rooms = screen.getByRole("navigation", { name: "Rooms" });
-    expect(screen.getByLabelText("What do you want done?")).toBeTruthy();
-    expect(screen.getByPlaceholderText("Type here…")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Send task" })).toBeTruthy();
-    expect(screen.getAllByRole("textbox")).toHaveLength(1);
-    expect(within(rooms).getByText("No rooms yet")).toBeTruthy();
+    expect(within(rooms).getByText("No rooms yet")).toBeVisible();
     expect(within(rooms).queryByRole("button")).toBeNull();
-    expect(screen.queryByText("Active task")).toBeNull();
-  });
-
-  it("turns a submitted outcome into a Room and assembles its Agents first", () => {
-    renderChat();
-    fireEvent.change(screen.getByLabelText("What do you want done?"), {
-      target: {
-        value: "Build and launch a customer feedback website with Neon and Vercel.",
-      },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Send task" }));
-
-    const rooms = screen.getByRole("navigation", { name: "Rooms" });
-    expect(
-      within(rooms).getByRole("button", {
-        name: "Open room 01: Build and launch a customer feedback website with Neon and Vercel.",
-      }),
-    ).toHaveAttribute("aria-current", "true");
-
-    const assembly = screen.getByRole("region", {
-      name: "Agents assembled for this room",
-    });
-    expect(within(assembly).getByText("@xisen/planner")).toBeTruthy();
-    expect(within(assembly).getByText("@xisen/codex")).toBeTruthy();
-    expect(within(assembly).getByText("@aicoo/web-builder")).toBeTruthy();
-    expect(within(assembly).getByText("@aicoo/quality")).toBeTruthy();
-    expect(screen.getByText("9 Agents assembled · 2 Principals")).toBeTruthy();
+    expect(screen.getByLabelText("What do you want done?")).toBeVisible();
+    expect(screen.getByPlaceholderText("Type here…")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Continue locally" })).toBeDisabled();
     expect(screen.getAllByRole("textbox")).toHaveLength(1);
   });
 
-  it("keeps every submitted outcome as a selectable past Room", () => {
+  it("shows loading without falsely reporting an empty account", () => {
+    renderChat({
+      rooms: [],
+      selectedRoom: null,
+      selectedRoomId: null,
+      status: "loading",
+    });
+
+    expect(screen.getByRole("status")).toHaveTextContent("Loading rooms…");
+    expect(screen.queryByText("No rooms yet")).toBeNull();
+    expect(screen.getByRole("navigation", { name: "Rooms" })).toBeVisible();
+  });
+
+  it("renders durable Room summaries with exact status, sequence, activity, and selection", () => {
     renderChat();
-    fireEvent.change(screen.getByLabelText("What do you want done?"), {
-      target: { value: "Build the API first" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Send task" }));
-    fireEvent.change(screen.getByLabelText("What do you want done?"), {
-      target: { value: "Prepare launch verification" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Send task" }));
 
     const rooms = screen.getByRole("navigation", { name: "Rooms" });
-    expect(within(rooms).getAllByRole("button")).toHaveLength(2);
+    const launch = within(rooms).getByRole("button", {
+      name: "Open room Launch readiness",
+    });
+    const review = within(rooms).getByRole("button", {
+      name: "Open room Evidence review",
+    });
+
+    expect(launch).toHaveAttribute("aria-current", "true");
+    expect(launch).toHaveTextContent("open");
+    expect(launch).toHaveTextContent("Sequence 12");
+    expect(launch).toHaveTextContent(NOW);
+    expect(review).not.toHaveAttribute("aria-current");
+    expect(review).toHaveTextContent("closed");
+    expect(review).toHaveTextContent("Sequence 3");
+    expect(review).toHaveTextContent(EARLIER);
+  });
+
+  it("selects an account-visible Room by its canonical ID", () => {
+    const selectRoom = vi.fn();
+    renderChat({ selectRoom });
+
     fireEvent.click(
-      within(rooms).getByRole("button", {
-        name: "Open room 01: Build the API first",
-      }),
+      screen.getByRole("button", { name: "Open room Evidence review" }),
     );
 
-    expect(screen.getByRole("heading", { name: "Build the API first" })).toBeTruthy();
+    expect(selectRoom).toHaveBeenCalledTimes(1);
+    expect(selectRoom).toHaveBeenCalledWith(SECOND_ROOM_ID);
+  });
+
+  it("reflects Room list changes supplied by the live provider", () => {
+    contextMocks.useSharedNet.mockReturnValue(makeState({ rooms: [roomSummary] }));
+    const view = render(<ChatView />);
+
+    expect(screen.queryByRole("button", { name: "Open room Evidence review" })).toBeNull();
+
+    contextMocks.useSharedNet.mockReturnValue(makeState());
+    view.rerender(<ChatView />);
+
     expect(
-      within(rooms).getByRole("button", {
-        name: "Open room 01: Build the API first",
-      }),
-    ).toHaveAttribute("aria-current", "true");
+      screen.getByRole("button", { name: "Open room Evidence review" }),
+    ).toBeVisible();
+  });
+
+  it("shows the selected Room's exact ID, member count, and cursor", () => {
+    renderChat();
+
+    expect(screen.getByRole("heading", { name: "Launch readiness" })).toBeVisible();
+    expect(screen.getByText(ROOM_ID)).toBeVisible();
+    expect(screen.getByText("2 members")).toBeVisible();
+    expect(screen.getByText("Latest cursor cursor_12")).toBeVisible();
+  });
+
+  it("renders real messages in ascending Room sequence order", () => {
+    renderChat();
+
+    const history = screen.getByRole("list", { name: "Room messages" });
+    const messages = within(history).getAllByRole("article");
+
+    expect(messages).toHaveLength(2);
+    expect(messages[0]).toHaveAccessibleName("Message 7");
+    expect(messages[0]).toHaveTextContent("Please verify the launch checklist.");
+    expect(messages[1]).toHaveAccessibleName("Message 12");
+    expect(messages[1]).toHaveTextContent("Verification is complete.");
+  });
+
+  it("shows the complete sender provenance tuple without rewriting canonical IDs", () => {
+    renderChat();
+
+    const message = screen.getByRole("article", { name: "Message 7" });
+    const provenance = within(message).getByLabelText("Sender provenance");
+
+    expect(provenance).toHaveTextContent(`Principal${PRINCIPAL_ID}`);
+    expect(provenance).toHaveTextContent(`Agent${AGENT_ID}`);
+    expect(provenance).toHaveTextContent(`Runtime${RUNTIME_ID}`);
+    expect(provenance).toHaveTextContent(`Instance${INSTANCE_ID}`);
+  });
+
+  it("links a reply to the exact parent message ID", () => {
+    renderChat();
+
+    const reply = screen.getByRole("article", { name: "Message 12" });
+    expect(within(reply).getByText("Reply to")).toBeVisible();
+    expect(within(reply).getByText(FIRST_MESSAGE_ID)).toBeVisible();
+    expect(reply).toHaveTextContent(REPLY_MESSAGE_ID);
+  });
+
+  it("keeps current Room data visible while reporting stale state", () => {
+    renderChat({
+      error: "SharedNet data may be out of date.",
+      status: "stale",
+    });
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "SharedNet data may be out of date.",
+    );
+    expect(screen.getByRole("heading", { name: "Launch readiness" })).toBeVisible();
+    expect(screen.getByText("Please verify the launch checklist.")).toBeVisible();
+  });
+
+  it("reports selected Room history loading without inventing messages", () => {
+    renderChat({ selectedRoom: null });
+
+    expect(screen.getByRole("status")).toHaveTextContent("Loading Room history…");
+    expect(screen.queryByRole("list", { name: "Room messages" })).toBeNull();
+    expect(screen.queryByText("No messages yet")).toBeNull();
+  });
+
+  it("builds the no-selection instruction and leaves the draft unsubmitted", () => {
+    renderChat({ rooms: [], selectedRoom: null, selectedRoomId: null });
+
+    enterDraftAndContinue();
+
+    const dialog = screen.getByRole("dialog", {
+      name: "Continue in SharedNet Local",
+    });
+    const instructions = within(dialog).getByLabelText("Local Agent instructions");
+    expect(instructions.textContent).toBe(emptyInstruction(DRAFT));
+    expect(screen.getAllByRole("textbox")).toHaveLength(1);
+    expect(screen.getByLabelText("What do you want done?")).toHaveValue(DRAFT);
+    expect(screen.queryByText(DRAFT, { selector: ".room-message-content" })).toBeNull();
+  });
+
+  it("builds the selected instruction with the exact Room ID and local return contract", () => {
+    renderChat();
+
+    enterDraftAndContinue();
+
+    const instructions = screen.getByLabelText("Local Agent instructions");
+    const instructionValue = instructions.textContent ?? "";
+    expect(instructionValue).toBe(selectedInstruction(DRAFT));
+    expect(instructionValue).toContain(ROOM_ID);
+    expect(instructionValue).not.toContain(SECOND_ROOM_ID);
+    expect(instructionValue).toContain("Join it if needed");
+    expect(instructionValue).toContain("retrieve its current history first");
+    expect(instructionValue).toContain("message ID/cursor");
+  });
+
+  it("copies instructions through Clipboard and clears the draft only after success", async () => {
+    renderChat();
+    enterDraftAndContinue();
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy instructions" }));
+
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledWith(selectedInstruction(DRAFT));
+    });
+    expect(screen.getByRole("status")).toHaveTextContent("Copied to clipboard.");
+    expect(screen.getByLabelText("What do you want done?")).toHaveValue("");
+    expect(
+      screen.getByRole("dialog", { name: "Continue in SharedNet Local" }),
+    ).toBeVisible();
+  });
+
+  it("shows Clipboard failure and preserves the draft", async () => {
+    writeText.mockRejectedValueOnce(new Error("Clipboard denied"));
+    renderChat();
+    enterDraftAndContinue();
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy instructions" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Clipboard access failed. Copy the instructions manually.",
+    );
+    expect(screen.getByLabelText("What do you want done?")).toHaveValue(DRAFT);
+    expect(
+      screen.getByRole("dialog", { name: "Continue in SharedNet Local" }),
+    ).toBeVisible();
+  });
+
+  it("closes the dialog without clearing an uncopied draft", () => {
+    renderChat();
+    enterDraftAndContinue();
+
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByLabelText("What do you want done?")).toHaveValue(DRAFT);
+    expect(writeText).not.toHaveBeenCalled();
+  });
+
+  it("offers an explicit close-and-clear action", () => {
+    renderChat();
+    enterDraftAndContinue();
+
+    fireEvent.click(screen.getByRole("button", { name: "Close and clear" }));
+
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByLabelText("What do you want done?")).toHaveValue("");
+    expect(writeText).not.toHaveBeenCalled();
+  });
+
+  it("never POSTs a Room or message from browser handoff actions", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    renderChat();
+    enterDraftAndContinue();
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy instructions" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+
+    const prohibitedWrites = fetchMock.mock.calls.filter(([input, init]) => {
+      const path = String(input);
+      const method = String(
+        (init as RequestInit | undefined)?.method ?? "GET",
+      ).toUpperCase();
+      return (
+        method === "POST" &&
+        (path === "/api/sharednet/rooms" || path.includes("/messages"))
+      );
+    });
+    expect(prohibitedWrites).toEqual([]);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(screen.getAllByRole("article")).toHaveLength(2);
+  });
+
+  it("does not expose the removed demo workflow or synthetic accounting", () => {
+    renderChat();
+
+    expect(screen.queryByText(/Candidate World/i)).toBeNull();
+    expect(screen.queryByText(/Agents assembled/i)).toBeNull();
+    expect(screen.queryByText(/Agent work/i)).toBeNull();
+    expect(screen.queryByText(/tokens/i)).toBeNull();
+    expect(screen.queryByText(/recruit/i)).toBeNull();
   });
 });

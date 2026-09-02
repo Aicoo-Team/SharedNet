@@ -16,7 +16,7 @@ import {
 } from "@/src/context/sharednet-context";
 
 const navigation = [
-  { href: "/chat", label: "Chat" },
+  { href: "/chat", label: "Rooms" },
   { href: "/network", label: "Network" },
   { href: "/decisions", label: "Decisions" },
 ];
