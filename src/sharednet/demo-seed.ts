@@ -119,7 +119,11 @@ function normalizeEmail(value: unknown): string | undefined {
 
 function parseApiOrigin(value: string): string {
   try {
-    if (value !== value.trim()) {
+    if (
+      value !== value.trim() ||
+      value.includes("?") ||
+      value.includes("#")
+    ) {
       throw new Error("invalid origin");
     }
     const url = new URL(value);
@@ -139,6 +143,28 @@ function parseApiOrigin(value: string): string {
   } catch {
     throw trustedError(
       "SHAREDNET_API_URL must be a credential-free HTTP(S) origin.",
+    );
+  }
+}
+
+function buildAccountEndpoint(origin: string, userId: string): URL {
+  try {
+    const expectedPathname = `/v1/console/accounts/${encodeURIComponent(userId)}/demo-seed`;
+    const endpoint = new URL(expectedPathname, origin);
+
+    if (
+      endpoint.origin !== origin ||
+      endpoint.pathname !== expectedPathname ||
+      endpoint.search !== "" ||
+      endpoint.hash !== ""
+    ) {
+      throw new Error("invalid account endpoint");
+    }
+
+    return endpoint;
+  } catch {
+    throw trustedError(
+      "Expected exactly one Better Auth user for the requested email.",
     );
   }
 }
@@ -174,7 +200,9 @@ function isTypedIdArray(
 }
 
 function isCount(value: unknown): value is number {
-  return Number.isInteger(value) && Number(value) >= 0;
+  return (
+    typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+  );
 }
 
 function parseDemoSeedResult(value: unknown): DemoSeedResult {
@@ -284,14 +312,13 @@ async function seedDemoAccountUnchecked({
     );
   }
 
-  const response = await fetch(
-    `${origin}/v1/console/accounts/${encodeURIComponent(userId)}/demo-seed`,
-    {
-      headers: { "x-sharednet-console-token": consoleToken },
-      method: "POST",
-      redirect: "manual",
-    },
-  );
+  const endpoint = buildAccountEndpoint(origin, userId);
+
+  const response = await fetch(endpoint, {
+    headers: { "x-sharednet-console-token": consoleToken },
+    method: "POST",
+    redirect: "manual",
+  });
 
   if (!response.ok || response.redirected) {
     throw trustedError("SharedNet demo seed request failed.");

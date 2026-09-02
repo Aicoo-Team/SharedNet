@@ -213,7 +213,9 @@ describe("demo seed command", () => {
     "https://user:password@api.sharednet.test",
     "https://api.sharednet.test/v1",
     "https://api.sharednet.test?debug=true",
+    "https://api.sharednet.test?",
     "https://api.sharednet.test#fragment",
+    "https://api.sharednet.test#",
     " https://api.sharednet.test ",
     "not a URL",
   ])("rejects a non-origin API URL without echoing it: %s", async (apiUrl) => {
@@ -256,6 +258,30 @@ describe("demo seed command", () => {
       ).rejects.toThrow(
         "Expected exactly one Better Auth user for the requested email.",
       );
+    },
+  );
+
+  it.each([".", ".."])(
+    "rejects an auth-user ID normalized out of the endpoint before fetch: %s",
+    async (userId) => {
+      const fetch = vi.fn(async () => Response.json(validSeedResult));
+
+      await expect(
+        seedDemoAccount({
+          ...successfulOptions(fetch),
+          lookup: {
+            close() {},
+            findUserIdsByEmail() {
+              return [userId];
+            },
+          },
+        }),
+      ).rejects.toEqual(
+        new DemoSeedError(
+          "Expected exactly one Better Auth user for the requested email.",
+        ),
+      );
+      expect(fetch).not.toHaveBeenCalled();
     },
   );
 
@@ -379,6 +405,16 @@ describe("demo seed command", () => {
         counts: { ...validSeedResult.counts, connected_agents: 1.5 },
       },
       caseName: "fractional count",
+    },
+    {
+      body: {
+        ...validSeedResult,
+        counts: {
+          ...validSeedResult.counts,
+          principal_connections: Number.MAX_SAFE_INTEGER + 1,
+        },
+      },
+      caseName: "integer count outside the safe range",
     },
     {
       body: {
