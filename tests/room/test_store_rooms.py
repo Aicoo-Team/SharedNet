@@ -9,6 +9,7 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
+from unittest import mock
 
 from sharednet.room.errors import RoomError
 from sharednet.room.models import MembershipStatus, RoomStatus, RuntimeIdentity
@@ -90,6 +91,60 @@ class RoomStoreTests(unittest.TestCase):
             400,
             lambda: self.store.register_runtime("principal_bob", "agent_beta", "bad runtime"),
         )
+
+    @mock.patch(
+        "sharednet.room.store.new_runtime_id",
+        side_effect=["r_0000000000", "r_1111111111"],
+    )
+    def test_generated_runtime_id_retries_collision_without_overwriting_existing_row(
+        self,
+        generate_runtime_id,
+    ) -> None:
+        self.store.register_runtime("principal_existing", "agent_existing", "r_0000000000")
+
+        collision_error_code = None
+        try:
+            registration, _ = self.store.register_runtime("principal_new", "agent_new", None)
+        except RoomError as error:
+            collision_error_code = error.code
+
+        self.assertIsNone(
+            collision_error_code,
+            f"generated Runtime ID collision was not retried: {collision_error_code}",
+        )
+        self.assertEqual(registration.identity.runtime_id, "r_1111111111")
+        self.assertEqual(generate_runtime_id.call_count, 2)
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            rows = connection.execute(
+                """
+                SELECT runtime_id, principal_id, agent_id
+                FROM runtime_registrations
+                ORDER BY runtime_id
+                """
+            ).fetchall()
+        self.assertEqual(
+            rows,
+            [
+                ("r_0000000000", "principal_existing", "agent_existing"),
+                ("r_1111111111", "principal_new", "agent_new"),
+            ],
+        )
+
+    @mock.patch(
+        "sharednet.room.store.new_runtime_id",
+        side_effect=["r_0000000000"] * 100,
+    )
+    def test_generated_runtime_id_collision_retries_are_bounded(self, generate_runtime_id) -> None:
+        self.store.register_runtime("principal_existing", "agent_existing", "r_0000000000")
+
+        self.assert_room_error(
+            "runtime_id_conflict",
+            409,
+            lambda: self.store.register_runtime("principal_new", "agent_new", None),
+        )
+
+        self.assertGreater(generate_runtime_id.call_count, 1)
+        self.assertLess(generate_runtime_id.call_count, 100)
 
     def test_room_creation_is_atomic_with_creator_membership_and_persists(self) -> None:
         owner, token = self.register("principal_alice", "agent_owner", "runtime_owner")

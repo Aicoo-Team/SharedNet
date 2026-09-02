@@ -30,6 +30,9 @@ from .models import (
 )
 
 
+_GENERATED_RUNTIME_ID_ATTEMPTS = 8
+
+
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -249,49 +252,57 @@ class RoomStore:
         agent_id: str,
         requested_runtime_id: str | None,
     ) -> tuple[RuntimeRegistration, str]:
-        runtime_id = requested_runtime_id if requested_runtime_id is not None else new_runtime_id()
-        identity = RuntimeIdentity(principal_id, agent_id, runtime_id)
         created_at = self.clock()
         raw_token = secrets.token_urlsafe(32)
         token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+        generated_runtime_id = requested_runtime_id is None
+        attempts = _GENERATED_RUNTIME_ID_ATTEMPTS if generated_runtime_id else 1
 
-        with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            agent = connection.execute(
-                "SELECT principal_id FROM agents WHERE agent_id = ?",
-                (agent_id,),
-            ).fetchone()
-            if agent is not None and agent["principal_id"] != principal_id:
-                raise _error(
-                    "agent_principal_conflict",
-                    "agent is already owned by another principal",
-                    409,
+        for _ in range(attempts):
+            runtime_id = new_runtime_id() if generated_runtime_id else requested_runtime_id
+            identity = RuntimeIdentity(principal_id, agent_id, runtime_id)
+
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                agent = connection.execute(
+                    "SELECT principal_id FROM agents WHERE agent_id = ?",
+                    (agent_id,),
+                ).fetchone()
+                if agent is not None and agent["principal_id"] != principal_id:
+                    raise _error(
+                        "agent_principal_conflict",
+                        "agent is already owned by another principal",
+                        409,
+                    )
+                if connection.execute(
+                    "SELECT 1 FROM runtime_registrations WHERE runtime_id = ?",
+                    (runtime_id,),
+                ).fetchone() is not None:
+                    if generated_runtime_id:
+                        continue
+                    raise _error("runtime_id_conflict", "runtime_id is already registered", 409)
+
+                serialized_created_at = _timestamp(created_at)
+                connection.execute(
+                    "INSERT OR IGNORE INTO principals(principal_id, created_at) VALUES (?, ?)",
+                    (principal_id, serialized_created_at),
                 )
-            if connection.execute(
-                "SELECT 1 FROM runtime_registrations WHERE runtime_id = ?",
-                (runtime_id,),
-            ).fetchone() is not None:
-                raise _error("runtime_id_conflict", "runtime_id is already registered", 409)
+                connection.execute(
+                    "INSERT OR IGNORE INTO agents(agent_id, principal_id, created_at) VALUES (?, ?, ?)",
+                    (agent_id, principal_id, serialized_created_at),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO runtime_registrations(
+                        runtime_id, principal_id, agent_id, token_hash, created_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (runtime_id, principal_id, agent_id, token_hash, serialized_created_at),
+                )
 
-            serialized_created_at = _timestamp(created_at)
-            connection.execute(
-                "INSERT OR IGNORE INTO principals(principal_id, created_at) VALUES (?, ?)",
-                (principal_id, serialized_created_at),
-            )
-            connection.execute(
-                "INSERT OR IGNORE INTO agents(agent_id, principal_id, created_at) VALUES (?, ?, ?)",
-                (agent_id, principal_id, serialized_created_at),
-            )
-            connection.execute(
-                """
-                INSERT INTO runtime_registrations(
-                    runtime_id, principal_id, agent_id, token_hash, created_at
-                ) VALUES (?, ?, ?, ?, ?)
-                """,
-                (runtime_id, principal_id, agent_id, token_hash, serialized_created_at),
-            )
+            return RuntimeRegistration(identity, created_at), raw_token
 
-        return RuntimeRegistration(identity, created_at), raw_token
+        raise _error("runtime_id_conflict", "runtime_id is already registered", 409)
 
     def authenticate_runtime(self, raw_token: str) -> RuntimeIdentity:
         if not isinstance(raw_token, str):
