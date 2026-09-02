@@ -19,6 +19,7 @@ from .models import (
     RuntimeSession,
 )
 from .store import ControlStore
+from .service import ControlService
 
 __all__ = [
     "ActorIdentity",
@@ -27,6 +28,7 @@ __all__ = [
     "ConnectorSession",
     "ControlError",
     "ControlStore",
+    "ControlService",
     "CredentialStatus",
     "DecisionMode",
     "DecisionStatus",
