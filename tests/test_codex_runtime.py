@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import replace
 import os
@@ -26,6 +27,14 @@ from sharednet.runtime.codex import (
     parse_codex_events,
 )
 from tests.fixtures import four_agent_request
+
+
+NATIVE_OUTPUTS_RECEIPT = "@sharednet-native-outputs/v1"
+EXPECTED_CHILD_RESPONSE_CONTENT = (
+    "Complete only the assigned work using the participant's listed capabilities. Treat task acceptance criteria "
+    "as relevant constraints, but do not recreate the whole cross-capability deliverable or duplicate other "
+    "participants. Stay concise and ground the nonempty contribution in the task payload."
+)
 
 
 def plan() -> CoordinationPlan:
@@ -90,10 +99,7 @@ def expected_child_spawn_prompt(
             "marker": marker,
             "response_contract": {
                 "format": "marker-first-line-then-content",
-                "content": (
-                    "Complete the assigned work, satisfy every task acceptance criterion, and ground a nonempty "
-                    "contribution in the task payload."
-                ),
+                "content": EXPECTED_CHILD_RESPONSE_CONTENT,
             },
         },
         sort_keys=True,
@@ -107,11 +113,8 @@ def success_events(markers: list[str], target_plan: CoordinationPlan | None = No
     if len(markers) != len(participant_ids):
         raise ValueError("one marker is required for every participant")
     final = {
-        "synthesis": "The contributors agree on a bounded result. " + " ".join(markers),
-        "outputs": [
-            {"candidate_id": participant_id, "marker": marker, "content": f"Finding from {participant_id}."}
-            for participant_id, marker in zip(participant_ids, markers)
-        ],
+        "synthesis": "The contributors agree on a bounded result without protocol markers.",
+        "outputs": NATIVE_OUTPUTS_RECEIPT,
     }
     child_ids = tuple(f"child-{index}" for index in range(1, len(participant_ids)))
     events: list[dict[str, object]] = [{"type": "thread.started", "thread_id": "thread-root"}]
@@ -592,7 +595,13 @@ class CodexRuntimeTests(unittest.TestCase):
         self.assertEqual(evidence.spawned_agent_ids, ("child-1", "child-2", "child-3"))
         self.assertEqual(getattr(evidence, "completed_child_ids", ()), ("child-1", "child-2", "child-3"))
         self.assertEqual(evidence.usage["input_tokens"], 100)
-        self.assertIn("nonce-1", evidence.final_message)
+        self.assertEqual(
+            json.loads(evidence.final_message),
+            {
+                "synthesis": "The contributors agree on a bounded result without protocol markers.",
+                "outputs": NATIVE_OUTPUTS_RECEIPT,
+            },
+        )
         self.assertEqual(evidence.raw_event_count, 15)
 
     def test_parser_retains_only_bounded_collaboration_diagnostics(self) -> None:
@@ -640,47 +649,229 @@ class CodexRuntimeTests(unittest.TestCase):
         self.assertEqual(result.runtime_evidence["malformed_record_count"], 0)
         self.assertFalse(result.runtime_evidence["malformed_records_truncated"])
 
-    def test_missing_participant_marker_fails_closed(self) -> None:
+    def test_missing_or_wrong_native_outputs_receipt_fails_closed(self) -> None:
+        for mutation in (None, "@sharednet-native-outputs/v2", NATIVE_OUTPUTS_RECEIPT + " ", [], {}):
+            with self.subTest(outputs=mutation):
+                events = success_events(markers_for("nonce-1"))
+                final_event = structured_final_event(events)
+                final = json.loads(final_event["item"]["text"])
+                if mutation is None:
+                    final.pop("outputs")
+                else:
+                    final["outputs"] = mutation
+                final_event["item"]["text"] = json.dumps(final)
+                runner = RecordingRunner(
+                    ProcessOutcome(0, "\n".join(json.dumps(event) for event in events), "", False)
+                )
+
+                result = CodexRuntime(
+                    binary="/real/codex",
+                    runner=runner,
+                    nonce_factory=lambda: "nonce-1",
+                ).execute(plan())
+
+                self.assertEqual(result.status, TerminalStatus.FAILED)
+                self.assertEqual(result.error, "invalid_structured_output")
+
+    def test_root_final_cannot_reintroduce_participant_output_records(self) -> None:
         events = success_events(markers_for("nonce-1"))
         final_event = structured_final_event(events)
         final = json.loads(final_event["item"]["text"])
-        final["outputs"] = final["outputs"][:-1]
+        final["outputs"] = [
+            {
+                "candidate_id": "child-a",
+                "marker": "[[sharednet:nonce-1:child-a]]",
+                "content": "Root-fabricated child content.",
+            }
+        ]
         final_event["item"]["text"] = json.dumps(final)
         runner = RecordingRunner(ProcessOutcome(0, "\n".join(json.dumps(event) for event in events), "", False))
 
         result = CodexRuntime(binary="/real/codex", runner=runner, nonce_factory=lambda: "nonce-1").execute(plan())
 
         self.assertEqual(result.status, TerminalStatus.FAILED)
-        self.assertEqual(result.error, "missing_participant_markers")
+        self.assertEqual(result.error, "invalid_structured_output")
 
-    def test_marker_must_belong_to_its_named_participant(self) -> None:
-        events = [json.loads(line) for line in success_jsonl(markers_for("nonce-1")).splitlines()]
+    def test_whitespace_only_synthesis_fails_before_root_output_hydration(self) -> None:
+        events = success_events(markers_for("nonce-1"))
         final_event = structured_final_event(events)
         final = json.loads(final_event["item"]["text"])
-        final["outputs"][0]["marker"], final["outputs"][1]["marker"] = (
-            final["outputs"][1]["marker"],
-            final["outputs"][0]["marker"],
+        final["synthesis"] = " \t\r\n "
+        final_event["item"]["text"] = json.dumps(final)
+        runner = RecordingRunner(ProcessOutcome(0, "\n".join(json.dumps(event) for event in events), "", False))
+
+        result = CodexRuntime(binary="/real/codex", runner=runner, nonce_factory=lambda: "nonce-1").execute(plan())
+
+        self.assertEqual(result.status, TerminalStatus.FAILED)
+        self.assertEqual(result.error, "invalid_structured_output")
+        self.assertEqual(result.outputs, ())
+
+    def test_lone_surrogate_synthesis_returns_typed_structured_output_failure(self) -> None:
+        events = success_events(markers_for("nonce-1"))
+        final_event = structured_final_event(events)
+        final = json.loads(final_event["item"]["text"])
+        final["synthesis"] = "\ud800"
+        final_event["item"]["text"] = json.dumps(final)
+        runner = RecordingRunner(ProcessOutcome(0, "\n".join(json.dumps(event) for event in events), "", False))
+
+        try:
+            result = CodexRuntime(
+                binary="/real/codex",
+                runner=runner,
+                nonce_factory=lambda: "nonce-1",
+            ).execute(plan())
+        except UnicodeError as error:
+            self.fail(f"invalid synthesis UTF-8 scalar escaped as an untyped failure: {error}")
+
+        self.assertEqual(result.status, TerminalStatus.FAILED)
+        self.assertEqual(result.error, "invalid_structured_output")
+        self.assertEqual(result.outputs, ())
+
+    def test_duplicate_final_receipt_keys_fail_closed(self) -> None:
+        events = success_events(markers_for("nonce-1"))
+        final_event = structured_final_event(events)
+        final_event["item"]["text"] = (
+            '{"synthesis":"A bounded result.",'
+            f'"outputs":"{NATIVE_OUTPUTS_RECEIPT}",'
+            f'"outputs":"{NATIVE_OUTPUTS_RECEIPT}"}}'
         )
-        final_event["item"]["text"] = json.dumps(final)
         runner = RecordingRunner(ProcessOutcome(0, "\n".join(json.dumps(event) for event in events), "", False))
 
         result = CodexRuntime(binary="/real/codex", runner=runner, nonce_factory=lambda: "nonce-1").execute(plan())
 
         self.assertEqual(result.status, TerminalStatus.FAILED)
-        self.assertEqual(result.error, "missing_participant_markers")
+        self.assertEqual(result.error, "invalid_structured_output")
+        self.assertEqual(result.outputs, ())
 
-    def test_synthesis_must_repeat_every_participant_marker(self) -> None:
-        events = [json.loads(line) for line in success_jsonl(markers_for("nonce-1")).splitlines()]
+    def test_synthesis_needs_no_protocol_markers_and_becomes_the_root_output(self) -> None:
+        synthesis = "The root synthesizes the result in ordinary prose."
+        events = success_events(markers_for("nonce-1"))
         final_event = structured_final_event(events)
         final = json.loads(final_event["item"]["text"])
-        final["synthesis"] = "The contributors agree on a bounded result."
+        final["synthesis"] = synthesis
         final_event["item"]["text"] = json.dumps(final)
         runner = RecordingRunner(ProcessOutcome(0, "\n".join(json.dumps(event) for event in events), "", False))
 
         result = CodexRuntime(binary="/real/codex", runner=runner, nonce_factory=lambda: "nonce-1").execute(plan())
 
-        self.assertEqual(result.status, TerminalStatus.FAILED)
-        self.assertEqual(result.error, "missing_participant_markers")
+        self.assertEqual(result.status, TerminalStatus.ACCEPTED)
+        self.assertNotIn("[[sharednet:", result.synthesis)
+        self.assertEqual(result.outputs[0].participant_id, "root")
+        self.assertEqual(result.outputs[0].marker, "[[sharednet:nonce-1:root]]")
+        self.assertEqual(result.outputs[0].content, synthesis)
+        self.assertEqual(
+            dict(result.outputs[0].evidence),
+            {"source": "root_synthesis", "protocol": "native-output-receipt-v1"},
+        )
+
+    def test_runtime_builds_outputs_in_plan_order_from_root_synthesis_and_native_waits(self) -> None:
+        events = success_events(markers_for("nonce-1"))
+        first_wait = next(
+            event["item"]
+            for event in events
+            if event["type"] == "item.completed"
+            and isinstance(event.get("item"), dict)
+            and event["item"].get("id") == "wait-1"
+        )
+        first_wait["receiver_thread_ids"] = ["child-3"]
+        first_wait["agents_states"] = {
+            "child-3": {
+                "status": "completed",
+                "message": "[[sharednet:nonce-1:child-c]]\nFinding from child-c.",
+            }
+        }
+        second_wait_started = next(
+            event["item"]
+            for event in events
+            if event["type"] == "item.started"
+            and isinstance(event.get("item"), dict)
+            and event["item"].get("id") == "wait-2"
+        )
+        second_wait_started["receiver_thread_ids"] = ["child-1", "child-2"]
+        second_wait = next(
+            event["item"]
+            for event in events
+            if event["type"] == "item.completed"
+            and isinstance(event.get("item"), dict)
+            and event["item"].get("id") == "wait-2"
+        )
+        second_wait["receiver_thread_ids"] = ["child-2", "child-1"]
+        second_wait["agents_states"] = {
+            "child-2": {
+                "status": "completed",
+                "message": "[[sharednet:nonce-1:child-b]]\nFinding from child-b.",
+            },
+            "child-1": {
+                "status": "completed",
+                "message": "[[sharednet:nonce-1:child-a]]\nFinding from child-a.",
+            },
+        }
+        runner = RecordingRunner(ProcessOutcome(0, "\n".join(json.dumps(event) for event in events), "", False))
+
+        result = CodexRuntime(binary="/real/codex", runner=runner, nonce_factory=lambda: "nonce-1").execute(plan())
+
+        self.assertEqual(result.status, TerminalStatus.ACCEPTED)
+        self.assertTrue(result.runtime_evidence["native_proof_complete"])
+        self.assertTrue(result.runtime_evidence["native_output_hydration_complete"])
+        self.assertEqual(
+            [(output.participant_id, output.marker, output.content) for output in result.outputs],
+            [
+                (
+                    "root",
+                    "[[sharednet:nonce-1:root]]",
+                    "The contributors agree on a bounded result without protocol markers.",
+                ),
+                ("child-a", "[[sharednet:nonce-1:child-a]]", "Finding from child-a."),
+                ("child-b", "[[sharednet:nonce-1:child-b]]", "Finding from child-b."),
+                ("child-c", "[[sharednet:nonce-1:child-c]]", "Finding from child-c."),
+            ],
+        )
+        self.assertEqual(
+            dict(result.outputs[0].evidence),
+            {"source": "root_synthesis", "protocol": "native-output-receipt-v1"},
+        )
+        wait_event_index_by_child = {
+            child_id: event_index
+            for event_index, event in enumerate(events)
+            if event["type"] == "item.completed"
+            and isinstance(event.get("item"), dict)
+            and event["item"].get("tool") == "wait"
+            for child_id in event["item"]["agents_states"]
+        }
+        expected_child_evidence = (
+            {
+                "source": "native_wait",
+                "protocol": "native-output-receipt-v1",
+                "child_thread_id": "child-1",
+                "wait_event_index": wait_event_index_by_child["child-1"],
+                "sha256": "6d35622ade0fc48f9adb4ed7116ea6e067e5508980d8059585f1fc45ffce8b68",
+                "byte_length": 21,
+                "normalization_version": "crlf-to-lf-strip-v1",
+            },
+            {
+                "source": "native_wait",
+                "protocol": "native-output-receipt-v1",
+                "child_thread_id": "child-2",
+                "wait_event_index": wait_event_index_by_child["child-2"],
+                "sha256": "9025ae1f85379718d3c5964bdfec90fe8eede7c8acf08d99bc47d17ce6a7ae6a",
+                "byte_length": 21,
+                "normalization_version": "crlf-to-lf-strip-v1",
+            },
+            {
+                "source": "native_wait",
+                "protocol": "native-output-receipt-v1",
+                "child_thread_id": "child-3",
+                "wait_event_index": wait_event_index_by_child["child-3"],
+                "sha256": "d232f1cb57e5593d45bb29b50fb01f533f5378d0aa34f8a7d691867cd9635da6",
+                "byte_length": 21,
+                "normalization_version": "crlf-to-lf-strip-v1",
+            },
+        )
+        for output, expected_evidence in zip(result.outputs[1:], expected_child_evidence):
+            evidence = dict(output.evidence)
+            for key, expected_value in expected_evidence.items():
+                self.assertEqual(evidence[key], expected_value)
+            self.assertEqual(set(evidence), set(expected_evidence))
 
     def test_nonzero_exit_preserves_stderr_and_usage(self) -> None:
         runner = RecordingRunner(ProcessOutcome(7, usage_only_jsonl(), "provider unavailable", False))
@@ -800,10 +991,9 @@ class CodexRuntimeTests(unittest.TestCase):
 
     def test_one_participant_plan_rejects_any_spawn_evidence(self) -> None:
         single_participant_plan = replace(plan(), participants=plan().participants[:1])
-        marker = "[[sharednet:nonce-1:root]]"
         final = {
-            "synthesis": f"The root completed the task. {marker}",
-            "outputs": [{"candidate_id": "root", "marker": marker, "content": "Root finding."}],
+            "synthesis": "The root completed the task.",
+            "outputs": NATIVE_OUTPUTS_RECEIPT,
         }
         events = (
             {"type": "thread.started", "thread_id": "thread-root"},
@@ -907,6 +1097,79 @@ class CodexRuntimeTests(unittest.TestCase):
         self.assertEqual(result.error, "missing_native_spawn_evidence")
         self.assertNotIn("child-2", result.runtime_evidence["contributing_child_ids"])
 
+    def test_child_wait_body_at_32768_utf8_bytes_is_accepted_and_measured_after_normalization(self) -> None:
+        body = "界" * 10_922 + "ab"
+        self.assertEqual(len(body.encode("utf-8")), 32_768)
+        events = success_events(markers_for("nonce-1"))
+        wait = next(
+            event["item"]
+            for event in events
+            if isinstance(event.get("item"), dict)
+            and event["type"] == "item.completed"
+            and event["item"].get("id") == "wait-1"
+        )
+        wait["agents_states"]["child-1"]["message"] = f"[[sharednet:nonce-1:child-a]]\r\n{body}\r\n"
+        runner = RecordingRunner(ProcessOutcome(0, "\n".join(json.dumps(event) for event in events), "", False))
+
+        result = CodexRuntime(binary="/real/codex", runner=runner, nonce_factory=lambda: "nonce-1").execute(plan())
+
+        self.assertEqual(result.status, TerminalStatus.ACCEPTED)
+        child_output = next(output for output in result.outputs if output.participant_id == "child-a")
+        self.assertEqual(child_output.content, body)
+        self.assertEqual(child_output.evidence["byte_length"], 32_768)
+        self.assertEqual(child_output.evidence["sha256"], hashlib.sha256(body.encode("utf-8")).hexdigest())
+        self.assertEqual(child_output.evidence["protocol"], "native-output-receipt-v1")
+        self.assertEqual(child_output.evidence["normalization_version"], "crlf-to-lf-strip-v1")
+
+    def test_child_wait_body_over_32768_utf8_bytes_fails_closed(self) -> None:
+        body = "界" * 10_923
+        self.assertEqual(len(body.encode("utf-8")), 32_769)
+        events = success_events(markers_for("nonce-1"))
+        wait = next(
+            event["item"]
+            for event in events
+            if isinstance(event.get("item"), dict)
+            and event["type"] == "item.completed"
+            and event["item"].get("id") == "wait-1"
+        )
+        wait["agents_states"]["child-1"]["message"] = f"[[sharednet:nonce-1:child-a]]\n{body}"
+        runner = RecordingRunner(ProcessOutcome(0, "\n".join(json.dumps(event) for event in events), "", False))
+
+        result = CodexRuntime(binary="/real/codex", runner=runner, nonce_factory=lambda: "nonce-1").execute(plan())
+
+        self.assertEqual(result.status, TerminalStatus.FAILED)
+        self.assertEqual(result.error, "unbound_child_output")
+        self.assertEqual(result.outputs, ())
+        self.assertTrue(result.runtime_evidence["native_proof_complete"])
+        self.assertFalse(result.runtime_evidence["native_output_hydration_complete"])
+
+    def test_lone_surrogate_child_body_returns_typed_hydration_failure(self) -> None:
+        events = success_events(markers_for("nonce-1"))
+        wait = next(
+            event["item"]
+            for event in events
+            if isinstance(event.get("item"), dict)
+            and event["type"] == "item.completed"
+            and event["item"].get("id") == "wait-1"
+        )
+        wait["agents_states"]["child-1"]["message"] = "[[sharednet:nonce-1:child-a]]\n\ud800"
+        runner = RecordingRunner(ProcessOutcome(0, "\n".join(json.dumps(event) for event in events), "", False))
+
+        try:
+            result = CodexRuntime(
+                binary="/real/codex",
+                runner=runner,
+                nonce_factory=lambda: "nonce-1",
+            ).execute(plan())
+        except UnicodeError as error:
+            self.fail(f"invalid UTF-8 scalar escaped as an untyped failure: {error}")
+
+        self.assertEqual(result.status, TerminalStatus.FAILED)
+        self.assertEqual(result.error, "unbound_child_output")
+        self.assertEqual(result.outputs, ())
+        self.assertTrue(result.runtime_evidence["native_proof_complete"])
+        self.assertFalse(result.runtime_evidence["native_output_hydration_complete"])
+
     def test_spawn_prompt_must_carry_the_complete_task_and_assigned_participant(self) -> None:
         events = success_events(markers_for("nonce-1"))
         incomplete_prompt = json.dumps(
@@ -925,6 +1188,71 @@ class CodexRuntimeTests(unittest.TestCase):
 
         self.assertEqual(result.status, TerminalStatus.FAILED)
         self.assertEqual(result.error, "missing_native_spawn_evidence")
+
+    def test_provider_redundant_task_aliases_are_accepted_only_when_identical_to_nested_task(self) -> None:
+        for aliases in (("task_id",), ("required_capabilities",), ("task_id", "required_capabilities")):
+            with self.subTest(aliases=aliases):
+                events = success_events(markers_for("nonce-1"))
+                for event in events:
+                    item = event.get("item")
+                    if not isinstance(item, dict) or item.get("tool") != "spawn_agent":
+                        continue
+                    payload = json.loads(item["prompt"])
+                    for alias in aliases:
+                        payload[alias] = payload["task"][alias]
+                    item["prompt"] = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+                runner = RecordingRunner(
+                    ProcessOutcome(0, "\n".join(json.dumps(event) for event in events), "", False)
+                )
+
+                result = CodexRuntime(
+                    binary="/real/codex",
+                    runner=runner,
+                    nonce_factory=lambda: "nonce-1",
+                ).execute(plan())
+
+                self.assertEqual(result.status, TerminalStatus.ACCEPTED)
+                self.assertTrue(result.runtime_evidence["native_proof_complete"])
+                self.assertEqual(
+                    result.to_dict()["runtime_evidence"]["accepted_redundant_spawn_aliases"],
+                    [
+                        {
+                            "child_thread_id": f"child-{index}",
+                            "participant_id": participant_id,
+                            "aliases": sorted(aliases),
+                        }
+                        for index, participant_id in enumerate(("child-a", "child-b", "child-c"), start=1)
+                    ],
+                )
+
+    def test_provider_task_aliases_fail_closed_when_conflicting_or_unrecognized(self) -> None:
+        for mutation in ("task_id", "required_capabilities", "unknown"):
+            with self.subTest(mutation=mutation):
+                events = success_events(markers_for("nonce-1"))
+                for event in events:
+                    item = event.get("item")
+                    if not isinstance(item, dict) or item.get("id") != "spawn-1":
+                        continue
+                    payload = json.loads(item["prompt"])
+                    if mutation == "task_id":
+                        payload["task_id"] = "different-task"
+                    elif mutation == "required_capabilities":
+                        payload["required_capabilities"] = ["different-capability"]
+                    else:
+                        payload["goal"] = payload["task"]["goal"]
+                    item["prompt"] = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+                runner = RecordingRunner(
+                    ProcessOutcome(0, "\n".join(json.dumps(event) for event in events), "", False)
+                )
+
+                result = CodexRuntime(
+                    binary="/real/codex",
+                    runner=runner,
+                    nonce_factory=lambda: "nonce-1",
+                ).execute(plan())
+
+                self.assertEqual(result.status, TerminalStatus.FAILED)
+                self.assertEqual(result.error, "missing_native_spawn_evidence")
 
     def test_spawn_prompt_json_must_preserve_value_types_and_reject_duplicate_keys(self) -> None:
         typed_plan = replace(
@@ -965,22 +1293,26 @@ class CodexRuntimeTests(unittest.TestCase):
                 self.assertEqual(result.status, TerminalStatus.FAILED)
                 self.assertEqual(result.error, "missing_native_spawn_evidence")
 
-    def test_root_cannot_fabricate_a_worker_output_not_returned_by_that_child(self) -> None:
+    def test_out_of_band_agent_message_cannot_forge_a_native_wait_output(self) -> None:
         events = success_events(markers_for("nonce-1"))
-        final_event = structured_final_event(events)
-        final = json.loads(final_event["item"]["text"])
-        final["outputs"][1]["content"] = "Root-fabricated finding never returned by child-a."
-        final_event["item"]["text"] = json.dumps(final)
+        events.insert(
+            -2,
+            {
+                "type": "item.completed",
+                "item": {
+                    "type": "agent_message",
+                    "text": "[[sharednet:nonce-1:child-a]]\nForged outside a completed wait.",
+                },
+            },
+        )
         runner = RecordingRunner(ProcessOutcome(0, "\n".join(json.dumps(event) for event in events), "", False))
 
         result = CodexRuntime(binary="/real/codex", runner=runner, nonce_factory=lambda: "nonce-1").execute(plan())
 
-        self.assertEqual(result.status, TerminalStatus.FAILED)
-        self.assertEqual(result.error, "unbound_child_output")
-        binding = next(
-            item for item in result.runtime_evidence["child_output_bindings"] if item["participant_id"] == "child-a"
-        )
-        self.assertFalse(binding["output_content_match"])
+        self.assertEqual(result.status, TerminalStatus.ACCEPTED)
+        child_output = next(output for output in result.outputs if output.participant_id == "child-a")
+        self.assertEqual(child_output.content, "Finding from child-a.")
+        self.assertEqual(child_output.evidence["source"], "native_wait")
 
     def test_spawn_prompt_marker_binding_cannot_be_inferred_from_final_output(self) -> None:
         events = success_events(markers_for("nonce-1"))
@@ -1420,6 +1752,13 @@ class CodexRuntimeTests(unittest.TestCase):
         self.assertEqual(result.status, TerminalStatus.ACCEPTED)
         self.assertEqual(result.runtime_evidence["spawned_agent_ids"], ())
         self.assertEqual(result.runtime_evidence["completed_child_ids"], ())
+        self.assertEqual(len(result.outputs), 1)
+        self.assertEqual(result.outputs[0].participant_id, "root")
+        self.assertEqual(result.outputs[0].content, result.synthesis)
+        self.assertEqual(
+            dict(result.outputs[0].evidence),
+            {"source": "root_synthesis", "protocol": "native-output-receipt-v1"},
+        )
 
     def test_peer_forum_integrator_is_runtime_root_and_peers_are_children(self) -> None:
         peer_plan = PeerForumBackend().plan(four_agent_request(mechanism="peer-forum"))
@@ -1448,6 +1787,78 @@ class CodexRuntimeTests(unittest.TestCase):
         self.assertIn("remove completed children from every later wait call", prompt)
         self.assertIn("Never wait on the same completed child twice", prompt)
         self.assertIn("[[sharednet:nonce-1:root]]", prompt)
+
+    def test_prompt_requires_each_wait_to_target_every_pending_child(self) -> None:
+        prompt = build_codex_prompt(plan(), "nonce-1")
+
+        self.assertIn(
+            "Every wait call must target exactly all children that are still pending at that moment",
+            prompt,
+        )
+        self.assertIn(
+            "Do not wait on one child while any other child is still pending",
+            prompt,
+        )
+
+    def test_prompt_precomputes_exact_child_spawn_prompts_for_literal_copying(self) -> None:
+        localized_task = {
+            "task_id": "runtime-task",
+            "goal": "不访问、不假定、也不修改真实微信源码。",
+            "required_capabilities": ["analysis"],
+            "acceptance_criteria": ["保留任务文字，不要同义改写。"],
+            "input_data": {"record": "模拟资料"},
+        }
+        localized_plan = replace(plan(), runtime_instructions={"task": localized_task})
+
+        prompt = build_codex_prompt(localized_plan, "nonce-1")
+        payload = json.loads(prompt.split("Plan and required markers:\n", 1)[1])
+
+        self.assertIn("child_spawn_prompts", payload)
+        self.assertEqual(
+            set(payload["child_spawn_prompts"]),
+            {"child-a", "child-b", "child-c"},
+        )
+        self.assertEqual(
+            json.loads(payload["child_spawn_prompts"]["child-a"]),
+            {
+                "task": localized_task,
+                "participant": {
+                    "candidate_id": "child-a",
+                    "role": "contributor",
+                    "assignment": "Contribute child-a findings.",
+                    "capabilities": ["analysis"],
+                },
+                "marker": "[[sharednet:nonce-1:child-a]]",
+                "response_contract": {
+                    "content": EXPECTED_CHILD_RESPONSE_CONTENT,
+                    "format": "marker-first-line-then-content",
+                },
+            },
+        )
+        self.assertNotIn("satisfy every task acceptance criterion", prompt)
+
+    def test_child_response_contract_is_capability_scoped_and_avoids_duplicate_full_deliverables(self) -> None:
+        prompt = build_codex_prompt(plan(), "nonce-1")
+        payload = json.loads(prompt.split("Plan and required markers:\n", 1)[1])
+        contract = payload["child_response_contract"]["content"]
+
+        self.assertNotIn("satisfy every task acceptance criterion", contract)
+        self.assertIn("only the assigned work", contract)
+        self.assertIn("listed capabilities", contract)
+        self.assertIn("acceptance criteria as relevant constraints", contract)
+        self.assertIn("do not recreate the whole cross-capability deliverable", contract)
+        self.assertIn("duplicate other participants", contract)
+        self.assertIn("Stay concise", contract)
+        self.assertIn("ground the nonempty contribution in the task payload", contract)
+
+    def test_prompt_assigns_native_output_materialization_to_the_runtime(self) -> None:
+        prompt = build_codex_prompt(plan(), "nonce-1")
+
+        self.assertIn(NATIVE_OUTPUTS_RECEIPT, prompt)
+        self.assertIn("`outputs` must equal", prompt)
+        self.assertIn("SharedNet runtime constructs participant outputs from validated native waits", prompt)
+        self.assertNotIn("copy each non-root child's contribution body", prompt)
+        self.assertNotIn("include every exact participant marker in `synthesis`", prompt)
 
     def test_prompt_materializes_the_runtime_task_fallback_for_direct_legacy_plans(self) -> None:
         legacy_plan = replace(plan(), runtime_instructions={"goal": "Legacy direct plan."})

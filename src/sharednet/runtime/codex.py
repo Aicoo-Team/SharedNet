@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -27,12 +28,19 @@ _DEFAULT_MODEL = "gpt-5.3-codex"
 _DEFAULT_MAX_CAPTURE_BYTES = 1_000_000
 _MAX_RETAINED_DIAGNOSTIC_EVENTS = 128
 _MAX_RETAINED_PROOF_RECORDS = 128
+_MAX_CHILD_CONTRIBUTION_BYTES = 32_768
+_NATIVE_OUTPUTS_RECEIPT = "@sharednet-native-outputs/v1"
+_NATIVE_OUTPUT_PROTOCOL = "native-output-receipt-v1"
+_CONTRIBUTION_NORMALIZATION_VERSION = "crlf-to-lf-strip-v1"
+_REDUNDANT_TASK_ALIASES = frozenset({"task_id", "required_capabilities"})
+_CHILD_SPAWN_CORE_KEYS = frozenset({"task", "participant", "marker", "response_contract"})
 _SUCCESSFUL_SPAWN_CHILD_STATES = frozenset({"pending_init", "in_progress", "running", "completed"})
 _CHILD_RESPONSE_CONTRACT = {
     "format": "marker-first-line-then-content",
     "content": (
-        "Complete the assigned work, satisfy every task acceptance criterion, and ground a nonempty contribution "
-        "in the task payload."
+        "Complete only the assigned work using the participant's listed capabilities. Treat task acceptance criteria "
+        "as relevant constraints, but do not recreate the whole cross-capability deliverable or duplicate other "
+        "participants. Stay concise and ground the nonempty contribution in the task payload."
     ),
 }
 
@@ -107,21 +115,36 @@ def build_codex_prompt(plan: CoordinationPlan, nonce: str) -> str:
     runtime_instructions = plan_payload["runtime_instructions"]
     if not isinstance(runtime_instructions.get("task"), Mapping):
         runtime_instructions["task"] = _effective_task_payload(plan)
+    child_spawn_prompts = {
+        candidate_id: json.dumps(
+            child_payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+        for candidate_id, child_payload in _expected_child_spawn_payloads(plan, markers).items()
+    }
     payload = {
         "plan": plan_payload,
         "markers": markers,
         "child_response_contract": _CHILD_RESPONSE_CONTRACT,
+        "child_spawn_prompts": child_spawn_prompts,
     }
     spawn_instruction = (
         f"Issue exactly {child_count} parallel native spawn_agent calls for the remaining planned participants; "
-        "do not delegate spawning to a child. Build each spawn prompt as exactly one JSON object, with no prose or "
-        "Markdown fences, containing exactly `task`, `participant`, `marker`, and `response_contract`. Copy `task` "
-        "exactly from `plan.runtime_instructions.task`. The `participant` object must contain exactly that candidate's "
-        "`candidate_id`, `role`, `assignment`, and `capabilities` from the plan. Copy exactly that candidate's exact marker "
-        "and the supplied child response contract. JSON key order and insignificant whitespace may vary. Each child "
+        "do not delegate spawning to a child. For each planned child, take the corresponding complete JSON string from "
+        "`child_spawn_prompts` and pass that string's decoded value verbatim as the spawn prompt. Do not rebuild it from "
+        "the plan, paraphrase, translate, normalize, or correct any character. Each supplied string is already exactly "
+        "one JSON object, with no prose or Markdown fences, containing exactly `task`, `participant`, `marker`, and "
+        "`response_contract`; it already contains exactly that candidate's exact marker and participant data. JSON key "
+        "order and insignificant whitespace may vary, but every decoded key and value must remain identical. Each child "
         "must return its marker as its first line and its nonempty contribution after that line. Wait for every child "
-        "before replying. In final `outputs`, copy each non-root child's contribution body exactly; do not summarize, "
-        "rewrite, or fabricate worker output. "
+        "before replying, and use the completed contributions when writing the synthesis. "
+        f"The first wait call must target all {child_count} spawned child thread IDs at once. "
+        "Every wait call must target exactly all children that are still pending at that moment. "
+        "Do not wait on one child while any other child is still pending. "
+        "Treat a child as completed for this protocol only after a completed wait returns status `completed` and a "
+        "nonempty message for it; an out-of-band completion notice does not remove it from the pending set. "
         "After each completed wait, remove completed children from every later wait call. "
         "Never wait on the same completed child twice. "
         if child_count
@@ -135,9 +158,10 @@ def build_codex_prompt(plan: CoordinationPlan, nonce: str) -> str:
         "Do not execute or spawn any unplanned participant or turn. "
         "Do not use file, shell, or web tools for this data-only smoke. "
         "Your final response must be a JSON object with exactly the keys `synthesis` and `outputs`. "
-        "`synthesis` must be a string. `outputs` must contain one object for every planned participant, and each object "
-        "must contain `candidate_id`, `marker`, and `content` strings. Preserve the exact marker assigned to each participant "
-        "and include every exact participant marker in `synthesis`.\n\n"
+        "`synthesis` must be a nonempty string containing the integrated answer. "
+        f"`outputs` must equal the exact string `{_NATIVE_OUTPUTS_RECEIPT}`; do not emit participant output objects. "
+        "SharedNet runtime constructs participant outputs from validated native waits, so do not copy protocol markers "
+        "or child contribution bodies into `outputs`.\n\n"
         "Plan and required markers:\n"
         f"{json.dumps(payload, sort_keys=True, separators=(',', ':'))}"
     )
@@ -517,37 +541,25 @@ class CodexRuntime:
                 usage=evidence.usage,
             )
 
-        decoded = _decode_final_output(evidence.final_message)
-        if decoded is None:
+        synthesis = _decode_final_receipt(evidence.final_message)
+        if synthesis is None:
             return self._failure(plan, "invalid_structured_output", evidence=runtime_evidence, usage=evidence.usage)
-        synthesis, outputs = decoded
-        parsed_outputs = _validated_outputs(outputs, expected_markers)
-        if parsed_outputs is None:
-            return self._failure(plan, "invalid_structured_output", evidence=runtime_evidence, usage=evidence.usage)
-        if (
-            {output.marker for output in parsed_outputs} != set(expected_markers.values())
-            or any(output.marker != expected_markers[output.participant_id] for output in parsed_outputs)
-            or any(marker not in synthesis for marker in expected_markers.values())
-        ):
-            return self._failure(plan, "missing_participant_markers", evidence=runtime_evidence, usage=evidence.usage)
-
         if not native_proof["native_proof_complete"]:
             return self._failure(plan, "missing_native_spawn_evidence", evidence=runtime_evidence, usage=evidence.usage)
-        child_output_proof = _child_output_proof(
-            evidence,
-            native_proof["child_participant_bindings"],
-            parsed_outputs,
-            expected_markers,
-            plan,
+        hydrated_outputs, hydration_evidence = _hydrate_native_outputs(
+            plan=plan,
+            evidence=evidence,
+            child_participant_bindings=native_proof["child_participant_bindings"],
+            expected_markers=expected_markers,
+            synthesis=synthesis,
         )
-        runtime_evidence.update(child_output_proof)
-        runtime_evidence["native_proof_complete"] = child_output_proof["child_output_proof_complete"]
-        if not child_output_proof["child_output_proof_complete"]:
+        runtime_evidence.update(hydration_evidence)
+        if hydrated_outputs is None:
             return self._failure(plan, "unbound_child_output", evidence=runtime_evidence, usage=evidence.usage)
         return CoordinationResult(
             status=TerminalStatus.ACCEPTED,
             plan=plan,
-            outputs=parsed_outputs,
+            outputs=hydrated_outputs,
             synthesis=synthesis,
             runtime_evidence=runtime_evidence,
             usage=evidence.usage,
@@ -868,12 +880,15 @@ def _native_coordination_proof(
         valid = False
 
     participant_by_child: dict[str, str] = {}
+    accepted_redundant_aliases: list[dict[str, Any]] = []
     for child_id, prompt in evidence.spawn_bindings:
         decoded_prompt = _decode_child_spawn_prompt(prompt)
+        normalized_prompt = _normalize_redundant_task_aliases(decoded_prompt)
+        alias_keys = sorted(set(decoded_prompt) - _CHILD_SPAWN_CORE_KEYS) if decoded_prompt is not None else []
         matches = [
             participant_id
             for participant_id, expected_payload in expected_spawn_payloads.items()
-            if decoded_prompt is not None and _canonical_json(decoded_prompt) == _canonical_json(expected_payload)
+            if normalized_prompt is not None and _canonical_json(normalized_prompt) == _canonical_json(expected_payload)
         ]
         if len(matches) != 1:
             valid = False
@@ -883,6 +898,14 @@ def _native_coordination_proof(
             valid = False
             continue
         participant_by_child[child_id] = participant_id
+        if alias_keys:
+            accepted_redundant_aliases.append(
+                {
+                    "child_thread_id": child_id,
+                    "participant_id": participant_id,
+                    "aliases": alias_keys,
+                }
+            )
     if set(participant_by_child.values()) != required_child_ids:
         valid = False
 
@@ -912,6 +935,7 @@ def _native_coordination_proof(
         "completed_child_ids": list(completed_ids),
         "contributing_child_ids": contributing_ids,
         "child_participant_bindings": participant_by_child,
+        "accepted_redundant_spawn_aliases": accepted_redundant_aliases,
         "native_proof_complete": valid,
     }
 
@@ -955,6 +979,24 @@ def _decode_child_spawn_prompt(prompt: str) -> Mapping[str, Any] | None:
     return value if isinstance(value, Mapping) else None
 
 
+def _normalize_redundant_task_aliases(value: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
+    """Remove only provider-added task aliases that exactly duplicate the nested task."""
+    if value is None:
+        return None
+    extra_keys = set(value) - _CHILD_SPAWN_CORE_KEYS
+    if not extra_keys.issubset(_REDUNDANT_TASK_ALIASES):
+        return None
+    task = value.get("task")
+    if not isinstance(task, Mapping):
+        return None
+    normalized = dict(value)
+    for key in extra_keys:
+        if key not in task or _canonical_json_value(value.get(key)) != _canonical_json_value(task.get(key)):
+            return None
+        normalized.pop(key)
+    return normalized if set(normalized) == _CHILD_SPAWN_CORE_KEYS else None
+
+
 def _json_object_without_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     value: dict[str, Any] = {}
     for key, item in pairs:
@@ -968,6 +1010,10 @@ def _canonical_json(value: Mapping[str, Any]) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
+def _canonical_json_value(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
 def _child_contribution_body(message: str, marker: str) -> str | None:
     """Return a canonical child body only for the marker-first response contract."""
     normalized = message.replace("\r\n", "\n").replace("\r", "\n").strip()
@@ -978,48 +1024,117 @@ def _child_contribution_body(message: str, marker: str) -> str | None:
     return body
 
 
-def _child_output_proof(
-    evidence: CodexEventEvidence,
-    participant_by_child: Mapping[str, str],
-    outputs: Sequence[AgentOutput],
-    expected_markers: Mapping[str, str],
+def _hydrate_native_outputs(
+    *,
     plan: CoordinationPlan,
-) -> dict[str, Any]:
-    """Bind each non-root final output to the completed native child's body."""
-    messages_by_child = {child_id: message for child_id, message, _ in evidence.completed_child_messages}
-    outputs_by_participant = {output.participant_id: output for output in outputs}
-    plans_by_participant = {participant.candidate_id: participant for participant in plan.participants}
+    evidence: CodexEventEvidence,
+    child_participant_bindings: Mapping[str, str],
+    expected_markers: Mapping[str, str],
+    synthesis: str,
+) -> tuple[tuple[AgentOutput, ...] | None, dict[str, Any]]:
+    """Materialize attributable outputs directly from verified native wait records."""
+    participants = plan.participants
+    valid = bool(participants) and set(expected_markers) == set(plan.participant_ids)
+    planned_child_ids = tuple(participant.candidate_id for participant in participants[1:])
+    participant_to_children: dict[str, list[str]] = {}
+    for child_id, participant_id in child_participant_bindings.items():
+        participant_to_children.setdefault(participant_id, []).append(child_id)
+
+    spawned_child_ids = evidence.spawned_agent_ids
+    if (
+        len(child_participant_bindings) != len(planned_child_ids)
+        or set(child_participant_bindings) != set(spawned_child_ids)
+        or len(spawned_child_ids) != len(set(spawned_child_ids))
+        or set(participant_to_children) != set(planned_child_ids)
+        or any(len(child_ids) != 1 for child_ids in participant_to_children.values())
+    ):
+        valid = False
+
+    messages_by_child: dict[str, list[tuple[str, int]]] = {}
+    for child_id, message, event_index in evidence.completed_child_messages:
+        messages_by_child.setdefault(child_id, []).append((message, event_index))
+    if set(messages_by_child) != set(spawned_child_ids) or any(
+        len(messages) != 1 for messages in messages_by_child.values()
+    ):
+        valid = False
+
+    outputs: list[AgentOutput] = []
+    root_marker = expected_markers.get(participants[0].candidate_id, "") if participants else ""
+    if participants and isinstance(root_marker, str) and root_marker:
+        outputs.append(
+            AgentOutput(
+                participant_id=participants[0].candidate_id,
+                marker=root_marker,
+                content=synthesis,
+                evidence={"source": "root_synthesis", "protocol": _NATIVE_OUTPUT_PROTOCOL},
+            )
+        )
+    else:
+        valid = False
+
     bindings: list[dict[str, Any]] = []
-    valid = True
-    for child_id in evidence.spawned_agent_ids:
-        participant_id = participant_by_child.get(child_id)
-        participant = plans_by_participant.get(participant_id) if participant_id is not None else None
-        output = outputs_by_participant.get(participant_id) if participant_id is not None else None
-        marker = expected_markers.get(participant_id, "") if participant_id is not None else ""
-        message = messages_by_child.get(child_id, "")
-        body = _child_contribution_body(message, marker) if marker else None
-        output_matches = body is not None and output is not None and _normalize_contribution(output.content) == body
-        if participant is None or not output_matches:
+    for participant in participants[1:]:
+        participant_id = participant.candidate_id
+        bound_children = participant_to_children.get(participant_id, [])
+        child_id = bound_children[0] if len(bound_children) == 1 else None
+        records = messages_by_child.get(child_id, []) if child_id is not None else []
+        marker = expected_markers.get(participant_id, "")
+        body: str | None = None
+        encoded_body: bytes | None = None
+        event_index: int | None = None
+        if child_id is not None and len(records) == 1 and isinstance(marker, str) and marker:
+            message, candidate_event_index = records[0]
+            body = _child_contribution_body(message, marker)
+            if isinstance(candidate_event_index, int) and candidate_event_index >= 0:
+                event_index = candidate_event_index
+            if body is not None:
+                try:
+                    encoded_body = body.encode("utf-8", errors="strict")
+                except UnicodeEncodeError:
+                    encoded_body = None
+        output_matches = (
+            body is not None
+            and encoded_body is not None
+            and event_index is not None
+            and len(encoded_body) <= _MAX_CHILD_CONTRIBUTION_BYTES
+        )
+        if not output_matches:
             valid = False
+        else:
+            outputs.append(
+                AgentOutput(
+                    participant_id=participant_id,
+                    marker=marker,
+                    content=body,
+                    evidence={
+                        "source": "native_wait",
+                        "protocol": _NATIVE_OUTPUT_PROTOCOL,
+                        "child_thread_id": child_id,
+                        "wait_event_index": event_index,
+                        "sha256": hashlib.sha256(encoded_body).hexdigest(),
+                        "byte_length": len(encoded_body),
+                        "normalization_version": _CONTRIBUTION_NORMALIZATION_VERSION,
+                    },
+                )
+            )
         bindings.append(
             {
                 "child_thread_id": child_id,
                 "participant_id": participant_id,
-                "assignment": participant.assignment if participant is not None else None,
-                "capabilities": list(participant.capabilities) if participant is not None else [],
+                "assignment": participant.assignment,
+                "capabilities": list(participant.capabilities),
                 "output_content_match": output_matches,
             }
         )
-    if len(bindings) != max(0, len(plan.participants) - 1):
+
+    if len(outputs) != len(participants):
         valid = False
-    return {
+    hydration_evidence = {
         "child_output_bindings": bindings,
         "child_output_proof_complete": valid,
+        "native_output_hydration_complete": valid,
     }
-
-
-def _normalize_contribution(value: str) -> str:
-    return value.replace("\r\n", "\n").replace("\r", "\n").strip()
+    return (tuple(outputs) if valid else None), hydration_evidence
 
 
 def _agent_message(event: Mapping[str, Any]) -> str | None:
@@ -1031,35 +1146,19 @@ def _agent_message(event: Mapping[str, Any]) -> str | None:
     return None
 
 
-def _decode_final_output(message: str) -> tuple[str, list[Mapping[str, Any]]] | None:
+def _decode_final_receipt(message: str) -> str | None:
     try:
-        value = json.loads(message)
-    except (TypeError, json.JSONDecodeError):
+        value = json.loads(message, object_pairs_hook=_json_object_without_duplicates)
+    except (TypeError, ValueError):
         return None
     if not isinstance(value, Mapping) or set(value) != {"synthesis", "outputs"}:
         return None
     synthesis = value.get("synthesis")
     outputs = value.get("outputs")
-    if not isinstance(synthesis, str) or not isinstance(outputs, list):
+    if not isinstance(synthesis, str) or not synthesis.strip() or outputs != _NATIVE_OUTPUTS_RECEIPT:
         return None
-    if not all(isinstance(output, Mapping) for output in outputs):
+    try:
+        synthesis.encode("utf-8", errors="strict")
+    except UnicodeEncodeError:
         return None
-    return synthesis, outputs
-
-
-def _validated_outputs(outputs: list[Mapping[str, Any]], expected_markers: Mapping[str, str]) -> tuple[AgentOutput, ...] | None:
-    parsed: list[AgentOutput] = []
-    candidate_ids: set[str] = set()
-    for output in outputs:
-        if set(output) != {"candidate_id", "marker", "content"}:
-            return None
-        candidate_id = output.get("candidate_id")
-        marker = output.get("marker")
-        content = output.get("content")
-        if not all(isinstance(value, str) and value for value in (candidate_id, marker, content)):
-            return None
-        if candidate_id not in expected_markers or candidate_id in candidate_ids:
-            return None
-        candidate_ids.add(candidate_id)
-        parsed.append(AgentOutput(participant_id=candidate_id, marker=marker, content=content))
-    return tuple(parsed)
+    return synthesis
