@@ -416,6 +416,14 @@ def create_room_app(
             )
         }
 
+    @app.post("/v1/console/accounts/{auth_user_id}/demo-seed")
+    def seed_demo_account(
+        auth_user_id: str,
+        request: Request,
+        _: None = Depends(_require_console),
+    ) -> dict[str, object]:
+        return request.app.state.control_store.seed_demo_account(auth_user_id)
+
     @app.post("/v1/console/accounts/{auth_user_id}/pairings/{pairing_id}/claim")
     def claim_pairing(
         auth_user_id: str,

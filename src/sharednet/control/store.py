@@ -39,6 +39,78 @@ from .models import (
 
 _GENERATED_ID_ATTEMPTS = 8
 
+_DEMO_OWNER_AGENTS = (
+    (
+        "planner",
+        "Planner",
+        "Planning Agent",
+        "Turns outcomes into task graphs and decides when the network helps.",
+        ("task planning", "candidate selection", "coordination"),
+        0,
+    ),
+    (
+        "codex",
+        "Codex",
+        "Implementation Agent",
+        "Owns the repository and integrates specialist contributions.",
+        ("coding", "integration", "tests"),
+        1,
+    ),
+    (
+        "research",
+        "Research",
+        "Research Agent",
+        "Collects product context and primary implementation evidence.",
+        ("web research", "API research", "synthesis"),
+        1,
+    ),
+    (
+        "reviewer",
+        "Reviewer",
+        "Independent Verifier",
+        "Checks evidence without inheriting the builder’s assumptions.",
+        ("code review", "acceptance tests", "risk checks"),
+        0,
+    ),
+)
+
+_DEMO_AICOO_AGENTS = (
+    (
+        "web-builder",
+        "Web Builder",
+        "Website Specialist",
+        "Builds production-oriented web products from a concise outcome.",
+        ("Next.js", "product implementation", "responsive UI"),
+    ),
+    (
+        "design-engineer",
+        "Design Engineer",
+        "Interface Specialist",
+        "Shapes clear interaction systems and production-ready interface code.",
+        ("interaction design", "design systems", "accessibility"),
+    ),
+    (
+        "neon",
+        "Neon",
+        "Database Specialist",
+        "Designs Neon schemas, migrations, and least-privilege integration plans.",
+        ("Postgres", "Neon API", "schema design"),
+    ),
+    (
+        "vercel",
+        "Vercel",
+        "Deployment Specialist",
+        "Prepares Vercel projects, environment bindings, and deployment checks.",
+        ("Vercel API", "deployments", "environment variables"),
+    ),
+    (
+        "quality",
+        "Quality",
+        "Launch Verifier",
+        "Independently verifies behavior, accessibility, and launch readiness.",
+        ("browser QA", "accessibility", "release evidence"),
+    ),
+)
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
@@ -353,6 +425,265 @@ class ControlStore:
                 validated_user_id,
                 self.clock(),
             )
+
+    @staticmethod
+    def _seed_principal_profile_in_connection(
+        connection: sqlite3.Connection,
+        principal_id: str,
+        seed_key: str,
+        diagnostic_label: str,
+        kind: str,
+        summary: str,
+        created_at: str,
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO principal_profiles(
+                principal_id, seed_key, diagnostic_label, kind, summary, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(principal_id) DO UPDATE SET
+                seed_key = excluded.seed_key,
+                diagnostic_label = excluded.diagnostic_label,
+                kind = excluded.kind,
+                summary = excluded.summary
+            """,
+            (
+                principal_id,
+                seed_key,
+                diagnostic_label,
+                kind,
+                summary,
+                created_at,
+            ),
+        )
+
+    @staticmethod
+    def _seed_agent_in_connection(
+        connection: sqlite3.Connection,
+        principal_id: str,
+        seed_key: str,
+        diagnostic_label: str,
+        role: str,
+        summary: str,
+        runtime_kind: str,
+        capabilities: tuple[str, ...],
+        discoverability: int,
+        official: int,
+        created_at: str,
+    ) -> str:
+        existing = connection.execute(
+            """
+            SELECT agent.agent_id, agent.principal_id
+            FROM agent_profiles AS profile
+            JOIN agents AS agent ON agent.agent_id = profile.agent_id
+            WHERE profile.seed_key = ?
+            """,
+            (seed_key,),
+        ).fetchone()
+        serialized_capabilities = json.dumps(capabilities, separators=(",", ":"))
+        if existing is not None:
+            if existing["principal_id"] != principal_id:
+                raise _error(
+                    "demo_seed_conflict",
+                    "demo Agent seed key belongs to another Principal",
+                    409,
+                )
+            connection.execute(
+                """
+                UPDATE agent_profiles
+                SET diagnostic_label = ?, role = ?, summary = ?, runtime_kind = ?,
+                    capabilities_json = ?, discoverability = ?, official = ?
+                WHERE agent_id = ?
+                """,
+                (
+                    diagnostic_label,
+                    role,
+                    summary,
+                    runtime_kind,
+                    serialized_capabilities,
+                    discoverability,
+                    official,
+                    existing["agent_id"],
+                ),
+            )
+            return existing["agent_id"]
+
+        for _ in range(_GENERATED_ID_ATTEMPTS):
+            agent_id = new_agent_id()
+            if connection.execute(
+                "SELECT 1 FROM agents WHERE agent_id = ?",
+                (agent_id,),
+            ).fetchone() is not None:
+                continue
+            connection.execute(
+                "INSERT INTO agents(agent_id, principal_id, created_at) VALUES (?, ?, ?)",
+                (agent_id, principal_id, created_at),
+            )
+            connection.execute(
+                """
+                INSERT INTO agent_profiles(
+                    agent_id, seed_key, diagnostic_label, role, summary,
+                    runtime_kind, capabilities_json, discoverability,
+                    official, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    agent_id,
+                    seed_key,
+                    diagnostic_label,
+                    role,
+                    summary,
+                    runtime_kind,
+                    serialized_capabilities,
+                    discoverability,
+                    official,
+                    created_at,
+                ),
+            )
+            return agent_id
+
+        raise _error("agent_id_conflict", "could not allocate a unique Agent ID", 409)
+
+    def seed_demo_account(self, auth_user_id: str) -> dict[str, object]:
+        """Seed truthful account-scoped profiles in one idempotent transaction."""
+
+        validated_user_id = self._validate_auth_user_id(auth_user_id)
+        created_at = self.clock()
+        serialized_created_at = _timestamp(created_at)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            principal_id = self._provision_principal_in_connection(
+                connection,
+                validated_user_id,
+                created_at,
+            )
+            self._seed_principal_profile_in_connection(
+                connection,
+                principal_id,
+                f"demo.owner.{principal_id}.principal",
+                "Your account",
+                "self",
+                "Your identity, policies, and persistent Agents.",
+                serialized_created_at,
+            )
+
+            aicoo = connection.execute(
+                """
+                SELECT principal_id
+                FROM principal_profiles
+                WHERE seed_key = 'demo.aicoo.principal'
+                """
+            ).fetchone()
+            if aicoo is None:
+                connected_principal_id = ""
+                for _ in range(_GENERATED_ID_ATTEMPTS):
+                    candidate = new_principal_id()
+                    if connection.execute(
+                        "SELECT 1 FROM principals WHERE principal_id = ?",
+                        (candidate,),
+                    ).fetchone() is not None:
+                        continue
+                    connected_principal_id = candidate
+                    connection.execute(
+                        "INSERT INTO principals(principal_id, created_at) VALUES (?, ?)",
+                        (connected_principal_id, serialized_created_at),
+                    )
+                    break
+                if not connected_principal_id:
+                    raise _error(
+                        "principal_id_conflict",
+                        "could not allocate a unique Principal ID",
+                        409,
+                    )
+            else:
+                connected_principal_id = aicoo["principal_id"]
+            self._seed_principal_profile_in_connection(
+                connection,
+                connected_principal_id,
+                "demo.aicoo.principal",
+                "Aicoo",
+                "connected",
+                "A connected company Principal with discoverable specialist Agents.",
+                serialized_created_at,
+            )
+
+            owner_agent_ids = []
+            for slug, label, role, summary, capabilities, discoverability in (
+                _DEMO_OWNER_AGENTS
+            ):
+                owner_agent_ids.append(
+                    self._seed_agent_in_connection(
+                        connection,
+                        principal_id,
+                        f"demo.owner.{principal_id}.{slug}",
+                        label,
+                        role,
+                        summary,
+                        "offline",
+                        capabilities,
+                        discoverability,
+                        0,
+                        serialized_created_at,
+                    )
+                )
+
+            connected_agent_ids = []
+            for slug, label, role, summary, capabilities in _DEMO_AICOO_AGENTS:
+                connected_agent_ids.append(
+                    self._seed_agent_in_connection(
+                        connection,
+                        connected_principal_id,
+                        f"demo.aicoo.{slug}",
+                        label,
+                        role,
+                        summary,
+                        "template",
+                        capabilities,
+                        1,
+                        1,
+                        serialized_created_at,
+                    )
+                )
+
+            left_principal_id, right_principal_id = sorted(
+                (principal_id, connected_principal_id)
+            )
+            connection.execute(
+                """
+                INSERT INTO principal_connections(
+                    connection_id, left_principal_id, right_principal_id, created_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(left_principal_id, right_principal_id) DO NOTHING
+                """,
+                (
+                    _new_id("connection_"),
+                    left_principal_id,
+                    right_principal_id,
+                    serialized_created_at,
+                ),
+            )
+
+            connection_count = int(
+                connection.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM principal_connections
+                    WHERE left_principal_id = ? AND right_principal_id = ?
+                    """,
+                    (left_principal_id, right_principal_id),
+                ).fetchone()[0]
+            )
+            return {
+                "principal_id": principal_id,
+                "connected_principal_id": connected_principal_id,
+                "owner_agent_ids": owner_agent_ids,
+                "connected_agent_ids": connected_agent_ids,
+                "counts": {
+                    "owner_agents": len(owner_agent_ids),
+                    "connected_agents": len(connected_agent_ids),
+                    "principal_connections": connection_count,
+                },
+            }
 
     @staticmethod
     def _matching_token_row(
