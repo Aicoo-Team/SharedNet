@@ -673,6 +673,222 @@ class ControlStore:
         with self._connect() as connection:
             return self._instance_by_id(connection, instance_id)
 
+    def _require_actor_identity_in_connection(
+        self,
+        connection: sqlite3.Connection,
+        identity: ActorIdentity,
+    ) -> sqlite3.Row:
+        row = connection.execute(
+            """
+            SELECT * FROM agent_instances
+            WHERE instance_id = ? AND runtime_id = ? AND agent_id = ? AND principal_id = ?
+              AND credential_status = 'active'
+            """,
+            (
+                identity.instance_id,
+                identity.runtime_id,
+                identity.agent_id,
+                identity.principal_id,
+            ),
+        ).fetchone()
+        if row is None:
+            raise _error("invalid_instance_identity", "Instance identity is invalid", 401)
+        if row["status"] == InstanceStatus.ENDED.value:
+            raise _error("instance_ended", "Instance has ended", 409)
+        if _parse_timestamp(row["expires_at"]) <= self.clock():
+            raise _error("instance_expired", "Instance lease has expired", 401)
+        return row
+
+    def request_decision(
+        self,
+        identity: ActorIdentity,
+        mode: DecisionMode,
+        title: str,
+        description: str,
+        consequence: str | None,
+        room_id: str | None,
+    ) -> HumanDecision:
+        created_at = self.clock()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._require_actor_identity_in_connection(connection, identity)
+            if room_id is not None:
+                membership = connection.execute(
+                    """
+                    SELECT 1
+                    FROM rooms
+                    JOIN room_memberships
+                      ON room_memberships.room_id = rooms.room_id
+                    WHERE rooms.room_id = ?
+                      AND room_memberships.principal_id = ?
+                      AND room_memberships.agent_id = ?
+                      AND room_memberships.status = 'active'
+                    """,
+                    (room_id, identity.principal_id, identity.agent_id),
+                ).fetchone()
+                if membership is None:
+                    raise _error(
+                        "room_membership_required",
+                        "active Room membership is required for a linked Decision",
+                        403,
+                    )
+
+            for _ in range(_GENERATED_ID_ATTEMPTS):
+                decision_id = _new_id("decision_")
+                if connection.execute(
+                    "SELECT 1 FROM human_decisions WHERE decision_id = ?",
+                    (decision_id,),
+                ).fetchone() is not None:
+                    continue
+                connection.execute(
+                    """
+                    INSERT INTO human_decisions(
+                        decision_id, pairing_id, room_id, target_principal_id,
+                        requester_principal_id, requester_agent_id, requester_runtime_id,
+                        requester_instance_id, response_mode, title, description,
+                        consequence, status, response_text, created_at, resolved_at
+                    ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                              'pending', NULL, ?, NULL)
+                    """,
+                    (
+                        decision_id,
+                        room_id,
+                        identity.principal_id,
+                        identity.principal_id,
+                        identity.agent_id,
+                        identity.runtime_id,
+                        identity.instance_id,
+                        mode.value,
+                        title,
+                        description,
+                        consequence,
+                        _timestamp(created_at),
+                    ),
+                )
+                return self._decision_by_id(connection, decision_id)
+        raise _error("decision_id_conflict", "could not allocate a unique Decision ID", 409)
+
+    def list_decisions_for_account(
+        self,
+        auth_user_id: str,
+        status: DecisionStatus | None,
+    ) -> tuple[HumanDecision, ...]:
+        validated_user_id = self._validate_auth_user_id(auth_user_id)
+        parameters: list[str] = [validated_user_id]
+        status_clause = ""
+        if status is not None:
+            status_clause = " AND decision.status = ?"
+            parameters.append(status.value)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT decision.*
+                FROM human_decisions AS decision
+                JOIN account_principals AS account
+                  ON account.principal_id = decision.target_principal_id
+                WHERE account.auth_user_id = ?{status_clause}
+                ORDER BY decision.created_at DESC, decision.decision_id ASC
+                """,
+                parameters,
+            ).fetchall()
+        return tuple(self._decision(row) for row in rows)
+
+    def resolve_decision_for_account(
+        self,
+        auth_user_id: str,
+        decision_id: str,
+        outcome: DecisionStatus,
+        response_text: str | None,
+    ) -> HumanDecision:
+        validated_user_id = self._validate_auth_user_id(auth_user_id)
+        now = self.clock()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT decision.*
+                FROM human_decisions AS decision
+                JOIN account_principals AS account
+                  ON account.principal_id = decision.target_principal_id
+                WHERE decision.decision_id = ? AND account.auth_user_id = ?
+                """,
+                (decision_id, validated_user_id),
+            ).fetchone()
+            if row is None:
+                raise _error("decision_not_found", "Decision was not found", 404)
+
+            mode = DecisionMode(row["response_mode"])
+            if mode is DecisionMode.APPROVAL:
+                if outcome not in {DecisionStatus.APPROVED, DecisionStatus.DENIED}:
+                    raise _error(
+                        "invalid_decision_response",
+                        "approval Decisions require approved or denied",
+                        400,
+                    )
+            elif outcome is not DecisionStatus.ANSWERED or response_text is None:
+                raise _error(
+                    "invalid_decision_response",
+                    "text Decisions require a non-empty answer",
+                    400,
+                )
+
+            if row["status"] != DecisionStatus.PENDING.value:
+                if row["status"] == outcome.value and row["response_text"] == response_text:
+                    return self._decision(row)
+                raise _error(
+                    "decision_already_resolved",
+                    "Decision was already resolved with another response",
+                    409,
+                )
+
+            resolved_at = _timestamp(now)
+            connection.execute(
+                """
+                UPDATE human_decisions
+                SET status = ?, response_text = ?, resolved_at = ?
+                WHERE decision_id = ?
+                """,
+                (outcome.value, response_text, resolved_at, decision_id),
+            )
+            if row["pairing_id"] is not None:
+                connection.execute(
+                    """
+                    UPDATE pairing_challenges
+                    SET status = ?, resolved_at = ?
+                    WHERE pairing_id = ? AND status = 'claimed'
+                    """,
+                    (outcome.value, resolved_at, row["pairing_id"]),
+                )
+            return self._decision_by_id(connection, decision_id)
+
+    def get_decision_for_instance(
+        self,
+        identity: ActorIdentity,
+        decision_id: str,
+    ) -> HumanDecision:
+        with self._connect() as connection:
+            self._require_actor_identity_in_connection(connection, identity)
+            row = connection.execute(
+                """
+                SELECT * FROM human_decisions
+                WHERE decision_id = ?
+                  AND requester_principal_id = ?
+                  AND requester_agent_id = ?
+                  AND requester_runtime_id = ?
+                  AND requester_instance_id = ?
+                """,
+                (
+                    decision_id,
+                    identity.principal_id,
+                    identity.agent_id,
+                    identity.runtime_id,
+                    identity.instance_id,
+                ),
+            ).fetchone()
+        if row is None:
+            raise _error("decision_not_found", "Decision was not found", 404)
+        return self._decision(row)
+
     def revoke_connector(self, connector_token: str) -> None:
         now = self.clock()
         with self._connect() as connection:

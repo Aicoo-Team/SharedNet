@@ -12,6 +12,8 @@ from .models import (
     AgentInstance,
     ConnectorSession,
     ControlError,
+    DecisionMode,
+    DecisionStatus,
     HumanDecision,
     InstanceSession,
     PairingStart,
@@ -133,6 +135,118 @@ class ControlService:
     def authenticate_instance(self, instance_token: str) -> ActorIdentity:
         return self.store.authenticate_instance(
             self._token(instance_token, "instance")
+        )
+
+    def request_decision(
+        self,
+        identity: ActorIdentity,
+        mode: str,
+        title: str,
+        description: str,
+        consequence: str | None = None,
+        room_id: str | None = None,
+    ) -> HumanDecision:
+        if not isinstance(identity, ActorIdentity):
+            raise ControlError(
+                "invalid_instance_identity",
+                "Decision requester must be an Instance identity",
+                401,
+            )
+        try:
+            response_mode = DecisionMode(mode)
+        except (TypeError, ValueError) as error:
+            raise ControlError(
+                "invalid_decision_mode",
+                "Decision mode must be approval or text",
+                400,
+            ) from error
+        normalized_title = self._bounded_text(title, "title", 200)
+        normalized_description = self._bounded_text(description, "description", 4000)
+        normalized_consequence = self._optional_bounded_text(
+            consequence,
+            "consequence",
+            4000,
+        )
+        if room_id is not None:
+            room_id = self._bounded_text(room_id, "room_id", 128)
+        return self.store.request_decision(
+            identity,
+            response_mode,
+            normalized_title,
+            normalized_description,
+            normalized_consequence,
+            room_id,
+        )
+
+    def list_decisions_for_account(
+        self,
+        auth_user_id: str,
+        status: str | None = None,
+    ) -> tuple[HumanDecision, ...]:
+        normalized_status = None
+        if status is not None:
+            try:
+                normalized_status = DecisionStatus(status)
+            except (TypeError, ValueError) as error:
+                raise ControlError(
+                    "invalid_decision_status",
+                    "Decision status is invalid",
+                    400,
+                ) from error
+        return self.store.list_decisions_for_account(auth_user_id, normalized_status)
+
+    def resolve_decision_for_account(
+        self,
+        auth_user_id: str,
+        decision_id: str,
+        outcome: str,
+        response_text: str | None = None,
+    ) -> HumanDecision:
+        try:
+            normalized_outcome = DecisionStatus(outcome)
+        except (TypeError, ValueError) as error:
+            raise ControlError(
+                "invalid_decision_response",
+                "Decision outcome is invalid",
+                400,
+            ) from error
+        if normalized_outcome is DecisionStatus.PENDING:
+            raise ControlError(
+                "invalid_decision_response",
+                "pending is not a Decision response",
+                400,
+            )
+        if response_text is not None and (
+            not isinstance(response_text, str)
+            or not response_text.strip()
+            or len(response_text) > 4000
+        ):
+            raise ControlError(
+                "invalid_decision_response",
+                "Decision response text must contain 1 to 4000 characters",
+                400,
+            )
+        return self.store.resolve_decision_for_account(
+            auth_user_id,
+            self._bounded_text(decision_id, "decision_id", 128),
+            normalized_outcome,
+            response_text,
+        )
+
+    def get_decision_for_instance(
+        self,
+        identity: ActorIdentity,
+        decision_id: str,
+    ) -> HumanDecision:
+        if not isinstance(identity, ActorIdentity):
+            raise ControlError(
+                "invalid_instance_identity",
+                "Decision requester must be an Instance identity",
+                401,
+            )
+        return self.store.get_decision_for_instance(
+            identity,
+            self._bounded_text(decision_id, "decision_id", 128),
         )
 
     @staticmethod
