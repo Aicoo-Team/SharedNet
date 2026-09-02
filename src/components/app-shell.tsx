@@ -10,7 +10,10 @@ import {
   useState,
 } from "react";
 import { authClient } from "@/lib/auth-client";
-import { useSharedNetDemo } from "@/src/context/sharednet-demo-context";
+import {
+  SharedNetProvider,
+  useSharedNet,
+} from "@/src/context/sharednet-context";
 
 const navigation = [
   { href: "/chat", label: "Chat" },
@@ -27,6 +30,7 @@ type Account = Readonly<{
 
 function AccountControl({ account }: Readonly<{ account: Account }>) {
   const router = useRouter();
+  const { principal, status } = useSharedNet();
   const controlRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
@@ -91,7 +95,13 @@ function AccountControl({ account }: Readonly<{ account: Account }>) {
             <strong>{displayName}</strong>
             <span>{account.email}</span>
           </div>
-          <p>Account · {account.id}</p>
+          <p>
+            {principal
+              ? `Principal · ${principal.principal_id}`
+              : status === "loading"
+                ? "Principal loading…"
+                : "Principal unavailable"}
+          </p>
           {signOutError ? <p className="rail-account-error" role="alert">{signOutError}</p> : null}
           <button disabled={signingOut} onClick={() => void signOut()} type="button">
             {signingOut ? "Signing out" : "Sign out"}
@@ -121,8 +131,8 @@ export function formatTokenCount(value: number): string {
 
 function ProductShell({ account, children }: { account: Account; children: ReactNode }) {
   const pathname = usePathname();
-  const { state } = useSharedNetDemo();
-  const pendingCount = state.decisions.filter(
+  const { decisions } = useSharedNet();
+  const pendingCount = decisions.filter(
     (decision) => decision.status === "pending",
   ).length;
 
@@ -210,7 +220,11 @@ function AuthenticatedProductShell({ children }: { children: ReactNode }) {
     return <main className="account-loading" role="status">Loading account…</main>;
   }
 
-  return <ProductShell account={data.user}>{children}</ProductShell>;
+  return (
+    <SharedNetProvider key={data.user.id}>
+      <ProductShell account={data.user}>{children}</ProductShell>
+    </SharedNetProvider>
+  );
 }
 
 export function AppShell({ children }: { children: ReactNode }) {

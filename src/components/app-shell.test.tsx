@@ -1,6 +1,8 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { SharedNetDemoProvider } from "@/src/context/sharednet-demo-context";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import { useSharedNet } from "@/src/context/sharednet-context";
+
 import { AppShell } from "./app-shell";
 
 const navigationState = vi.hoisted(() => ({ pathname: "/chat", replace: vi.fn() }));
@@ -15,34 +17,121 @@ vi.mock("next/navigation", () => ({
   useRouter: () => ({ replace: navigationState.replace }),
 }));
 
+const NOW = "2026-09-03T05:00:00+00:00";
+const PRINCIPAL_ID = "p_15COsXY9aK";
+const SECOND_PRINCIPAL_ID = "p_3SecondOne";
+
+const principal = {
+  created_at: NOW,
+  diagnostic_label: "Xisen",
+  kind: "human",
+  principal_id: PRINCIPAL_ID,
+  summary: "SharedNet account Principal",
+};
+
+const network = {
+  agents: [],
+  connected_principals: [],
+  edges: [],
+  instances: [],
+  principal,
+  runtimes: [],
+};
+
+const pendingDecision = {
+  consequence: "The deploy remains paused",
+  created_at: NOW,
+  decision_id: "decision_launch",
+  description: "Approve the production launch",
+  requester: null,
+  resolved_at: null,
+  response_mode: "approval",
+  response_text: null,
+  room_id: null,
+  status: "pending",
+  target_principal_id: PRINCIPAL_ID,
+  title: "Production launch",
+};
+
+const approvedDecision = {
+  ...pendingDecision,
+  decision_id: "decision_reviewed",
+  resolved_at: NOW,
+  response_text: "Approved after review",
+  status: "approved",
+  title: "Reviewed launch",
+};
+
+function dashboardFetch(input: RequestInfo | URL): Promise<Response> {
+  const path = String(input);
+  if (path === "/api/sharednet/bootstrap") {
+    return Promise.resolve(Response.json({ principal_id: PRINCIPAL_ID }));
+  }
+  if (path === "/api/sharednet/rooms") {
+    return Promise.resolve(Response.json({ rooms: [] }));
+  }
+  if (path === "/api/sharednet/network") {
+    return Promise.resolve(Response.json(network));
+  }
+  if (path === "/api/sharednet/decisions") {
+    return Promise.resolve(
+      Response.json({ decisions: [pendingDecision, approvedDecision] }),
+    );
+  }
+  return Promise.reject(new Error(`Unexpected Dashboard request: ${path}`));
+}
+
+function signedInSession(userId = "user_xisen") {
+  return {
+    data: {
+      session: { id: `session_${userId}`, userId },
+      user: {
+        email: "xisen.demo@sharednet.local",
+        id: userId,
+        image: null,
+        name: "Xisen",
+      },
+    },
+    error: null,
+    isPending: false,
+  };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
+function PrincipalProbe() {
+  const { principal: livePrincipal, status } = useSharedNet();
+  return (
+    <output data-testid="shell-principal">
+      {status}:{livePrincipal?.principal_id ?? "none"}
+    </output>
+  );
+}
+
 describe("SharedNet application shell", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     navigationState.pathname = "/chat";
-    authClient.useSession.mockReturnValue({
-      data: {
-        session: { id: "session_xisen", userId: "user_xisen" },
-        user: {
-          email: "xisen.demo@sharednet.local",
-          id: "user_xisen",
-          image: null,
-          name: "Xisen",
-        },
-      },
-      error: null,
-      isPending: false,
-    });
+    authClient.useSession.mockReturnValue(signedInSession());
     authClient.signOut.mockResolvedValue({ data: null, error: null });
-    window.localStorage.clear();
+    vi.stubGlobal("fetch", vi.fn(dashboardFetch));
   });
 
-  it("keeps the three product surfaces separate from the registration point", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("keeps the three product surfaces separate from the registration point", async () => {
     render(
-      <SharedNetDemoProvider>
-        <AppShell>
-          <p>Page content</p>
-        </AppShell>
-      </SharedNetDemoProvider>,
+      <AppShell>
+        <p>Page content</p>
+      </AppShell>,
     );
 
     const navigation = screen.getByRole("navigation", { name: "Primary surfaces" });
@@ -59,10 +148,9 @@ describe("SharedNet application shell", () => {
       "href",
       "/network",
     );
-    expect(screen.getByRole("link", { name: "Decisions, 2 pending" })).toHaveAttribute(
-      "href",
-      "/decisions",
-    );
+    expect(
+      await screen.findByRole("link", { name: "Decisions, 1 pending" }),
+    ).toHaveAttribute("href", "/decisions");
     expect(navigation.querySelectorAll(".rail-dot")).toHaveLength(3);
     const setup = screen.getByRole("navigation", { name: "Setup" });
     expect(setup.querySelectorAll("a")).toHaveLength(1);
@@ -72,18 +160,17 @@ describe("SharedNet application shell", () => {
     expect(
       screen.getByRole("link", { name: "Agent registration protocol" }),
     ).not.toHaveAttribute("aria-current");
-    expect(screen.getByText("2", { selector: ".rail-decision-badge" })).toBeTruthy();
+    expect(screen.getByText("1", { selector: ".rail-decision-badge" })).toBeTruthy();
     expect(screen.queryByText("SharedNet")).toBeNull();
     expect(screen.queryByLabelText(/Platform usage/)).toBeNull();
   });
 
-  it("shows the signed-in account in the lower-left rail and signs out", async () => {
+  it("shows the live SharedNet principal in the account panel and signs out", async () => {
+    const fetchMock = vi.mocked(fetch);
     render(
-      <SharedNetDemoProvider>
-        <AppShell>
-          <p>Page content</p>
-        </AppShell>
-      </SharedNetDemoProvider>,
+      <AppShell>
+        <p>Page content</p>
+      </AppShell>,
     );
 
     const accountButton = screen.getByRole("button", { name: "Open Xisen account" });
@@ -93,38 +180,123 @@ describe("SharedNet application shell", () => {
     const accountPanel = screen.getByRole("region", { name: "Account" });
     expect(accountPanel).toHaveTextContent("Xisen");
     expect(accountPanel).toHaveTextContent("xisen.demo@sharednet.local");
+    await waitFor(() => expect(accountPanel).toHaveTextContent(PRINCIPAL_ID));
+    expect(accountPanel).not.toHaveTextContent("user_xisen");
+    expect(fetchMock.mock.calls.every(([input]) => !String(input).includes("user_xisen")))
+      .toBe(true);
 
     fireEvent.click(within(accountPanel).getByRole("button", { name: "Sign out" }));
     await waitFor(() => expect(authClient.signOut).toHaveBeenCalledTimes(1));
     expect(navigationState.replace).toHaveBeenCalledWith("/login");
   });
 
-  it("redirects an expired session to the 3001 login route", async () => {
-    authClient.useSession.mockReturnValue({ data: null, error: null, isPending: false });
+  it("shows a neutral principal label when the live projection is unavailable", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const path = String(input);
+        if (path === "/api/sharednet/network") {
+          return Promise.resolve(Response.json({ error: "offline" }, { status: 503 }));
+        }
+        return dashboardFetch(input);
+      }),
+    );
 
     render(
-      <SharedNetDemoProvider>
-        <AppShell>
-          <p>Private chat</p>
-        </AppShell>
-      </SharedNetDemoProvider>,
+      <AppShell>
+        <p>Page content</p>
+      </AppShell>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Open Xisen account" }));
+    const accountPanel = screen.getByRole("region", { name: "Account" });
+
+    await waitFor(() => expect(accountPanel).toHaveTextContent("Principal unavailable"));
+    expect(accountPanel).not.toHaveTextContent("user_xisen");
+  });
+
+  it("redirects an expired session without mounting the live provider", async () => {
+    authClient.useSession.mockReturnValue({ data: null, error: null, isPending: false });
+    const fetchMock = vi.mocked(fetch);
+
+    render(
+      <AppShell>
+        <p>Private chat</p>
+      </AppShell>,
     );
 
     await waitFor(() => {
       expect(navigationState.replace).toHaveBeenCalledWith("/login?next=%2Fchat");
     });
     expect(screen.getByRole("status")).toHaveTextContent("Loading account");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("mounts fresh live state when the Better Auth account changes", async () => {
+    let account = 1;
+    let bootstrapCalls = 0;
+    const secondNetwork = deferred<Response>();
+    const fetchMock = vi.fn((input: RequestInfo | URL): Promise<Response> => {
+      const path = String(input);
+      if (path === "/api/sharednet/bootstrap") {
+        bootstrapCalls += 1;
+        return Promise.resolve(
+          Response.json({
+            principal_id: account === 1 ? PRINCIPAL_ID : SECOND_PRINCIPAL_ID,
+          }),
+        );
+      }
+      if (path === "/api/sharednet/rooms") {
+        return Promise.resolve(Response.json({ rooms: [] }));
+      }
+      if (path === "/api/sharednet/decisions") {
+        return Promise.resolve(Response.json({ decisions: [] }));
+      }
+      if (path === "/api/sharednet/network") {
+        return account === 1 ? Promise.resolve(Response.json(network)) : secondNetwork.promise;
+      }
+      return Promise.reject(new Error(`Unexpected Dashboard request: ${path}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const view = render(
+      <AppShell>
+        <PrincipalProbe />
+      </AppShell>,
+    );
+    expect(await screen.findByText(`ready:${PRINCIPAL_ID}`)).toBeVisible();
+
+    account = 2;
+    authClient.useSession.mockReturnValue(signedInSession("user_second"));
+    view.rerender(
+      <AppShell>
+        <PrincipalProbe />
+      </AppShell>,
+    );
+
+    expect(screen.getByTestId("shell-principal")).toHaveTextContent("loading:none");
+    expect(screen.getByTestId("shell-principal")).not.toHaveTextContent(PRINCIPAL_ID);
+    await waitFor(() => expect(bootstrapCalls).toBe(2));
+
+    secondNetwork.resolve(
+      Response.json({
+        ...network,
+        principal: {
+          ...principal,
+          diagnostic_label: "Second account",
+          principal_id: SECOND_PRINCIPAL_ID,
+        },
+      }),
+    );
+    expect(await screen.findByText(`ready:${SECOND_PRINCIPAL_ID}`)).toBeVisible();
   });
 
   it("marks the setup point active without activating a product surface", () => {
     navigationState.pathname = "/protocol";
 
     render(
-      <SharedNetDemoProvider>
-        <AppShell>
-          <p>Protocol content</p>
-        </AppShell>
-      </SharedNetDemoProvider>,
+      <AppShell>
+        <p>Protocol content</p>
+      </AppShell>,
     );
 
     expect(
@@ -141,11 +313,9 @@ describe("SharedNet application shell", () => {
     navigationState.pathname = "/";
 
     render(
-      <SharedNetDemoProvider>
-        <AppShell>
-          <p>Standalone marketing page</p>
-        </AppShell>
-      </SharedNetDemoProvider>,
+      <AppShell>
+        <p>Standalone marketing page</p>
+      </AppShell>,
     );
 
     expect(screen.getByText("Standalone marketing page")).toBeVisible();
@@ -158,11 +328,9 @@ describe("SharedNet application shell", () => {
     navigationState.pathname = "/login";
 
     render(
-      <SharedNetDemoProvider>
-        <AppShell>
-          <h1>Sign in to SharedNet</h1>
-        </AppShell>
-      </SharedNetDemoProvider>,
+      <AppShell>
+        <h1>Sign in to SharedNet</h1>
+      </AppShell>,
     );
 
     expect(screen.getByRole("heading", { name: "Sign in to SharedNet" })).toBeVisible();
