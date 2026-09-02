@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import unittest
 
+from sharednet.control.models import ActorIdentity
 from sharednet.room.errors import RoomError
 from sharednet.room.models import (
     Artifact,
@@ -30,6 +31,39 @@ NOW = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
 
 
 class RoomModelTests(unittest.TestCase):
+    def test_room_and_message_accept_complete_instance_provenance(self) -> None:
+        identity = ActorIdentity(
+            "p_15COsXY9aK",
+            "a_7Qm2Zx8WpL",
+            "r_4Nk8Vm2QaT",
+            "i_8pQ2Km7XaN",
+        )
+        room = Room(
+            "room_instance",
+            "Instance room",
+            None,
+            identity,
+            "principal_only",
+            RoomStatus.OPEN,
+            NOW,
+            NOW,
+        )
+        message = Message(
+            "message_instance",
+            room.room_id,
+            1,
+            identity,
+            "hello",
+            None,
+            (),
+            (),
+            NOW,
+            ResolutionState.NOT_REQUIRED,
+        )
+
+        self.assertEqual(room.to_dict()["creator"]["instance_id"], identity.instance_id)
+        self.assertEqual(message.to_dict()["sender"]["instance_id"], identity.instance_id)
+
     def test_cursor_round_trip_and_validation(self) -> None:
         self.assertEqual(parse_cursor(None), 0)
         self.assertEqual(parse_cursor("cursor_41"), 41)

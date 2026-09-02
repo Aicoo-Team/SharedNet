@@ -10,6 +10,10 @@ import json
 from pathlib import Path
 import secrets
 import sqlite3
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..control.models import ActorIdentity
 
 from ..identity import new_runtime_id
 from .errors import RoomError
@@ -348,7 +352,7 @@ class RoomStore:
     def _require_identity(
         self,
         connection: sqlite3.Connection,
-        identity: RuntimeIdentity,
+        identity: RuntimeIdentity | ActorIdentity,
     ) -> None:
         row = connection.execute(
             """
@@ -360,10 +364,33 @@ class RoomStore:
         ).fetchone()
         if row is None:
             raise _error("invalid_runtime_identity", "runtime identity is not registered", 401)
+        instance_id = getattr(identity, "instance_id", None)
+        if instance_id is None:
+            return
+        instance = connection.execute(
+            """
+            SELECT status, credential_status, expires_at
+            FROM agent_instances
+            WHERE instance_id = ? AND runtime_id = ? AND agent_id = ? AND principal_id = ?
+            """,
+            (
+                instance_id,
+                identity.runtime_id,
+                identity.agent_id,
+                identity.principal_id,
+            ),
+        ).fetchone()
+        if (
+            instance is None
+            or instance["status"] != "online"
+            or instance["credential_status"] != "active"
+            or _parse_timestamp(instance["expires_at"]) <= self.clock()
+        ):
+            raise _error("invalid_instance_identity", "Instance identity is not active", 401)
 
     def create_room(
         self,
-        identity: RuntimeIdentity,
+        identity: RuntimeIdentity | ActorIdentity,
         name: str,
         description: str | None,
         access_policy: str,
@@ -391,8 +418,9 @@ class RoomStore:
                 INSERT INTO rooms(
                     room_id, name, description,
                     creator_principal_id, creator_agent_id, creator_runtime_id,
+                    creator_instance_id,
                     access_policy, status, created_at, updated_at, latest_sequence
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
                 """,
                 (
                     room.room_id,
@@ -401,6 +429,7 @@ class RoomStore:
                     identity.principal_id,
                     identity.agent_id,
                     identity.runtime_id,
+                    getattr(identity, "instance_id", None),
                     room.access_policy,
                     room.status.value,
                     serialized_created_at,
@@ -590,7 +619,7 @@ class RoomStore:
 
     def post_message(
         self,
-        identity: RuntimeIdentity,
+        identity: RuntimeIdentity | ActorIdentity,
         room_id: str,
         content: str,
         reply_to: str | None,
@@ -662,9 +691,10 @@ class RoomStore:
                 INSERT INTO messages(
                     message_id, room_id, sequence,
                     sender_principal_id, sender_agent_id, sender_runtime_id,
+                    sender_instance_id,
                     content, reply_to, tags_json, attachment_ids_json,
                     created_at, resolution_state
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     message.message_id,
@@ -673,6 +703,7 @@ class RoomStore:
                     identity.principal_id,
                     identity.agent_id,
                     identity.runtime_id,
+                    getattr(identity, "instance_id", None),
                     message.content,
                     message.reply_to,
                     tags_json,
@@ -970,15 +1001,26 @@ class RoomStore:
     @staticmethod
     def _message(row: sqlite3.Row) -> Message:
         tags = tuple(CoordinationTag(**item) for item in json.loads(row["tags_json"]))
+        if row["sender_instance_id"] is None:
+            identity: RuntimeIdentity | ActorIdentity = RuntimeIdentity(
+                row["sender_principal_id"],
+                row["sender_agent_id"],
+                row["sender_runtime_id"],
+            )
+        else:
+            from ..control.models import ActorIdentity
+
+            identity = ActorIdentity(
+                row["sender_principal_id"],
+                row["sender_agent_id"],
+                row["sender_runtime_id"],
+                row["sender_instance_id"],
+            )
         return Message(
             message_id=row["message_id"],
             room_id=row["room_id"],
             sequence=row["sequence"],
-            sender=RuntimeIdentity(
-                row["sender_principal_id"],
-                row["sender_agent_id"],
-                row["sender_runtime_id"],
-            ),
+            sender=identity,
             content=row["content"],
             reply_to=row["reply_to"],
             tags=tags,
@@ -1007,11 +1049,21 @@ class RoomStore:
 
     @staticmethod
     def _room(row: sqlite3.Row) -> Room:
-        identity = RuntimeIdentity(
-            row["creator_principal_id"],
-            row["creator_agent_id"],
-            row["creator_runtime_id"],
-        )
+        if row["creator_instance_id"] is None:
+            identity: RuntimeIdentity | ActorIdentity = RuntimeIdentity(
+                row["creator_principal_id"],
+                row["creator_agent_id"],
+                row["creator_runtime_id"],
+            )
+        else:
+            from ..control.models import ActorIdentity
+
+            identity = ActorIdentity(
+                row["creator_principal_id"],
+                row["creator_agent_id"],
+                row["creator_runtime_id"],
+                row["creator_instance_id"],
+            )
         return Room(
             room_id=row["room_id"],
             name=row["name"],

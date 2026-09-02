@@ -6,7 +6,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 import re
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from ..control.models import ActorIdentity
 
 from .errors import RoomError
 
@@ -178,6 +181,14 @@ class RuntimeIdentity:
         return {"principal_id": self.principal_id, "agent_id": self.agent_id, "runtime_id": self.runtime_id}
 
 
+def _is_room_identity(value: object) -> bool:
+    if isinstance(value, RuntimeIdentity):
+        return True
+    from ..control.models import ActorIdentity
+
+    return isinstance(value, ActorIdentity)
+
+
 @dataclass(frozen=True)
 class RuntimeRegistration:
     identity: RuntimeIdentity
@@ -197,7 +208,7 @@ class Room:
     room_id: str
     name: str
     description: str | None
-    creator: RuntimeIdentity
+    creator: RuntimeIdentity | ActorIdentity
     access_policy: str
     status: RoomStatus
     created_at: datetime
@@ -210,8 +221,8 @@ class Room:
         object.__setattr__(self, "name", self.name.strip())
         if self.description is not None and (not isinstance(self.description, str) or len(self.description) > 4000):
             raise _error("invalid_description", "description must be at most 4000 characters")
-        if not isinstance(self.creator, RuntimeIdentity):
-            raise _error("invalid_identity", "creator must be a runtime identity")
+        if not _is_room_identity(self.creator):
+            raise _error("invalid_identity", "creator must be a runtime or Instance identity")
         if self.access_policy not in ("anyone_with_id", "principal_only"):
             raise _error("invalid_access_policy", "access policy is invalid")
         object.__setattr__(self, "status", _enum(self.status, RoomStatus, "status"))
@@ -287,7 +298,7 @@ class Message:
     message_id: str
     room_id: str
     sequence: int
-    sender: RuntimeIdentity
+    sender: RuntimeIdentity | ActorIdentity
     content: str
     reply_to: str | None
     tags: tuple[CoordinationTag, ...]
@@ -300,8 +311,8 @@ class Message:
             object.__setattr__(self, name, _identifier(getattr(self, name), name))
         if isinstance(self.sequence, bool) or not isinstance(self.sequence, int) or self.sequence < 1:
             raise _error("invalid_sequence", "sequence must be a positive integer")
-        if not isinstance(self.sender, RuntimeIdentity):
-            raise _error("invalid_identity", "sender must be a runtime identity")
+        if not _is_room_identity(self.sender):
+            raise _error("invalid_identity", "sender must be a runtime or Instance identity")
         if not isinstance(self.content, str) or not 1 <= len(self.content.strip()) <= 100000:
             raise _error("invalid_content", "content must be 1 to 100000 trimmed characters")
         object.__setattr__(self, "content", self.content.strip())

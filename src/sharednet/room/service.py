@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterable
 import re
-from typing import BinaryIO
+from typing import TYPE_CHECKING, BinaryIO
+
+if TYPE_CHECKING:
+    from ..control.models import ActorIdentity
 
 from .blobs import LocalBlobStore
 from .errors import RoomError
@@ -37,7 +40,7 @@ class RoomService:
 
     def post_message(
         self,
-        identity: RuntimeIdentity,
+        identity: RuntimeIdentity | ActorIdentity,
         room_id: str,
         content: str,
         reply_to: str | None = None,
@@ -58,7 +61,7 @@ class RoomService:
 
     def retrieve_messages(
         self,
-        identity: RuntimeIdentity,
+        identity: RuntimeIdentity | ActorIdentity,
         room_id: str,
         after_cursor: str | None = None,
         limit: int = 50,
@@ -70,7 +73,7 @@ class RoomService:
 
     def resolve_message(
         self,
-        identity: RuntimeIdentity,
+        identity: RuntimeIdentity | ActorIdentity,
         room_id: str,
         message_id: str,
         outcome: str,
@@ -80,7 +83,7 @@ class RoomService:
 
     async def upload_artifact(
         self,
-        identity: RuntimeIdentity,
+        identity: RuntimeIdentity | ActorIdentity,
         room_id: str,
         filename: str,
         media_type: str,
@@ -103,7 +106,7 @@ class RoomService:
 
     def open_artifact(
         self,
-        identity: RuntimeIdentity,
+        identity: RuntimeIdentity | ActorIdentity,
         room_id: str,
         artifact_id: str,
     ) -> tuple[Artifact, BinaryIO]:

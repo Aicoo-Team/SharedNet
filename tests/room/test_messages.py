@@ -12,6 +12,9 @@ import tempfile
 import threading
 import unittest
 
+from sharednet.control.models import ActorIdentity
+from sharednet.control.service import ControlService
+from sharednet.control.store import ControlStore
 from sharednet.room.blobs import LocalBlobStore
 from sharednet.room.errors import RoomError
 from sharednet.room.models import ResolutionState, RuntimeIdentity
@@ -80,6 +83,61 @@ class RoomMessageTests(unittest.TestCase):
                 "SELECT COUNT(*) FROM message_resolutions WHERE message_id = ?",
                 (message_id,),
             ).fetchone()[0]
+
+    def started_instance(self) -> tuple[ActorIdentity, str]:
+        control_store = ControlStore(self.database_path, self.clock)
+        control_store.initialize()
+        control = ControlService(control_store, self.clock)
+        pairing = control.create_pairing("http://127.0.0.1:3001")
+        decision = control.claim_pairing(pairing.pairing_id, "better-auth-room-user")
+        control.resolve_pairing(decision.decision_id, "better-auth-room-user", "approved")
+        connector = control.exchange_pairing(pairing.pairing_id, pairing.pairing_secret)
+        agent = control.create_agent(connector.token, "Room writer", ["room-messaging"])
+        runtime = control.register_runtime(connector.token, agent.agent_id, "codex", "/workspace")
+        instance = control.start_instance(runtime.runtime_token, "provider-thread")
+        return instance.identity, instance.instance_token
+
+    def test_new_room_and_message_persist_instance_provenance(self) -> None:
+        identity, _ = self.started_instance()
+        room = self.store.create_room(identity, "Instance room", None, "principal_only")
+        message = self.service.post_message(identity, room.room_id, "hello")
+
+        self.assertEqual(room.creator, identity)
+        self.assertEqual(message.sender, identity)
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            room_instance_id = connection.execute(
+                "SELECT creator_instance_id FROM rooms WHERE room_id = ?",
+                (room.room_id,),
+            ).fetchone()[0]
+            message_instance_id = connection.execute(
+                "SELECT sender_instance_id FROM messages WHERE message_id = ?",
+                (message.message_id,),
+            ).fetchone()[0]
+        self.assertEqual(room_instance_id, identity.instance_id)
+        self.assertEqual(message_instance_id, identity.instance_id)
+
+        reopened_store = RoomStore(self.database_path, clock=self.clock)
+        reopened_room, _ = reopened_store.get_room(identity, room.room_id)
+        reopened_page = reopened_store.retrieve_messages(identity, room.room_id, 0, 50)
+        self.assertEqual(reopened_room.creator, identity)
+        self.assertEqual(reopened_page.messages[0].sender, identity)
+
+    def test_legacy_room_and_message_keep_null_instance_provenance(self) -> None:
+        identity = self.register("principal_legacy", "agent_legacy", "runtime_legacy")
+        room = self.create_room(identity)
+        message = self.service.post_message(identity, room.room_id, "legacy")
+
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            stored = connection.execute(
+                """
+                SELECT rooms.creator_instance_id, messages.sender_instance_id
+                FROM rooms JOIN messages ON messages.room_id = rooms.room_id
+                WHERE messages.message_id = ?
+                """,
+                (message.message_id,),
+            ).fetchone()
+        self.assertEqual(stored, (None, None))
+        self.assertIsInstance(message.sender, RuntimeIdentity)
 
     def test_active_membership_guards_reads_and_posts_but_closed_history_remains_readable(self) -> None:
         owner = self.register("principal_owner", "agent_owner", "runtime_owner")
