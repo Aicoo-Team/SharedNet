@@ -13,8 +13,32 @@ function DottedField() {
 }
 
 function errorMessage(error: unknown, mode: AuthMode): string {
-  if (error && typeof error === "object" && "message" in error && typeof error.message === "string") {
-    return error.message;
+  if (error && typeof error === "object") {
+    const authError = error as {
+      code?: unknown;
+      message?: unknown;
+      status?: unknown;
+    };
+
+    if (
+      (typeof authError.status === "number" && authError.status >= 500)
+      || authError.code === "INTERNAL_SERVER_ERROR"
+    ) {
+      return "Sign-in service is unavailable. Try again after the server is ready.";
+    }
+
+    if (
+      mode === "sign-in"
+      && (authError.status === 401 || authError.code === "INVALID_EMAIL_OR_PASSWORD")
+    ) {
+      return typeof authError.message === "string" && authError.message.trim()
+        ? authError.message
+        : "Email or password is incorrect.";
+    }
+
+    if (typeof authError.message === "string" && authError.message.trim()) {
+      return authError.message;
+    }
   }
 
   return mode === "sign-in"
@@ -88,7 +112,7 @@ export default function ModernLoginSignup() {
           <h1 id="auth-heading" className="text-[1.5rem] leading-[1.2] font-semibold tracking-[-0.025em]">
             {isSignIn ? (
               <>
-                Sign in to <span className="text-[#B9D9EB]">SharedNet</span>
+                Sign in to <span className="text-[#75AADB]">SharedNet</span>
               </>
             ) : (
               "Create your SharedNet account"

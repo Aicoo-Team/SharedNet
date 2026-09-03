@@ -54,11 +54,11 @@ describe("ModernLoginSignup", () => {
     vi.restoreAllMocks();
   });
 
-  it("uses Columbia blue for the SharedNet word without changing the heading name", () => {
+  it("uses an accessible blue accent for the SharedNet word", () => {
     render(<ModernLoginSignup />);
 
     const heading = screen.getByRole("heading", { name: "Sign in to SharedNet" });
-    expect(within(heading).getByText("SharedNet")).toHaveClass("text-[#B9D9EB]");
+    expect(within(heading).getByText("SharedNet")).toHaveClass("text-[#75AADB]");
   });
 
   it("gives credential fields browser-readable names and email input hints", () => {
@@ -153,6 +153,30 @@ describe("ModernLoginSignup", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("Invalid email or password");
     expect(navigation.replace).not.toHaveBeenCalled();
     expect(screen.getByLabelText("Email")).toHaveValue("xisen@example.com");
+  });
+
+  it("distinguishes an unavailable auth service from incorrect credentials", async () => {
+    authClient.signIn.email.mockResolvedValue({
+      data: null,
+      error: {
+        code: "INTERNAL_SERVER_ERROR",
+        status: 500,
+      },
+    });
+    render(<ModernLoginSignup />);
+
+    fireEvent.change(screen.getByLabelText("Email"), {
+      target: { value: "xisen@example.com" },
+    });
+    fireEvent.change(screen.getByLabelText("Password"), {
+      target: { value: "not-the-password" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Sign in to SharedNet" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Sign-in service is unavailable. Try again after the server is ready.",
+    );
+    expect(navigation.replace).not.toHaveBeenCalled();
   });
 
   it("prevents duplicate submissions while authentication is pending", async () => {
