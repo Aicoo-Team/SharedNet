@@ -38,7 +38,9 @@
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+  list-style: none;
   margin: 28px 0 36px;
+  padding: 0;
 }
 
 .pill {
@@ -99,6 +101,7 @@
   border-radius: 10px;
   color: #17231c;
   font: inherit;
+  min-height: 44px;
   min-width: 0;
   padding: 11px 12px;
 }
@@ -115,7 +118,16 @@
   color: #fff;
   cursor: pointer;
   font: 700 14px/1 "Albert Sans Variable", sans-serif;
+  min-height: 44px;
   padding: 12px 18px;
+}
+
+.button:focus-visible,
+.textLink:focus-visible,
+.field input:focus-visible,
+.field textarea:focus-visible {
+  outline: 3px solid #173f2a;
+  outline-offset: 3px;
 }
 
 .button:disabled {
@@ -128,10 +140,33 @@
   color: #173f2a;
 }
 
+.danger {
+  background: #8a3125;
+  color: #fff;
+}
+
 .actions {
+  align-items: center;
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+}
+
+.textLink {
+  align-items: center;
+  color: #173f2a;
+  display: inline-flex;
+  font-size: 14px;
+  font-weight: 700;
+  min-height: 44px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.card .status {
+  color: #315b3d;
+  font-size: 13px;
+  margin: 8px 0 12px;
 }
 
 .identity {
@@ -154,13 +189,13 @@
 
 .message {
   background: #fff;
-  border-left: 4px solid #77a486;
-  border-radius: 0 10px 10px 0;
+  border: 1px solid #b9c9bd;
+  border-radius: 10px;
   padding: 12px 14px;
 }
 
 .message small {
-  color: #6f7d74;
+  color: #58665d;
   display: block;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   margin-bottom: 5px;
