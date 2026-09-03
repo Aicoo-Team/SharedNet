@@ -148,18 +148,69 @@ class LocalRegistrationTests(TestCase):
                 other_connector.token, first_agent.agent_id, "codex", None
             )
 
+        self.store.revoke_instance(first_instance.instance_token)
+        with self.assertRaisesRegex(ControlError, "invalid_instance_token"):
+            self.service.authenticate_instance(first_instance.instance_token)
+        self.store.revoke_runtime(first_runtime.runtime_token)
+        with self.assertRaisesRegex(ControlError, "invalid_runtime_token"):
+            self.service.start_instance(first_runtime.runtime_token)
         self.store.revoke_connector(first_connector.token)
         with self.assertRaisesRegex(ControlError, "invalid_connector_token"):
             self.service.register_runtime(
                 first_connector.token, first_agent.agent_id, "codex", None
             )
 
-        self.store.revoke_runtime(first_runtime.runtime_token)
-        with self.assertRaisesRegex(ControlError, "invalid_runtime_token"):
-            self.service.start_instance(first_runtime.runtime_token)
-        self.store.revoke_instance(first_instance.instance_token)
+    def test_connector_revocation_is_limited_to_its_issued_descendants(self) -> None:
+        first_connector = self.approved_connector("better-auth-user-1")
+        second_connector = self.approved_connector("better-auth-user-1")
+        agent = self.service.create_agent(first_connector.token, "Codex", ["rooms"])
+        first_runtime = self.service.register_runtime(
+            first_connector.token,
+            agent.agent_id,
+            "codex",
+            None,
+        )
+        second_runtime = self.service.register_runtime(
+            second_connector.token,
+            agent.agent_id,
+            "codex",
+            None,
+        )
+        first_instance = self.service.start_instance(first_runtime.runtime_token)
+        second_instance = self.service.start_instance(second_runtime.runtime_token)
+
+        self.store.revoke_connector(first_connector.token)
+
         with self.assertRaisesRegex(ControlError, "invalid_instance_token"):
             self.service.authenticate_instance(first_instance.instance_token)
+        self.assertEqual(
+            self.service.authenticate_instance(second_instance.instance_token),
+            second_instance.identity,
+        )
+
+    def test_pre_lineage_modern_runtime_credentials_fail_closed(self) -> None:
+        connector = self.approved_connector()
+        agent = self.service.create_agent(connector.token, "Codex", ["rooms"])
+        runtime = self.service.register_runtime(
+            connector.token,
+            agent.agent_id,
+            "codex",
+            None,
+        )
+        instance = self.service.start_instance(runtime.runtime_token)
+
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            connection.execute(
+                "UPDATE runtime_registrations SET connector_credential_id = NULL "
+                "WHERE runtime_id = ?",
+                (runtime.runtime_id,),
+            )
+            connection.commit()
+
+        with self.assertRaisesRegex(ControlError, "invalid_runtime_token"):
+            self.service.start_instance(runtime.runtime_token)
+        with self.assertRaisesRegex(ControlError, "invalid_instance_token"):
+            self.service.authenticate_instance(instance.instance_token)
 
     def test_raw_runtime_and_instance_credentials_are_never_persisted(self) -> None:
         connector = self.approved_connector()

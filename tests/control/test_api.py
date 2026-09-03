@@ -208,6 +208,61 @@ class ControlApiTests(TestCase):
             )
             self.assertEqual(unauthorized.status_code, 401, unauthorized.text)
 
+    def assert_existing_instance_rejected(
+        self,
+        client: TestClient,
+        instance_token: str,
+    ) -> None:
+        headers = authorization("Instance", instance_token)
+        responses = {
+            "heartbeat": client.post(
+                "/v1/local/instances/current/heartbeat",
+                headers=headers,
+                json={"lease_seconds": 90},
+            ),
+            "Room": client.get("/v1/rooms", headers=headers),
+            "Decision": client.post(
+                "/v1/decisions",
+                headers=headers,
+                json={
+                    "mode": "approval",
+                    "title": "Release",
+                    "description": "Approve the release",
+                },
+            ),
+        }
+        for operation, response in responses.items():
+            with self.subTest(operation=operation):
+                self.assertEqual(response.status_code, 401, response.text)
+                self.assertEqual(
+                    response.json()["error"]["code"],
+                    "invalid_instance_token",
+                )
+
+    def test_connector_revocation_invalidates_existing_instance_access(self) -> None:
+        app = self.app()
+        with TestClient(app) as client:
+            connector, _, _, instance = self.started_instance(client)
+
+            app.state.control_store.revoke_connector(connector["connector_token"])
+
+            self.assert_existing_instance_rejected(
+                client,
+                instance["instance_token"],
+            )
+
+    def test_runtime_revocation_invalidates_existing_instance_access(self) -> None:
+        app = self.app()
+        with TestClient(app) as client:
+            _, _, runtime, instance = self.started_instance(client)
+
+            app.state.control_store.revoke_runtime(runtime["runtime_token"])
+
+            self.assert_existing_instance_rejected(
+                client,
+                instance["instance_token"],
+            )
+
     def test_legacy_registration_is_opt_in_and_bearer_use_gets_compatibility_instance(self) -> None:
         with TestClient(self.app(legacy=False)) as client:
             self.assertEqual(

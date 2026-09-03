@@ -133,7 +133,14 @@ def _parser() -> argparse.ArgumentParser:
     serve.add_argument("--max-upload-bytes", type=_positive_int, default=268_435_456)
     serve.add_argument("--allow-remote-without-tls", action="store_true")
 
-    register = room_commands.add_parser("register")
+    register = room_commands.add_parser(
+        "register",
+        help="legacy compatibility only; requires server opt-in",
+        description=(
+            "Legacy compatibility only. This is not SharedNet V1 onboarding "
+            "and requires a server with legacy registration explicitly enabled."
+        ),
+    )
     register.add_argument("--principal-id", required=True)
     register.add_argument("--agent-id", required=True)
     register.add_argument("--runtime-id")
@@ -647,7 +654,13 @@ def _run_room(arguments: argparse.Namespace) -> int:
         if not isinstance(identity, dict):
             raise RoomError("invalid_response", "registration identity is invalid", 502)
         RoomSessionFile(session_path).save(client.base_url, runtime_token, identity)
-        _emit(payload)
+        _emit(
+            {
+                "compatibility": "legacy",
+                "registration": registration_payload,
+                "session_path": str(session_path),
+            }
+        )
         return 0
 
     if arguments.command == "build":

@@ -550,10 +550,141 @@
 }
 
 .room-history {
+  align-content: start;
   display: grid;
+  gap: 22px;
   min-height: 0;
   overflow: auto;
   padding: 18px 24px 30px;
+}
+
+.room-members {
+  display: grid;
+  gap: 10px;
+  margin: 0 auto;
+  max-width: 760px;
+  width: 100%;
+}
+
+.room-members > header {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+
+.room-members h2 {
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.1em;
+  margin: 0;
+  text-transform: uppercase;
+}
+
+.room-members > header span {
+  color: var(--sn-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9px;
+}
+
+.room-member-list,
+.room-runtime-list,
+.room-instance-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.room-member-list {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.room-member-list article {
+  border: 1px solid var(--sn-line);
+  display: grid;
+  gap: 9px;
+  padding: 10px;
+}
+
+.room-member-list article[data-presence="online"] {
+  border-left: 3px solid var(--sn-atlantic);
+}
+
+.room-member-list article > header {
+  align-items: baseline;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.room-member-list article > header strong {
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.room-member-list article > header span,
+.room-member-list article > p,
+.room-runtime-list small,
+.room-instance-list small {
+  color: var(--sn-muted);
+  font-size: 8px;
+}
+
+.room-member-list article > p {
+  margin: 0;
+}
+
+.room-member-list dl {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+}
+
+.room-member-list dl div {
+  display: grid;
+  gap: 7px;
+  grid-template-columns: 48px minmax(0, 1fr);
+}
+
+.room-member-list dt,
+.room-member-list dd {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 8px;
+  margin: 0;
+}
+
+.room-member-list dt,
+.room-runtime-list > li > span,
+.room-instance-list > li > span {
+  color: var(--sn-muted);
+  text-transform: uppercase;
+}
+
+.room-runtime-list,
+.room-instance-list {
+  display: grid;
+  gap: 6px;
+}
+
+.room-runtime-list > li,
+.room-instance-list > li {
+  border-left: 1px solid var(--sn-columbia);
+  display: grid;
+  gap: 2px;
+  padding-left: 7px;
+}
+
+.room-runtime-list span,
+.room-runtime-list code,
+.room-instance-list span,
+.room-instance-list code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 8px;
+}
+
+.room-instance-list {
+  margin-top: 4px;
 }
 
 .room-history-state {

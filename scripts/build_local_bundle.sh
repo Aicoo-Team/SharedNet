@@ -31,7 +31,12 @@ cp "${repository_root}/LICENSES/RAC-MIT.txt" "${bundle_root}/LICENSES/"
 
 (
   cd "${bundle_root}"
-  shasum -a 256 bin/sharednet skills/sharednet-room/SKILL.md > SHA256SUMS
+  find . -type f ! -name SHA256SUMS -print \
+    | LC_ALL=C sort \
+    | while IFS= read -r payload; do
+        shasum -a 256 "${payload#./}"
+      done \
+    > SHA256SUMS
 )
 
 archive_name="sharednet-local-darwin-arm64.tar.gz"

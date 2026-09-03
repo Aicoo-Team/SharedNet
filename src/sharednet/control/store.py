@@ -342,6 +342,18 @@ class ControlStore:
             )
             self._add_column_if_missing(
                 connection,
+                "runtime_registrations",
+                "connector_credential_id",
+                "TEXT REFERENCES principal_connector_credentials(credential_id)",
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS runtime_registrations_connector_idx
+                    ON runtime_registrations(connector_credential_id, credential_status)
+                """
+            )
+            self._add_column_if_missing(
+                connection,
                 "agent_instances",
                 "credential_status",
                 "TEXT NOT NULL DEFAULT 'active'",
@@ -935,8 +947,9 @@ class ControlStore:
                     """
                     INSERT INTO runtime_registrations(
                         runtime_id, principal_id, agent_id, token_hash, created_at,
-                        runtime_kind, workspace_label, credential_status, revoked_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', NULL)
+                        runtime_kind, workspace_label, credential_status, revoked_at,
+                        connector_credential_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', NULL, ?)
                     """,
                     (
                         runtime_id,
@@ -946,6 +959,7 @@ class ControlStore:
                         _timestamp(created_at),
                         runtime_kind,
                         workspace_label,
+                        credential["credential_id"],
                     ),
                 )
                 return RuntimeSession(
@@ -971,13 +985,44 @@ class ControlStore:
             """
         ).fetchall()
         match = self._matching_token_row(rows, runtime_token)
-        if match is None:
+        if match is None or not self._runtime_has_active_connector_ancestry(
+            connection,
+            match,
+        ):
             raise _error(
                 "invalid_runtime_token",
                 "Runtime credential is invalid or revoked",
                 401,
             )
         return match
+
+    @staticmethod
+    def _runtime_has_active_connector_ancestry(
+        connection: sqlite3.Connection,
+        runtime: sqlite3.Row,
+    ) -> bool:
+        connector_credential_id = runtime["connector_credential_id"]
+        if connector_credential_id is None:
+            return not all(
+                is_typed_id(runtime[field], prefix)
+                for field, prefix in (
+                    ("principal_id", "p"),
+                    ("agent_id", "a"),
+                    ("runtime_id", "r"),
+                )
+            )
+        return (
+            connection.execute(
+                """
+                SELECT 1 FROM principal_connector_credentials
+                WHERE credential_id = ?
+                  AND principal_id = ?
+                  AND status = 'active'
+                """,
+                (connector_credential_id, runtime["principal_id"]),
+            ).fetchone()
+            is not None
+        )
 
     def authenticate_runtime(self, runtime_token: str) -> RuntimeBinding:
         if not isinstance(runtime_token, str) or not runtime_token:
@@ -1158,11 +1203,34 @@ class ControlStore:
         *,
         require_active_credential: bool = True,
     ) -> sqlite3.Row:
-        query = "SELECT * FROM agent_instances"
         if require_active_credential:
-            query += " WHERE credential_status = 'active'"
+            query = """
+                SELECT instance.*
+                FROM agent_instances AS instance
+                JOIN runtime_registrations AS runtime
+                  ON runtime.runtime_id = instance.runtime_id
+                 AND runtime.principal_id = instance.principal_id
+                 AND runtime.agent_id = instance.agent_id
+                WHERE instance.credential_status = 'active'
+                  AND runtime.credential_status = 'active'
+            """
+        else:
+            query = "SELECT * FROM agent_instances"
         rows = connection.execute(query).fetchall()
         match = self._matching_token_row(rows, instance_token)
+        if match is not None and require_active_credential:
+            runtime = connection.execute(
+                """
+                SELECT * FROM runtime_registrations
+                WHERE runtime_id = ? AND principal_id = ? AND agent_id = ?
+                """,
+                (match["runtime_id"], match["principal_id"], match["agent_id"]),
+            ).fetchone()
+            if runtime is None or not self._runtime_has_active_connector_ancestry(
+                connection,
+                runtime,
+            ):
+                match = None
         if match is None:
             raise _error(
                 "invalid_instance_token",
@@ -1453,13 +1521,36 @@ class ControlStore:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = self._authenticate_connector_in_connection(connection, connector_token)
+            serialized_now = _timestamp(now)
+            connection.execute(
+                """
+                UPDATE agent_instances
+                SET credential_status = 'revoked', revoked_at = ?
+                WHERE credential_status = 'active'
+                  AND runtime_id IN (
+                    SELECT runtime_id
+                    FROM runtime_registrations
+                    WHERE connector_credential_id = ?
+                  )
+                """,
+                (serialized_now, row["credential_id"]),
+            )
+            connection.execute(
+                """
+                UPDATE runtime_registrations
+                SET credential_status = 'revoked', revoked_at = ?
+                WHERE connector_credential_id = ?
+                  AND credential_status = 'active'
+                """,
+                (serialized_now, row["credential_id"]),
+            )
             connection.execute(
                 """
                 UPDATE principal_connector_credentials
                 SET status = 'revoked', revoked_at = ?
                 WHERE credential_id = ?
                 """,
-                (_timestamp(now), row["credential_id"]),
+                (serialized_now, row["credential_id"]),
             )
 
     def revoke_runtime(self, runtime_token: str) -> None:
@@ -1467,13 +1558,22 @@ class ControlStore:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = self._authenticate_runtime_in_connection(connection, runtime_token)
+            serialized_now = _timestamp(now)
+            connection.execute(
+                """
+                UPDATE agent_instances
+                SET credential_status = 'revoked', revoked_at = ?
+                WHERE runtime_id = ? AND credential_status = 'active'
+                """,
+                (serialized_now, row["runtime_id"]),
+            )
             connection.execute(
                 """
                 UPDATE runtime_registrations
                 SET credential_status = 'revoked', revoked_at = ?
                 WHERE runtime_id = ?
                 """,
-                (_timestamp(now), row["runtime_id"]),
+                (serialized_now, row["runtime_id"]),
             )
 
     def revoke_instance(self, instance_token: str) -> None:

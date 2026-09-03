@@ -16,6 +16,7 @@ import type {
   AgentId,
   InstanceId,
   MessageId,
+  NetworkProjection,
   PrincipalId,
   RoomCursor,
   RoomDetail,
@@ -158,6 +159,102 @@ const roomDetail: RoomDetail = {
     status: "open",
     updated_at: NOW,
   },
+};
+
+const networkProjection: NetworkProjection = {
+  agents: [
+    {
+      agent_id: AGENT_ID,
+      capabilities: ["rooms"],
+      created_at: EARLIER,
+      diagnostic_label: "Codex",
+      discoverability: false,
+      official: false,
+      principal_id: PRINCIPAL_ID,
+      role: "Local agent",
+      runtime_kind: "codex",
+      summary: "Launch owner",
+    },
+    {
+      agent_id: SECOND_AGENT_ID,
+      capabilities: ["verification"],
+      created_at: EARLIER,
+      diagnostic_label: "Reviewer",
+      discoverability: true,
+      official: false,
+      principal_id: SECOND_PRINCIPAL_ID,
+      role: "Review agent",
+      runtime_kind: "claude-code",
+      summary: "Launch reviewer",
+    },
+  ],
+  connected_principals: [
+    {
+      created_at: EARLIER,
+      diagnostic_label: "Review Principal",
+      kind: "connected",
+      principal_id: SECOND_PRINCIPAL_ID,
+      summary: "External review account",
+    },
+  ],
+  edges: [],
+  instances: [
+    {
+      agent_id: AGENT_ID,
+      ended_at: null,
+      expires_at: "2026-09-03T05:13:30+00:00",
+      instance_id: INSTANCE_ID,
+      last_seen_at: NOW,
+      presence: "online",
+      principal_id: PRINCIPAL_ID,
+      runtime_id: RUNTIME_ID,
+      runtime_type: "codex",
+      started_at: EARLIER,
+      status: "online",
+      workspace_label: "/workspace/sharednet",
+    },
+    {
+      agent_id: SECOND_AGENT_ID,
+      ended_at: null,
+      expires_at: EARLIER,
+      instance_id: SECOND_INSTANCE_ID,
+      last_seen_at: EARLIER,
+      presence: "offline",
+      principal_id: SECOND_PRINCIPAL_ID,
+      runtime_id: SECOND_RUNTIME_ID,
+      runtime_type: "claude-code",
+      started_at: EARLIER,
+      status: "online",
+      workspace_label: null,
+    },
+  ],
+  principal: {
+    created_at: EARLIER,
+    diagnostic_label: "Owner Principal",
+    kind: "account",
+    principal_id: PRINCIPAL_ID,
+    summary: "Signed-in account",
+  },
+  runtimes: [
+    {
+      agent_id: AGENT_ID,
+      created_at: EARLIER,
+      principal_id: PRINCIPAL_ID,
+      runtime_id: RUNTIME_ID,
+      runtime_kind: "codex",
+      status: "active",
+      workspace_label: "/workspace/sharednet",
+    },
+    {
+      agent_id: SECOND_AGENT_ID,
+      created_at: EARLIER,
+      principal_id: SECOND_PRINCIPAL_ID,
+      runtime_id: SECOND_RUNTIME_ID,
+      runtime_kind: "claude-code",
+      status: "active",
+      workspace_label: null,
+    },
+  ],
 };
 
 const DRAFT = "Review the release evidence before launch.";
@@ -341,6 +438,45 @@ describe("SharedNet Rooms", () => {
     expect(screen.getByText(ROOM_ID)).toBeVisible();
     expect(screen.getByText("2 members")).toBeVisible();
     expect(screen.getByText("Latest cursor cursor_12")).toBeVisible();
+  });
+
+  it("shows active member identities with lease-derived Runtime and Instance presence", () => {
+    renderChat({ network: networkProjection });
+
+    const members = screen.getByRole("list", { name: "Active Room members" });
+    const owner = within(members).getByRole("article", {
+      name: `Room member ${AGENT_ID}`,
+    });
+    const reviewer = within(members).getByRole("article", {
+      name: `Room member ${SECOND_AGENT_ID}`,
+    });
+
+    expect(owner).toHaveAttribute("data-presence", "online");
+    expect(owner).toHaveTextContent(`Principal${PRINCIPAL_ID}`);
+    expect(owner).toHaveTextContent(`Agent${AGENT_ID}`);
+    expect(owner).toHaveTextContent(`Runtime${RUNTIME_ID}`);
+    expect(owner).toHaveTextContent(`Instance${INSTANCE_ID}`);
+    expect(owner).toHaveTextContent("Online · lease active");
+
+    expect(reviewer).toHaveAttribute("data-presence", "offline");
+    expect(reviewer).toHaveTextContent(`Principal${SECOND_PRINCIPAL_ID}`);
+    expect(reviewer).toHaveTextContent(`Agent${SECOND_AGENT_ID}`);
+    expect(reviewer).toHaveTextContent(`Runtime${SECOND_RUNTIME_ID}`);
+    expect(reviewer).toHaveTextContent(`Instance${SECOND_INSTANCE_ID}`);
+    expect(reviewer).toHaveTextContent("Offline · lease expired or ended");
+  });
+
+  it("keeps active membership and presence visible when the Room has no messages", () => {
+    renderChat({
+      network: networkProjection,
+      selectedRoom: { ...roomDetail, messages: [] },
+    });
+
+    expect(screen.getByRole("list", { name: "Active Room members" })).toBeVisible();
+    expect(
+      screen.getByRole("article", { name: `Room member ${AGENT_ID}` }),
+    ).toBeVisible();
+    expect(screen.getByText("No messages yet")).toBeVisible();
   });
 
   it("renders real messages in ascending Room sequence order", () => {
@@ -687,7 +823,11 @@ describe("SharedNet Rooms", () => {
     });
     expect(prohibitedWrites).toEqual([]);
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(screen.getAllByRole("article")).toHaveLength(2);
+    expect(
+      within(screen.getByRole("list", { name: "Room messages" })).getAllByRole(
+        "article",
+      ),
+    ).toHaveLength(2);
   });
 
   it("does not expose the removed demo workflow or synthetic accounting", () => {

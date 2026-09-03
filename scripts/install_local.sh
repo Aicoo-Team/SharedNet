@@ -25,6 +25,16 @@ fi
 
 (
   cd "${script_dir}"
+  manifest_payloads="$(awk 'NF >= 2 { print $2 }' SHA256SUMS | LC_ALL=C sort)"
+  bundle_payloads="$(
+    find . -type f ! -name SHA256SUMS -print \
+      | sed 's#^\./##' \
+      | LC_ALL=C sort
+  )"
+  if [[ "${manifest_payloads}" != "${bundle_payloads}" ]]; then
+    printf 'Bundle manifest does not cover the complete payload.\n' >&2
+    exit 2
+  fi
   shasum -a 256 -c SHA256SUMS
 )
 

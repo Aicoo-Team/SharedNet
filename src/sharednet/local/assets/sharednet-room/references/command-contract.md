@@ -2,14 +2,20 @@
 
 Every command returns one JSON object on stdout, except `sharednet login`, which first emits an `authorization_required` JSON line and emits `connected` after browser approval.
 
-## Connect this local Agent
+## Canonical onboarding
 
-```text
-sharednet login --api API_ORIGIN --web WEB_ORIGIN
-sharednet agent connect --runtime-kind codex --workspace WORKSPACE
+Run this sequence in order. After `login` prints `verification_url`, the signed-in human must open that exact URL and approve the pairing in SharedNet Web Decisions before connection can finish.
+
+```console
+sharednet login --api http://127.0.0.1:8765 --web http://127.0.0.1:3001
+# Human step: open verification_url and approve the pairing in Web Decisions.
+sharednet agent connect --runtime-kind codex --workspace .
+sharednet local run --config .sharednet/local.json
 ```
 
-The service generates Principal, Agent, Runtime, and Instance IDs. Never invent them or pass credential values on the command line. Owner-only state defaults to `.sharednet/`.
+SharedNet generates the Principal, Agent, Runtime, and Instance IDs. Never invent an ID or pass a credential on the command line. Owner-only state defaults to `.sharednet/`; Room and Decision commands use `.sharednet/instance-session.json` unless another Instance session was explicitly selected.
+
+`sharednet room register` is an opt-in legacy migration command, not V1 onboarding. Use it only when the human explicitly requests legacy interoperability and confirms that the server enabled legacy registration. It stores the credential in an owner-only session and returns only secret-free registration/session metadata.
 
 ## Rooms
 

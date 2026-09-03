@@ -153,6 +153,60 @@ class CliTests(unittest.TestCase):
         self.assertIn("unknown coordination mechanism", payload["error"])
 
 
+class SharedNetSkillContractTests(unittest.TestCase):
+    def test_shipped_onboarding_runs_only_the_generated_identity_flow(self) -> None:
+        from sharednet import cli
+
+        contracts = (
+            REPOSITORY_ROOT
+            / ".agents"
+            / "skills"
+            / "sharednet-room"
+            / "references"
+            / "command-contract.md",
+            REPOSITORY_ROOT
+            / "src"
+            / "sharednet"
+            / "local"
+            / "assets"
+            / "sharednet-room"
+            / "references"
+            / "command-contract.md",
+        )
+        expected_commands = [
+            ("login", None),
+            ("agent", "connect"),
+            ("local", "run"),
+        ]
+
+        for contract in contracts:
+            with self.subTest(contract=contract):
+                text = contract.read_text(encoding="utf-8")
+                _, heading, remainder = text.partition("## Canonical onboarding")
+                self.assertTrue(heading, "canonical onboarding section is missing")
+                _, fence, fenced = remainder.partition("```console")
+                self.assertTrue(fence, "canonical onboarding command block is missing")
+                command_block, closing_fence, _ = fenced.partition("```")
+                self.assertTrue(closing_fence, "canonical onboarding command block is unclosed")
+
+                parsed_commands = []
+                for line in command_block.splitlines():
+                    if not line.startswith("sharednet "):
+                        continue
+                    parsed = cli._parser().parse_args(line.split()[1:])
+                    parsed_commands.append(
+                        (parsed.namespace, getattr(parsed, "command", None))
+                    )
+                    for caller_selected_id in (
+                        "principal_id",
+                        "agent_id",
+                        "runtime_id",
+                    ):
+                        self.assertNotIn(caller_selected_id, vars(parsed))
+
+                self.assertEqual(parsed_commands, expected_commands)
+
+
 class RoomCliTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
@@ -202,22 +256,42 @@ class RoomCliTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         return json.loads(completed.stdout), session_path
 
-    def test_registration_saves_session_and_only_registration_prints_token(self) -> None:
+    def test_legacy_registration_saves_credential_without_printing_it(self) -> None:
         registration, session_path = self.register()
-        token = registration["runtime_token"]
-        self.assertTrue(token)
         session = RoomSessionFile(session_path).load()
-        self.assertEqual(session.runtime_token, token)
+        self.assertTrue(session.runtime_token)
         self.assertEqual(session.identity["runtime_id"], "runtime_alpha")
+        self.assertEqual(registration.get("compatibility"), "legacy")
+        self.assertEqual(
+            Path(str(registration.get("session_path"))).resolve(),
+            session_path.resolve(),
+        )
+        self.assertNotIn("runtime_token", registration)
+        self.assertNotIn(session.runtime_token, json.dumps(registration))
 
         built = self.room_cli("build", "--name", "CLI Room")
         self.assertEqual(built.returncode, 0, built.stderr)
         listed = self.room_cli("list")
         self.assertEqual(listed.returncode, 0, listed.stderr)
         for completed in (built, listed):
-            self.assertNotIn(token, completed.stdout)
-            self.assertNotIn(token, completed.stderr)
+            self.assertNotIn(session.runtime_token, completed.stdout)
+            self.assertNotIn(session.runtime_token, completed.stderr)
         self.assertEqual(json.loads(listed.stdout)["rooms"][0]["name"], "CLI Room")
+
+    def test_room_help_labels_register_as_legacy_compatibility(self) -> None:
+        completed = run_cli("room", "--help")
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        register_help = next(
+            (
+                line.lower()
+                for line in completed.stdout.splitlines()
+                if line.strip().startswith("register ")
+            ),
+            "",
+        )
+        self.assertIn("legacy", register_help)
+        self.assertIn("compatibility", register_help)
 
     def test_cli_posts_repeated_tags_and_attachments_in_argument_order(self) -> None:
         self.register()

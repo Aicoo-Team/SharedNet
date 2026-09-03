@@ -23,6 +23,7 @@ function buildLocalInstruction(draft: string, roomId: RoomId | null): string {
 export function ChatView() {
   const {
     error,
+    network,
     rooms,
     selectRoom,
     selectedRoom,
@@ -48,6 +49,53 @@ export function ChatView() {
         (left, right) => left.sequence - right.sequence,
       ),
     [detail],
+  );
+  const activeMembers = useMemo(
+    () =>
+      (detail?.memberships ?? [])
+        .filter((membership) => membership.status === "active")
+        .map((membership) => {
+          const agent = network?.agents.find(
+            (candidate) =>
+              candidate.agent_id === membership.agent_id &&
+              candidate.principal_id === membership.principal_id,
+          );
+          const runtimes = (network?.runtimes ?? [])
+            .filter(
+              (runtime) =>
+                runtime.agent_id === membership.agent_id &&
+                runtime.principal_id === membership.principal_id,
+            )
+            .map((runtime) => {
+              const instances = (network?.instances ?? []).filter(
+                (instance) =>
+                  instance.runtime_id === runtime.runtime_id &&
+                  instance.agent_id === membership.agent_id &&
+                  instance.principal_id === membership.principal_id,
+              );
+              return {
+                instances,
+                presence:
+                  runtime.status === "active" &&
+                  instances.some((instance) => instance.presence === "online")
+                    ? "online"
+                    : "offline",
+                runtime,
+              };
+            });
+          return {
+            agent,
+            membership,
+            presence:
+              network === null
+                ? "unknown"
+                : runtimes.some((runtime) => runtime.presence === "online")
+                  ? "online"
+                  : "offline",
+            runtimes,
+          };
+        }),
+    [detail, network],
   );
 
   useEffect(() => {
@@ -225,6 +273,106 @@ export function ChatView() {
           {staleNotice}
 
           <div className="room-history">
+            {detail !== null ? (
+              <section
+                aria-labelledby="active-room-members-title"
+                className="room-members"
+              >
+                <header>
+                  <h2 id="active-room-members-title">Active members</h2>
+                  <span>{activeMembers.length}</span>
+                </header>
+                <ul aria-label="Active Room members" className="room-member-list">
+                  {activeMembers.map((member) => (
+                    <li key={member.membership.agent_id}>
+                      <article
+                        aria-label={`Room member ${member.membership.agent_id}`}
+                        data-presence={member.presence}
+                      >
+                        <header>
+                          <strong>
+                            {member.agent?.diagnostic_label ?? "Room Agent"}
+                          </strong>
+                          <span>
+                            {member.presence === "online"
+                              ? "Online"
+                              : member.presence === "offline"
+                                ? "Offline"
+                                : "Presence unavailable"}
+                          </span>
+                        </header>
+                        <dl>
+                          <div>
+                            <dt>Principal</dt>
+                            <dd className="room-canonical-id">
+                              {member.membership.principal_id}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt>Agent</dt>
+                            <dd className="room-canonical-id">
+                              {member.membership.agent_id}
+                            </dd>
+                          </div>
+                        </dl>
+                        {member.presence === "unknown" ? (
+                          <p>Runtime and Instance presence is unavailable.</p>
+                        ) : member.runtimes.length === 0 ? (
+                          <p>No Runtime or Instance presence is projected.</p>
+                        ) : (
+                          <ul
+                            aria-label={`Runtime presence for ${member.membership.agent_id}`}
+                            className="room-runtime-list"
+                          >
+                            {member.runtimes.map((runtime) => (
+                              <li
+                                data-presence={runtime.presence}
+                                key={runtime.runtime.runtime_id}
+                              >
+                                <span>Runtime</span>
+                                <code className="room-canonical-id">
+                                  {runtime.runtime.runtime_id}
+                                </code>
+                                <small>
+                                  {runtime.presence === "online"
+                                    ? "Online · active Instance lease"
+                                    : "Offline · no active Instance lease"}
+                                </small>
+                                {runtime.instances.length > 0 ? (
+                                  <ul
+                                    aria-label={`Instances for ${runtime.runtime.runtime_id}`}
+                                    className="room-instance-list"
+                                  >
+                                    {runtime.instances.map((instance) => (
+                                      <li
+                                        data-presence={instance.presence}
+                                        key={instance.instance_id}
+                                      >
+                                        <span>Instance</span>
+                                        <code className="room-canonical-id">
+                                          {instance.instance_id}
+                                        </code>
+                                        <small>
+                                          {instance.presence === "online"
+                                            ? "Online · lease active"
+                                            : "Offline · lease expired or ended"}
+                                        </small>
+                                      </li>
+                                    ))}
+                                  </ul>
+                                ) : (
+                                  <p>No Instances projected.</p>
+                                )}
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </article>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            ) : null}
             {detail === null ? (
               <p className="room-history-state" role="status">
                 {status === "stale"
