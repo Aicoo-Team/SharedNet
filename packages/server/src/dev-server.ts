@@ -3,8 +3,8 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { createErrorEnvelope, generateRequestId } from "../../protocol/src/index.ts";
-import { handleRequest, sharedNetStore } from "./handler.ts";
-import type { SharedNetRepository } from "./memory-repository.ts";
+import { handleRequest } from "./handler.ts";
+import type { SharedNetRepository } from "./repository.ts";
 
 async function readBody(request: IncomingMessage): Promise<Buffer | undefined> {
   if (request.method === "GET" || request.method === "HEAD") return undefined;
@@ -34,7 +34,7 @@ async function writeResponse(response: Response, target: ServerResponse): Promis
   target.end(Buffer.from(await response.arrayBuffer()));
 }
 
-export function createSharedNetDevServer(store: SharedNetRepository = sharedNetStore) {
+export function createSharedNetDevServer(store?: SharedNetRepository) {
   return createServer(async (incoming, outgoing) => {
     try {
       const host = incoming.headers.host ?? "127.0.0.1";

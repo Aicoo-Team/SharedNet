@@ -15,13 +15,13 @@ import {
   type ErrorCode,
 } from "../../protocol/src/index.ts";
 import {
-  MemorySharedNetRepository,
   RepositoryError,
   type IdempotencyScope,
   type InstanceAuth,
   type PrincipalAuth,
   type SharedNetRepository,
-} from "./memory-repository.ts";
+} from "./repository.ts";
+import { createRuntimeRepository } from "./runtime-repository.ts";
 
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8" };
 const NO_STORE_HEADERS = {
@@ -35,14 +35,12 @@ const UUID_V4_PATTERN =
 const SNK_PATTERN = /^snk_[A-Za-z0-9_-]{43}$/;
 const SNI_PATTERN = /^sni_[A-Za-z0-9_-]{43}$/;
 
-function defaultDevApiKey(): string | undefined {
-  if (process.env.NODE_ENV === "production") return undefined;
-  return process.env.SHAREDNET_DEV_API_KEY;
-}
+let runtimeRepository: SharedNetRepository | undefined;
 
-export const sharedNetStore = new MemorySharedNetRepository({
-  devApiKey: defaultDevApiKey(),
-});
+export function sharedNetStore(): SharedNetRepository {
+  runtimeRepository ??= createRuntimeRepository();
+  return runtimeRepository;
+}
 
 function jsonResponse(
   value: unknown,
@@ -70,24 +68,24 @@ function parseBearer(request: Request): string | null {
   return match?.[1] ?? "";
 }
 
-function authenticateApiKey(
+async function authenticateApiKey(
   request: Request,
   store: SharedNetRepository,
-): PrincipalAuth | Response {
+): Promise<PrincipalAuth | Response> {
   const bearer = parseBearer(request);
   if (bearer === null) return errorResponse("authentication_required");
   if (!SNK_PATTERN.test(bearer)) return errorResponse("invalid_credentials");
-  return store.authenticateApiKey(bearer) ?? errorResponse("invalid_credentials");
+  return (await store.authenticateApiKey(bearer)) ?? errorResponse("invalid_credentials");
 }
 
-function authenticateInstance(
+async function authenticateInstance(
   request: Request,
   store: SharedNetRepository,
-): InstanceAuth | Response {
+): Promise<InstanceAuth | Response> {
   const bearer = parseBearer(request);
   if (bearer === null) return errorResponse("authentication_required");
   if (!SNI_PATTERN.test(bearer)) return errorResponse("invalid_credentials");
-  return store.authenticateInstance(bearer) ?? errorResponse("invalid_credentials");
+  return (await store.authenticateInstance(bearer)) ?? errorResponse("invalid_credentials");
 }
 
 function isResponse(value: unknown): value is Response {
@@ -140,7 +138,7 @@ function canonicalJson(value: unknown): string {
     .join(",")}}`;
 }
 
-function executeIdempotent(
+async function executeIdempotent(
   store: SharedNetRepository,
   auth: InstanceAuth,
   operationId: string,
@@ -148,8 +146,8 @@ function executeIdempotent(
   pathParameters: Record<string, string>,
   body: unknown,
   status: number,
-  operation: () => unknown,
-): Response {
+  operation: () => Promise<unknown>,
+): Promise<Response> {
   const scope: IdempotencyScope = {
     principalId: auth.principalId,
     credentialClass: "instance",
@@ -160,9 +158,9 @@ function executeIdempotent(
   const fingerprint = digestSecret(
     canonicalJson({ operation_id: operationId, path_parameters: pathParameters, body }),
   );
-  const result = store.executeIdempotent(scope, fingerprint, () => ({
+  const result = await store.executeIdempotent(scope, fingerprint, async () => ({
     status,
-    body: JSON.stringify(operation()),
+    body: JSON.stringify(await operation()),
   }));
   return new Response(result.body, {
     status: result.status,
@@ -198,7 +196,7 @@ function parseMessageQuery(url: URL): { after: number; limit: number } {
 
 export async function handleRequest(
   request: Request,
-  store: SharedNetRepository = sharedNetStore,
+  store?: SharedNetRepository,
 ): Promise<Response> {
   try {
     const url = new URL(request.url);
@@ -214,22 +212,29 @@ export async function handleRequest(
       return jsonResponse(OPENAPI_DOCUMENT, { status: 200 });
     }
 
+    const getRepository = () => store ?? sharedNetStore();
+
     if (path === "/api/v1/agents/default") {
       if (request.method !== "PUT") return routeMethodNotAllowed("PUT");
-      const auth = authenticateApiKey(request, store);
+      const repository = getRepository();
+      const auth = await authenticateApiKey(request, repository);
       if (isResponse(auth)) return auth;
-      return jsonResponse({ agent: store.ensureDefaultAgent(auth) }, { status: 200 });
+      return jsonResponse(
+        { agent: await repository.ensureDefaultAgent(auth) },
+        { status: 200 },
+      );
     }
 
     const startInstanceMatch = /^\/api\/v1\/agents\/([^/]+)\/instances$/.exec(path);
     if (startInstanceMatch) {
       if (request.method !== "POST") return routeMethodNotAllowed("POST");
-      const auth = authenticateApiKey(request, store);
+      const repository = getRepository();
+      const auth = await authenticateApiKey(request, repository);
       if (isResponse(auth)) return auth;
       requireNoIdempotency(request);
       const agentId = parsePublicId(startInstanceMatch[1], "agt");
       const input = await requiredJson(request, parseStartInstanceRequest);
-      return jsonResponse(store.startInstance(auth, agentId, input), {
+      return jsonResponse(await repository.startInstance(auth, agentId, input), {
         status: 201,
         headers: NO_STORE_HEADERS,
       });
@@ -237,79 +242,85 @@ export async function handleRequest(
 
     if (path === "/api/v1/instances/current") {
       if (request.method !== "GET") return routeMethodNotAllowed("GET");
-      const auth = authenticateInstance(request, store);
+      const repository = getRepository();
+      const auth = await authenticateInstance(request, repository);
       if (isResponse(auth)) return auth;
-      return jsonResponse(store.getCurrentInstance(auth), { status: 200 });
+      return jsonResponse(await repository.getCurrentInstance(auth), { status: 200 });
     }
 
     if (path === "/api/v1/instances/current/heartbeat") {
       if (request.method !== "POST") return routeMethodNotAllowed("POST");
-      const auth = authenticateInstance(request, store);
+      const repository = getRepository();
+      const auth = await authenticateInstance(request, repository);
       if (isResponse(auth)) return auth;
       await optionalEmptyJson(request);
-      return jsonResponse(store.heartbeat(auth), { status: 200 });
+      return jsonResponse(await repository.heartbeat(auth), { status: 200 });
     }
 
     if (path === "/api/v1/rooms") {
       if (request.method !== "POST") return routeMethodNotAllowed("POST");
-      const auth = authenticateInstance(request, store);
+      const repository = getRepository();
+      const auth = await authenticateInstance(request, repository);
       if (isResponse(auth)) return auth;
       const key = getIdempotencyKey(request);
       const input = await requiredJson(request, parseCreateRoomRequest);
-      return executeIdempotent(
-        store,
+      return await executeIdempotent(
+        repository,
         auth,
         "createRoom",
         key,
         {},
         input,
         201,
-        () => store.createRoom(auth, input),
+        () => repository.createRoom(auth, input),
       );
     }
 
     const joinMatch = /^\/api\/v1\/rooms\/([^/]+)\/join$/.exec(path);
     if (joinMatch) {
       if (request.method !== "POST") return routeMethodNotAllowed("POST");
-      const auth = authenticateInstance(request, store);
+      const repository = getRepository();
+      const auth = await authenticateInstance(request, repository);
       if (isResponse(auth)) return auth;
       const key = getIdempotencyKey(request);
       const roomId = parsePublicId(joinMatch[1], "rom");
       const input = await optionalEmptyJson(request);
-      return executeIdempotent(
-        store,
+      return await executeIdempotent(
+        repository,
         auth,
         "joinRoom",
         key,
         { room_id: roomId },
         input,
         200,
-        () => store.joinRoom(auth, roomId),
+        () => repository.joinRoom(auth, roomId),
       );
     }
 
     const messagesMatch = /^\/api\/v1\/rooms\/([^/]+)\/messages$/.exec(path);
     if (messagesMatch) {
-      const auth = authenticateInstance(request, store);
+      const repository = getRepository();
+      const auth = await authenticateInstance(request, repository);
       if (isResponse(auth)) return auth;
       const roomId = parsePublicId(messagesMatch[1], "rom");
       if (request.method === "GET") {
-        return jsonResponse(store.listMessages(auth, roomId, parseMessageQuery(url)), {
-          status: 200,
-        });
+        return jsonResponse(
+          await repository.listMessages(auth, roomId, parseMessageQuery(url)),
+          { status: 200 },
+        );
       }
       if (request.method === "POST") {
         const key = getIdempotencyKey(request);
         const input = await requiredJson(request, parsePostMessageRequest);
-        return executeIdempotent(
-          store,
+        return await executeIdempotent(
+          repository,
           auth,
           "postMessage",
           key,
           { room_id: roomId },
           input,
           201,
-          () => store.postMessage(auth, roomId, input),
+          () => repository.postMessage(auth, roomId, input),
         );
       }
       return routeMethodNotAllowed("GET, POST");

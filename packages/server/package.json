@@ -3,6 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "dependencies": {
+    "@better-auth/api-key": "1.7.2",
+    "@sharednet/db": "workspace:*",
+    "@sharednet/protocol": "workspace:*",
+    "drizzle-orm": "0.45.2"
+  },
   "exports": {
     ".": "./src/index.ts"
   }

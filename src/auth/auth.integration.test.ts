@@ -10,8 +10,15 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { defaultKeyHasher } from "@better-auth/api-key";
+import Database from "better-sqlite3";
 import { getMigrations } from "better-auth/db/migration";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+
+import {
+  API_KEY_ID_PATTERN,
+  SNK_SECRET_PATTERN,
+} from "../../packages/protocol/src/index.ts";
 
 const testDirectory = mkdtempSync(join(tmpdir(), "sharednet-better-auth-"));
 const databasePath = join(testDirectory, "auth.sqlite");
@@ -20,6 +27,7 @@ const baseURL = "http://127.0.0.1:3001";
 type AuthModule = typeof import("../../lib/auth");
 
 let authModule: AuthModule;
+let auth: ReturnType<AuthModule["getAuth"]>;
 
 beforeAll(async () => {
   vi.stubEnv(
@@ -33,7 +41,8 @@ beforeAll(async () => {
   chmodSync(databasePath, 0o644);
 
   authModule = await import("../../lib/auth");
-  const { runMigrations } = await getMigrations(authModule.auth.options);
+  auth = authModule.getAuth();
+  const { runMigrations } = await getMigrations(auth.options);
   await runMigrations();
 });
 
@@ -51,7 +60,7 @@ describe("Better Auth integration", () => {
     const email = "ada@example.com";
     const password = "a-secure-test-password";
 
-    const signUpResponse = await authModule.auth.handler(
+    const signUpResponse = await auth.handler(
       new Request(`${baseURL}/api/auth/sign-up/email`, {
         body: JSON.stringify({ email, name: "Ada Lovelace", password }),
         headers: { "content-type": "application/json" },
@@ -64,7 +73,7 @@ describe("Better Auth integration", () => {
       user: { email, name: "Ada Lovelace" },
     });
 
-    const signInResponse = await authModule.auth.handler(
+    const signInResponse = await auth.handler(
       new Request(`${baseURL}/api/auth/sign-in/email`, {
         body: JSON.stringify({ email, password }),
         headers: { "content-type": "application/json" },
@@ -76,17 +85,100 @@ describe("Better Auth integration", () => {
     expect(signInResponse.status).toBe(200);
     expect(sessionCookie).toContain("better-auth.session_token=");
 
-    const sessionResponse = await authModule.auth.handler(
+    const sessionResponse = await auth.handler(
       new Request(`${baseURL}/api/auth/get-session`, {
         headers: { cookie: sessionCookie ?? "" },
       }),
     );
 
     expect(sessionResponse.status).toBe(200);
-    expect(await sessionResponse.json()).toMatchObject({
+    const resolvedSession = await sessionResponse.json();
+    expect(resolvedSession).toMatchObject({
       session: { userId: expect.any(String) },
       user: { email, name: "Ada Lovelace" },
     });
+
+    const createKeyResponse = await auth.handler(
+      new Request(`${baseURL}/api/auth/api-key/create`, {
+        body: JSON.stringify({ name: "Ada's local Codex" }),
+        headers: {
+          "content-type": "application/json",
+          cookie: sessionCookie ?? "",
+        },
+        method: "POST",
+      }),
+    );
+    const createdKey = (await createKeyResponse.json()) as {
+      id: string;
+      key: string;
+      referenceId: string;
+    };
+
+    expect(createKeyResponse.status).toBe(200);
+    expect(createdKey.id).toMatch(API_KEY_ID_PATTERN);
+    expect(createdKey.key).toMatch(SNK_SECRET_PATTERN);
+    expect(createdKey.referenceId).toBe(resolvedSession.user.id);
+
+    const database = new Database(databasePath, { readonly: true });
+    const storedKey = database
+      .prepare("SELECT key FROM apikey WHERE id = ?")
+      .get(createdKey.id) as { key: string };
+    database.close();
+
+    expect(storedKey.key).toBe(await defaultKeyHasher(createdKey.key));
+    expect(storedKey.key).not.toBe(createdKey.key);
+
+    await expect(
+      auth.api.verifyApiKey({ body: { key: createdKey.key } }),
+    ).resolves.toMatchObject({
+      key: { id: createdKey.id, referenceId: resolvedSession.user.id },
+      valid: true,
+    });
+
+    const apiKeySessionResponse = await auth.handler(
+      new Request(`${baseURL}/api/auth/get-session`, {
+        headers: { "x-api-key": createdKey.key },
+      }),
+    );
+
+    expect(apiKeySessionResponse.status).toBe(200);
+    expect(await apiKeySessionResponse.json()).toBeNull();
+  });
+
+  it("runs the injected Principal provisioner after creating a user", async () => {
+    const database = new Database(databasePath);
+    const afterUserCreated = vi.fn(async () => undefined);
+    const provisionedAuth = authModule.createSharedNetAuth({
+      afterUserCreated,
+      baseURL,
+      database,
+      secret:
+        "principal-hook-test-secret-with-at-least-thirty-two-characters",
+    });
+
+    const response = await provisionedAuth.handler(
+      new Request(`${baseURL}/api/auth/sign-up/email`, {
+        body: JSON.stringify({
+          email: "grace@example.com",
+          name: "Grace Hopper",
+          password: "another-secure-test-password",
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      }),
+    );
+    database.close();
+
+    expect(response.status).toBe(200);
+    expect(afterUserCreated).toHaveBeenCalledOnce();
+    expect(afterUserCreated).toHaveBeenCalledWith(
+      expect.objectContaining({
+        email: "grace@example.com",
+        id: expect.any(String),
+        name: "Grace Hopper",
+      }),
+      expect.anything(),
+    );
   });
 
   it("exports the React client and the Next.js GET/POST handlers", async () => {
@@ -97,6 +189,8 @@ describe("Better Auth integration", () => {
 
     expect(authClient.signIn.email).toBeTypeOf("function");
     expect(authClient.signUp.email).toBeTypeOf("function");
+    expect(authClient.apiKey.create).toBeTypeOf("function");
+    expect(authClient.apiKey.list).toBeTypeOf("function");
     expect(route.GET).toBeTypeOf("function");
     expect(route.POST).toBeTypeOf("function");
 

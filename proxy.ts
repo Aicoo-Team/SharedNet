@@ -8,8 +8,8 @@ export async function proxy(request: NextRequest) {
     return NextResponse.next();
   }
 
-  const { auth } = await import("./lib/auth");
-  const session = await auth.api.getSession({
+  const { getAuth } = await import("./lib/auth");
+  const session = await getAuth().api.getSession({
     headers: request.headers,
     query: { disableRefresh: true },
   });

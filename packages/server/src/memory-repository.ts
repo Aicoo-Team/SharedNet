@@ -17,23 +17,17 @@ import {
   type RoomId,
   type RoomMember,
 } from "../../protocol/src/index.ts";
-
-const PRESENCE_LEASE_MS = 90_000;
-const INSTANCE_TOKEN_TTL_MS = 86_400_000;
-
-export type PrincipalAuth = {
-  kind: "api_key";
-  principalId: PrincipalId;
-  actorId: ApiKeyId;
-};
-
-export type InstanceAuth = {
-  kind: "instance";
-  principalId: PrincipalId;
-  agentId: AgentId;
-  instanceId: InstanceId;
-  actorId: InstanceId;
-};
+import {
+  INSTANCE_TOKEN_TTL_MS,
+  PRESENCE_LEASE_MS,
+  RepositoryError,
+  type IdempotencyResult,
+  type IdempotencyScope,
+  type InstanceAuth,
+  type PrincipalAuth,
+  type SharedNetRepository,
+  type StoredHttpResult,
+} from "./repository.ts";
 
 type ApiKeyRecord = {
   id: ApiKeyId;
@@ -51,79 +45,18 @@ type RoomRecord = Room & {
   nextSequence: number;
 };
 
-type StoredHttpResult = {
-  status: number;
-  body: string;
-};
-
 type IdempotencyRecord = StoredHttpResult & {
   fingerprint: string;
 };
 
-export type IdempotencyScope = {
-  principalId: PrincipalId;
-  credentialClass: "api_key" | "instance";
-  actorId: ApiKeyId | InstanceId;
-  operationId: string;
-  key: string;
-};
-
-export type IdempotencyResult = StoredHttpResult & {
-  replayed: boolean;
-};
-
-export class RepositoryError extends Error {
-  readonly status: number;
-  readonly code: string;
-
-  constructor(
-    status: number,
-    code: string,
-    message: string,
-  ) {
-    super(message);
-    this.name = "RepositoryError";
-    this.status = status;
-    this.code = code;
-  }
-}
-
-export interface SharedNetRepository {
-  authenticateApiKey(token: string): PrincipalAuth | null;
-  authenticateInstance(token: string): InstanceAuth | null;
-  ensureDefaultAgent(auth: PrincipalAuth): Agent;
-  startInstance(
-    auth: PrincipalAuth,
-    agentId: AgentId,
-    input: { runtime_kind: Instance["runtime_kind"]; cli_version: string },
-  ): { instance: Instance; token: string; heartbeat_after_seconds: 30 };
-  getCurrentInstance(auth: InstanceAuth): {
-    principal: Principal;
-    agent: Agent;
-    instance: Instance;
-  };
-  heartbeat(auth: InstanceAuth): { instance: Instance; heartbeat_after_seconds: 30 };
-  createRoom(
-    auth: InstanceAuth,
-    input: { name: string; description?: string | null },
-  ): { room: Room; membership: RoomMember };
-  joinRoom(auth: InstanceAuth, roomId: RoomId): { room: Room; membership: RoomMember };
-  postMessage(
-    auth: InstanceAuth,
-    roomId: RoomId,
-    input: { content: string; reply_to_message_id?: MessageId | null },
-  ): { message: Message };
-  listMessages(
-    auth: InstanceAuth,
-    roomId: RoomId,
-    input: { after: number; limit: number },
-  ): { items: Message[]; next_cursor: string | null; has_more: boolean };
-  executeIdempotent(
-    scope: IdempotencyScope,
-    fingerprint: string,
-    operation: () => StoredHttpResult,
-  ): IdempotencyResult;
-}
+export { RepositoryError } from "./repository.ts";
+export type {
+  IdempotencyResult,
+  IdempotencyScope,
+  InstanceAuth,
+  PrincipalAuth,
+  SharedNetRepository,
+} from "./repository.ts";
 
 export type MemoryRepositoryOptions = {
   devApiKey?: string;
@@ -161,6 +94,10 @@ export class MemorySharedNetRepository implements SharedNetRepository {
   private readonly memberships = new Map<string, RoomMember>();
   private readonly messages = new Map<RoomId, Message[]>();
   private readonly idempotency = new Map<string, IdempotencyRecord>();
+  private readonly idempotencyInFlight = new Map<
+    string,
+    { fingerprint: string; result: Promise<IdempotencyResult> }
+  >();
 
   constructor(options: MemoryRepositoryOptions = {}) {
     this.now = options.now ?? (() => new Date());
@@ -183,7 +120,7 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     }
   }
 
-  authenticateApiKey(token: string): PrincipalAuth | null {
+  async authenticateApiKey(token: string): Promise<PrincipalAuth | null> {
     const candidate = digestSecret(token);
     for (const record of this.apiKeysByDigest.values()) {
       if (record.revokedAt === null && secureDigestEquals(candidate, record.digest)) {
@@ -197,7 +134,7 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     return null;
   }
 
-  authenticateInstance(token: string): InstanceAuth | null {
+  async authenticateInstance(token: string): Promise<InstanceAuth | null> {
     const candidate = digestSecret(token);
     let instanceId: InstanceId | undefined;
     for (const [digest, id] of this.instanceIdsByDigest) {
@@ -232,7 +169,7 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     };
   }
 
-  ensureDefaultAgent(auth: PrincipalAuth): Agent {
+  async ensureDefaultAgent(auth: PrincipalAuth): Promise<Agent> {
     const existing = [...this.agents.values()].find(
       (agent) => agent.principal_id === auth.principalId && agent.is_default,
     );
@@ -251,11 +188,11 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     return { ...agent };
   }
 
-  startInstance(
+  async startInstance(
     auth: PrincipalAuth,
     agentId: AgentId,
     input: { runtime_kind: Instance["runtime_kind"]; cli_version: string },
-  ): { instance: Instance; token: string; heartbeat_after_seconds: 30 } {
+  ): Promise<{ instance: Instance; token: string; heartbeat_after_seconds: 30 }> {
     const agent = this.agents.get(agentId);
     if (!agent || agent.principal_id !== auth.principalId) {
       throw new RepositoryError(404, "agent_not_found", "Agent was not found.");
@@ -288,7 +225,7 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     };
   }
 
-  getCurrentInstance(auth: InstanceAuth) {
+  async getCurrentInstance(auth: InstanceAuth) {
     const record = this.instanceRecord(auth);
     const principal = this.principals.get(auth.principalId);
     const agent = this.agents.get(auth.agentId);
@@ -302,7 +239,7 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     };
   }
 
-  heartbeat(auth: InstanceAuth) {
+  async heartbeat(auth: InstanceAuth) {
     const record = this.instanceRecord(auth);
     const now = this.now();
     record.last_seen_at = now.toISOString();
@@ -314,10 +251,10 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     };
   }
 
-  createRoom(
+  async createRoom(
     auth: InstanceAuth,
     input: { name: string; description?: string | null },
-  ): { room: Room; membership: RoomMember } {
+  ): Promise<{ room: Room; membership: RoomMember }> {
     this.requireOnline(auth);
     const createdAt = this.timestamp();
     const room: RoomRecord = {
@@ -344,7 +281,10 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     return { room: this.projectRoom(room), membership: { ...membership } };
   }
 
-  joinRoom(auth: InstanceAuth, roomId: RoomId): { room: Room; membership: RoomMember } {
+  async joinRoom(
+    auth: InstanceAuth,
+    roomId: RoomId,
+  ): Promise<{ room: Room; membership: RoomMember }> {
     this.requireOnline(auth);
     const room = this.ownedRoom(auth, roomId);
     if (room.state === "closed") {
@@ -368,11 +308,11 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     return { room: this.projectRoom(room), membership: { ...membership } };
   }
 
-  postMessage(
+  async postMessage(
     auth: InstanceAuth,
     roomId: RoomId,
     input: { content: string; reply_to_message_id?: MessageId | null },
-  ): { message: Message } {
+  ): Promise<{ message: Message }> {
     this.requireOnline(auth);
     const room = this.ownedRoom(auth, roomId);
     if (room.state === "closed") {
@@ -406,7 +346,7 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     return { message: { ...message } };
   }
 
-  listMessages(
+  async listMessages(
     auth: InstanceAuth,
     roomId: RoomId,
     input: { after: number; limit: number },
@@ -425,11 +365,11 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     };
   }
 
-  executeIdempotent(
+  async executeIdempotent(
     scope: IdempotencyScope,
     fingerprint: string,
-    operation: () => StoredHttpResult,
-  ): IdempotencyResult {
+    operation: () => Promise<StoredHttpResult>,
+  ): Promise<IdempotencyResult> {
     const key = idempotencyKey(scope);
     const existing = this.idempotency.get(key);
     if (existing) {
@@ -443,9 +383,30 @@ export class MemorySharedNetRepository implements SharedNetRepository {
       return { status: existing.status, body: existing.body, replayed: true };
     }
 
-    const result = operation();
-    this.idempotency.set(key, { ...result, fingerprint });
-    return { ...result, replayed: false };
+    const inFlight = this.idempotencyInFlight.get(key);
+    if (inFlight) {
+      if (inFlight.fingerprint !== fingerprint) {
+        throw new RepositoryError(
+          409,
+          "idempotency_conflict",
+          "Idempotency key was already used for a different request.",
+        );
+      }
+      const replay = await inFlight.result;
+      return { ...replay, replayed: true };
+    }
+
+    const pending = (async () => {
+      const result = await operation();
+      this.idempotency.set(key, { ...result, fingerprint });
+      return { ...result, replayed: false };
+    })();
+    this.idempotencyInFlight.set(key, { fingerprint, result: pending });
+    try {
+      return await pending;
+    } finally {
+      this.idempotencyInFlight.delete(key);
+    }
   }
 
   private timestamp(): string {

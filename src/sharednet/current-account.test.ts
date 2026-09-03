@@ -4,7 +4,7 @@ const authGetSession = vi.hoisted(() => vi.fn());
 
 vi.mock("server-only", () => ({}));
 vi.mock("../../lib/auth", () => ({
-  auth: { api: { getSession: authGetSession } },
+  getAuth: () => ({ api: { getSession: authGetSession } }),
 }));
 
 import { requireAuthUserId, SharedNetAuthError } from "./current-account";

@@ -4,11 +4,11 @@ import { NextRequest } from "next/server";
 const getSession = vi.hoisted(() => vi.fn());
 
 vi.mock("../../lib/auth", () => ({
-  auth: {
+  getAuth: () => ({
     api: {
       getSession,
     },
-  },
+  }),
 }));
 
 import { config, proxy } from "../../proxy";

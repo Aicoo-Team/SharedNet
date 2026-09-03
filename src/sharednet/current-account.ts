@@ -1,6 +1,6 @@
 import "server-only";
 
-import { auth } from "../../lib/auth";
+import { getAuth } from "../../lib/auth";
 
 export class SharedNetAuthError extends Error {
   readonly code = "unauthenticated";
@@ -13,7 +13,7 @@ export class SharedNetAuthError extends Error {
 }
 
 export async function requireAuthUserId(headers: Headers): Promise<string> {
-  const session = await auth.api.getSession({ headers });
+  const session = await getAuth().api.getSession({ headers });
   const authUserId = session?.user?.id;
 
   if (typeof authUserId !== "string" || authUserId.trim().length === 0) {

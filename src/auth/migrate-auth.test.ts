@@ -1,105 +1,78 @@
 // @vitest-environment node
 
-import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import Database from "better-sqlite3";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
 const projectRoot = fileURLToPath(new URL("../..", import.meta.url));
-const secret = "migration-test-secret-with-at-least-thirty-two-characters";
-const temporaryDirectories: string[] = [];
+const migrationScript = fileURLToPath(
+  new URL("../../scripts/migrate-auth.mjs", import.meta.url),
+);
 
-function createDatabasePath() {
-  const directory = mkdtempSync(join(tmpdir(), "sharednet-auth-migrate-"));
-  temporaryDirectories.push(directory);
-  return join(directory, "auth.sqlite");
-}
-
-function migrationEnvironment(databasePath: string) {
+function migrationEnvironment(
+  overrides: Record<string, string | undefined> = {},
+): NodeJS.ProcessEnv {
   const environment = { ...process.env };
-  delete environment.BETTER_AUTH_DATABASE_PATH;
-  delete environment.BETTER_AUTH_SECRET;
-  delete environment.BETTER_AUTH_URL;
+  delete environment.DATABASE_URL_UNPOOLED;
+  delete environment.SHAREDNET_POSTGRES_URL_NON_POOLING;
 
-  return {
-    ...environment,
-    BETTER_AUTH_DATABASE_PATH: databasePath,
-    BETTER_AUTH_SECRET: secret,
-    BETTER_AUTH_URL: "http://127.0.0.1:3001",
-  };
+  for (const [name, value] of Object.entries(overrides)) {
+    if (value === undefined) delete environment[name];
+    else environment[name] = value;
+  }
+  return environment;
 }
 
 function runMigration(environment: NodeJS.ProcessEnv) {
-  return spawnSync("pnpm", ["run", "auth:migrate"], {
-    cwd: projectRoot,
-    encoding: "utf8",
-    env: environment,
-    timeout: 30_000,
-  });
+  return spawnSync(
+    process.execPath,
+    ["--experimental-strip-types", migrationScript],
+    {
+      cwd: projectRoot,
+      encoding: "utf8",
+      env: environment,
+      timeout: 30_000,
+    },
+  );
 }
 
 function commandOutput(result: ReturnType<typeof runMigration>) {
   return `${result.stdout ?? ""}${result.stderr ?? ""}`;
 }
 
-afterEach(() => {
-  for (const directory of temporaryDirectories.splice(0)) {
-    rmSync(directory, { force: true, recursive: true });
-  }
-});
-
-describe("Better Auth migration command", () => {
-  it(
-    "creates an owner-only fresh schema, remains repeatable, and prints no secret",
-    () => {
-      const databasePath = createDatabasePath();
-      const environment = migrationEnvironment(databasePath);
-
-      const firstRun = runMigration(environment);
-      const secondRun = runMigration(environment);
-
-      expect(firstRun.error).toBeUndefined();
-      expect(firstRun.status, commandOutput(firstRun)).toBe(0);
-      expect(secondRun.error).toBeUndefined();
-      expect(secondRun.status, commandOutput(secondRun)).toBe(0);
-      expect(commandOutput(firstRun)).not.toContain(secret);
-      expect(commandOutput(secondRun)).not.toContain(secret);
-      expect(statSync(databasePath).mode & 0o777).toBe(0o600);
-
-      const database = new Database(databasePath, { readonly: true });
-      const tables = database
-        .prepare(
-          "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name",
-        )
-        .all()
-        .map((row) => (row as { name: string }).name);
-      database.close();
-
-      expect(tables).toEqual(["account", "session", "user", "verification"]);
-    },
-    30_000,
-  );
-
-  it.each([
-    "BETTER_AUTH_DATABASE_PATH",
-    "BETTER_AUTH_SECRET",
-    "BETTER_AUTH_URL",
-  ] as const)("fails closed when %s is missing", (missingVariable) => {
-    const databasePath = createDatabasePath();
-    const environment = migrationEnvironment(databasePath);
-    delete environment[missingVariable];
-
-    const result = runMigration(environment);
+describe("SharedNet migration command", () => {
+  it("fails closed before connecting when no unpooled migration URL is set", () => {
+    const result = runMigration(migrationEnvironment());
     const output = commandOutput(result);
 
     expect(result.error).toBeUndefined();
     expect(result.status).not.toBe(0);
-    expect(output).toContain(missingVariable);
-    expect(output).not.toContain(secret);
-    expect(existsSync(databasePath)).toBe(false);
+    expect(output).toContain("DATABASE_URL_UNPOOLED");
+    expect(output).toContain("SHAREDNET_POSTGRES_URL_NON_POOLING");
+  });
+
+  it("never prints a rejected connection URL or its password", () => {
+    const password = "migration-test-password-that-must-not-be-printed";
+    const connectionString = `postgres://sharednet:${password}@127.0.0.1:1/sharednet`;
+    const result = runMigration(
+      migrationEnvironment({ DATABASE_URL_UNPOOLED: connectionString }),
+    );
+    const output = commandOutput(result);
+
+    expect(result.error).toBeUndefined();
+    expect(result.status).not.toBe(0);
+    expect(output).toContain("SharedNet database migration failed.");
+    expect(output).not.toContain(connectionString);
+    expect(output).not.toContain(password);
+  });
+
+  it("uses the checked Drizzle pipeline instead of runtime Better Auth migrations", () => {
+    const source = readFileSync(migrationScript, "utf8");
+
+    expect(source).toContain("migrateDatabase");
+    expect(source).not.toContain("getMigrations");
+    expect(source).not.toContain("BETTER_AUTH_DATABASE_PATH");
   });
 });

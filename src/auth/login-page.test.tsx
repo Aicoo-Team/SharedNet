@@ -11,7 +11,7 @@ const nextServer = vi.hoisted(() => ({
 }));
 
 vi.mock("../../lib/auth", () => ({
-  auth: { api: { getSession: serverAuth.getSession } },
+  getAuth: () => ({ api: { getSession: serverAuth.getSession } }),
 }));
 vi.mock("next/headers", () => ({
   headers: vi.fn(async () => nextServer.headers),

@@ -15,7 +15,7 @@ const { authGetSession, sharedNetClient } = vi.hoisted(() => ({
 
 vi.mock("server-only", () => ({}));
 vi.mock("../../lib/auth", () => ({
-  auth: { api: { getSession: authGetSession } },
+  getAuth: () => ({ api: { getSession: authGetSession } }),
 }));
 vi.mock("./server-client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./server-client")>();

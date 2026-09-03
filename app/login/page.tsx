@@ -3,7 +3,7 @@ import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 
 import ModernLoginSignup from "../../components/ui/modern-login-signup";
-import { auth } from "../../lib/auth";
+import { getAuth } from "../../lib/auth";
 import { safePostAuthPath } from "../../src/auth/redirect";
 
 type LoginPageProps = {
@@ -20,7 +20,7 @@ function LoginFallback() {
 
 export default async function LoginPage({ searchParams }: LoginPageProps) {
   const requestHeaders = await headers();
-  const session = await auth.api.getSession({
+  const session = await getAuth().api.getSession({
     headers: requestHeaders,
     query: { disableRefresh: true },
   });

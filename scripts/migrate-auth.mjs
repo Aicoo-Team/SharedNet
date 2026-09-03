@@ -1,29 +1,19 @@
-const requiredEnvironment = [
-  "BETTER_AUTH_DATABASE_PATH",
-  "BETTER_AUTH_SECRET",
-  "BETTER_AUTH_URL",
-];
-const missingEnvironment = requiredEnvironment.filter(
-  (name) => !process.env[name]?.trim(),
-);
+const migrationUrl =
+  process.env.DATABASE_URL_UNPOOLED?.trim() ||
+  process.env.SHAREDNET_POSTGRES_URL_NON_POOLING?.trim();
 
-if (missingEnvironment.length > 0) {
+if (!migrationUrl) {
   console.error(
-    `Better Auth migration requires: ${missingEnvironment.join(", ")}`,
+    "SharedNet migrations require DATABASE_URL_UNPOOLED or SHAREDNET_POSTGRES_URL_NON_POOLING.",
   );
   process.exitCode = 1;
 } else {
   try {
-    const [{ getMigrations }, { auth }] = await Promise.all([
-      import("better-auth/db/migration"),
-      import("../lib/auth.ts"),
-    ]);
-    const { runMigrations } = await getMigrations(auth.options);
-
-    await runMigrations();
-    console.log("Better Auth database migration completed.");
+    const { migrateDatabase } = await import("../packages/db/src/migrate.ts");
+    await migrateDatabase({ connectionString: migrationUrl });
+    console.log("SharedNet checked database migrations completed.");
   } catch {
-    console.error("Better Auth database migration failed.");
+    console.error("SharedNet database migration failed.");
     process.exitCode = 1;
   }
 }

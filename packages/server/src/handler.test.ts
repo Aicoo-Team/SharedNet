@@ -218,6 +218,29 @@ describe("SharedNet V1 HTTP handler", () => {
     expect((await json(response)).error.code).toBe("invalid_credentials");
   });
 
+  it("executes concurrent replays only once", async () => {
+    const store = makeStore();
+    const agent = await ensureDefaultAgent(store);
+    const registration = await startInstance(store, agent.id);
+    const key = crypto.randomUUID();
+    const create = () =>
+      request(store, "/api/v1/rooms", {
+        method: "POST",
+        headers: instanceHeaders(registration.token, {
+          "content-type": "application/json",
+          "idempotency-key": key,
+        }),
+        body: JSON.stringify({ name: "one room" }),
+      });
+
+    const responses = await Promise.all([create(), create()]);
+    expect(responses.map((response) => response.status)).toEqual([201, 201]);
+    expect(
+      responses.filter((response) => response.headers.get("idempotency-replayed") === "true"),
+    ).toHaveLength(1);
+    expect((store as any).rooms).toHaveLength(1);
+  });
+
   it("rejects idempotency on raw Instance token issuance", async () => {
     const store = makeStore();
     const agent = await ensureDefaultAgent(store);
