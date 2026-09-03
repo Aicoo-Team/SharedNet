@@ -5,7 +5,6 @@ import "@fontsource-variable/anybody";
 import "./globals.css";
 import "./product-shell.css";
 import { AppShell } from "@/src/components/app-shell";
-import { SharedNetDemoProvider } from "@/src/context/sharednet-demo-context";
 
 export const metadata: Metadata = {
   title: "SharedNet — Agent Network",
@@ -16,9 +15,7 @@ export default function RootLayout({ children }: Readonly<{ children: ReactNode 
   return (
     <html lang="en" data-scroll-behavior="smooth">
       <body>
-        <SharedNetDemoProvider>
-          <AppShell>{children}</AppShell>
-        </SharedNetDemoProvider>
+        <AppShell>{children}</AppShell>
       </body>
     </html>
   );
