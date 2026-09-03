@@ -1,13 +1,17 @@
+import { execFileSync } from "node:child_process";
 import {
-  chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
+  promises as fsPromises,
+  readFileSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import type { FileHandle } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -20,6 +24,10 @@ const ARCHIVE_BYTES = Buffer.from("sharednet-local-bundle");
 const ARCHIVE_SHA256 =
   "e04571bca797b03329a08579362a878f2ef7d9f408df3cb4cdb53e2301800738";
 const ARCHIVE_DIGEST = "sha-256=4EVxvKeXsDMpoIV5NiqHjy732fQI3zy0zbU+IwGABzg=";
+const CHECKSUM_WRITER = resolve(
+  process.cwd(),
+  "scripts/write_bundle_checksum.sh",
+);
 const UNAVAILABLE_BODY =
   '{"error":{"code":"bundle_unavailable","message":"SharedNet Local is not available."}}';
 
@@ -44,6 +52,36 @@ function writeAvailableBundle(
   writeSidecar(contents);
 }
 
+function writeProducedSidecar(path = archivePath): void {
+  execFileSync(CHECKSUM_WRITER, [path], { stdio: "pipe" });
+}
+
+async function injectOpenHandles(): Promise<{
+  archiveHandle: FileHandle;
+  sidecarHandle: FileHandle;
+}> {
+  const sidecarHandle = await fsPromises.open(sidecarPath, "r");
+  const archiveHandle = await fsPromises.open(archivePath, "r");
+  vi.spyOn(fsPromises, "open")
+    .mockResolvedValueOnce(sidecarHandle)
+    .mockResolvedValueOnce(archiveHandle);
+  return { archiveHandle, sidecarHandle };
+}
+
+async function expectHandleClosed(handle: FileHandle): Promise<void> {
+  await expect(handle.stat()).rejects.toThrow();
+}
+
+async function closeIfOpen(...handles: FileHandle[]): Promise<void> {
+  for (const handle of handles) {
+    try {
+      await handle.close();
+    } catch {
+      // The route already closed this handle.
+    }
+  }
+}
+
 async function expectUnavailable(
   request = new Request("http://localhost/downloads/sharednet-local"),
 ): Promise<void> {
@@ -63,27 +101,110 @@ describe("GET /downloads/sharednet-local", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.unstubAllEnvs();
     rmSync(directory, { force: true, recursive: true });
   });
 
-  it("serves the verified archive bytes with fixed private download metadata", async () => {
+  it("writes the canonical checksum sidecar for the fixed archive basename", () => {
+    writeArchive();
+
+    writeProducedSidecar();
+
+    expect(readFileSync(sidecarPath, "utf8")).toBe(
+      `${ARCHIVE_SHA256}  ${ARCHIVE_NAME}\n`,
+    );
+  });
+
+  it("refuses to write a checksum for any other archive basename", () => {
+    const wrongArchive = join(directory, "sharednet-local-other.tar.gz");
+    writeFileSync(wrongArchive, ARCHIVE_BYTES);
+
+    expect(() => writeProducedSidecar(wrongArchive)).toThrow();
+    expect(existsSync(`${wrongArchive}.sha256`)).toBe(false);
+  });
+
+  it("streams producer-verified bytes with fixed metadata and closes both handles", async () => {
+    writeArchive();
+    writeProducedSidecar();
+    const { archiveHandle, sidecarHandle } = await injectOpenHandles();
+
+    try {
+      const response = await GET(
+        new Request(
+          "http://localhost/downloads/sharednet-local?path=/etc/passwd&filename=forged.tar.gz",
+        ),
+      );
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toBe("application/gzip");
+      expect(response.headers.get("content-disposition")).toBe(
+        `attachment; filename="${ARCHIVE_NAME}"`,
+      );
+      expect(response.headers.get("cache-control")).toBe("private, no-store");
+      expect(response.headers.get("digest")).toBe(ARCHIVE_DIGEST);
+      expect(Buffer.from(await response.arrayBuffer())).toEqual(ARCHIVE_BYTES);
+      await expectHandleClosed(sidecarHandle);
+      await expectHandleClosed(archiveHandle);
+    } finally {
+      await closeIfOpen(sidecarHandle, archiveHandle);
+    }
+  });
+
+  it("accepts an uppercase checksum entry", async () => {
     writeAvailableBundle(`${ARCHIVE_SHA256.toUpperCase()}  ${ARCHIVE_NAME}\n`);
 
     const response = await GET(
-      new Request(
-        "http://localhost/downloads/sharednet-local?path=/etc/passwd&filename=forged.tar.gz",
-      ),
+      new Request("http://localhost/downloads/sharednet-local"),
     );
 
     expect(response.status).toBe(200);
-    expect(response.headers.get("content-type")).toBe("application/gzip");
-    expect(response.headers.get("content-disposition")).toBe(
-      `attachment; filename="${ARCHIVE_NAME}"`,
-    );
-    expect(response.headers.get("cache-control")).toBe("private, no-store");
     expect(response.headers.get("digest")).toBe(ARCHIVE_DIGEST);
     expect(Buffer.from(await response.arrayBuffer())).toEqual(ARCHIVE_BYTES);
+  });
+
+  it("closes the archive handle when the response stream is cancelled", async () => {
+    writeFileSync(archivePath, Buffer.alloc(1024 * 1024, 0x61));
+    writeProducedSidecar();
+    const { archiveHandle, sidecarHandle } = await injectOpenHandles();
+
+    try {
+      const response = await GET(
+        new Request("http://localhost/downloads/sharednet-local"),
+      );
+
+      expect(response.status).toBe(200);
+      await response.body?.cancel("test cancellation");
+      await expectHandleClosed(sidecarHandle);
+      await expectHandleClosed(archiveHandle);
+    } finally {
+      await closeIfOpen(sidecarHandle, archiveHandle);
+    }
+  });
+
+  it("closes the archive handle when response streaming fails", async () => {
+    writeArchive();
+    writeProducedSidecar();
+    const { archiveHandle, sidecarHandle } = await injectOpenHandles();
+    const actualRead = archiveHandle.read.bind(archiveHandle);
+    vi.spyOn(archiveHandle, "read")
+      .mockImplementationOnce(actualRead)
+      .mockRejectedValueOnce(new Error("injected stream read failure"));
+
+    try {
+      const response = await GET(
+        new Request("http://localhost/downloads/sharednet-local"),
+      );
+
+      expect(response.status).toBe(200);
+      await expect(response.arrayBuffer()).rejects.toThrow(
+        "injected stream read failure",
+      );
+      await expectHandleClosed(sidecarHandle);
+      await expectHandleClosed(archiveHandle);
+    } finally {
+      await closeIfOpen(sidecarHandle, archiveHandle);
+    }
   });
 
   it("rejects a missing server-only path even when a caller supplies one", async () => {
@@ -177,25 +298,44 @@ describe("GET /downloads/sharednet-local", () => {
     await expectUnavailable();
   });
 
-  it("returns the safe unavailable response when the archive read fails", async () => {
+  it("returns the safe unavailable response when opening a leaf fails", async () => {
     writeAvailableBundle();
-    chmodSync(archivePath, 0o000);
+    vi.spyOn(fsPromises, "open").mockRejectedValueOnce(
+      new Error("injected open failure"),
+    );
+
+    await expectUnavailable();
+  });
+
+  it("closes the sidecar handle when its read fails before headers", async () => {
+    writeAvailableBundle();
+    const sidecarHandle = await fsPromises.open(sidecarPath, "r");
+    vi.spyOn(sidecarHandle, "readFile").mockRejectedValueOnce(
+      new Error("injected sidecar read failure"),
+    );
+    vi.spyOn(fsPromises, "open").mockResolvedValueOnce(sidecarHandle);
 
     try {
       await expectUnavailable();
+      await expectHandleClosed(sidecarHandle);
     } finally {
-      chmodSync(archivePath, 0o600);
+      await closeIfOpen(sidecarHandle);
     }
   });
 
-  it("returns the safe unavailable response when the sidecar read fails", async () => {
+  it("closes both handles when archive hashing fails before headers", async () => {
     writeAvailableBundle();
-    chmodSync(sidecarPath, 0o000);
+    const { archiveHandle, sidecarHandle } = await injectOpenHandles();
+    vi.spyOn(archiveHandle, "read").mockRejectedValueOnce(
+      new Error("injected archive read failure"),
+    );
 
     try {
       await expectUnavailable();
+      await expectHandleClosed(sidecarHandle);
+      await expectHandleClosed(archiveHandle);
     } finally {
-      chmodSync(sidecarPath, 0o600);
+      await closeIfOpen(sidecarHandle, archiveHandle);
     }
   });
 });

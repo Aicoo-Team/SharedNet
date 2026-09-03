@@ -35,5 +35,5 @@ cp "${repository_root}/LICENSES/RAC-MIT.txt" "${bundle_root}/LICENSES/"
 
 archive="${output_dir}/sharednet-local-darwin-arm64.tar.gz"
 COPYFILE_DISABLE=1 tar -C "${temporary_root}" -czf "${archive}" sharednet-local
-shasum -a 256 "${archive}" > "${archive}.sha256"
+"${repository_root}/scripts/write_bundle_checksum.sh" "${archive}"
 printf '%s\n' "${archive}"
