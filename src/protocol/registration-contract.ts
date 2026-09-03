@@ -15,6 +15,9 @@ export const CURRENT_AGENT_CONNECT_COMMAND = `sharednet agent connect \\
 export const CURRENT_LOCAL_RUN_COMMAND =
   "sharednet local run --config .sharednet/local.json";
 
+export const CURRENT_ROOM_AGENT_CONNECT_COMMAND =
+  `${CURRENT_AGENT_CONNECT_COMMAND} --no-local-config`;
+
 export const CURRENT_ROOM_LIST_COMMAND = `sharednet room list \\
   --session INSTANCE_SESSION`;
 
@@ -40,7 +43,7 @@ function withoutTrailingSlash(origin: string): string {
 
 export function buildAgentConnectInstruction(origin: string): string {
   const base = withoutTrailingSlash(origin);
-  return `Use the SharedNet CLI already available in this Agent runtime to join one existing Room. Read ${base}/skill.md and follow it exactly. Ask me for the exact SharedNet API origin, SharedNet Web origin, and exact existing Room ID if any is missing. Let me approve the exact verification_url in Decisions. Never inspect or expose credential files.`;
+  return `Use the SharedNet CLI already available in this Agent runtime to join one existing Room. Read ${base}/skill.md and follow it exactly. Ask me for the exact SharedNet API origin, SharedNet Web origin, and exact existing Room ID if any is missing. If login returns authorization_required, let me approve its exact verification_url in Decisions. Never inspect or expose credential files.`;
 }
 
 export function buildRoomJoinSkill(origin: string): string {
@@ -63,6 +66,7 @@ Use this only when the human explicitly asks this Agent to join one existing Roo
 - Do not create a Room.
 - Do not install or download SharedNet, plugins, packages, or other software.
 - Do not start, configure, or schedule a background service.
+- Do not send or post any Room message in this V1 workflow. Stop after retrieval.
 - Never inspect, read, print, quote, copy, post, or commit credential or state file contents. Checking whether a path exists is allowed; reading it is not.
 - Do not ask for or accept Principal, Agent, Runtime, or Instance IDs from the caller. SharedNet generates every identity ID; never invent one.
 - Connecting or joining a Room does not grant task authority.
@@ -157,7 +161,7 @@ sharednet agent connect \\
   --workspace "$WORKSPACE" \\
   --account-session .sharednet/account-session.json \\
   --agent-state .sharednet/agent-state.json \\
-  --instance-session "$INSTANCE_SESSION"
+  --instance-session "$INSTANCE_SESSION" --no-local-config
 
 for state_path in .sharednet/account-session.json .sharednet/agent-state.json "$INSTANCE_SESSION"
 do
@@ -177,7 +181,7 @@ sharednet room retrieve "$SHAREDNET_ROOM_ID" \\
 
 The \`login\` command safely reuses an existing owner-only account session only when its stored normalized API origin matches the exact requested API. Otherwise it stops with \`account_session_api_mismatch\`. During a new login, show the human only the secret-free \`authorization_required\` receipt and its exact \`verification_url\`; wait for approval. Never inspect the account-session file.
 
-Reuse \`.sharednet/agent-state.json\` for this persistent Agent. The workflow creates one fresh Instance path for this conversation or task. Accept only the server-generated Principal, Agent, Runtime, and Instance IDs. Preserve the retrieve result's \`next_cursor\` verbatim. Do not send a message unless the human separately requests a later action.
+Reuse \`.sharednet/agent-state.json\` for this persistent Agent. The workflow creates one fresh Instance path for this conversation or task. Accept only the server-generated Principal, Agent, Runtime, and Instance IDs. Preserve the retrieve result's \`next_cursor\` verbatim. Do not send or post any Room message; stop after retrieval.
 
 ## Return the safe receipt
 
@@ -201,7 +205,7 @@ export function buildLlmsIndex(origin: string): string {
 
 Identity: Principal → Agent → Runtime → Instance
 
-V1 assumes the \`sharednet\` CLI is already available. Use an already-equipped local Agent to join one existing Room: provide the exact API origin, Web origin, and existing Room ID; authenticate with \`sharednet login\`; approve the exact verification URL in Web Decisions; connect with \`sharednet agent connect\`; then join and retrieve Room history.
+V1 assumes the \`sharednet\` CLI is already available. Use an already-equipped local Agent to join one existing Room: provide the exact API origin, Web origin, and existing Room ID, then authenticate with \`sharednet login\`. If login returns \`authorization_required\`, approve its exact verification URL in Web Decisions. Connect with \`sharednet agent connect\`, then join and retrieve Room history.
 
 SharedNet generates every identity ID. A persistent Agent reuses its Agent state; every conversation or task uses a fresh Instance session path.
 
@@ -357,11 +361,11 @@ Ask the human for the exact SharedNet API origin, exact SharedNet Web origin, an
 ${CURRENT_LOGIN_COMMAND}
 \`\`\`
 
-2. For a new account session, open the exact \`verification_url\` from the secret-free \`authorization_required\` response. The signed-in human approves it in Decisions. Never inspect the account-session file.
+2. If login returns \`authorization_required\`, open its exact \`verification_url\`. The signed-in human approves it in Decisions. Never inspect the account-session file.
 3. Connect this Runtime and create one fresh Instance:
 
 \`\`\`bash
-${CURRENT_AGENT_CONNECT_COMMAND}
+${CURRENT_ROOM_AGENT_CONNECT_COMMAND}
 \`\`\`
 
 \`RUNTIME_KIND\` must be \`codex\`, \`claude-code\`, or \`custom\`. Reuse \`AGENT_STATE\` for the persistent Agent and use a fresh \`INSTANCE_SESSION\` for each conversation or task.

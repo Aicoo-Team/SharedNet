@@ -155,10 +155,10 @@ describe("SharedNet application shell", () => {
     const setup = screen.getByRole("navigation", { name: "Setup" });
     expect(setup.querySelectorAll("a")).toHaveLength(1);
     expect(
-      screen.getByRole("link", { name: "Agent registration protocol" }),
+      screen.getByRole("link", { name: "Room join protocol" }),
     ).toHaveAttribute("href", "/protocol");
     expect(
-      screen.getByRole("link", { name: "Agent registration protocol" }),
+      screen.getByRole("link", { name: "Room join protocol" }),
     ).not.toHaveAttribute("aria-current");
     expect(screen.getByText("1", { selector: ".rail-decision-badge" })).toBeTruthy();
     expect(screen.queryByText("SharedNet")).toBeNull();

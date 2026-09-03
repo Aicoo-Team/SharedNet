@@ -72,6 +72,7 @@ def _parser() -> argparse.ArgumentParser:
     connect.add_argument("--account-session", default=".sharednet/account-session.json")
     connect.add_argument("--agent-state", default=".sharednet/agent-state.json")
     connect.add_argument("--instance-session", default=".sharednet/instance-session.json")
+    connect.add_argument("--no-local-config", action="store_true")
     connect.add_argument("--lease-seconds", type=_positive_int, default=90)
     connect.add_argument("--timeout", type=_positive_float, default=30.0)
 
@@ -276,6 +277,26 @@ def _room_client(arguments: argparse.Namespace, *, registration: bool = False):
     session_path = _session_path(arguments)
     session = _load_optional_session(session_path)
     flag_url = getattr(arguments, "url", None)
+
+    if getattr(arguments, "session", None) is not None and not registration:
+        if session is None:
+            raise RoomError("session_not_found", "Room session file does not exist", 404)
+        if flag_url is not None and normalize_base_url(flag_url) != session.base_url:
+            raise RoomError(
+                "session_url_mismatch",
+                "explicit URL does not match the connected Instance session",
+                409,
+            )
+        return (
+            RoomClient(
+                session.base_url,
+                session.runtime_token,
+                arguments.timeout,
+                auth_scheme=session.auth_scheme,
+            ),
+            session_path,
+        )
+
     environment_url = os.environ.get("SHAREDNET_ROOM_URL")
     has_url_override = flag_url is not None or environment_url is not None
     if flag_url is not None:
@@ -415,17 +436,20 @@ def _run_agent(arguments: argparse.Namespace) -> int:
     from .control.client import ControlClient
     from .control.models import ControlError
     from .control.session import AccountSessionFile, AgentStateFile, InstanceSessionFile
-    from .local.service import LocalConfig
 
     account = AccountSessionFile(arguments.account_session).load()
     client = ControlClient(account.api_url, arguments.timeout)
     agent_file = AgentStateFile(arguments.agent_state)
     instance_file = InstanceSessionFile(arguments.instance_session)
     local_config_path = instance_file.path.parent / "local.json"
-    if os.path.lexists(local_config_path):
-        local_config = LocalConfig.load(local_config_path)
-    else:
-        local_config = LocalConfig(instances=())
+    local_config = None
+    if not arguments.no_local_config:
+        from .local.service import LocalConfig
+
+        if os.path.lexists(local_config_path):
+            local_config = LocalConfig.load(local_config_path)
+        else:
+            local_config = LocalConfig(instances=())
     if os.path.lexists(instance_file.path):
         raise ControlError(
             "session_exists",
@@ -504,16 +528,17 @@ def _run_agent(arguments: argparse.Namespace) -> int:
         except Exception:
             pass
         raise
-    local_config.with_instance(instance_file.path).save(local_config_path)
-    _emit(
-        {
-            "status": "connected",
-            "identity": identity,
-            "instance_session": str(instance_file.path),
-            "local_config": str(local_config_path),
-            "expires_at": instance.get("expires_at"),
-        }
-    )
+    if local_config is not None:
+        local_config.with_instance(instance_file.path).save(local_config_path)
+    receipt = {
+        "status": "connected",
+        "identity": identity,
+        "instance_session": str(instance_file.path),
+        "expires_at": instance.get("expires_at"),
+    }
+    if local_config is not None:
+        receipt["local_config"] = str(local_config_path)
+    _emit(receipt)
     return 0
 
 

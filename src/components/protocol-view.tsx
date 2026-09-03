@@ -3,7 +3,7 @@
 import { useState } from "react";
 import {
   buildAgentConnectInstruction,
-  CURRENT_AGENT_CONNECT_COMMAND,
+  CURRENT_ROOM_AGENT_CONNECT_COMMAND,
   CURRENT_LOGIN_COMMAND,
   CURRENT_ROOM_JOIN_COMMAND,
   CURRENT_ROOM_RETRIEVE_COMMAND,
@@ -96,14 +96,15 @@ export function ProtocolView({ origin }: { origin: string }) {
             </li>
             <li>
               <p>
-                Open the exact <code>verification_url</code> and approve it in
-                Decisions while signed in.
+                If login returns <code>authorization_required</code>, open its
+                exact <code>verification_url</code> and approve it in Decisions
+                while signed in.
               </p>
             </li>
             <li>
               <p>Connect the Runtime and create this work&apos;s Instance.</p>
               <pre aria-label="SharedNet Agent connect command">
-                <code>{CURRENT_AGENT_CONNECT_COMMAND}</code>
+                <code>{CURRENT_ROOM_AGENT_CONNECT_COMMAND}</code>
               </pre>
             </li>
             <li>

@@ -177,7 +177,7 @@ function ProductShell({ account, children }: { account: Account; children: React
         <nav aria-label="Setup" className="rail-setup">
           <Link
             aria-current={pathname === "/protocol" ? "page" : undefined}
-            aria-label="Agent registration protocol"
+            aria-label="Room join protocol"
             className="rail-destination"
             data-active={pathname === "/protocol" ? "true" : undefined}
             href="/protocol"

@@ -656,6 +656,72 @@ class LocalIdentityCliTests(unittest.TestCase):
         local_config = LocalConfig.load(state_root / "local.json")
         self.assertEqual(local_config.instances[0].session_path, instance_path.resolve())
 
+    def test_agent_connect_without_local_config_does_not_read_or_write_runner_state(self) -> None:
+        state_root = self.root / ".sharednet"
+        account_path = state_root / "account.json"
+        agent_path = state_root / "agent.json"
+        instance_path = state_root / "instance.json"
+        trap_path = self.root / "must-not-be-read.json"
+        AccountSessionFile(account_path).save(
+            "http://127.0.0.1:8765", "p_15COsXY9aK", "connector-secret"
+        )
+        trap_path.write_text("not local config", encoding="utf-8")
+        (state_root / "local.json").symlink_to(trap_path)
+
+        class FakeClient:
+            def __init__(self, base_url: str, timeout: float = 30.0) -> None:
+                self.base_url = base_url
+
+            def create_agent(self, connector_token: str, label: str, capabilities):
+                return {"principal_id": "p_15COsXY9aK", "agent_id": "a_7Qm2Zx8WpL"}
+
+            def register_runtime(
+                self, connector_token: str, agent_id: str, runtime_kind: str, workspace: str
+            ):
+                return {
+                    "principal_id": "p_15COsXY9aK",
+                    "agent_id": "a_7Qm2Zx8WpL",
+                    "runtime_id": "r_4Nk8Vm2QaT",
+                    "runtime_token": "runtime-secret",
+                }
+
+            def start_instance(
+                self, runtime_token: str, provider_session_id: str | None, lease_seconds: int
+            ):
+                return {
+                    "identity": {
+                        "principal_id": "p_15COsXY9aK",
+                        "agent_id": "a_7Qm2Zx8WpL",
+                        "runtime_id": "r_4Nk8Vm2QaT",
+                        "instance_id": "i_8pQ2Km7XaN",
+                    },
+                    "instance_token": "instance-secret",
+                    "expires_at": "2026-09-03T00:00:00+00:00",
+                }
+
+        with patch("sharednet.control.client.ControlClient", FakeClient):
+            code, stdout, stderr = self.invoke(
+                "agent",
+                "connect",
+                "--runtime-kind",
+                "codex",
+                "--workspace",
+                str(self.root),
+                "--account-session",
+                str(account_path),
+                "--agent-state",
+                str(agent_path),
+                "--instance-session",
+                str(instance_path),
+                "--no-local-config",
+            )
+
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(trap_path.read_text(encoding="utf-8"), "not local config")
+        self.assertTrue((state_root / "local.json").is_symlink())
+        self.assertNotIn("local_config", json.loads(stdout))
+        self.assertEqual(InstanceSessionFile(instance_path).load().instance_id, "i_8pQ2Km7XaN")
+
     def test_room_commands_send_instance_scope_from_the_new_session(self) -> None:
         observed_authorization: list[str | None] = []
         app = FastAPI(openapi_url=None, docs_url=None, redoc_url=None)
@@ -686,6 +752,77 @@ class LocalIdentityCliTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(observed_authorization, ["Instance instance-secret"])
         self.assertNotIn("instance-secret", completed.stdout + completed.stderr)
+
+    def test_explicit_instance_session_ignores_conflicting_room_environment(self) -> None:
+        observed_session_authorization: list[str | None] = []
+        observed_decoy_authorization: list[str | None] = []
+        session_app = FastAPI(openapi_url=None, docs_url=None, redoc_url=None)
+        decoy_app = FastAPI(openapi_url=None, docs_url=None, redoc_url=None)
+
+        @session_app.get("/v1/rooms")
+        def session_rooms(request: Request):
+            observed_session_authorization.append(request.headers.get("authorization"))
+            return {"rooms": []}
+
+        @decoy_app.get("/v1/rooms")
+        def decoy_rooms(request: Request):
+            observed_decoy_authorization.append(request.headers.get("authorization"))
+            return {"rooms": []}
+
+        with LiveServer(session_app) as session_server, LiveServer(decoy_app) as decoy_server:
+            session_path = self.root / ".sharednet" / "instance.json"
+            InstanceSessionFile(session_path).save(
+                session_server.url,
+                "p_15COsXY9aK",
+                "a_7Qm2Zx8WpL",
+                "r_4Nk8Vm2QaT",
+                "i_8pQ2Km7XaN",
+                "instance-secret",
+            )
+            completed = run_cli(
+                "room",
+                "list",
+                "--session",
+                str(session_path),
+                cwd=self.root,
+                extra_environment={
+                    "SHAREDNET_ROOM_URL": decoy_server.url,
+                    "SHAREDNET_INSTANCE_TOKEN": "decoy-instance-secret",
+                    "SHAREDNET_RUNTIME_TOKEN": "decoy-runtime-secret",
+                },
+            )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(observed_session_authorization, ["Instance instance-secret"])
+        self.assertEqual(observed_decoy_authorization, [])
+        for secret in ("instance-secret", "decoy-instance-secret", "decoy-runtime-secret"):
+            self.assertNotIn(secret, completed.stdout + completed.stderr)
+
+    def test_explicit_instance_session_rejects_a_conflicting_url_flag(self) -> None:
+        session_path = self.root / ".sharednet" / "instance.json"
+        InstanceSessionFile(session_path).save(
+            "http://127.0.0.1:8765",
+            "p_15COsXY9aK",
+            "a_7Qm2Zx8WpL",
+            "r_4Nk8Vm2QaT",
+            "i_8pQ2Km7XaN",
+            "instance-secret",
+        )
+
+        completed = run_cli(
+            "room",
+            "list",
+            "--session",
+            str(session_path),
+            "--url",
+            "https://other.sharednet.example",
+            cwd=self.root,
+        )
+
+        self.assertEqual(completed.returncode, 2)
+        self.assertEqual(completed.stdout, "")
+        self.assertEqual(json.loads(completed.stderr)["error"]["code"], "session_url_mismatch")
+        self.assertNotIn("instance-secret", completed.stderr)
 
     def test_instance_and_decision_commands_use_the_saved_instance_credential(self) -> None:
         session_path = self.root / ".sharednet" / "instance.json"

@@ -26,12 +26,14 @@ describe("SharedNet Local protocol artifacts", () => {
     expect(skill).toContain("command -v sharednet");
     expect(skill).toContain("sharednet login");
     expect(skill).toContain("sharednet agent connect");
+    expect(skill).toContain("--no-local-config");
     expect(skill).toContain('sharednet room join "$SHAREDNET_ROOM_ID"');
     expect(skill).toContain('sharednet room retrieve "$SHAREDNET_ROOM_ID"');
     expect(skill).toContain("Join only the exact Room ID provided by the human");
     expect(skill).not.toContain("sharednet room build");
     expect(skill).not.toContain("sharednet room list");
     expect(skill).not.toContain("sharednet room post");
+    expect(skill).not.toContain("unless the human separately requests");
     expect(skill).not.toContain("sharednet local run");
     expect(skill).not.toContain("downloads/sharednet-local");
 
@@ -81,6 +83,7 @@ describe("SharedNet Local protocol artifacts", () => {
     expect(workflow).toContain('--web "$SHAREDNET_WEB_ORIGIN"');
     expect(workflow).toContain('sharednet room join "$SHAREDNET_ROOM_ID"');
     expect(workflow).toContain('sharednet room retrieve "$SHAREDNET_ROOM_ID"');
+    expect(workflow).toContain("--no-local-config");
     expect(workflow.indexOf('if [ -L "$directory" ]')).toBeLessThan(
       workflow.indexOf("chmod 700"),
     );
@@ -123,6 +126,7 @@ describe("SharedNet Local protocol artifacts", () => {
     expect(index).not.toContain("downloads/sharednet-local");
     expect(index).not.toContain("sharednet room build");
     expect(index).not.toContain("sharednet local run");
+    expect(index).toContain("If login returns `authorization_required`");
   });
 
   it("keeps the full machine-readable protocol inside the Room-only V1", () => {
@@ -132,6 +136,7 @@ describe("SharedNet Local protocol artifacts", () => {
     expect(fullText).toContain("Join one existing Room");
     expect(fullText).toContain("join only the exact Room ID provided by the human");
     expect(fullText).toContain("retrieve its history");
+    expect(fullText).toContain("If login returns `authorization_required`");
     for (const laterCapability of [
       "downloads/sharednet-local",
       "sharednet room build",

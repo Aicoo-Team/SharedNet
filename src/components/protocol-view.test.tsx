@@ -54,6 +54,9 @@ describe("SharedNet Local protocol", () => {
     expect(screen.getByLabelText("SharedNet Agent connect command")).toHaveTextContent(
       "--instance-session INSTANCE_SESSION",
     );
+    expect(screen.getByLabelText("SharedNet Agent connect command")).toHaveTextContent(
+      "--no-local-config",
+    );
     expect(screen.getByLabelText("SharedNet Room join command")).toHaveTextContent(
       "--session INSTANCE_SESSION",
     );
@@ -77,6 +80,7 @@ describe("SharedNet Local protocol", () => {
     expect(pageText).not.toContain("sharednet local run");
     expect(pageText).not.toContain("--principal-id");
     expect(pageText).not.toContain("--agent-id");
+    expect(pageText).toContain("If login returns authorization_required");
   });
 
   it("uses Instance identity and explains persistent Agent state", () => {
