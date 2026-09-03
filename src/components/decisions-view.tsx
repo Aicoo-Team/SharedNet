@@ -1,84 +1,334 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useSharedNetDemo } from "@/src/context/sharednet-demo-context";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
-  getDecisionResponseMode,
-  type Decision,
-} from "@/src/domain/network-demo";
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
-function DecisionHistoryItem({ decision }: { decision: Decision }) {
-  const responseMode = getDecisionResponseMode(decision);
+import { useSharedNet } from "@/src/context/sharednet-context";
+import {
+  parsePairingId,
+  type DecisionId,
+  type DecisionProjection,
+  type DecisionResolution,
+  type PairingId,
+} from "@/src/sharednet/contracts";
+
+type Drafts = Partial<Record<DecisionId, string>>;
+
+type MutationState =
+  | { decisionId: DecisionId; phase: "pending" }
+  | { decisionId: DecisionId; phase: "error" }
+  | null;
+
+type PairingState =
+  | { phase: "idle" }
+  | { phase: "invalid" }
+  | { phase: "pending"; retry: boolean }
+  | { phase: "error" };
+
+const decisionStatusLabels: Record<DecisionProjection["status"], string> = {
+  answered: "Answered",
+  approved: "Approved",
+  denied: "Denied",
+  pending: "Pending",
+};
+
+function DecisionStatus({ decision }: { decision: DecisionProjection }) {
+  return (
+    <span className="decision-status" data-status={decision.status}>
+      {decisionStatusLabels[decision.status]}
+    </span>
+  );
+}
+
+function DecisionFacts({ decision }: { decision: DecisionProjection }) {
+  return (
+    <dl aria-label={`${decision.title} details`} className="decision-facts">
+      <div>
+        <dt>Created</dt>
+        <dd>
+          <time dateTime={decision.created_at}>{decision.created_at}</time>
+        </dd>
+      </div>
+      <div>
+        <dt>Resolved</dt>
+        <dd>
+          {decision.resolved_at ? (
+            <time dateTime={decision.resolved_at}>{decision.resolved_at}</time>
+          ) : (
+            "Not resolved"
+          )}
+        </dd>
+      </div>
+      <div>
+        <dt>Room ID</dt>
+        <dd>{decision.room_id ?? "No Room"}</dd>
+      </div>
+      <div className="decision-response-fact">
+        <dt>Response</dt>
+        <dd>{decision.response_text ?? "No response yet."}</dd>
+      </div>
+      {decision.requester ? (
+        <>
+          <div>
+            <dt>Requester Principal</dt>
+            <dd>{decision.requester.principal_id}</dd>
+          </div>
+          <div>
+            <dt>Requester Agent</dt>
+            <dd>{decision.requester.agent_id}</dd>
+          </div>
+          <div>
+            <dt>Requester Runtime</dt>
+            <dd>{decision.requester.runtime_id}</dd>
+          </div>
+          <div>
+            <dt>Requester Instance</dt>
+            <dd>{decision.requester.instance_id}</dd>
+          </div>
+        </>
+      ) : (
+        <div>
+          <dt>Requester</dt>
+          <dd>Requester not available</dd>
+        </div>
+      )}
+    </dl>
+  );
+}
+
+function DecisionHistoryItem({ decision }: { decision: DecisionProjection }) {
+  const titleId = `decision-history-${decision.decision_id}`;
 
   return (
-    <article className="decision-history-item">
-      <div>
-        <h2>{decision.title}</h2>
-        <p>{decision.description}</p>
-        {decision.resolutionNote ? (
-          <blockquote>{decision.resolutionNote}</blockquote>
-        ) : null}
-      </div>
-      <span data-status={decision.status}>
-        {decision.status === "approved"
-          ? responseMode === "text"
-            ? "Answered"
-            : "Approved"
-          : "Denied"}
-      </span>
+    <article
+      aria-labelledby={titleId}
+      className="decision-history-item"
+      data-status={decision.status}
+    >
+      <header>
+        <h2 id={titleId}>{decision.title}</h2>
+        <DecisionStatus decision={decision} />
+      </header>
+      <p>{decision.description}</p>
+      <small>{decision.consequence ?? "No consequence provided."}</small>
+      <DecisionFacts decision={decision} />
     </article>
   );
 }
 
-export function DecisionsView() {
-  const { state, resolveDecision } = useSharedNetDemo();
-  const pending = state.decisions.filter((decision) => decision.status === "pending");
-  const resolved = state.decisions.filter((decision) => decision.status !== "pending");
-  const [selectedDecisionId, setSelectedDecisionId] = useState<string | null>(
-    pending[0]?.id ?? null,
+function PairingNotice({
+  pairingId,
+  pairingState,
+  retry,
+}: {
+  pairingId: PairingId | null;
+  pairingState: PairingState;
+  retry: (pairingId: PairingId) => void;
+}) {
+  if (pairingState.phase === "idle") return null;
+  if (pairingState.phase === "invalid") {
+    return (
+      <p className="decisions-data-state decisions-data-error" role="alert">
+        This pairing link is invalid.
+      </p>
+    );
+  }
+  if (pairingState.phase === "error") {
+    return (
+      <div className="decisions-pairing-state">
+        <p className="decisions-data-state decisions-data-error" role="alert">
+          Unable to claim this pairing. Try again.
+        </p>
+        <button
+          disabled={pairingId === null}
+          onClick={() => {
+            if (pairingId) retry(pairingId);
+          }}
+          type="button"
+        >
+          Retry pairing
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="decisions-pairing-state">
+      <p className="decisions-data-state" role="status">
+        Claiming pairing…
+      </p>
+      {pairingState.retry ? (
+        <button disabled type="button">
+          Retry pairing
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function DecisionsLoading() {
+  return (
+    <div className="decisions-workspace">
+      <header className="decisions-titlebar">
+        <h1>Decisions</h1>
+      </header>
+      <div className="decisions-notices" />
+      <section aria-label="Pending decisions" className="pending-decisions">
+        <p className="decisions-clear" role="status">
+          Loading decisions…
+        </p>
+      </section>
+    </div>
+  );
+}
+
+function DecisionsContent() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const { claimPairing, decisions, error, resolveDecision, status } = useSharedNet();
+  const pending = useMemo(
+    () => decisions.filter((decision) => decision.status === "pending"),
+    [decisions],
+  );
+  const resolved = useMemo(
+    () => decisions.filter((decision) => decision.status !== "pending"),
+    [decisions],
+  );
+  const pairingQuery = searchParams.get("pairing");
+  const pairingId = parsePairingId(pairingQuery);
+  const [selectedDecisionId, setSelectedDecisionId] = useState<DecisionId | null>(
+    pending[0]?.decision_id ?? null,
   );
   const [historyOpen, setHistoryOpen] = useState(false);
-  const [instruction, setInstruction] = useState("");
-  const [answer, setAnswer] = useState("");
+  const [drafts, setDrafts] = useState<Drafts>({});
+  const [mutationState, setMutationState] = useState<MutationState>(null);
+  const [pairingState, setPairingState] = useState<PairingState>({ phase: "idle" });
+  const mountedRef = useRef(false);
+  const mutationInFlightRef = useRef(false);
+  const automaticPairingRef = useRef<string | null>(null);
+  const pairingRevisionRef = useRef(0);
   const selectedDecision =
-    pending.find((decision) => decision.id === selectedDecisionId) ?? pending[0];
-  const selectedResponseMode = selectedDecision
-    ? getDecisionResponseMode(selectedDecision)
-    : null;
+    pending.find((decision) => decision.decision_id === selectedDecisionId) ??
+    pending[0] ??
+    null;
+  const selectedDraft = selectedDecision
+    ? (drafts[selectedDecision.decision_id] ?? "")
+    : "";
+  const mutationPending = mutationState?.phase === "pending";
+  const selectedMutationFailed =
+    mutationState?.phase === "error" &&
+    mutationState.decisionId === selectedDecision?.decision_id;
 
   useEffect(() => {
-    if (pending.length === 0) {
-      setSelectedDecisionId(null);
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    setSelectedDecisionId((current) => {
+      if (pending.length === 0) return null;
+      if (current && pending.some((decision) => decision.decision_id === current)) {
+        return current;
+      }
+      return pending[0].decision_id;
+    });
+  }, [pending]);
+
+  const attemptPairing = useCallback(
+    async (nextPairingId: PairingId, retry = false) => {
+      const revision = pairingRevisionRef.current + 1;
+      pairingRevisionRef.current = revision;
+      setPairingState({ phase: "pending", retry });
+
+      try {
+        await claimPairing(nextPairingId);
+        if (!mountedRef.current || pairingRevisionRef.current !== revision) return;
+        setPairingState({ phase: "idle" });
+        router.replace("/decisions");
+      } catch {
+        if (!mountedRef.current || pairingRevisionRef.current !== revision) return;
+        setPairingState({ phase: "error" });
+      }
+    },
+    [claimPairing, router],
+  );
+
+  useEffect(() => {
+    if (pairingQuery === null) {
+      if (automaticPairingRef.current !== null) {
+        automaticPairingRef.current = null;
+        pairingRevisionRef.current += 1;
+        setPairingState({ phase: "idle" });
+      }
       return;
     }
-    if (!pending.some((decision) => decision.id === selectedDecisionId)) {
-      setSelectedDecisionId(pending[0].id);
+    if (automaticPairingRef.current === pairingQuery) return;
+
+    automaticPairingRef.current = pairingQuery;
+    if (pairingId === null) {
+      pairingRevisionRef.current += 1;
+      setPairingState({ phase: "invalid" });
+      return;
     }
-  }, [pending, selectedDecisionId]);
+    void attemptPairing(pairingId);
+  }, [attemptPairing, pairingId, pairingQuery]);
 
-  function resolveSelected(outcome: "approved" | "denied") {
+  function updateSelectedDraft(value: string) {
     if (!selectedDecision) return;
-    resolveDecision(selectedDecision.id, outcome);
+    setDrafts((current) => ({
+      ...current,
+      [selectedDecision.decision_id]: value,
+    }));
   }
 
-  function applyInstruction() {
-    if (!selectedDecision || !instruction.trim()) return;
-    resolveDecision(selectedDecision.id, "approved", instruction);
-    setInstruction("");
+  async function submitResolution(resolution: DecisionResolution) {
+    if (!selectedDecision || mutationInFlightRef.current) return;
+    const decisionId = selectedDecision.decision_id;
+    mutationInFlightRef.current = true;
+    setMutationState({ decisionId, phase: "pending" });
+
+    try {
+      await resolveDecision(decisionId, resolution);
+      if (!mountedRef.current) return;
+      setDrafts((current) => {
+        if (current[decisionId] === undefined) return current;
+        const next = { ...current };
+        delete next[decisionId];
+        return next;
+      });
+      setMutationState(null);
+    } catch {
+      if (mountedRef.current) {
+        setMutationState({ decisionId, phase: "error" });
+      }
+    } finally {
+      mutationInFlightRef.current = false;
+    }
   }
 
-  function approveAll() {
-    pending
-      .filter((decision) => getDecisionResponseMode(decision) === "approval")
-      .forEach((decision) => resolveDecision(decision.id, "approved"));
+  function submitApproval(outcome: "approved" | "denied") {
+    if (!selectedDecision || selectedDecision.response_mode !== "approval") return;
+    const responseText = selectedDraft.trim();
+    void submitResolution({
+      outcome,
+      ...(responseText ? { responseText } : {}),
+    });
   }
 
   function submitAnswer() {
-    if (!selectedDecision || selectedResponseMode !== "text" || !answer.trim()) {
-      return;
-    }
-    resolveDecision(selectedDecision.id, "approved", answer);
-    setAnswer("");
+    if (!selectedDecision || selectedDecision.response_mode !== "text") return;
+    const responseText = selectedDraft.trim();
+    if (!responseText) return;
+    void submitResolution({ outcome: "answered", responseText });
   }
 
   return (
@@ -95,16 +345,34 @@ export function DecisionsView() {
         </button>
       </header>
 
+      <div className="decisions-notices">
+        {status === "stale" ? (
+          <p className="decisions-data-state decisions-data-error" role="alert">
+            {error ?? "SharedNet data may be out of date."}
+          </p>
+        ) : null}
+        <PairingNotice
+          pairingId={pairingId}
+          pairingState={pairingState}
+          retry={(nextPairingId) => void attemptPairing(nextPairingId, true)}
+        />
+      </div>
+
       <section aria-label="Pending decisions" className="pending-decisions">
         {pending.length > 0 && selectedDecision ? (
           <>
             <nav aria-label="Decision queue" className="decision-queue">
               {pending.map((decision, index) => (
                 <button
-                  aria-current={decision.id === selectedDecision.id ? "true" : undefined}
+                  aria-current={
+                    decision.decision_id === selectedDecision.decision_id
+                      ? "true"
+                      : undefined
+                  }
                   aria-label={`Open decision ${index + 1}: ${decision.title}`}
-                  key={decision.id}
-                  onClick={() => setSelectedDecisionId(decision.id)}
+                  disabled={mutationPending}
+                  key={decision.decision_id}
+                  onClick={() => setSelectedDecisionId(decision.decision_id)}
                   type="button"
                 >
                   <span>{String(index + 1).padStart(2, "0")}</span>
@@ -113,67 +381,62 @@ export function DecisionsView() {
               ))}
             </nav>
 
-            <article className="decision-workbench">
+            <article
+              aria-labelledby={`decision-title-${selectedDecision.decision_id}`}
+              className="decision-workbench"
+            >
               <div className="decision-question">
-                <p>{selectedDecision.type.replace("_", " ")}</p>
-                <h2>{selectedDecision.title}</h2>
+                <div className="decision-kicker">
+                  <p>{selectedDecision.response_mode}</p>
+                  <DecisionStatus decision={selectedDecision} />
+                </div>
+                <h2 id={`decision-title-${selectedDecision.decision_id}`}>
+                  {selectedDecision.title}
+                </h2>
                 <p>{selectedDecision.description}</p>
-                <small>{selectedDecision.consequence}</small>
+                <small>
+                  {selectedDecision.consequence ?? "No consequence provided."}
+                </small>
               </div>
 
-              {selectedResponseMode === "approval" ? (
+              <DecisionFacts decision={selectedDecision} />
+
+              {selectedDecision.response_mode === "approval" ? (
                 <>
                   <div className="decision-controls">
                     <button
                       aria-label="Deny"
                       className="decision-control decision-control-deny"
-                      onClick={() => resolveSelected("denied")}
+                      disabled={mutationPending}
+                      onClick={() => submitApproval("denied")}
                       type="button"
                     >
                       <span aria-hidden="true" />
                       Deny
                     </button>
                     <button
-                      aria-label="Approve once"
+                      aria-label="Approve"
                       className="decision-control decision-control-once"
-                      onClick={() => resolveSelected("approved")}
+                      disabled={mutationPending}
+                      onClick={() => submitApproval("approved")}
                       type="button"
                     >
                       <span aria-hidden="true" />
-                      Approve once
-                    </button>
-                    <button
-                      aria-label="Approve all pending"
-                      className="decision-control decision-control-all"
-                      onClick={approveAll}
-                      type="button"
-                    >
-                      <span aria-hidden="true" />
-                      Approve all
+                      Approve
                     </button>
                   </div>
 
                   <div className="decision-instruction">
-                    <label className="sr-only" htmlFor="decision-instruction">
-                      Give SharedNet an instruction before continuing
+                    <label className="sr-only" htmlFor="decision-note">
+                      Optional note
                     </label>
                     <input
-                      id="decision-instruction"
-                      onChange={(event) => setInstruction(event.target.value)}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter") applyInstruction();
-                      }}
-                      placeholder="Work on A first…"
-                      value={instruction}
+                      disabled={mutationPending}
+                      id="decision-note"
+                      onChange={(event) => updateSelectedDraft(event.target.value)}
+                      placeholder="Optional note…"
+                      value={selectedDraft}
                     />
-                    <button
-                      aria-label="Apply instruction"
-                      disabled={!instruction.trim()}
-                      onClick={applyInstruction}
-                      type="button"
-                    >
-                      →
-                    </button>
                   </div>
                 </>
               ) : (
@@ -181,15 +444,16 @@ export function DecisionsView() {
                   <label htmlFor="decision-answer">Your answer</label>
                   <div>
                     <textarea
+                      disabled={mutationPending}
                       id="decision-answer"
-                      onChange={(event) => setAnswer(event.target.value)}
+                      onChange={(event) => updateSelectedDraft(event.target.value)}
                       placeholder="Write your answer…"
                       rows={4}
-                      value={answer}
+                      value={selectedDraft}
                     />
                     <button
                       aria-label="Submit answer"
-                      disabled={!answer.trim()}
+                      disabled={mutationPending || !selectedDraft.trim()}
                       onClick={submitAnswer}
                       type="button"
                     >
@@ -198,8 +462,22 @@ export function DecisionsView() {
                   </div>
                 </div>
               )}
+
+              {selectedMutationFailed ? (
+                <p className="decision-mutation-error" role="alert">
+                  Unable to save this decision. Try again.
+                </p>
+              ) : null}
             </article>
           </>
+        ) : status === "loading" ? (
+          <p className="decisions-clear" role="status">
+            Loading decisions…
+          </p>
+        ) : status === "stale" ? (
+          <p className="decisions-clear decisions-unavailable" role="status">
+            Decisions unavailable while SharedNet data is stale.
+          </p>
         ) : (
           <p className="decisions-clear">No decisions need you.</p>
         )}
@@ -213,7 +491,7 @@ export function DecisionsView() {
           </header>
           {resolved.length > 0 ? (
             resolved.map((decision) => (
-              <DecisionHistoryItem decision={decision} key={decision.id} />
+              <DecisionHistoryItem decision={decision} key={decision.decision_id} />
             ))
           ) : (
             <p>No past decisions.</p>
@@ -221,5 +499,13 @@ export function DecisionsView() {
         </section>
       ) : null}
     </div>
+  );
+}
+
+export function DecisionsView() {
+  return (
+    <Suspense fallback={<DecisionsLoading />}>
+      <DecisionsContent />
+    </Suspense>
   );
 }

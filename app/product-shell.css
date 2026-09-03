@@ -1227,7 +1227,7 @@
 
 .decisions-workspace {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   height: 100%;
   min-height: 0;
   overflow: hidden;
@@ -1240,6 +1240,7 @@
   display: grid;
   grid-template-columns: 40px 1fr 40px;
   min-height: 38px;
+  grid-row: 1;
 }
 
 .decisions-titlebar h1 {
@@ -1262,11 +1263,56 @@
   width: 36px;
 }
 
+.decisions-notices {
+  display: grid;
+  gap: 6px;
+  grid-row: 2;
+  justify-items: center;
+}
+
+.decisions-data-state {
+  background: var(--sn-blue-soft);
+  border: 1px solid var(--sn-columbia);
+  border-radius: 4px;
+  color: var(--sn-oxford);
+  font-size: 9px;
+  margin: 0;
+  padding: 5px 8px;
+}
+
+.decisions-data-error {
+  background: color-mix(in srgb, var(--sn-red) 7%, var(--sn-paper));
+  border-color: color-mix(in srgb, var(--sn-red) 35%, var(--sn-paper));
+  color: var(--sn-red);
+}
+
+.decisions-pairing-state {
+  align-items: center;
+  display: flex;
+  gap: 7px;
+}
+
+.decisions-pairing-state button {
+  background: transparent;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  color: var(--sn-oxford);
+  font-size: 9px;
+  min-height: 27px;
+  padding: 0 8px;
+}
+
+.decisions-pairing-state button:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
 .pending-decisions {
   align-items: center;
   display: grid;
   gap: clamp(28px, 5vw, 70px);
   grid-template-columns: minmax(210px, 300px) minmax(360px, 520px);
+  grid-row: 3;
   justify-content: center;
   min-height: 0;
   overflow: auto;
@@ -1296,6 +1342,11 @@
   border-color: var(--sn-gold-ink);
 }
 
+.decision-queue button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
 .decision-queue span {
   color: var(--sn-muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -1312,15 +1363,39 @@
 
 .decision-workbench {
   display: grid;
-  gap: 22px;
+  gap: 16px;
 }
 
-.decision-question > p:first-child {
+.decision-kicker {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  margin: 0 0 8px;
+}
+
+.decision-kicker p {
   color: var(--sn-oxford);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 9px;
-  margin: 0 0 8px;
+  margin: 0;
   text-transform: uppercase;
+}
+
+.decision-status {
+  color: var(--sn-gold-ink);
+  font-size: 9px;
+  font-weight: 650;
+  text-transform: uppercase;
+}
+
+.decision-status[data-status="approved"],
+.decision-status[data-status="answered"] {
+  color: var(--sn-green);
+}
+
+.decision-status[data-status="denied"] {
+  color: var(--sn-red);
 }
 
 .decision-question h2 {
@@ -1330,10 +1405,51 @@
   margin: 0 0 8px;
 }
 
-.decision-question > p:nth-of-type(2) {
+.decision-question > p {
   font-size: 12px;
   line-height: 1.5;
   margin: 0 0 8px;
+}
+
+.decision-facts {
+  display: grid;
+  gap: 8px 14px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+}
+
+.decision-facts > div {
+  min-width: 0;
+}
+
+.decision-facts dt {
+  color: var(--sn-muted);
+  font-size: 8px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  margin-bottom: 2px;
+  text-transform: uppercase;
+}
+
+.decision-facts dd {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9px;
+  line-height: 1.4;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.decision-response-fact {
+  grid-column: 1 / -1;
+}
+
+.decision-response-fact dd {
+  background: var(--sn-blue-soft);
+  border: 1px solid var(--sn-columbia);
+  border-radius: 4px;
+  color: var(--sn-ink);
+  font-family: inherit;
+  padding: 6px 8px;
 }
 
 .decision-question small {
@@ -1360,6 +1476,11 @@
   padding: 5px 0;
 }
 
+.decision-control:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
 .decision-control > span {
   background: transparent;
   border: 1.5px solid currentColor;
@@ -1377,12 +1498,8 @@
   color: var(--sn-gold-ink);
 }
 
-.decision-control-all {
-  color: var(--sn-green);
-}
-
-.decision-control:hover > span,
-.decision-control:focus-visible > span {
+.decision-control:not(:disabled):hover > span,
+.decision-control:not(:disabled):focus-visible > span {
   background: currentColor;
 }
 
@@ -1390,7 +1507,7 @@
   border: 1px solid var(--sn-ink);
   border-radius: 5px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 38px;
+  grid-template-columns: minmax(0, 1fr);
   overflow: hidden;
 }
 
@@ -1402,15 +1519,10 @@
   padding: 7px 11px;
 }
 
-.decision-instruction button {
-  background: transparent;
-  border: 0;
-  border-left: 1px solid var(--sn-line);
-}
-
-.decision-instruction button:disabled {
+.decision-instruction input:disabled,
+.decision-text-answer textarea:disabled {
   cursor: default;
-  opacity: 0.25;
+  opacity: 0.55;
 }
 
 .decision-text-answer {
@@ -1459,11 +1571,21 @@
   cursor: default;
 }
 
+.decision-mutation-error {
+  color: var(--sn-red);
+  font-size: 9px;
+  margin: -6px 0 0;
+}
+
 .decisions-clear {
   color: var(--sn-green);
   grid-column: 1 / -1;
   margin: 0;
   text-align: center;
+}
+
+.decisions-unavailable {
+  color: var(--sn-muted);
 }
 
 .resolved-decisions {
@@ -1494,46 +1616,37 @@
 }
 
 .decision-history-item {
-  align-items: start;
   border-bottom: 1px solid var(--sn-line);
   display: grid;
-  gap: 14px;
-  grid-template-columns: 1fr auto;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr);
   padding: 12px 2px;
+}
+
+.decision-history-item > header {
+  align-items: start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
 }
 
 .decision-history-item h2 {
   font-size: 12px;
   font-weight: 600;
-  margin: 0 0 5px;
+  margin: 0;
 }
 
 .decision-history-item p,
-.decision-history-item blockquote {
+.decision-history-item small {
   color: var(--sn-muted);
   font-size: 10px;
   line-height: 1.45;
   margin: 0;
 }
 
-.decision-history-item blockquote {
-  background: var(--sn-blue-soft);
-  border: 1px solid var(--sn-columbia);
-  border-radius: 4px;
-  color: var(--sn-ink);
-  margin-top: 7px;
-  padding: 6px 8px;
-}
-
-.decision-history-item > span {
-  color: var(--sn-red);
-  font-size: 9px;
-  font-weight: 650;
-  text-transform: uppercase;
-}
-
-.decision-history-item > span[data-status="approved"] {
-  color: var(--sn-green);
+.decision-history-item .decision-facts {
+  border-top: 1px solid var(--sn-line);
+  padding-top: 8px;
 }
 
 /* Registration protocol */
