@@ -3,13 +3,42 @@ import {
   buildAgentRegistrationSkill,
   buildLlmsFullText,
   buildLlmsIndex,
+  buildRoomJoinSkill,
 } from "./registration-contract";
 import { GET as getLlmsIndex } from "@/app/llms.txt/route";
 import { GET as getLlmsFullText } from "@/app/llms-full.txt/route";
 import { GET as getRegistrationSkill } from "@/app/protocol/skill.md/route";
+import { GET as getRoomJoinSkill } from "@/app/skill.md/route";
 
 describe("SharedNet Local protocol artifacts", () => {
   const origin = "https://sharednet.ai";
+
+  it("publishes the same Room-only Skill at the canonical and compatibility routes", async () => {
+    const skill = buildRoomJoinSkill(origin);
+
+    expect(skill).toContain("name: sharednet-room-join");
+    expect(skill).toContain("command -v sharednet");
+    expect(skill).toContain("sharednet login");
+    expect(skill).toContain("sharednet agent connect");
+    expect(skill).toContain("sharednet room join ROOM_ID");
+    expect(skill).toContain("sharednet room retrieve ROOM_ID");
+    expect(skill).toContain("Join only the exact Room ID provided by the human");
+    expect(skill).not.toContain("sharednet room build");
+    expect(skill).not.toContain("sharednet local run");
+    expect(skill).not.toContain("downloads/sharednet-local");
+
+    const canonicalResponse = getRoomJoinSkill(
+      new Request("https://sharednet.ai/skill.md"),
+    );
+    const compatibilityResponse = getRegistrationSkill(
+      new Request("https://sharednet.ai/protocol/skill.md"),
+    );
+
+    expect(canonicalResponse.headers.get("content-type")).toContain("text/plain");
+    expect(compatibilityResponse.headers.get("content-type")).toContain("text/plain");
+    expect(await canonicalResponse.text()).toBe(skill);
+    expect(await compatibilityResponse.text()).toBe(skill);
+  });
 
   it("gives an Agent absolute discovery links from llms.txt", () => {
     const index = buildLlmsIndex(origin);
