@@ -5,7 +5,8 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repository_root="$(cd "${script_dir}/.." && pwd)"
 python_command="${PYTHON:-python3}"
 output_dir="${SHAREDNET_DIST_DIR:-${repository_root}/dist}"
-temporary_root="$(mktemp -d "${TMPDIR:-/tmp}/sharednet-build.XXXXXX")"
+mkdir -p "${output_dir}"
+temporary_root="$(mktemp -d "${output_dir}/.sharednet-build.XXXXXX")"
 trap 'rm -rf "${temporary_root}"' EXIT
 
 mkdir -p "${output_dir}"
@@ -33,7 +34,11 @@ cp "${repository_root}/LICENSES/RAC-MIT.txt" "${bundle_root}/LICENSES/"
   shasum -a 256 bin/sharednet skills/sharednet-room/SKILL.md > SHA256SUMS
 )
 
-archive="${output_dir}/sharednet-local-darwin-arm64.tar.gz"
-COPYFILE_DISABLE=1 tar -C "${temporary_root}" -czf "${archive}" sharednet-local
-"${repository_root}/scripts/write_bundle_checksum.sh" "${archive}"
-printf '%s\n' "${archive}"
+archive_name="sharednet-local-darwin-arm64.tar.gz"
+private_archive="${temporary_root}/${archive_name}"
+published_archive="${output_dir}/${archive_name}"
+COPYFILE_DISABLE=1 tar -C "${temporary_root}" -czf "${private_archive}" sharednet-local
+"${repository_root}/scripts/write_bundle_checksum.sh" "${private_archive}"
+mv -f "${private_archive}" "${published_archive}"
+mv -f "${private_archive}.sha256" "${published_archive}.sha256"
+printf '%s\n' "${published_archive}"

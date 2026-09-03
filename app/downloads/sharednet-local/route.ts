@@ -6,10 +6,11 @@ import type { FileHandle } from "node:fs/promises";
 import { basename, isAbsolute } from "node:path";
 
 const ARCHIVE_NAME = "sharednet-local-darwin-arm64.tar.gz";
-const MAX_ARCHIVE_BYTES = 256 * 1024 * 1024;
+const MAX_ARCHIVE_BYTES = 128 * 1024 * 1024;
 const MAX_SIDECAR_BYTES = 512;
 const FILE_CHUNK_BYTES = 64 * 1024;
-const READ_ONLY_NO_FOLLOW = constants.O_RDONLY | constants.O_NOFOLLOW;
+const READ_ONLY_NO_FOLLOW_NONBLOCKING =
+  constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
 const SIDECAR_PATTERN = new RegExp(
   `^([0-9a-fA-F]{64})[ \\t]+${ARCHIVE_NAME.replaceAll(".", "\\.")}(?:\\r?\\n)?$`,
 );
@@ -22,11 +23,9 @@ const UNAVAILABLE_BODY = {
 
 export const runtime = "nodejs";
 
-interface OpenRegularFile {
-  readonly ctimeMs: number;
-  readonly handle: FileHandle;
-  readonly mtimeMs: number;
-  readonly size: number;
+interface VerifiedSnapshot {
+  readonly bytes: Uint8Array;
+  readonly digest: Buffer;
 }
 
 function unavailableResponse(): Response {
@@ -48,174 +47,113 @@ function configuredArchivePath(): string {
   return archivePath;
 }
 
-async function closeIgnoringErrors(handle: FileHandle): Promise<void> {
-  try {
-    await handle.close();
-  } catch {
-    // Preserve the original validation or I/O failure.
-  }
-}
-
-async function openRegularFile(
+async function readVerifiedSnapshot(
   path: string,
   maximumBytes: number,
-): Promise<OpenRegularFile> {
-  const handle = await fileSystem.open(path, READ_ONLY_NO_FOLLOW);
+): Promise<VerifiedSnapshot> {
+  const handle: FileHandle = await fileSystem.open(
+    path,
+    READ_ONLY_NO_FOLLOW_NONBLOCKING,
+  );
   try {
-    const metadata = await handle.stat();
+    const before = await handle.stat();
     if (
-      !metadata.isFile() ||
-      !Number.isSafeInteger(metadata.size) ||
-      metadata.size < 0 ||
-      metadata.size > maximumBytes
+      !before.isFile() ||
+      !Number.isSafeInteger(before.size) ||
+      before.size < 0 ||
+      before.size > maximumBytes
     ) {
       throw new Error("SharedNet Local bundle file is invalid");
     }
-    return {
-      ctimeMs: metadata.ctimeMs,
-      handle,
-      mtimeMs: metadata.mtimeMs,
-      size: metadata.size,
-    };
-  } catch (error) {
-    await closeIgnoringErrors(handle);
-    throw error;
-  }
-}
 
-async function readChecksumSidecar(path: string): Promise<string> {
-  const sidecar = await openRegularFile(path, MAX_SIDECAR_BYTES);
-  try {
-    const contents = await sidecar.handle.readFile();
-    if (contents.byteLength !== sidecar.size) {
-      throw new Error("SharedNet Local checksum sidecar changed while reading");
+    const bytes = new Uint8Array(before.size);
+    const hash = createHash("sha256");
+    let position = 0;
+    while (position < bytes.byteLength) {
+      const length = Math.min(FILE_CHUNK_BYTES, bytes.byteLength - position);
+      const { bytesRead } = await handle.read(
+        bytes,
+        position,
+        length,
+        position,
+      );
+      if (bytesRead === 0) {
+        throw new Error("SharedNet Local bundle ended while reading");
+      }
+      hash.update(bytes.subarray(position, position + bytesRead));
+      position += bytesRead;
     }
-    return contents.toString("utf8");
+
+    const after = await handle.stat();
+    if (
+      !after.isFile() ||
+      after.dev !== before.dev ||
+      after.ino !== before.ino ||
+      after.size !== before.size ||
+      after.mtimeMs !== before.mtimeMs ||
+      after.ctimeMs !== before.ctimeMs
+    ) {
+      throw new Error("SharedNet Local bundle changed while reading");
+    }
+    return { bytes, digest: hash.digest() };
   } finally {
-    await sidecar.handle.close();
+    await handle.close();
   }
 }
 
-async function hashArchive(archive: OpenRegularFile): Promise<Buffer> {
-  const hash = createHash("sha256");
-  let position = 0;
-
-  while (position < archive.size) {
-    const chunk = Buffer.allocUnsafe(
-      Math.min(FILE_CHUNK_BYTES, archive.size - position),
-    );
-    const { bytesRead } = await archive.handle.read(
-      chunk,
-      0,
-      chunk.byteLength,
-      position,
-    );
-    if (bytesRead === 0) {
-      throw new Error("SharedNet Local bundle ended while hashing");
-    }
-    hash.update(chunk.subarray(0, bytesRead));
-    position += bytesRead;
-  }
-
-  const metadata = await archive.handle.stat();
-  if (
-    !metadata.isFile() ||
-    metadata.size !== archive.size ||
-    metadata.mtimeMs !== archive.mtimeMs ||
-    metadata.ctimeMs !== archive.ctimeMs
-  ) {
-    throw new Error("SharedNet Local bundle changed while hashing");
-  }
-  return hash.digest();
-}
-
-function streamArchive(
-  handle: FileHandle,
-  size: number,
+function streamSnapshot(
+  snapshot: Uint8Array,
 ): ReadableStream<Uint8Array> {
-  let closePromise: Promise<void> | undefined;
   let position = 0;
-
-  function closeOnce(): Promise<void> {
-    closePromise ??= handle.close();
-    return closePromise;
-  }
 
   return new ReadableStream<Uint8Array>({
-    async cancel() {
-      await closeOnce();
-    },
-    async pull(controller) {
-      try {
-        if (position >= size) {
-          await closeOnce();
-          controller.close();
-          return;
-        }
+    pull(controller) {
+      if (position >= snapshot.byteLength) {
+        controller.close();
+        return;
+      }
 
-        const chunk = new Uint8Array(
-          Math.min(FILE_CHUNK_BYTES, size - position),
-        );
-        const { bytesRead } = await handle.read(
-          chunk,
-          0,
-          chunk.byteLength,
-          position,
-        );
-        if (bytesRead === 0) {
-          throw new Error("SharedNet Local bundle ended while streaming");
-        }
-        position += bytesRead;
-        controller.enqueue(
-          bytesRead === chunk.byteLength ? chunk : chunk.slice(0, bytesRead),
-        );
-
-        if (position === size) {
-          await closeOnce();
-          controller.close();
-        }
-      } catch (error) {
-        await closeIgnoringErrors(handle);
-        controller.error(error);
+      const end = Math.min(position + FILE_CHUNK_BYTES, snapshot.byteLength);
+      controller.enqueue(snapshot.subarray(position, end));
+      position = end;
+      if (position === snapshot.byteLength) {
+        controller.close();
       }
     },
   });
 }
 
 export async function GET(_request: Request): Promise<Response> {
-  let archiveHandle: FileHandle | undefined;
   try {
     const archivePath = configuredArchivePath();
     const sidecarPath = `${archivePath}.sha256`;
-    const sidecar = await readChecksumSidecar(sidecarPath);
-    const match = SIDECAR_PATTERN.exec(sidecar);
+    const sidecar = await readVerifiedSnapshot(sidecarPath, MAX_SIDECAR_BYTES);
+    const match = SIDECAR_PATTERN.exec(
+      Buffer.from(
+        sidecar.bytes.buffer,
+        sidecar.bytes.byteOffset,
+        sidecar.bytes.byteLength,
+      ).toString("utf8"),
+    );
     if (!match) {
       throw new Error("SharedNet Local checksum sidecar is invalid");
     }
 
-    const archive = await openRegularFile(archivePath, MAX_ARCHIVE_BYTES);
-    archiveHandle = archive.handle;
-    const digest = await hashArchive(archive);
-    if (digest.toString("hex") !== match[1].toLowerCase()) {
+    const archive = await readVerifiedSnapshot(archivePath, MAX_ARCHIVE_BYTES);
+    if (archive.digest.toString("hex") !== match[1].toLowerCase()) {
       throw new Error("SharedNet Local bundle checksum does not match");
     }
 
-    const body = streamArchive(archive.handle, archive.size);
-    const response = new Response(body, {
+    return new Response(streamSnapshot(archive.bytes), {
       headers: {
         "Cache-Control": "private, no-store",
         "Content-Disposition": `attachment; filename="${ARCHIVE_NAME}"`,
-        "Content-Length": String(archive.size),
+        "Content-Length": String(archive.bytes.byteLength),
         "Content-Type": "application/gzip",
-        Digest: `sha-256=${digest.toString("base64")}`,
+        Digest: `sha-256=${archive.digest.toString("base64")}`,
       },
     });
-    archiveHandle = undefined;
-    return response;
   } catch {
-    if (archiveHandle) {
-      await closeIgnoringErrors(archiveHandle);
-    }
     return unavailableResponse();
   }
 }

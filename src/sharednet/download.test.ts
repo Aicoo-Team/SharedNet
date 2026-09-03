@@ -1,10 +1,14 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import {
+  closeSync,
+  constants as fsConstants,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   promises as fsPromises,
   readFileSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -28,6 +32,11 @@ const CHECKSUM_WRITER = resolve(
   process.cwd(),
   "scripts/write_bundle_checksum.sh",
 );
+const FIFO_SUPPORTED =
+  typeof fsConstants.O_NONBLOCK === "number" &&
+  (spawnSync("mkfifo", [], { stdio: "ignore" }).error as
+    | NodeJS.ErrnoException
+    | undefined)?.code !== "ENOENT";
 const UNAVAILABLE_BODY =
   '{"error":{"code":"bundle_unavailable","message":"SharedNet Local is not available."}}';
 
@@ -54,6 +63,25 @@ function writeAvailableBundle(
 
 function writeProducedSidecar(path = archivePath): void {
   execFileSync(CHECKSUM_WRITER, [path], { stdio: "pipe" });
+}
+
+function createPrivateProducedBundle(
+  contents = ARCHIVE_BYTES,
+): { archive: string; sidecar: string } {
+  const privateDirectory = join(directory, "private-build");
+  mkdirSync(privateDirectory, { recursive: true });
+  const privateArchive = join(privateDirectory, ARCHIVE_NAME);
+  writeFileSync(privateArchive, contents);
+  writeProducedSidecar(privateArchive);
+  return { archive: privateArchive, sidecar: `${privateArchive}.sha256` };
+}
+
+function publishProducedBundle(bundle: {
+  archive: string;
+  sidecar: string;
+}): void {
+  renameSync(bundle.archive, archivePath);
+  renameSync(bundle.sidecar, sidecarPath);
 }
 
 async function injectOpenHandles(): Promise<{
@@ -92,6 +120,33 @@ async function expectUnavailable(
   expect(await response.text()).toBe(UNAVAILABLE_BODY);
 }
 
+async function expectFifoUnavailablePromptly(fifoPath: string): Promise<void> {
+  let writerDescriptor: number | undefined;
+  const unblockTimer = setTimeout(() => {
+    try {
+      writerDescriptor = openSync(
+        fifoPath,
+        fsConstants.O_WRONLY | fsConstants.O_NONBLOCK,
+      );
+      closeSync(writerDescriptor);
+      writerDescriptor = undefined;
+    } catch {
+      // A nonblocking route has already closed the FIFO before this fallback.
+    }
+  }, 500);
+  const startedAt = performance.now();
+
+  try {
+    await expectUnavailable();
+    expect(performance.now() - startedAt).toBeLessThan(300);
+  } finally {
+    clearTimeout(unblockTimer);
+    if (writerDescriptor !== undefined) {
+      closeSync(writerDescriptor);
+    }
+  }
+}
+
 describe("GET /downloads/sharednet-local", () => {
   beforeEach(() => {
     directory = mkdtempSync(join(tmpdir(), "sharednet-local-download-"));
@@ -107,11 +162,9 @@ describe("GET /downloads/sharednet-local", () => {
   });
 
   it("writes the canonical checksum sidecar for the fixed archive basename", () => {
-    writeArchive();
+    const bundle = createPrivateProducedBundle();
 
-    writeProducedSidecar();
-
-    expect(readFileSync(sidecarPath, "utf8")).toBe(
+    expect(readFileSync(bundle.sidecar, "utf8")).toBe(
       `${ARCHIVE_SHA256}  ${ARCHIVE_NAME}\n`,
     );
   });
@@ -124,9 +177,8 @@ describe("GET /downloads/sharednet-local", () => {
     expect(existsSync(`${wrongArchive}.sha256`)).toBe(false);
   });
 
-  it("streams producer-verified bytes with fixed metadata and closes both handles", async () => {
-    writeArchive();
-    writeProducedSidecar();
+  it("streams a privately produced snapshot after closing both handles", async () => {
+    publishProducedBundle(createPrivateProducedBundle());
     const { archiveHandle, sidecarHandle } = await injectOpenHandles();
 
     try {
@@ -143,9 +195,9 @@ describe("GET /downloads/sharednet-local", () => {
       );
       expect(response.headers.get("cache-control")).toBe("private, no-store");
       expect(response.headers.get("digest")).toBe(ARCHIVE_DIGEST);
-      expect(Buffer.from(await response.arrayBuffer())).toEqual(ARCHIVE_BYTES);
       await expectHandleClosed(sidecarHandle);
       await expectHandleClosed(archiveHandle);
+      expect(Buffer.from(await response.arrayBuffer())).toEqual(ARCHIVE_BYTES);
     } finally {
       await closeIfOpen(sidecarHandle, archiveHandle);
     }
@@ -163,7 +215,7 @@ describe("GET /downloads/sharednet-local", () => {
     expect(Buffer.from(await response.arrayBuffer())).toEqual(ARCHIVE_BYTES);
   });
 
-  it("closes the archive handle when the response stream is cancelled", async () => {
+  it("streams fixed-size views from one snapshot after filesystem closure", async () => {
     writeFileSync(archivePath, Buffer.alloc(1024 * 1024, 0x61));
     writeProducedSidecar();
     const { archiveHandle, sidecarHandle } = await injectOpenHandles();
@@ -174,34 +226,16 @@ describe("GET /downloads/sharednet-local", () => {
       );
 
       expect(response.status).toBe(200);
-      await response.body?.cancel("test cancellation");
       await expectHandleClosed(sidecarHandle);
       await expectHandleClosed(archiveHandle);
-    } finally {
-      await closeIfOpen(sidecarHandle, archiveHandle);
-    }
-  });
-
-  it("closes the archive handle when response streaming fails", async () => {
-    writeArchive();
-    writeProducedSidecar();
-    const { archiveHandle, sidecarHandle } = await injectOpenHandles();
-    const actualRead = archiveHandle.read.bind(archiveHandle);
-    vi.spyOn(archiveHandle, "read")
-      .mockImplementationOnce(actualRead)
-      .mockRejectedValueOnce(new Error("injected stream read failure"));
-
-    try {
-      const response = await GET(
-        new Request("http://localhost/downloads/sharednet-local"),
-      );
-
-      expect(response.status).toBe(200);
-      await expect(response.arrayBuffer()).rejects.toThrow(
-        "injected stream read failure",
-      );
-      await expectHandleClosed(sidecarHandle);
-      await expectHandleClosed(archiveHandle);
+      const reader = response.body?.getReader();
+      expect(reader).toBeDefined();
+      const first = await reader!.read();
+      const second = await reader!.read();
+      expect(first.done).toBe(false);
+      expect(second.done).toBe(false);
+      expect(second.value?.buffer).toBe(first.value?.buffer);
+      await reader!.cancel("test cancellation");
     } finally {
       await closeIfOpen(sidecarHandle, archiveHandle);
     }
@@ -272,6 +306,26 @@ describe("GET /downloads/sharednet-local", () => {
     await expectUnavailable();
   });
 
+  it.skipIf(!FIFO_SUPPORTED)(
+    "rejects a FIFO archive without blocking",
+    async () => {
+      execFileSync("mkfifo", [archivePath]);
+      writeSidecar();
+
+      await expectFifoUnavailablePromptly(archivePath);
+    },
+  );
+
+  it.skipIf(!FIFO_SUPPORTED)(
+    "rejects a FIFO checksum sidecar without blocking",
+    async () => {
+      writeArchive();
+      execFileSync("mkfifo", [sidecarPath]);
+
+      await expectFifoUnavailablePromptly(sidecarPath);
+    },
+  );
+
   it.each([
     ["a short hash", `abcd  ${ARCHIVE_NAME}\n`],
     ["a non-hex hash", `${"g".repeat(64)}  ${ARCHIVE_NAME}\n`],
@@ -310,7 +364,7 @@ describe("GET /downloads/sharednet-local", () => {
   it("closes the sidecar handle when its read fails before headers", async () => {
     writeAvailableBundle();
     const sidecarHandle = await fsPromises.open(sidecarPath, "r");
-    vi.spyOn(sidecarHandle, "readFile").mockRejectedValueOnce(
+    vi.spyOn(sidecarHandle, "read").mockRejectedValueOnce(
       new Error("injected sidecar read failure"),
     );
     vi.spyOn(fsPromises, "open").mockResolvedValueOnce(sidecarHandle);
