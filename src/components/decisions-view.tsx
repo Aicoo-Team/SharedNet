@@ -273,14 +273,17 @@ function DecisionsContent() {
     }
     if (automaticPairingRef.current === pairingQuery) return;
 
-    automaticPairingRef.current = pairingQuery;
     if (pairingId === null) {
+      automaticPairingRef.current = pairingQuery;
       pairingRevisionRef.current += 1;
       setPairingState({ phase: "invalid" });
       return;
     }
+    if (status === "loading") return;
+
+    automaticPairingRef.current = pairingQuery;
     void attemptPairing(pairingId);
-  }, [attemptPairing, pairingId, pairingQuery]);
+  }, [attemptPairing, pairingId, pairingQuery, status]);
 
   function updateSelectedDraft(value: string) {
     if (!selectedDecision) return;

@@ -500,6 +500,39 @@ describe("SharedNet Decisions", () => {
     expect(selectedWorkbench(approvalDecision.title)).toBeVisible();
   });
 
+  it("waits for provider readiness before claiming a valid pairing exactly once", async () => {
+    const claim = deferredVoid();
+    const claimPairing = vi.fn(() => claim.promise);
+    navigationMocks.searchParams = new URLSearchParams({ pairing: PAIRING_ID });
+    const { rerender } = renderDecisions({
+      claimPairing,
+      decisions: [],
+      status: "loading",
+    });
+
+    expect(claimPairing).not.toHaveBeenCalled();
+    expect(navigationMocks.replace).not.toHaveBeenCalled();
+
+    contextMocks.useSharedNet.mockReturnValue(
+      makeState({ claimPairing, decisions: [], status: "ready" }),
+    );
+    rerender(<DecisionsView />);
+
+    await waitFor(() => expect(claimPairing).toHaveBeenCalledWith(PAIRING_ID));
+    expect(claimPairing).toHaveBeenCalledTimes(1);
+    expect(navigationMocks.replace).not.toHaveBeenCalled();
+
+    await act(async () => {
+      claim.resolve();
+      await claim.promise;
+    });
+
+    await waitFor(() =>
+      expect(navigationMocks.replace).toHaveBeenCalledWith("/decisions"),
+    );
+    expect(navigationMocks.replace).toHaveBeenCalledTimes(1);
+  });
+
   it("claims one valid pairing exactly once, ignores URL identity inputs, and cleans the URL after refresh", async () => {
     const claim = deferredVoid();
     const claimPairing = vi.fn(() => claim.promise);

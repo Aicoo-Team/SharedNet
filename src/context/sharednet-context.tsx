@@ -50,6 +50,11 @@ type SharedNetContextValue = {
 };
 
 const SharedNetContext = createContext<SharedNetContextValue | null>(null);
+const MUTATION_UNAVAILABLE_MESSAGE = "SharedNet mutation is unavailable.";
+
+function mutationUnavailableError(): Error {
+  return new Error(MUTATION_UNAVAILABLE_MESSAGE);
+}
 
 async function requestJson<T>(
   path: string,
@@ -240,7 +245,7 @@ export function SharedNetProvider({ children }: { children: ReactNode }) {
         mutationController === null ||
         mutationController.signal.aborted
       ) {
-        return;
+        throw mutationUnavailableError();
       }
       const body = {
         outcome: resolution.outcome,
@@ -248,24 +253,42 @@ export function SharedNetProvider({ children }: { children: ReactNode }) {
           ? {}
           : { responseText: resolution.responseText }),
       };
-      await requestJson(
-        `/api/sharednet/decisions/${encodeURIComponent(decisionId)}`,
-        isDecisionProjection,
-        {
-          body: JSON.stringify(body),
-          headers: { "Content-Type": "application/json" },
-          method: "PATCH",
-          signal: mutationController.signal,
-        },
-      );
+      try {
+        await requestJson(
+          `/api/sharednet/decisions/${encodeURIComponent(decisionId)}`,
+          isDecisionProjection,
+          {
+            body: JSON.stringify(body),
+            headers: { "Content-Type": "application/json" },
+            method: "PATCH",
+            signal: mutationController.signal,
+          },
+        );
+      } catch (cause) {
+        if (
+          !mountedRef.current ||
+          mutationAbortControllerRef.current !== mutationController ||
+          mutationController.signal.aborted
+        ) {
+          throw mutationUnavailableError();
+        }
+        throw cause;
+      }
       if (
         !mountedRef.current ||
         mutationAbortControllerRef.current !== mutationController ||
         mutationController.signal.aborted
       ) {
-        return;
+        throw mutationUnavailableError();
       }
       await refresh();
+      if (
+        !mountedRef.current ||
+        mutationAbortControllerRef.current !== mutationController ||
+        mutationController.signal.aborted
+      ) {
+        throw mutationUnavailableError();
+      }
     },
     [refresh],
   );
@@ -278,21 +301,39 @@ export function SharedNetProvider({ children }: { children: ReactNode }) {
         mutationController === null ||
         mutationController.signal.aborted
       ) {
-        return;
+        throw mutationUnavailableError();
       }
-      await requestJson(
-        `/api/sharednet/pairings/${encodeURIComponent(pairingId)}/claim`,
-        isDecisionProjection,
-        { method: "POST", signal: mutationController.signal },
-      );
+      try {
+        await requestJson(
+          `/api/sharednet/pairings/${encodeURIComponent(pairingId)}/claim`,
+          isDecisionProjection,
+          { method: "POST", signal: mutationController.signal },
+        );
+      } catch (cause) {
+        if (
+          !mountedRef.current ||
+          mutationAbortControllerRef.current !== mutationController ||
+          mutationController.signal.aborted
+        ) {
+          throw mutationUnavailableError();
+        }
+        throw cause;
+      }
       if (
         !mountedRef.current ||
         mutationAbortControllerRef.current !== mutationController ||
         mutationController.signal.aborted
       ) {
-        return;
+        throw mutationUnavailableError();
       }
       await refresh();
+      if (
+        !mountedRef.current ||
+        mutationAbortControllerRef.current !== mutationController ||
+        mutationController.signal.aborted
+      ) {
+        throw mutationUnavailableError();
+      }
     },
     [refresh],
   );

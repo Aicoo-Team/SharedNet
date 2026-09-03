@@ -1,3 +1,5 @@
+import { useEffect, useState } from "react";
+
 import {
   act,
   cleanup,
@@ -241,6 +243,23 @@ function MutationProbe({
   );
 }
 
+function ColdMountClaimProbe() {
+  const { claimPairing } = useSharedNet();
+  const [outcome, setOutcome] = useState("pending");
+
+  useEffect(() => {
+    void claimPairing(parsedPairingId).then(
+      () => setOutcome("fulfilled"),
+      (cause: unknown) =>
+        setOutcome(
+          cause instanceof Error ? `rejected:${cause.message}` : "rejected:non-error",
+        ),
+    );
+  }, [claimPairing]);
+
+  return <span data-testid="cold-mount-claim">{outcome}</span>;
+}
+
 function successfulFetch(input: RequestInfo | URL): Promise<Response> {
   const path = String(input);
   if (path === "/api/sharednet/bootstrap") {
@@ -285,6 +304,24 @@ describe("SharedNetProvider", () => {
     vi.useRealTimers();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+  });
+
+  it("rejects a pairing claim started before the provider lifecycle is ready", async () => {
+    const fetchMock = vi.fn(successfulFetch);
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <SharedNetProvider>
+        <ColdMountClaimProbe />
+      </SharedNetProvider>,
+    );
+
+    expect(await screen.findByTestId("cold-mount-claim")).toHaveTextContent(
+      "rejected:SharedNet mutation is unavailable.",
+    );
+    expect(fetchMock.mock.calls.map(([input]) => String(input))).not.toContain(
+      "/api/sharednet/pairings/pairing.launch%3A1/claim",
+    );
   });
 
   it("loads validated account projections in memory", async () => {
@@ -994,9 +1031,9 @@ describe("SharedNetProvider", () => {
       providerUnmounted = true;
       view.unmount();
       mutationResponse.resolve(Response.json(mutationResult));
-      await act(async () => {
-        await pendingMutation;
-      });
+      await expect(pendingMutation).rejects.toThrow(
+        "SharedNet mutation is unavailable.",
+      );
 
       expect.soft(mutationInit?.signal).toBeInstanceOf(AbortSignal);
       expect.soft(mutationInit?.signal?.aborted).toBe(true);
