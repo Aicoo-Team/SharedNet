@@ -1,12 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { auth } from "./lib/auth";
-
 export async function proxy(request: NextRequest) {
-  if (request.nextUrl.pathname === "/protocol/skill.md") {
+  if (
+    request.nextUrl.pathname === "/protocol" ||
+    request.nextUrl.pathname === "/protocol/skill.md"
+  ) {
     return NextResponse.next();
   }
 
+  const { auth } = await import("./lib/auth");
   const session = await auth.api.getSession({
     headers: request.headers,
     query: { disableRefresh: true },

@@ -290,7 +290,7 @@ describe("SharedNet application shell", () => {
     expect(await screen.findByText(`ready:${SECOND_PRINCIPAL_ID}`)).toBeVisible();
   });
 
-  it("marks the setup point active without activating a product surface", () => {
+  it("leaves the public protocol outside the authenticated product frame", () => {
     navigationState.pathname = "/protocol";
 
     render(
@@ -299,14 +299,10 @@ describe("SharedNet application shell", () => {
       </AppShell>,
     );
 
-    expect(
-      screen.getByRole("link", { name: "Agent registration protocol" }),
-    ).toHaveAttribute("aria-current", "page");
-    expect(
-      screen.getByRole("navigation", { name: "Primary surfaces" }).querySelector(
-        '[aria-current="page"]',
-      ),
-    ).toBeNull();
+    expect(screen.getByText("Protocol content")).toBeVisible();
+    expect(screen.queryByRole("navigation", { name: "Primary surfaces" })).toBeNull();
+    expect(screen.queryByRole("navigation", { name: "Setup" })).toBeNull();
+    expect(authClient.useSession).not.toHaveBeenCalled();
   });
 
   it("leaves the public homepage outside the authenticated product frame", () => {

@@ -1,9 +1,13 @@
+import { randomBytes } from "node:crypto";
 import { chmodSync } from "node:fs";
 
 import { betterAuth } from "better-auth";
 import Database from "better-sqlite3";
 
-const databasePath = process.env.BETTER_AUTH_DATABASE_PATH;
+const isProductionBuild = process.env.NEXT_PHASE === "phase-production-build";
+const databasePath =
+  process.env.BETTER_AUTH_DATABASE_PATH ||
+  (isProductionBuild ? ":memory:" : undefined);
 
 if (!databasePath) {
   throw new Error(
@@ -28,10 +32,14 @@ function openOwnerOnlyDatabase(path: string): Database.Database {
 }
 
 export const auth = betterAuth({
-  baseURL: process.env.BETTER_AUTH_URL,
+  baseURL:
+    process.env.BETTER_AUTH_URL ||
+    (isProductionBuild ? "http://127.0.0.1:3001" : undefined),
   database: openOwnerOnlyDatabase(databasePath),
   emailAndPassword: {
     enabled: true,
   },
-  secret: process.env.BETTER_AUTH_SECRET,
+  secret:
+    process.env.BETTER_AUTH_SECRET ||
+    (isProductionBuild ? randomBytes(32).toString("hex") : undefined),
 });

@@ -64,7 +64,7 @@ describe("authentication proxy", () => {
     expect(response.headers.get("location")).toBeNull();
   });
 
-  it("protects the human protocol page while leaving only the Agent skill document public", async () => {
+  it("leaves the exact human protocol and Agent skill public but protects nested paths", async () => {
     getSession.mockResolvedValue(null);
 
     const pageResponse = await proxy(
@@ -74,13 +74,11 @@ describe("authentication proxy", () => {
       new NextRequest("http://127.0.0.1:3001/protocol/skill.md/notes"),
     );
 
-    expect(pageResponse.status).toBe(307);
-    expect(
-      new URL(pageResponse.headers.get("location")!).searchParams.get("next"),
-    ).toBe("/protocol");
+    expect(pageResponse.status).toBe(200);
+    expect(pageResponse.headers.get("x-middleware-next")).toBe("1");
+    expect(pageResponse.headers.get("location")).toBeNull();
     expect(nestedResponse.status).toBe(307);
-
-    getSession.mockClear();
+    expect(getSession).toHaveBeenCalledTimes(1);
 
     const skillResponse = await proxy(
       new NextRequest("http://127.0.0.1:3001/protocol/skill.md"),
@@ -89,7 +87,7 @@ describe("authentication proxy", () => {
     expect(skillResponse.status).toBe(200);
     expect(skillResponse.headers.get("x-middleware-next")).toBe("1");
     expect(skillResponse.headers.get("location")).toBeNull();
-    expect(getSession).not.toHaveBeenCalled();
+    expect(getSession).toHaveBeenCalledTimes(1);
   });
 
   it("matches only the authenticated app surfaces", () => {
