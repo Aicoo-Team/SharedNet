@@ -232,6 +232,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   if (
     pathname === "/" ||
+    pathname === "/about" ||
     pathname === "/login" ||
     pathname === "/protocol" ||
     pathname === "/developers"

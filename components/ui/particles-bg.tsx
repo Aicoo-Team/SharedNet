@@ -206,7 +206,7 @@ export default function ParticlesComponent() {
       />
       <div
         aria-hidden="true"
-        className="pointer-events-none absolute inset-0 z-0 overflow-hidden bg-gradient-to-tr from-[#e3f2fd] via-[#90caf9] to-[#64b5f6] transition-colors duration-500 dark:from-[#000814] dark:via-[#003566] dark:to-[#0077b6]"
+        className="absolute inset-0 z-0 overflow-hidden bg-gradient-to-tr from-[#e3f2fd] via-[#90caf9] to-[#64b5f6] transition-colors duration-500 dark:from-[#000814] dark:via-[#003566] dark:to-[#0077b6]"
         id={PARTICLE_HOST_ID}
       />
     </>

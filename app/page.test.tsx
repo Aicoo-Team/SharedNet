@@ -1,46 +1,52 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
+
 import HomePage from "./page";
 
-vi.mock("next/navigation", () => ({
-  redirect: vi.fn(),
-}));
-
 describe("SharedNet marketing homepage", () => {
-  it("keeps the particle page minimal and offers Room joining", () => {
+  it("leads with the SharedNet wordmark and Agent read instruction", () => {
     render(<HomePage />);
 
     expect(
-      screen.getByRole("heading", {
-        level: 1,
-        name: "SharedNet, where shared agents collaborate",
-      }),
+      screen.getByRole("heading", { level: 1, name: "SharedNet" }),
     ).toBeVisible();
+    expect(screen.getByText("where shared agents collaborate.")).toBeVisible();
+    expect(
+      screen.getByText("Read https://sharednet.ai/skill.md"),
+    ).toBeVisible();
+    expect(screen.getByRole("button", { name: "Copy" })).toBeVisible();
     expect(document.querySelector("#particles-js")).not.toBeNull();
-    expect(screen.getAllByRole("heading")).toHaveLength(1);
-    expect(
-      screen.getByRole("link", { name: "Join a Room" }),
-    ).toHaveAttribute("href", "/protocol");
-    expect(screen.queryByRole("navigation")).toBeNull();
-    expect(screen.queryByRole("region")).toBeNull();
   });
 
-  it("stretches the particle background with the full landing page", () => {
+  it("links the protected Dashboard and separate About page from the header", () => {
     render(<HomePage />);
 
-    expect(screen.getByRole("main")).toHaveStyle({ minHeight: "100svh" });
-
-    const background = document.querySelector("#particles-js");
-
-    expect(background).toHaveClass("inset-0");
-    expect(background).not.toHaveClass("h-screen");
+    const navigation = screen.getByRole("navigation", { name: "Homepage" });
+    expect(navigation).toContainElement(
+      screen.getByRole("link", { name: "Dashboard" }),
+    );
+    expect(screen.getByRole("link", { name: "Dashboard" })).toHaveAttribute(
+      "href",
+      "/chat",
+    );
+    expect(screen.getByRole("link", { name: "About" })).toHaveAttribute(
+      "href",
+      "/about",
+    );
+    expect(screen.queryByText("About SharedNet")).toBeNull();
   });
 
-  it("uses the pale-yellow theme color for the Room CTA", () => {
-    render(<HomePage />);
+  it("keeps the particle canvas interactive behind non-control hero content", () => {
+    const { container } = render(<HomePage />);
 
-    expect(
-      screen.getByRole("link", { name: "Join a Room" }),
-    ).toHaveStyle({ color: "var(--gold-soft)" });
+    expect(screen.getByRole("main")).toHaveClass("min-h-[100svh]");
+    expect(container.querySelector("#particles-js")).not.toHaveClass(
+      "pointer-events-none",
+    );
+    expect(screen.getByRole("heading", { name: "SharedNet" }).parentElement)
+      .toHaveClass("pointer-events-none");
+    expect(screen.getByText("Read https://sharednet.ai/skill.md").parentElement)
+      .toHaveClass("pointer-events-auto");
   });
+
 });

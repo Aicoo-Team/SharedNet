@@ -72,10 +72,13 @@ describe("ParticlesComponent", () => {
   });
 
   it("keeps the supplied 140-particle field animated and interactive", () => {
-    render(<ParticlesComponent />);
+    const { container } = render(<ParticlesComponent />);
 
     const particleLoader = vi.mocked(window.particlesJS!);
     const firstOptions = particleLoader.mock.calls[0]?.[1] as unknown as TestParticleOptions;
+    expect(container.querySelector("#particles-js")).not.toHaveClass(
+      "pointer-events-none",
+    );
     expect(firstOptions.particles.number.value).toBe(140);
     expect(firstOptions.particles.color.value).toBe("#0277bd");
     expect(firstOptions.particles.opacity.value).toBe(0.7);

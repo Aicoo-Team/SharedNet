@@ -320,6 +320,20 @@ describe("SharedNet application shell", () => {
     expect(screen.queryByLabelText(/Platform usage/)).toBeNull();
   });
 
+  it("leaves the public About page outside the authenticated product frame", () => {
+    navigationState.pathname = "/about";
+
+    render(
+      <AppShell>
+        <p>About SharedNet</p>
+      </AppShell>,
+    );
+
+    expect(screen.getByText("About SharedNet")).toBeVisible();
+    expect(screen.queryByRole("navigation", { name: "Primary surfaces" })).toBeNull();
+    expect(authClient.useSession).not.toHaveBeenCalled();
+  });
+
   it("leaves the login page outside the product frame", () => {
     navigationState.pathname = "/login";
 
