@@ -114,6 +114,7 @@ class RoomApiTests(unittest.TestCase):
             ("POST", "/v1/decisions"),
             ("GET", "/v1/decisions/{decision_id}"),
             ("POST", "/v1/console/accounts/{auth_user_id}/provision"),
+            ("POST", "/v1/console/accounts/{auth_user_id}/demo-seed"),
             ("POST", "/v1/console/accounts/{auth_user_id}/pairings/{pairing_id}/claim"),
             ("GET", "/v1/console/accounts/{auth_user_id}/rooms"),
             ("GET", "/v1/console/accounts/{auth_user_id}/rooms/{room_id}"),
