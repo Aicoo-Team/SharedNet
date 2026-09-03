@@ -1730,22 +1730,24 @@
 }
 
 .protocol-actions button {
-  background: var(--sn-oxford);
-  border: 1px solid var(--sn-oxford);
-  color: var(--sn-paper);
-}
-
-.protocol-actions a {
+  background: transparent;
   border: 1px solid var(--sn-line);
   color: var(--sn-ink);
 }
 
-.protocol-actions button:hover {
-  background: var(--sn-atlantic);
-  border-color: var(--sn-atlantic);
+.protocol-actions .protocol-primary-action {
+  background: var(--sn-oxford);
+  border-color: var(--sn-oxford);
+  color: var(--sn-paper);
 }
 
-.protocol-actions a:hover {
+.protocol-actions .protocol-primary-action:hover {
+  background: var(--sn-atlantic);
+  border-color: var(--sn-atlantic);
+  color: var(--sn-paper);
+}
+
+.protocol-actions button:hover {
   border-color: var(--sn-atlantic);
   color: var(--sn-atlantic);
 }

@@ -3,13 +3,12 @@ import {
   buildAgentRegistrationSkill,
   buildLlmsFullText,
   buildLlmsIndex,
-  CURRENT_LOCAL_REGISTER_COMMAND,
 } from "./registration-contract";
 import { GET as getLlmsIndex } from "@/app/llms.txt/route";
 import { GET as getLlmsFullText } from "@/app/llms-full.txt/route";
 import { GET as getRegistrationSkill } from "@/app/protocol/skill.md/route";
 
-describe("SharedNet agent registration artifacts", () => {
+describe("SharedNet Local protocol artifacts", () => {
   const origin = "https://sharednet.ai";
 
   it("gives an Agent absolute discovery links from llms.txt", () => {
@@ -20,79 +19,125 @@ describe("SharedNet agent registration artifacts", () => {
     expect(index).toContain("https://sharednet.ai/llms-full.txt");
   });
 
-  it("keeps runtime attachment separate from Room authority in the executable skill", () => {
+  it("orders login, human approval, Agent connection, and the local runner", () => {
     const skill = buildAgentRegistrationSkill(origin);
+    const milestones = [
+      "sharednet login",
+      "exact `verification_url`",
+      "signed-in human approves the pairing in Decisions",
+      "sharednet agent connect",
+      "sharednet local run --config .sharednet/local.json",
+    ];
 
-    expect(skill).toContain("sharednet room register");
-    expect(skill).toContain("Registering does not join a Room");
-    expect(skill).toContain("Do not join any Room without an exact Room ID");
-    expect(skill).toContain("Never read, print, quote, copy, post, or commit the credential file");
-    expect(skill).not.toContain("runtime_token=<");
+    expect(skill).toContain(`sharednet login \\
+  --api API_ORIGIN \\
+  --web WEB_ORIGIN \\
+  --account-session ACCOUNT_SESSION`);
+    expect(skill).toContain(`sharednet agent connect \\
+  --runtime-kind RUNTIME_KIND \\
+  --workspace WORKSPACE \\
+  --account-session ACCOUNT_SESSION \\
+  --agent-state AGENT_STATE \\
+  --instance-session INSTANCE_SESSION`);
+    expect(skill).toContain("RUNTIME_KIND must be codex, claude-code, or custom");
+
+    for (const [index, milestone] of milestones.entries()) {
+      expect(skill.indexOf(milestone), milestone).toBeGreaterThan(-1);
+      if (index > 0) {
+        expect(skill.indexOf(milestone), milestone).toBeGreaterThan(
+          skill.indexOf(milestones[index - 1]!),
+        );
+      }
+    }
   });
 
-  it("gives an attached Agent an executable create-and-join Room workflow", () => {
-    const skill = buildAgentRegistrationSkill(origin);
+  it("uses the Principal to Agent to Runtime to Instance identity spine everywhere", () => {
+    const artifacts = [
+      buildLlmsIndex(origin),
+      buildAgentRegistrationSkill(origin),
+      buildLlmsFullText(origin),
+    ];
 
-    expect(skill).toContain("sharednet room list");
-    expect(skill).toContain("sharednet room build");
-    expect(skill).toContain("--access-policy anyone_with_id");
-    expect(skill).toContain("sharednet room join <exact-room-id>");
-    expect(skill).toContain("sharednet room retrieve <exact-room-id>");
-    expect(skill).toContain("The creator is already an active Room member");
-    expect(skill).toContain("Read the exact `room_id` from the build JSON");
+    for (const artifact of artifacts) {
+      expect(artifact).toContain("Principal → Agent → Runtime → Instance");
+      expect(artifact).not.toContain("Principal → Agent → Runtime → Session");
+    }
   });
 
-  it("explains how first local registration materializes an account in SQLite", () => {
+  it("reuses persistent Agent state but gives every conversation a fresh Instance path", () => {
+    const skill = buildAgentRegistrationSkill(origin);
     const fullText = buildLlmsFullText(origin);
 
-    expect(fullText).toContain(
-      "the first registration transaction creates the Principal row, Agent row, and Runtime registration",
+    expect(skill).toContain("Reuse the same Agent state path for this persistent Agent");
+    expect(skill).toContain(
+      "Use a fresh Instance session path for every new conversation or task",
     );
-    expect(fullText).toContain(
-      "The Principal row is the local V1 account and authority boundary",
+    expect(fullText).toContain("SharedNet generates the Principal, Agent, Runtime, and Instance IDs");
+    expect(fullText).toContain("V1 has no separately persisted Session object");
+  });
+
+  it("uses the current Instance session for the complete Room workflow", () => {
+    const skill = buildAgentRegistrationSkill(origin);
+    const commands = [
+      "sharednet room list",
+      "sharednet room build",
+      "sharednet room join ROOM_ID",
+      "sharednet room retrieve ROOM_ID",
+      "sharednet room post ROOM_ID",
+    ];
+
+    for (const command of commands) {
+      const commandStart = skill.indexOf(command);
+      expect(commandStart, command).toBeGreaterThan(-1);
+      expect(skill.slice(commandStart, commandStart + 220), command).toContain(
+        "--session INSTANCE_SESSION",
+      );
+    }
+
+    expect(skill.indexOf("sharednet room list")).toBeLessThan(
+      skill.indexOf("sharednet room build"),
     );
+    expect(skill.indexOf("sharednet room retrieve ROOM_ID")).toBeLessThan(
+      skill.indexOf("sharednet room post ROOM_ID"),
+    );
+    expect(skill).toContain("Join only the exact Room ID provided by the human");
+    expect(skill).toContain("Preserve `next_cursor` verbatim");
   });
 
-  it("has SharedNet mint the Runtime ID during ordinary registration", () => {
-    const skill = buildAgentRegistrationSkill(origin);
-
-    expect(CURRENT_LOCAL_REGISTER_COMMAND).not.toContain("--runtime-id");
-    expect(skill).not.toContain("- Runtime ID\n");
-    expect(skill).toContain("SharedNet generates the Runtime ID");
-    expect(skill).toContain("same local session file");
-  });
-
-  it("gives every work session its own Session ID without conflating it with Runtime", () => {
-    const fullText = buildLlmsFullText(origin);
-
-    expect(fullText).toContain("Principal → Agent → Runtime → Session");
-    expect(fullText).toContain("Every new work session receives a new session_id");
-    expect(fullText).toContain("one Runtime may host several Sessions");
-    expect(fullText).toContain("new runtime_id only for a new runtime incarnation");
-  });
-
-  it("labels the unauthenticated V1 command separately from the target pairing flow", () => {
-    const fullText = buildLlmsFullText(origin);
-
-    expect(fullText).toContain("Current local V1");
-    expect(fullText).toContain("Target account-bound pairing");
-    expect(fullText).toContain("The authenticated account mints a short-lived pairing grant");
-    expect(fullText).toContain("The website is a read model, not an Agent registration form");
-  });
-
-  it("fails closed when a registered Runtime has lost its local credential", () => {
+  it("keeps credential contents private and the Web on its V1 write boundary", () => {
     const skill = buildAgentRegistrationSkill(origin);
     const fullText = buildLlmsFullText(origin);
 
-    expect(skill).toContain("runtime_id_conflict");
-    expect(skill).toContain("Do not delete the registration or choose a replacement Runtime ID");
-    expect(fullText).toContain("Orphaned Runtime recovery");
-    expect(fullText).toContain("revokes the old token hash");
-    expect(fullText).toContain("increments credential_version");
-    expect(fullText).toContain("Replayed grants and old credentials fail");
-    expect(fullText).toContain("same durable endpoint");
-    expect(fullText).toContain("replaced_by");
-    expect(fullText).toContain("records an audit event");
+    expect(skill).toContain(
+      "Never inspect, read, print, quote, copy, post, or expose credential or state file contents",
+    );
+    expect(skill).toContain("Return only secret-free JSON receipts and safe errors");
+    expect(fullText).toContain("The Web observes Rooms and mutates only Decisions");
+    expect(fullText).toContain("The website cannot create Rooms or post Agent messages");
+  });
+
+  it("explicitly keeps later-version capabilities out of V1", () => {
+    const fullText = buildLlmsFullText(origin);
+
+    expect(fullText).toContain("Typed Delegation");
+    expect(fullText).toContain("automatic recruitment");
+    expect(fullText).toContain("Remote execution");
+    expect(fullText).toContain("Hosting");
+    expect(fullText).toContain("Composio");
+  });
+
+  it("never presents caller-supplied identity or room register as normal onboarding", () => {
+    const artifacts = [
+      buildLlmsIndex(origin),
+      buildAgentRegistrationSkill(origin),
+      buildLlmsFullText(origin),
+    ];
+
+    for (const artifact of artifacts) {
+      expect(artifact).not.toContain("sharednet room register");
+      expect(artifact).not.toContain("--principal-id");
+      expect(artifact).not.toContain("--agent-id");
+    }
   });
 
   it("serves all Agent-facing artifacts as plain text from the requesting origin", async () => {
