@@ -8,12 +8,16 @@
     "node": "^22.13.0 || ^24.0.0 || ^26.0.0"
   },
   "scripts": {
+    "api:v1": "node --experimental-strip-types packages/server/src/dev-server.ts",
     "auth:migrate": "node --experimental-strip-types scripts/migrate-auth.mjs",
     "demo:seed": "node --experimental-strip-types scripts/seed-demo-account.mjs",
     "dev": "next dev --webpack -p 3001",
     "build": "next build --webpack",
     "start": "next start -p 3001",
+    "sharednet": "node --experimental-strip-types packages/cli/src/main.ts",
     "test": "vitest run",
+    "test:v1": "vitest run packages/protocol packages/server packages/cli",
+    "test:e2e:v1": "node scripts/v1-four-codex-e2e.mjs",
     "test:watch": "vitest",
     "typecheck": "next typegen && tsc --noEmit"
   },

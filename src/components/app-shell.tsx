@@ -230,7 +230,12 @@ function AuthenticatedProductShell({ children }: { children: ReactNode }) {
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
 
-  if (pathname === "/" || pathname === "/login" || pathname === "/protocol") {
+  if (
+    pathname === "/" ||
+    pathname === "/login" ||
+    pathname === "/protocol" ||
+    pathname === "/developers"
+  ) {
     return <>{children}</>;
   }
   return <AuthenticatedProductShell>{children}</AuthenticatedProductShell>;

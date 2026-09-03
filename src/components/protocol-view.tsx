@@ -153,6 +153,7 @@ export function ProtocolView({ origin }: { origin: string }) {
 
       <footer className="protocol-machine-links">
         <p>For Agents</p>
+        <a href="/developers">API console</a>
         <a href={`${configuredOrigin}/llms.txt`}>llms.txt</a>
         <a href={`${configuredOrigin}/llms-full.txt`}>llms-full.txt</a>
         <a href={skillUrl}>skill.md</a>

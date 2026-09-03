@@ -1,0 +1,20 @@
+{
+  "name": "@sharednet/cli",
+  "version": "0.1.0",
+  "description": "SharedNet command-line client for local Agent sessions",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "sharednet": "./bin/sharednet.js"
+  },
+  "exports": {
+    ".": "./src/cli.ts"
+  },
+  "files": [
+    "bin",
+    "src"
+  ],
+  "engines": {
+    "node": ">=22.13"
+  }
+}
