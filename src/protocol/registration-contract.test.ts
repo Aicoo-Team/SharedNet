@@ -13,6 +13,12 @@ import { GET as getRoomJoinSkill } from "@/app/skill.md/route";
 describe("SharedNet Local protocol artifacts", () => {
   const origin = "https://sharednet.ai";
 
+  function bashBlocks(value: string): string[] {
+    return [...value.matchAll(/```bash\n([\s\S]*?)\n```/g)].map(
+      (match) => match[1]!,
+    );
+  }
+
   it("publishes the same Room-only Skill at the canonical and compatibility routes", async () => {
     const skill = buildRoomJoinSkill(origin);
 
@@ -20,10 +26,12 @@ describe("SharedNet Local protocol artifacts", () => {
     expect(skill).toContain("command -v sharednet");
     expect(skill).toContain("sharednet login");
     expect(skill).toContain("sharednet agent connect");
-    expect(skill).toContain("sharednet room join ROOM_ID");
-    expect(skill).toContain("sharednet room retrieve ROOM_ID");
+    expect(skill).toContain('sharednet room join "$SHAREDNET_ROOM_ID"');
+    expect(skill).toContain('sharednet room retrieve "$SHAREDNET_ROOM_ID"');
     expect(skill).toContain("Join only the exact Room ID provided by the human");
     expect(skill).not.toContain("sharednet room build");
+    expect(skill).not.toContain("sharednet room list");
+    expect(skill).not.toContain("sharednet room post");
     expect(skill).not.toContain("sharednet local run");
     expect(skill).not.toContain("downloads/sharednet-local");
 
@@ -38,6 +46,71 @@ describe("SharedNet Local protocol artifacts", () => {
     expect(compatibilityResponse.headers.get("content-type")).toContain("text/plain");
     expect(await canonicalResponse.text()).toBe(skill);
     expect(await compatibilityResponse.text()).toBe(skill);
+  });
+
+  it("keeps the exact-input Room workflow in one self-contained shell", () => {
+    const skill = buildRoomJoinSkill(origin);
+    const blocks = bashBlocks(skill);
+
+    expect(blocks).toHaveLength(1);
+    const workflow = blocks[0]!;
+    const milestones = [
+      "command -v sharednet",
+      "REPLACE_WITH_EXACT_SHAREDNET_API_ORIGIN",
+      "REPLACE_WITH_EXACT_SHAREDNET_WEB_ORIGIN",
+      "REPLACE_WITH_EXACT_ROOM_ID",
+      'if [ -L "$directory" ]',
+      "chmod 700 .sharednet .sharednet/instances",
+      "chmod 600",
+      "sharednet login",
+      "sharednet agent connect",
+      "sharednet room join",
+      "sharednet room retrieve",
+    ];
+
+    for (const [index, milestone] of milestones.entries()) {
+      expect(workflow.indexOf(milestone), milestone).toBeGreaterThan(-1);
+      if (index > 0) {
+        expect(workflow.indexOf(milestone), milestone).toBeGreaterThan(
+          workflow.indexOf(milestones[index - 1]!),
+        );
+      }
+    }
+
+    expect(workflow).toContain('--api "$SHAREDNET_API_ORIGIN"');
+    expect(workflow).toContain('--web "$SHAREDNET_WEB_ORIGIN"');
+    expect(workflow).toContain('sharednet room join "$SHAREDNET_ROOM_ID"');
+    expect(workflow).toContain('sharednet room retrieve "$SHAREDNET_ROOM_ID"');
+    expect(workflow.indexOf('if [ -L "$directory" ]')).toBeLessThan(
+      workflow.indexOf("chmod 700"),
+    );
+    expect(workflow.indexOf('if [ -L "$state_path" ]')).toBeLessThan(
+      workflow.indexOf("chmod 600"),
+    );
+  });
+
+  it("publishes a strict secret-free final receipt and server-owned identities", () => {
+    const skill = buildRoomJoinSkill(origin);
+    const receipt = skill.slice(skill.indexOf("## Return the safe receipt"));
+
+    expect(receipt).toContain("exactly these seven fields and nothing else");
+    for (const field of [
+      "principal_id",
+      "agent_id",
+      "runtime_id",
+      "instance_id",
+      "room_id",
+      "next_cursor",
+      "Room history was read.",
+    ]) {
+      expect(receipt, field).toContain(field);
+    }
+    expect(receipt).toContain("Do not return credentials");
+    expect(skill).toContain("SharedNet generates every identity ID");
+    expect(skill).not.toContain("--principal-id");
+    expect(skill).not.toContain("--agent-id");
+    expect(skill).not.toContain("--runtime-id");
+    expect(skill).not.toContain("--instance-id");
   });
 
   it("gives an Agent absolute discovery links from llms.txt", () => {

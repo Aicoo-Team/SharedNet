@@ -517,6 +517,79 @@ class LocalIdentityCliTests(unittest.TestCase):
         self.assertNotIn("connector-secret", stdout + stderr)
         self.assertEqual(AccountSessionFile(account_path).load().connector_token, "connector-secret")
 
+    def test_login_reuses_a_matching_normalized_api_session_without_pairing(self) -> None:
+        account_path = self.root / ".sharednet" / "account.json"
+        AccountSessionFile(account_path).save(
+            "https://sharednet.example", "p_15COsXY9aK", "connector-secret"
+        )
+
+        class NoPairingClient:
+            def __init__(self, base_url: str, timeout: float = 30.0) -> None:
+                from sharednet.room.client import normalize_base_url
+
+                self.base_url = normalize_base_url(base_url)
+
+            def create_pairing(self, web_base_url: str):
+                raise AssertionError("matching account-session reuse must not create a pairing")
+
+        with patch("sharednet.control.client.ControlClient", NoPairingClient):
+            code, stdout, stderr = self.invoke(
+                "login",
+                "--api",
+                "HTTPS://SHAREDNET.EXAMPLE/",
+                "--web",
+                "https://app.sharednet.example",
+                "--account-session",
+                str(account_path),
+            )
+
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(stderr, "")
+        self.assertEqual(
+            json.loads(stdout),
+            {
+                "account_session": str(account_path),
+                "principal_id": "p_15COsXY9aK",
+                "reused": True,
+                "status": "connected",
+            },
+        )
+        self.assertNotIn("connector-secret", stdout + stderr)
+
+    def test_login_rejects_an_account_session_for_another_api_without_leaking_it(self) -> None:
+        account_path = self.root / ".sharednet" / "account.json"
+        AccountSessionFile(account_path).save(
+            "https://first.sharednet.example", "p_15COsXY9aK", "connector-secret"
+        )
+
+        class NoPairingClient:
+            def __init__(self, base_url: str, timeout: float = 30.0) -> None:
+                from sharednet.room.client import normalize_base_url
+
+                self.base_url = normalize_base_url(base_url)
+
+            def create_pairing(self, web_base_url: str):
+                raise AssertionError("mismatched account-session must fail before pairing")
+
+        with patch("sharednet.control.client.ControlClient", NoPairingClient):
+            code, stdout, stderr = self.invoke(
+                "login",
+                "--api",
+                "https://second.sharednet.example",
+                "--web",
+                "https://app.sharednet.example",
+                "--account-session",
+                str(account_path),
+            )
+
+        self.assertEqual(code, 2)
+        self.assertEqual(stdout, "")
+        self.assertEqual(
+            json.loads(stderr)["error"]["code"],
+            "account_session_api_mismatch",
+        )
+        self.assertNotIn("connector-secret", stdout + stderr)
+
     def test_agent_connect_persists_server_ids_and_never_prints_credentials(self) -> None:
         state_root = self.root / ".sharednet"
         account_path = state_root / "account.json"

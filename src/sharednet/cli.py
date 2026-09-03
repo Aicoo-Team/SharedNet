@@ -347,14 +347,27 @@ def _run_login(arguments: argparse.Namespace) -> int:
     from .control.session import AccountSessionFile
     from .room.errors import RoomError
 
-    account_path = Path(arguments.account_session)
-    if os.path.lexists(account_path):
-        raise ControlError(
-            "session_exists",
-            "Account session file already exists; remove it explicitly before pairing again",
-            409,
-        )
     client = ControlClient(arguments.api, arguments.timeout)
+    account_path = Path(arguments.account_session)
+    account_file = AccountSessionFile(account_path)
+    if os.path.lexists(account_path):
+        account = account_file.load()
+        if account.api_url != client.base_url:
+            raise ControlError(
+                "account_session_api_mismatch",
+                "Account session belongs to another SharedNet API; choose a different session path or remove it explicitly before pairing again",
+                409,
+            )
+        _emit(
+            {
+                "status": "connected",
+                "principal_id": account.principal_id,
+                "account_session": str(account_path),
+                "reused": True,
+            }
+        )
+        return 0
+
     pairing = client.create_pairing(arguments.web)
     pairing_id = _required_string(pairing, "pairing_id")
     pairing_secret = _required_string(pairing, "pairing_secret")
@@ -386,12 +399,13 @@ def _run_login(arguments: argparse.Namespace) -> int:
 
     principal_id = _required_string(connected, "principal_id")
     connector_token = _required_string(connected, "connector_token")
-    AccountSessionFile(account_path).save(client.base_url, principal_id, connector_token)
+    account_file.save(client.base_url, principal_id, connector_token)
     _emit(
         {
             "status": "connected",
             "principal_id": principal_id,
             "account_session": str(account_path),
+            "reused": False,
         }
     )
     return 0
