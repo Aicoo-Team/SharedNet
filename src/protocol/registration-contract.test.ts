@@ -64,6 +64,20 @@ describe("SharedNet Local protocol artifacts", () => {
     }
   });
 
+  it("documents every canonical typed ID prefix", () => {
+    const fullText = buildLlmsFullText(origin);
+
+    for (const typedId of [
+      "p_ + 10 Base62 characters",
+      "a_ + 10 Base62 characters",
+      "r_ + 10 Base62 characters",
+      "i_ + 10 Base62 characters",
+    ]) {
+      expect(fullText, typedId).toContain(typedId);
+    }
+    expect(fullText).not.toContain("rt_ + 10 Base62 characters");
+  });
+
   it("reuses persistent Agent state but gives every conversation a fresh Instance path", () => {
     const skill = buildAgentRegistrationSkill(origin);
     const fullText = buildLlmsFullText(origin);

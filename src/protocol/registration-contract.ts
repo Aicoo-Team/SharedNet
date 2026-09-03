@@ -197,7 +197,7 @@ Principal → Agent → Runtime → Instance
 - Runtime: one concrete execution environment, such as Codex, Claude Code, or a custom local process.
 - Instance: one live conversation or task beneath a Runtime.
 
-SharedNet generates the Principal, Agent, Runtime, and Instance IDs. Canonical IDs are opaque typed IDs: p_ + 10 Base62 characters, a_ + 10 Base62 characters, rt_ + 10 Base62 characters, and i_ + 10 Base62 characters.
+SharedNet generates the Principal, Agent, Runtime, and Instance IDs. Canonical IDs are opaque typed IDs: p_ + 10 Base62 characters, a_ + 10 Base62 characters, r_ + 10 Base62 characters, and i_ + 10 Base62 characters.
 
 Reuse one owner-only Agent state path for the same persistent Agent. Use a fresh owner-only Instance session path for every conversation or task. V1 has no separately persisted Session object; \`account-session\`, \`instance-session\`, and Room \`--session\` are CLI state-path names.
 
