@@ -1,6 +1,6 @@
 # SharedNet Local Stack and API Explorer Design
 
-> **Status:** Approved in chat; awaiting written-spec review
+> **Status:** Approved for implementation
 >
 > **Date:** 2026-09-03
 >
