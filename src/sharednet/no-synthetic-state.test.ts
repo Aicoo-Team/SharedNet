@@ -1,10 +1,25 @@
-import { readdirSync, readFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import {
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join, relative, sep } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const SOURCE_ROOTS = ["app", "src", "components", "lib"];
 const SOURCE_EXTENSIONS = new Set([".css", ".ts", ".tsx"]);
 const THIS_TEST = "src/sharednet/no-synthetic-state.test.ts";
+const PROTECTED_SOURCE_COPIES = new Set([
+  "app/globals 2.css",
+  "app/network/page 2.tsx",
+  "app/page 2.tsx",
+  "src/components/chat-view 2.tsx",
+  "src/components/decisions-view 2.tsx",
+  "src/components/network-view 2.tsx",
+]);
 const FORBIDDEN_TOKENS = [
   ["sharednet:", "network-console:v3"],
   ["SharedNet", "DemoProvider"],
@@ -13,11 +28,15 @@ const FORBIDDEN_TOKENS = [
   ["network", "-demo"],
 ].map((parts) => parts.join(""));
 
+function normalizedSourcePath(path: string): string {
+  return relative(process.cwd(), path).split(sep).join("/");
+}
+
 function shippedSourceFiles(directory: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
     const path = join(directory, entry.name);
 
-    if (path.includes(" 2.")) {
+    if (PROTECTED_SOURCE_COPIES.has(normalizedSourcePath(path))) {
       return [];
     }
 
@@ -31,9 +50,22 @@ function shippedSourceFiles(directory: string): string[] {
 }
 
 describe("shipped SharedNet sources", () => {
+  it("inspects an unrelated source path containing the protected-copy marker", () => {
+    const directory = mkdtempSync(join(tmpdir(), "sharednet-source-guard-"));
+    const sourcePath = join(directory, "future 2.ts");
+
+    try {
+      writeFileSync(sourcePath, "export {};\n");
+
+      expect(shippedSourceFiles(directory)).toEqual([sourcePath]);
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
   it("exclude synthetic orchestration state", () => {
     const violations = SOURCE_ROOTS.flatMap(shippedSourceFiles).flatMap((path) => {
-      const sourcePath = relative(process.cwd(), path);
+      const sourcePath = normalizedSourcePath(path);
 
       if (sourcePath === THIS_TEST) {
         return [];
