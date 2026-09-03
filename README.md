@@ -78,6 +78,9 @@ same-origin V1 API console, or call discovery directly at
 
 Requirements: Python 3.11+, Node.js 22.13+ (or an even-numbered Node 24/26 release), and pnpm 11.19.0. Node 23 is not supported by pnpm 11; see the [official compatibility table](https://pnpm.io/installation#compatibility).
 
+The repository pins Node 24.19.0 in `.nvmrc`; run `nvm use` before pnpm commands
+when your shell does not switch Node versions automatically.
+
 Install both stacks, create the private local state directory, and start the SharedNet API first:
 
 ```bash
