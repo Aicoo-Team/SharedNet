@@ -142,9 +142,13 @@ class DashboardProjectionService:
                 FROM agents AS agent
                 LEFT JOIN agent_profiles AS profile ON profile.agent_id = agent.agent_id
                 WHERE agent.principal_id IN ({placeholders})
+                  AND (
+                    agent.principal_id = ?
+                    OR COALESCE(profile.discoverability, 0) = 1
+                  )
                 ORDER BY agent.principal_id, agent.created_at, agent.agent_id
                 """,
-                visible_principal_ids,
+                (*visible_principal_ids, principal_id),
             ).fetchall()
             agent_ids = tuple(row["agent_id"] for row in agents)
             runtimes: list[sqlite3.Row] = []
@@ -173,7 +177,12 @@ class DashboardProjectionService:
                     agent_ids,
                 ).fetchall()
 
-            edges = self._network_edges(connection, principal_id, connected_ids)
+            edges = self._network_edges(
+                connection,
+                principal_id,
+                connected_ids,
+                agent_ids,
+            )
 
         return {
             "principal": principal,
@@ -372,18 +381,34 @@ class DashboardProjectionService:
         connection: sqlite3.Connection,
         principal_id: str,
         connected_ids: tuple[str, ...],
+        visible_agent_ids: tuple[str, ...],
     ) -> list[dict[str, object]]:
         visible_principal_ids = (principal_id, *connected_ids)
         visible_placeholders = ",".join("?" for _ in visible_principal_ids)
+        durable_connection_rows = connection.execute(
+            """
+            SELECT CASE
+                     WHEN left_principal_id = ? THEN right_principal_id
+                     ELSE left_principal_id
+                   END AS connected_principal_id
+            FROM principal_connections
+            WHERE left_principal_id = ? OR right_principal_id = ?
+            ORDER BY connected_principal_id
+            """,
+            (principal_id, principal_id, principal_id),
+        ).fetchall()
         edges: list[dict[str, object]] = [
             {
                 "kind": "principal_connection",
                 "source_id": principal_id,
-                "target_id": connected_id,
+                "target_id": row["connected_principal_id"],
                 "weight": 1,
             }
-            for connected_id in connected_ids
+            for row in durable_connection_rows
         ]
+        if not visible_agent_ids:
+            return edges
+        visible_agent_placeholders = ",".join("?" for _ in visible_agent_ids)
         rows = connection.execute(
             f"""
             SELECT left_member.agent_id AS source_id,
@@ -399,6 +424,8 @@ class DashboardProjectionService:
               AND right_member.status = 'active'
               AND left_agent.principal_id IN ({visible_placeholders})
               AND right_agent.principal_id IN ({visible_placeholders})
+              AND left_member.agent_id IN ({visible_agent_placeholders})
+              AND right_member.agent_id IN ({visible_agent_placeholders})
               AND EXISTS (
                   SELECT 1
                   FROM room_memberships AS owner_member
@@ -411,7 +438,13 @@ class DashboardProjectionService:
             GROUP BY left_member.agent_id, right_member.agent_id
             ORDER BY source_id, target_id
             """,
-            (*visible_principal_ids, *visible_principal_ids, principal_id),
+            (
+                *visible_principal_ids,
+                *visible_principal_ids,
+                *visible_agent_ids,
+                *visible_agent_ids,
+                principal_id,
+            ),
         ).fetchall()
         edges.extend(
             {

@@ -1028,18 +1028,15 @@
 }
 
 .network-canvas {
-  min-height: 100%;
-  min-width: 100%;
+  margin-inline: auto;
   position: relative;
 }
 
 .relationship-lines {
-  height: 100%;
   inset: 0;
   overflow: visible;
   pointer-events: none;
   position: absolute;
-  width: 100%;
   z-index: 1;
 }
 

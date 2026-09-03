@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -45,6 +48,10 @@ const FIRST_INSTANCE_ID = "i_4Tf9Mn2YwJ" as InstanceId;
 const SECOND_INSTANCE_ID = "i_7Cx3Lp8RaK" as InstanceId;
 const ORPHAN_INSTANCE_ID = "i_5Zh1Qv6DsL" as InstanceId;
 const OTHER_INSTANCE_ID = "i_9Nk4Wb2PgM" as InstanceId;
+const PRODUCT_SHELL_CSS = readFileSync(
+  resolve(process.cwd(), "app/product-shell.css"),
+  "utf8",
+);
 
 function makePrincipal(
   principal_id: PrincipalId,
@@ -436,8 +443,53 @@ describe("SharedNet Network", () => {
         `[data-edge-kind="principal_connection"][data-edge-source="${OWN_PRINCIPAL_ID}"][data-edge-target="${CONNECTED_PRINCIPAL_ID}"]`,
       ),
     ).toHaveLength(1);
+    const relationships = within(graph).getByRole("list", {
+      name: "Visible relationships",
+    });
+    expect(within(relationships).getAllByRole("listitem")).toHaveLength(2);
+    expect(relationships).toHaveTextContent(
+      `room_co_membership: source ${OWN_AGENT_ID}; target ${CONNECTED_AGENT_ID}; weight 3`,
+    );
+    expect(relationships).toHaveTextContent(
+      `principal_connection: source ${OWN_PRINCIPAL_ID}; target ${CONNECTED_PRINCIPAL_ID}; weight 1`,
+    );
     expect(within(graph).getByText("dotted · shared rooms × weight")).toBeVisible();
     expect(within(graph).getByText("solid · Principal connection")).toBeVisible();
+  });
+
+  it("bounds huge room-edge multiplicity while reporting the exact backend weight", () => {
+    const hugeWeight = 1_000;
+    renderNetwork({
+      network: makeNetwork({
+        agents: [
+          makeAgent(OWN_AGENT_ID, OWN_PRINCIPAL_ID),
+          makeAgent(CONNECTED_AGENT_ID, CONNECTED_PRINCIPAL_ID),
+        ],
+        edges: [
+          {
+            kind: "room_co_membership",
+            source_id: OWN_AGENT_ID,
+            target_id: CONNECTED_AGENT_ID,
+            weight: hugeWeight,
+          },
+        ],
+      }),
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Cross-Principal" }));
+    const graph = screen.getByRole("region", { name: "Relationship graph" });
+    const lines = graph.querySelectorAll(
+      `[data-edge-kind="room_co_membership"][data-edge-source="${OWN_AGENT_ID}"][data-edge-target="${CONNECTED_AGENT_ID}"]`,
+    );
+    expect(lines).toHaveLength(8);
+    for (const line of lines) {
+      expect(line).toHaveAttribute("data-edge-weight", String(hugeWeight));
+    }
+    expect(
+      within(graph).getByRole("list", { name: "Visible relationships" }),
+    ).toHaveTextContent(
+      `room_co_membership: source ${OWN_AGENT_ID}; target ${CONNECTED_AGENT_ID}; weight ${hugeWeight}`,
+    );
   });
 
   it("omits backend edges when either exact endpoint is absent from the scope", () => {
@@ -487,6 +539,16 @@ describe("SharedNet Network", () => {
     expect(graph.querySelector('[data-edge-target="' + PRIVATE_AGENT_ID + '"]')).toBeNull();
     expect(graph.querySelector('[data-edge-target="' + UNKNOWN_AGENT_ID + '"]')).toBeNull();
     expect(graph.querySelector('[data-edge-target="' + UNKNOWN_PRINCIPAL_ID + '"]')).toBeNull();
+    const relationships = within(graph).getByRole("list", {
+      name: "Visible relationships",
+    });
+    expect(within(relationships).getAllByRole("listitem")).toHaveLength(1);
+    expect(relationships).toHaveTextContent(
+      `room_co_membership: source ${OWN_AGENT_ID}; target ${CONNECTED_AGENT_ID}; weight 1`,
+    );
+    expect(relationships).not.toHaveTextContent(PRIVATE_AGENT_ID);
+    expect(relationships).not.toHaveTextContent(UNKNOWN_AGENT_ID);
+    expect(relationships).not.toHaveTextContent(UNKNOWN_PRINCIPAL_ID);
   });
 
   it("lays out one arbitrary Agent at finite coordinates", () => {
@@ -497,6 +559,32 @@ describe("SharedNet Network", () => {
     expect(Number.isFinite(Number(node!.dataset.layoutX))).toBe(true);
     expect(Number.isFinite(Number(node!.dataset.layoutY))).toBe(true);
     expect(node!.getAttribute("style")).not.toContain("NaN");
+  });
+
+  it("uses one unscaled pixel canvas for the SVG and positioned HTML nodes", () => {
+    const { container } = renderNetwork();
+    const canvas = container.querySelector<HTMLElement>(".network-canvas");
+    const svg = container.querySelector<SVGElement>(".relationship-lines");
+
+    expect(canvas).not.toBeNull();
+    expect(svg).not.toBeNull();
+    const canvasWidth = Number.parseFloat(canvas!.style.width);
+    const canvasHeight = Number.parseFloat(canvas!.style.height);
+    expect(svg).toHaveAttribute("width", String(canvasWidth));
+    expect(svg).toHaveAttribute("height", String(canvasHeight));
+    expect(svg).toHaveAttribute(
+      "viewBox",
+      `0 0 ${canvasWidth} ${canvasHeight}`,
+    );
+
+    const canvasRule = PRODUCT_SHELL_CSS.match(
+      /\.network-canvas\s*\{([^}]*)\}/,
+    )?.[1];
+    const svgRule = PRODUCT_SHELL_CSS.match(
+      /\.relationship-lines\s*\{([^}]*)\}/,
+    )?.[1];
+    expect(canvasRule).not.toMatch(/min-(?:width|height):\s*100%/);
+    expect(svgRule).not.toMatch(/(?:width|height):\s*100%/);
   });
 
   it("sorts opaque IDs into deterministic non-overlapping coordinates for many Agents", () => {
@@ -582,9 +670,9 @@ describe("SharedNet Network", () => {
       status: "stale",
     });
 
-    expect(screen.getByRole("status")).toHaveTextContent(
-      "Network data may be out of date.",
-    );
+    const freshness = screen.getByRole("status");
+    expect(freshness).toHaveTextContent("SharedNet data may be out of date.");
+    expect(freshness).not.toHaveTextContent("Network data may be out of date.");
     expect(screen.getByRole("region", { name: "Relationship graph" })).toBeVisible();
     expect(inspectButton(OWN_AGENT_ID)).toBeVisible();
   });

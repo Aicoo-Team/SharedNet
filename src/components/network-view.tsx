@@ -59,6 +59,7 @@ const PRINCIPAL_GROUP_TOP = 18;
 const PRINCIPAL_Y = 55;
 const AGENT_START_Y = 148;
 const AGENT_GAP = 88;
+const MAX_VISIBLE_ROOM_EDGE_LINES = 8;
 
 function compareOpaqueIds(left: string, right: string) {
   if (left < right) return -1;
@@ -214,6 +215,26 @@ function lineCoordinates(
   };
 }
 
+function visibleNetworkEdges(
+  edges: NetworkEdge[],
+  layout: NetworkLayout,
+): NetworkEdge[] {
+  return edges.filter((edge) => {
+    if (edge.kind === "room_co_membership") {
+      return (
+        layout.agentPositions.has(edge.source_id as AgentId) &&
+        layout.agentPositions.has(edge.target_id as AgentId)
+      );
+    }
+
+    return (
+      edge.source_id !== edge.target_id &&
+      layout.principalPositions.has(edge.source_id as PrincipalId) &&
+      layout.principalPositions.has(edge.target_id as PrincipalId)
+    );
+  });
+}
+
 function visibleEdgeLines(
   edges: NetworkEdge[],
   layout: NetworkLayout,
@@ -223,9 +244,13 @@ function visibleEdgeLines(
       const source = layout.agentPositions.get(edge.source_id as AgentId);
       const target = layout.agentPositions.get(edge.target_id as AgentId);
       if (!source || !target) return [];
-      return Array.from({ length: edge.weight }, (_, weightIndex) => (
+      const visibleLineCount = Math.min(
+        edge.weight,
+        MAX_VISIBLE_ROOM_EDGE_LINES,
+      );
+      return Array.from({ length: visibleLineCount }, (_, weightIndex) => (
         <line
-          {...lineCoordinates(source, target, weightIndex, edge.weight)}
+          {...lineCoordinates(source, target, weightIndex, visibleLineCount)}
           data-edge-kind={edge.kind}
           data-edge-source={edge.source_id}
           data-edge-target={edge.target_id}
@@ -399,6 +424,10 @@ export function NetworkView() {
     [network, scope],
   );
   const layout = useMemo(() => createNetworkLayout(principals), [principals]);
+  const visibleEdges = useMemo(
+    () => (network ? visibleNetworkEdges(network.edges, layout) : []),
+    [layout, network],
+  );
   const agentTrees = principals.flatMap((principal) => principal.agents);
   const selectedAgent =
     agentTrees.find(({ agent }) => agent.agent_id === selectedAgentId) ??
@@ -422,8 +451,8 @@ export function NetworkView() {
       {status !== "ready" ? (
         <p className="network-freshness" role="status">
           {status === "loading"
-            ? "Refreshing Network…"
-            : "Network data may be out of date."}
+            ? "Refreshing SharedNet…"
+            : "SharedNet data may be out of date."}
         </p>
       ) : null}
 
@@ -480,10 +509,23 @@ export function NetworkView() {
               <svg
                 aria-hidden="true"
                 className="relationship-lines"
+                height={layout.height}
                 viewBox={`0 0 ${layout.width} ${layout.height}`}
+                width={layout.width}
               >
-                {visibleEdgeLines(network.edges, layout)}
+                {visibleEdgeLines(visibleEdges, layout)}
               </svg>
+
+              <ol aria-label="Visible relationships" className="sr-only">
+                {visibleEdges.map((edge, index) => (
+                  <li
+                    key={`${edge.kind}:${edge.source_id}:${edge.target_id}:${index}`}
+                  >
+                    {edge.kind}: source {edge.source_id}; target {edge.target_id};
+                    weight {edge.weight}
+                  </li>
+                ))}
+              </ol>
 
               {principals.map((principal) => {
                 const principalId = principal.principal.principal_id;
