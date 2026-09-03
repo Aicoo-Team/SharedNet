@@ -532,6 +532,26 @@ describe("SharedNet Rooms", () => {
     ).toBeVisible();
   });
 
+  it("restores focus to the composer after copied content disables the Continue trigger", async () => {
+    renderChat();
+    const textarea = screen.getByLabelText("What do you want done?");
+    const trigger = screen.getByRole("button", { name: "Continue locally" });
+    const workspace = trigger.closest(".rooms-workspace");
+    enterDraftAndContinue();
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy instructions" }));
+    await screen.findByText("Copied to clipboard.");
+    expect(trigger).toBeDisabled();
+    expect(workspace).toHaveAttribute("inert");
+
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(textarea).toHaveFocus();
+    expect(trigger).toBeDisabled();
+    expect(workspace).not.toHaveAttribute("inert");
+  });
+
   it("shows Clipboard failure and preserves the draft", async () => {
     writeText.mockRejectedValueOnce(new Error("Clipboard denied"));
     renderChat();
@@ -624,6 +644,24 @@ describe("SharedNet Rooms", () => {
 
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(screen.getByLabelText("What do you want done?")).toHaveValue("");
+    expect(writeText).not.toHaveBeenCalled();
+  });
+
+  it("restores focus to the composer when Close and clear disables the Continue trigger", async () => {
+    renderChat();
+    const textarea = screen.getByLabelText("What do you want done?");
+    const trigger = screen.getByRole("button", { name: "Continue locally" });
+    const workspace = trigger.closest(".rooms-workspace");
+    enterDraftAndContinue();
+    expect(workspace).toHaveAttribute("inert");
+
+    fireEvent.click(screen.getByRole("button", { name: "Close and clear" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(textarea).toHaveValue("");
+    expect(textarea).toHaveFocus();
+    expect(trigger).toBeDisabled();
+    expect(workspace).not.toHaveAttribute("inert");
     expect(writeText).not.toHaveBeenCalled();
   });
 

@@ -38,6 +38,7 @@ export function ChatView() {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const instructionRevisionRef = useRef(0);
   const restoreFocusRef = useRef(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const selectedSummary = rooms.find((room) => room.room_id === selectedRoomId);
   const detail =
     selectedRoom?.room.room_id === selectedRoomId ? selectedRoom : null;
@@ -59,7 +60,12 @@ export function ChatView() {
 
     if (restoreFocusRef.current) {
       restoreFocusRef.current = false;
-      continueButtonRef.current?.focus();
+      const continueButton = continueButtonRef.current;
+      if (continueButton && !continueButton.disabled) {
+        continueButton.focus();
+      } else {
+        textareaRef.current?.focus();
+      }
     }
   }, [instruction]);
 
@@ -129,6 +135,7 @@ export function ChatView() {
           }
         }}
         placeholder="Type here…"
+        ref={textareaRef}
         rows={3}
         value={draft}
       />
