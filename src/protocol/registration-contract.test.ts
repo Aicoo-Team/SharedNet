@@ -117,8 +117,33 @@ describe("SharedNet Local protocol artifacts", () => {
     const index = buildLlmsIndex(origin);
 
     expect(index).toContain("https://sharednet.ai/protocol");
-    expect(index).toContain("https://sharednet.ai/protocol/skill.md");
+    expect(index).toContain("https://sharednet.ai/skill.md");
     expect(index).toContain("https://sharednet.ai/llms-full.txt");
+    expect(index).toContain("join one existing Room");
+    expect(index).not.toContain("downloads/sharednet-local");
+    expect(index).not.toContain("sharednet room build");
+    expect(index).not.toContain("sharednet local run");
+  });
+
+  it("keeps the full machine-readable protocol inside the Room-only V1", () => {
+    const fullText = buildLlmsFullText(origin);
+
+    expect(fullText).toContain("Executable Agent skill: https://sharednet.ai/skill.md");
+    expect(fullText).toContain("Join one existing Room");
+    expect(fullText).toContain("join only the exact Room ID provided by the human");
+    expect(fullText).toContain("retrieve its history");
+    for (const laterCapability of [
+      "downloads/sharednet-local",
+      "sharednet room build",
+      "sharednet room list",
+      "sharednet room post",
+      "sharednet local run",
+      "Agent Hosting",
+      "automatic recruitment",
+      "Typed Delegation",
+    ]) {
+      expect(fullText, laterCapability).not.toContain(laterCapability);
+    }
   });
 
   it("orders login, human approval, Agent connection, and the local runner", () => {
@@ -230,16 +255,6 @@ describe("SharedNet Local protocol artifacts", () => {
     expect(skill).toContain("Return only secret-free JSON receipts and safe errors");
     expect(fullText).toContain("The Web observes Rooms and mutates only Decisions");
     expect(fullText).toContain("The website cannot create Rooms or post Agent messages");
-  });
-
-  it("explicitly keeps later-version capabilities out of V1", () => {
-    const fullText = buildLlmsFullText(origin);
-
-    expect(fullText).toContain("Typed Delegation");
-    expect(fullText).toContain("automatic recruitment");
-    expect(fullText).toContain("Remote execution");
-    expect(fullText).toContain("Hosting");
-    expect(fullText).toContain("Composio");
   });
 
   it("never presents caller-supplied identity or room register as normal onboarding", () => {

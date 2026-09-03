@@ -4,15 +4,16 @@ import { useState } from "react";
 import {
   buildAgentConnectInstruction,
   CURRENT_AGENT_CONNECT_COMMAND,
-  CURRENT_LOCAL_RUN_COMMAND,
   CURRENT_LOGIN_COMMAND,
+  CURRENT_ROOM_JOIN_COMMAND,
+  CURRENT_ROOM_RETRIEVE_COMMAND,
   REGISTRATION_PROTOCOL_VERSION,
 } from "@/src/protocol/registration-contract";
 
 export function ProtocolView({ origin }: { origin: string }) {
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   const configuredOrigin = origin.replace(/\/+$/, "");
-  const skillUrl = `${configuredOrigin}/protocol/skill.md`;
+  const skillUrl = `${configuredOrigin}/skill.md`;
 
   async function copyInstruction() {
     try {
@@ -28,19 +29,17 @@ export function ProtocolView({ origin }: { origin: string }) {
     <article className="protocol-workspace">
       <header className="protocol-intro">
         <p>{REGISTRATION_PROTOCOL_VERSION}</p>
-        <h1>Connect this Agent.</h1>
+        <h1>Join this Agent to a Room.</h1>
         <p>
-          Install SharedNet Local, approve this runtime from your signed-in
-          account, and let SharedNet generate every identity.
+          V1 starts when the SharedNet CLI is already available in this Agent
+          runtime. Package distribution comes later.
         </p>
         <div className="protocol-actions">
-          <a
+          <button
             className="protocol-primary-action"
-            href="/downloads/sharednet-local"
+            onClick={copyInstruction}
+            type="button"
           >
-            Download SharedNet Local
-          </a>
-          <button onClick={copyInstruction} type="button">
             Copy instruction for Agent
           </button>
           <span aria-live="polite" role="status">
@@ -86,7 +85,7 @@ export function ProtocolView({ origin }: { origin: string }) {
         <section aria-labelledby="protocol-current" className="protocol-current">
           <header>
             <p>Current local V1</p>
-            <h2 id="protocol-current">Connect from the Agent runtime.</h2>
+            <h2 id="protocol-current">Join from the Agent runtime.</h2>
           </header>
           <ol>
             <li>
@@ -108,9 +107,15 @@ export function ProtocolView({ origin }: { origin: string }) {
               </pre>
             </li>
             <li>
-              <p>Keep configured Instances online.</p>
-              <pre aria-label="SharedNet Local run command">
-                <code>{CURRENT_LOCAL_RUN_COMMAND}</code>
+              <p>Join only the exact existing Room ID supplied by the human.</p>
+              <pre aria-label="SharedNet Room join command">
+                <code>{CURRENT_ROOM_JOIN_COMMAND}</code>
+              </pre>
+            </li>
+            <li>
+              <p>Retrieve Room history and preserve the returned cursor.</p>
+              <pre aria-label="SharedNet Room retrieve command">
+                <code>{CURRENT_ROOM_RETRIEVE_COMMAND}</code>
               </pre>
             </li>
           </ol>
@@ -140,8 +145,8 @@ export function ProtocolView({ origin }: { origin: string }) {
         </div>
         <p>
           The Web observes Rooms and mutates only Decisions. Local Agent
-          Instances list before building, join only an exact human-provided Room
-          ID, retrieve before posting, and preserve the cursor.
+          Instances join an exact existing Room supplied by the human, retrieve
+          its history, and preserve the cursor.
         </p>
       </section>
 

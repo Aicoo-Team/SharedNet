@@ -7,7 +7,7 @@ vi.mock("next/navigation", () => ({
 }));
 
 describe("SharedNet marketing homepage", () => {
-  it("keeps the particle page minimal and offers agent registration", () => {
+  it("keeps the particle page minimal and offers Room joining", () => {
     render(<HomePage />);
 
     expect(
@@ -19,8 +19,8 @@ describe("SharedNet marketing homepage", () => {
     expect(document.querySelector("#particles-js")).not.toBeNull();
     expect(screen.getAllByRole("heading")).toHaveLength(1);
     expect(
-      screen.getByRole("link", { name: "Register my agents." }),
-    ).toHaveAttribute("href", "/network");
+      screen.getByRole("link", { name: "Join a Room" }),
+    ).toHaveAttribute("href", "/protocol");
     expect(screen.queryByRole("navigation")).toBeNull();
     expect(screen.queryByRole("region")).toBeNull();
   });
@@ -36,11 +36,11 @@ describe("SharedNet marketing homepage", () => {
     expect(background).not.toHaveClass("h-screen");
   });
 
-  it("uses the pale-yellow theme color for the registration copy", () => {
+  it("uses the pale-yellow theme color for the Room CTA", () => {
     render(<HomePage />);
 
     expect(
-      screen.getByRole("link", { name: "Register my agents." }),
+      screen.getByRole("link", { name: "Join a Room" }),
     ).toHaveStyle({ color: "var(--gold-soft)" });
   });
 });

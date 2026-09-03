@@ -20,10 +20,10 @@ export default function HomePage() {
         </h1>
         <Link
           className="inline-flex min-h-11 items-center justify-center rounded-full border border-[#002147]/20 bg-[#002147] px-6 text-sm font-semibold tracking-[-0.01em] shadow-[0_12px_30px_rgba(0,33,71,0.2)] transition duration-200 hover:-translate-y-0.5 hover:bg-[#0e3560] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#002147]"
-          href="/network"
+          href="/protocol"
           style={{ color: "var(--gold-soft)" }}
         >
-          Register my agents.
+          Join a Room
         </Link>
       </div>
     </main>

@@ -13,25 +13,27 @@ describe("SharedNet Local protocol", () => {
     });
   });
 
-  it("presents a minimal Agent-first surface with the SharedNet Local download first", () => {
+  it("presents a minimal Room-join surface with the Agent instruction first", () => {
     const { container } = render(<ProtocolView origin="https://sharednet.ai" />);
 
     expect(
-      screen.getByRole("heading", { name: "Connect this Agent." }),
+      screen.getByRole("heading", { name: "Join this Agent to a Room." }),
     ).toBeTruthy();
     expect(container.querySelector("form")).toBeNull();
     expect(screen.queryByRole("textbox")).toBeNull();
     expect(screen.queryByText(/wizard/i)).toBeNull();
 
-    const download = screen.getByRole("link", { name: "Download SharedNet Local" });
-    expect(download).toHaveAttribute("href", "/downloads/sharednet-local");
-    expect(download).toHaveClass("protocol-primary-action");
+    expect(
+      screen.queryByRole("link", { name: "Download SharedNet Local" }),
+    ).toBeNull();
+    expect(screen.getByText(/CLI is already available/)).toBeTruthy();
+    expect(screen.getByText(/Package distribution comes later/)).toBeTruthy();
     expect(
       screen.getByRole("button", { name: "Copy instruction for Agent" }),
-    ).toBeTruthy();
+    ).toHaveClass("protocol-primary-action");
   });
 
-  it("shows login, exact human approval, Agent connect, and local run in order", () => {
+  it("shows login, approval, Agent connect, Room join, and retrieval in order", () => {
     const { container } = render(<ProtocolView origin="https://sharednet.ai" />);
     const pageText = container.textContent ?? "";
     const milestones = [
@@ -39,7 +41,8 @@ describe("SharedNet Local protocol", () => {
       "verification_url",
       "approve it in Decisions",
       "sharednet agent connect",
-      "sharednet local run --config .sharednet/local.json",
+      "sharednet room join ROOM_ID",
+      "sharednet room retrieve ROOM_ID",
     ];
 
     expect(screen.getByLabelText("SharedNet login command")).toHaveTextContent(
@@ -50,6 +53,12 @@ describe("SharedNet Local protocol", () => {
     );
     expect(screen.getByLabelText("SharedNet Agent connect command")).toHaveTextContent(
       "--instance-session INSTANCE_SESSION",
+    );
+    expect(screen.getByLabelText("SharedNet Room join command")).toHaveTextContent(
+      "--session INSTANCE_SESSION",
+    );
+    expect(screen.getByLabelText("SharedNet Room retrieve command")).toHaveTextContent(
+      "--session INSTANCE_SESSION",
     );
 
     for (const [index, milestone] of milestones.entries()) {
@@ -62,6 +71,10 @@ describe("SharedNet Local protocol", () => {
     }
 
     expect(pageText).not.toContain("sharednet room register");
+    expect(pageText).not.toContain("sharednet room build");
+    expect(pageText).not.toContain("sharednet room list");
+    expect(pageText).not.toContain("sharednet room post");
+    expect(pageText).not.toContain("sharednet local run");
     expect(pageText).not.toContain("--principal-id");
     expect(pageText).not.toContain("--agent-id");
   });
@@ -84,14 +97,12 @@ describe("SharedNet Local protocol", () => {
 
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
     expect(writeText.mock.calls[0]?.[0]).toContain(
-      "Read https://sharednet.ai/protocol/skill.md and follow it exactly",
+      "Read https://sharednet.ai/skill.md and follow it exactly",
     );
-    expect(writeText.mock.calls[0]?.[0]).toContain("exact verification_url");
-    expect(writeText.mock.calls[0]?.[0]).toContain("fresh Instance session path");
+    expect(writeText.mock.calls[0]?.[0]).toContain("exact existing Room ID");
     expect(writeText.mock.calls[0]?.[0]).toContain("Never inspect or expose credential files");
-    expect(writeText.mock.calls[0]?.[0]).toContain(
-      "join only an exact Room ID I provide",
-    );
+    expect(writeText.mock.calls[0]?.[0]).not.toContain("downloads/sharednet-local");
+    expect(writeText.mock.calls[0]?.[0]).not.toContain("sharednet room build");
     expect(screen.getByRole("status")).toHaveTextContent("Copied");
   });
 
@@ -102,7 +113,7 @@ describe("SharedNet Local protocol", () => {
 
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
     expect(writeText.mock.calls[0]?.[0]).toContain(
-      `Read ${window.location.origin}/protocol/skill.md`,
+      `Read ${window.location.origin}/skill.md`,
     );
   });
 });
