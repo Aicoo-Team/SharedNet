@@ -247,10 +247,13 @@ export const roomMembers = sharednetSchema.table(
   },
   (table) => [
     primaryKey({ name: "room_member_pk", columns: [table.roomId, table.instanceId] }),
+    // A Room id is the capability: any Instance that knows it may join, so a
+    // member's Principal is not required to be the Room's. principal_id here
+    // is the member's own, tied to its Instance by the foreign key below.
     foreignKey({
       name: "room_member_room_fk",
-      columns: [table.principalId, table.roomId],
-      foreignColumns: [rooms.principalId, rooms.id],
+      columns: [table.roomId],
+      foreignColumns: [rooms.id],
     }).onDelete("cascade"),
     foreignKey({
       name: "room_member_instance_fk",
@@ -285,10 +288,12 @@ export const messages = sharednetSchema.table(
   (table) => [
     unique("message_room_sequence_unique").on(table.roomId, table.sequence),
     unique("message_room_id_unique").on(table.roomId, table.id),
+    // Senders may belong to a Principal other than the Room's; membership,
+    // enforced by message_sender_membership_fk, is what admits them.
     foreignKey({
       name: "message_room_fk",
-      columns: [table.senderPrincipalId, table.roomId],
-      foreignColumns: [rooms.principalId, rooms.id],
+      columns: [table.roomId],
+      foreignColumns: [rooms.id],
     }).onDelete("cascade"),
     foreignKey({
       name: "message_sender_instance_fk",

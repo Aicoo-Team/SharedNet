@@ -68,6 +68,8 @@ export type {
 
 export type MemoryRepositoryOptions = {
   devApiKey?: string;
+  /** Each key seeds its own Principal, for exercising cross-Principal paths. */
+  devApiKeys?: string[];
   now?: () => Date;
 };
 
@@ -110,7 +112,11 @@ export class MemorySharedNetRepository implements SharedNetRepository {
   constructor(options: MemoryRepositoryOptions = {}) {
     this.now = options.now ?? (() => new Date());
 
-    if (options.devApiKey) {
+    const seedKeys = [
+      ...(options.devApiKey ? [options.devApiKey] : []),
+      ...(options.devApiKeys ?? []),
+    ];
+    for (const devApiKey of seedKeys) {
       const createdAt = this.timestamp();
       const principal: Principal = {
         id: generatePublicId("p"),
@@ -120,7 +126,7 @@ export class MemorySharedNetRepository implements SharedNetRepository {
       const apiKeyRecord: ApiKeyRecord = {
         id: generatePublicId("key"),
         principalId: principal.id,
-        digest: digestSecret(options.devApiKey),
+        digest: digestSecret(devApiKey),
         revokedAt: null,
       };
       this.principals.set(principal.id, principal);
@@ -345,7 +351,7 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     roomId: RoomId,
   ): Promise<{ room: Room; membership: RoomMember }> {
     this.requireOnline(auth);
-    const room = this.ownedRoom(auth, roomId);
+    const room = this.roomById(roomId);
     if (room.state === "closed") {
       throw new RepositoryError(409, "room_closed", "Room is closed.");
     }
@@ -371,7 +377,7 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     auth: InstanceAuth,
     roomId: RoomId,
   ): Promise<{ room: Room; memberships: RoomMember[] }> {
-    const room = this.ownedRoom(auth, roomId);
+    const room = this.roomById(roomId);
     this.requireMembership(auth, room.id);
     const memberships = [...this.memberships.values()]
       .filter((membership) => membership.room_id === room.id)
@@ -385,7 +391,7 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     input: { content: string; reply_to_message_id?: MessageId | null },
   ): Promise<{ message: Message }> {
     this.requireOnline(auth);
-    const room = this.ownedRoom(auth, roomId);
+    const room = this.roomById(roomId);
     if (room.state === "closed") {
       throw new RepositoryError(409, "room_closed", "Room is closed.");
     }
@@ -421,7 +427,7 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     roomId: RoomId,
     input: { after: number; limit: number },
   ) {
-    const room = this.ownedRoom(auth, roomId);
+    const room = this.roomById(roomId);
     this.requireMembership(auth, room.id);
     const matching = (this.messages.get(room.id) ?? []).filter(
       (message) => message.sequence > input.after,
@@ -537,9 +543,10 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     return record;
   }
 
-  private ownedRoom(auth: InstanceAuth, roomId: RoomId): RoomRecord {
+  /** A Room id is the capability; membership is checked separately. */
+  private roomById(roomId: RoomId): RoomRecord {
     const room = this.rooms.get(roomId);
-    if (!room || room.principal_id !== auth.principalId) {
+    if (!room) {
       throw new RepositoryError(404, "room_not_found", "Room was not found.");
     }
     return room;

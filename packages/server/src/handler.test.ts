@@ -7,6 +7,7 @@ import { handleRequest } from "./handler";
 import { MemorySharedNetRepository } from "./memory-repository";
 
 const DEV_KEY = `snk_${"a".repeat(43)}`;
+const OTHER_KEY = `snk_${"b".repeat(43)}`;
 
 function makeStore() {
   return new MemorySharedNetRepository({
@@ -23,9 +24,9 @@ function request(
   return handleRequest(new Request(`http://127.0.0.1:3001${path}`, init), store);
 }
 
-function apiHeaders(extra: Record<string, string> = {}) {
+function apiHeaders(extra: Record<string, string> = {}, key = DEV_KEY) {
   return {
-    authorization: `Bearer ${DEV_KEY}`,
+    authorization: `Bearer ${key}`,
     ...extra,
   };
 }
@@ -528,7 +529,7 @@ describe("GET /api/v1/rooms/{room_id}", () => {
     expect(response.status).toBe(401);
   });
 
-  it("answers 404 for a Room this Principal does not own", async () => {
+  it("answers 404 for a Room id that does not exist", async () => {
     const { store, token } = await seededRoom();
 
     const response = await request(
@@ -561,4 +562,81 @@ describe("GET /api/v1/rooms/{room_id}", () => {
     expect(response.status).toBe(405);
     expect(response.headers.get("allow")).toBe("GET");
   });
+
+describe("Rooms across Principals", () => {
+  const now = () => new Date("2026-09-04T10:20:30.123Z");
+
+  async function startAs(store: MemorySharedNetRepository, key: string) {
+    const response = await request(store, "/api/v1/instances", {
+      method: "POST",
+      headers: apiHeaders({ "content-type": "application/json" }, key),
+      body: JSON.stringify({ runtime_kind: "codex", cli_version: "0.1.0" }),
+    });
+    expect(response.status).toBe(201);
+    return json(response);
+  }
+
+  it("lets an Instance of another Principal join by Room id, and read only once it has", async () => {
+    const store = new MemorySharedNetRepository({ devApiKeys: [DEV_KEY, OTHER_KEY], now });
+    const owner = await startAs(store, DEV_KEY);
+    const guest = await startAs(store, OTHER_KEY);
+    expect(guest.instance.principal_id).not.toBe(owner.instance.principal_id);
+
+    const created = await request(store, "/api/v1/rooms", {
+      method: "POST",
+      headers: instanceHeaders(owner.token, {
+        "content-type": "application/json",
+        "idempotency-key": crypto.randomUUID(),
+      }),
+      body: JSON.stringify({ name: "Shared by id" }),
+    });
+    expect(created.status).toBe(201);
+    const roomId = (await json(created)).room.id as string;
+
+    // Knowing the id is not yet membership: reading is refused until joined.
+    const peek = await request(store, `/api/v1/rooms/${roomId}`, {
+      headers: instanceHeaders(guest.token),
+    });
+    expect(peek.status).toBe(403);
+    expect((await json(peek)).error.code).toBe("room_membership_required");
+
+    const joined = await request(store, `/api/v1/rooms/${roomId}/join`, {
+      method: "POST",
+      headers: instanceHeaders(guest.token, { "idempotency-key": crypto.randomUUID() }),
+    });
+    expect(joined.status).toBe(200);
+    const membership = (await json(joined)).membership;
+    expect(membership.instance_id).toBe(guest.instance.id);
+
+    const posted = await request(store, `/api/v1/rooms/${roomId}/messages`, {
+      method: "POST",
+      headers: instanceHeaders(guest.token, {
+        "content-type": "application/json",
+        "idempotency-key": crypto.randomUUID(),
+      }),
+      body: JSON.stringify({ content: "hello from another Principal" }),
+    });
+    expect(posted.status).toBe(201);
+    expect((await json(posted)).message.sender_principal_id).toBe(guest.instance.principal_id);
+
+    // The owner sees the guest as a member with the guest's own Principal,
+    // and reads the guest's message with truthful provenance.
+    const detail = await json(
+      await request(store, `/api/v1/rooms/${roomId}`, { headers: instanceHeaders(owner.token) }),
+    );
+    expect(detail.room.principal_id).toBe(owner.instance.principal_id);
+    expect(detail.memberships.map((member: any) => member.instance_id).sort()).toEqual(
+      [owner.instance.id, guest.instance.id].sort(),
+    );
+    const page = await json(
+      await request(store, `/api/v1/rooms/${roomId}/messages`, {
+        headers: instanceHeaders(owner.token),
+      }),
+    );
+    expect(page.items).toHaveLength(1);
+    expect(page.items[0].sender_principal_id).toBe(guest.instance.principal_id);
+    expect(page.items[0].sender_instance_id).toBe(guest.instance.id);
+  });
+});
+
 });

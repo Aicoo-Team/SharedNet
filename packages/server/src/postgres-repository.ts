@@ -520,7 +520,7 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
   ): Promise<{ room: Room; membership: RoomMember }> {
     return this.inTransaction(async () => {
       const joiner = await this.requireOnline(auth);
-      const room = await this.ownedRoom(auth, roomId);
+      const room = await this.roomById(roomId);
       if (room.state === "closed") {
         throw new RepositoryError(409, "room_closed", "Room is closed.");
       }
@@ -558,7 +558,7 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
     auth: InstanceAuth,
     roomId: RoomId,
   ): Promise<{ room: Room; memberships: RoomMember[] }> {
-    const room = await this.ownedRoom(auth, roomId);
+    const room = await this.roomById(roomId);
     await this.requireMembership(auth, room.id);
     const rows = await this.executor()
       .select({ member: roomMembers, agentId: instances.agentId })
@@ -581,7 +581,7 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
       const [room] = await this.executor()
         .select()
         .from(rooms)
-        .where(and(eq(rooms.id, roomId), eq(rooms.principalId, auth.principalId)))
+        .where(eq(rooms.id, roomId))
         .for("update")
         .limit(1);
       if (!room) {
@@ -634,7 +634,7 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
     roomId: RoomId,
     input: { after: number; limit: number },
   ): Promise<{ items: Message[]; next_cursor: string | null; has_more: boolean }> {
-    const room = await this.ownedRoom(auth, roomId);
+    const room = await this.roomById(roomId);
     await this.requireMembership(auth, room.id);
     const rows = await this.executor()
       .select({ message: messages, agentId: instances.agentId })
@@ -779,11 +779,15 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
     return record;
   }
 
-  private async ownedRoom(auth: InstanceAuth, roomId: RoomId): Promise<RoomRow> {
+  /**
+   * A Room id is the capability. Any Instance that knows it may join; reading
+   * and posting still require membership, which is checked separately.
+   */
+  private async roomById(roomId: RoomId): Promise<RoomRow> {
     const [room] = await this.executor()
       .select()
       .from(rooms)
-      .where(and(eq(rooms.id, roomId), eq(rooms.principalId, auth.principalId)))
+      .where(eq(rooms.id, roomId))
       .limit(1);
     if (!room) {
       throw new RepositoryError(404, "room_not_found", "Room was not found.");

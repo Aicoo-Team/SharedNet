@@ -216,20 +216,21 @@ export class SharedNetServerClient {
     const principal = await this.requirePrincipal(authUserId);
     const database = this.database();
 
-    const roomRows = await database
-      .select()
-      .from(rooms)
-      .where(eq(rooms.principalId, principal.id))
-      .orderBy(desc(rooms.createdAt));
+    // A Room is visible to a Principal that has a membership in it, whether or
+    // not it created the Room: membership, not ownership, is the relationship.
+    const visibleRoomIds = await this.memberRoomIds(principal.id);
+    if (visibleRoomIds.length === 0) return { rooms: [] };
 
-    if (roomRows.length === 0) return { rooms: [] };
-
-    const roomIds = roomRows.map((row) => row.id);
-    const [memberRows, tagOf] = await Promise.all([
+    const [roomRows, memberRows, tagOf] = await Promise.all([
+      database
+        .select()
+        .from(rooms)
+        .where(inArray(rooms.id, visibleRoomIds))
+        .orderBy(desc(rooms.createdAt)),
       database
         .select()
         .from(roomMembers)
-        .where(inArray(roomMembers.roomId, roomIds)),
+        .where(inArray(roomMembers.roomId, visibleRoomIds)),
       this.tagsFor(principal.id),
     ]);
 
@@ -260,7 +261,7 @@ export class SharedNetServerClient {
     const [room] = await database
       .select()
       .from(rooms)
-      .where(and(eq(rooms.id, roomId as never), eq(rooms.principalId, principal.id)))
+      .where(eq(rooms.id, roomId as never))
       .limit(1);
 
     if (!room) {
@@ -277,6 +278,12 @@ export class SharedNetServerClient {
       this.tagsFor(principal.id),
     ]);
 
+
+    // Membership, not ownership, admits the viewer. A Room the account has
+    // never joined is reported as absent rather than as forbidden.
+    if (!memberRows.some((member) => member.principalId === principal.id)) {
+      throw new SharedNetApiError("room_not_found", 404, "Room not found");
+    }
 
     const memberships: RoomMembership[] = memberRows.map((member) => ({
       agent_id: tagOf(member.instanceId),
@@ -311,7 +318,7 @@ export class SharedNetServerClient {
       messages: projectedMessages,
       next_cursor: cursor(room.nextSequence - 1),
       room: {
-        access_policy: "principal_only",
+        access_policy: "anyone_with_id",
         created_at: requiredIso(room.createdAt),
         creator: actor(tagOf(room.creatorInstanceId), room.principalId, room.creatorInstanceId),
         description: room.description,
@@ -366,17 +373,14 @@ export class SharedNetServerClient {
      * Directed delegation and verification edges are not emitted: nothing in
      * the schema records either yet. See the TODO in the V1 design spec.
      */
-    const roomRows = await database
-      .select({ id: rooms.id })
-      .from(rooms)
-      .where(eq(rooms.principalId, principal.id));
+    const visibleRoomIds = await this.memberRoomIds(principal.id);
 
     const edges: NetworkEdge[] = [];
-    if (roomRows.length > 0) {
+    if (visibleRoomIds.length > 0) {
       const memberRows = await database
         .select()
         .from(roomMembers)
-        .where(inArray(roomMembers.roomId, roomRows.map((room) => room.id)));
+        .where(inArray(roomMembers.roomId, visibleRoomIds));
 
       const byRoom = new Map<string, string[]>();
       for (const member of memberRows) {
@@ -483,6 +487,17 @@ export class SharedNetServerClient {
       .returning();
 
     return this.decisionProjection(updated, await this.tagsFor(principal.id));
+  }
+
+  /** Rooms this Principal has a membership in — the Rooms it can see. */
+  private async memberRoomIds(
+    principalId: string,
+  ): Promise<Array<(typeof roomMembers.$inferSelect)["roomId"]>> {
+    const rows = await this.database()
+      .select({ roomId: roomMembers.roomId })
+      .from(roomMembers)
+      .where(eq(roomMembers.principalId, principalId as never));
+    return [...new Set(rows.map((row) => row.roomId))];
   }
 
   /** Current tag per Instance of one Principal, resolved once per request. */
