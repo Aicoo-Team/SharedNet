@@ -161,7 +161,6 @@ export interface Agent {
   handle: string;
   display_name: string | null;
   description: string | null;
-  is_default: boolean;
   created_at: Timestamp;
 }
 
@@ -171,9 +170,12 @@ export type InstanceStatus = "online" | "offline" | "ended" | "revoked" | "expir
 export interface Instance {
   id: InstanceId;
   principal_id: PrincipalId;
-  agent_id: AgentId;
+  /** The tag this Instance is grouped under; null when untagged. */
+  agent_id: AgentId | null;
   runtime_kind: RuntimeKind;
   cli_version: string;
+  /** Where it runs — host, workspace, OS. Diagnostic; never authorization. */
+  runtime_metadata: Record<string, string>;
   status: InstanceStatus;
   started_at: Timestamp;
   last_seen_at: Timestamp;
@@ -191,14 +193,17 @@ export interface Room {
   name: string;
   description: string | null;
   state: RoomState;
-  creator_agent_id: AgentId;
+  /** The Instance that opened the Room; its tag is derived, not stored. */
+  creator_instance_id: InstanceId;
+  creator_agent_id: AgentId | null;
   created_at: Timestamp;
   closed_at: Timestamp | null;
 }
 
 export interface RoomMember {
   room_id: RoomId;
-  agent_id: AgentId;
+  /** Derived from the member Instance's current tag. */
+  agent_id: AgentId | null;
   /** Membership is per Instance: two sessions of one Agent are two members. */
   instance_id: InstanceId;
   state: "active" | "left";
@@ -211,7 +216,8 @@ export interface Message {
   room_id: RoomId;
   sequence: number;
   sender_principal_id: PrincipalId;
-  sender_agent_id: AgentId;
+  /** Derived from the sending Instance's current tag; follows regrouping. */
+  sender_agent_id: AgentId | null;
   sender_instance_id: InstanceId;
   content: string;
   reply_to_message_id: MessageId | null;
@@ -228,7 +234,7 @@ export interface Decision {
   title: string;
   description: string;
   status: DecisionStatus;
-  requested_by_agent_id: AgentId;
+  requested_by_agent_id: AgentId | null;
   requested_by_instance_id: InstanceId;
   room_id: RoomId | null;
   answer: string | null;
@@ -258,6 +264,7 @@ export type ErrorCode =
   | "room_membership_required"
   | "route_not_found"
   | "agent_not_found"
+  | "agent_limit_reached"
   | "instance_not_found"
   | "api_key_not_found"
   | "room_not_found"
@@ -295,6 +302,7 @@ export const SAFE_ERROR_MESSAGES: Readonly<Record<ErrorCode, string>> = {
   room_membership_required: "Active Room membership is required.",
   route_not_found: "Route was not found.",
   agent_not_found: "Agent was not found.",
+  agent_limit_reached: "Agent limit reached.",
   instance_not_found: "Instance was not found.",
   api_key_not_found: "API key was not found.",
   room_not_found: "Room was not found.",
@@ -333,6 +341,7 @@ export const ERROR_STATUS: Readonly<Record<ErrorCode, number>> = {
   room_membership_required: 403,
   route_not_found: 404,
   agent_not_found: 404,
+  agent_limit_reached: 409,
   instance_not_found: 404,
   api_key_not_found: 404,
   room_not_found: 404,
@@ -433,14 +442,60 @@ function hasNonWhitespaceScalar(value: string): boolean {
   return Array.from(value).some((scalar) => !/^\s$/u.test(scalar));
 }
 
+export const AGENT_HANDLE_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
+export const LOCAL_INSTANCE_KEY_PATTERN = /^[0-9a-f]{64}$/;
+const RUNTIME_METADATA_KEY_PATTERN = /^[a-z][a-z0-9_]{0,31}$/;
+const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f]/;
+export const MAX_RUNTIME_METADATA_ENTRIES = 16;
+export const MAX_RUNTIME_METADATA_VALUE_SCALARS = 256;
+
 export interface StartInstanceRequest {
   runtime_kind: RuntimeKind;
   cli_version: string;
+  /** Tag to register under. Omit to leave the pointer untouched, null to untag. */
+  agent_id?: AgentId | null;
+  /**
+   * HMAC of the caller's runtime session. When it matches a live Instance of
+   * the same Principal the server returns that Instance with a fresh token
+   * instead of creating a second one — one session, one live Instance.
+   */
+  local_instance_key?: string;
+  /** Host, workspace, OS and the like. Replaces what was stored before. */
+  runtime_metadata?: Record<string, string>;
+}
+
+function parseRuntimeMetadata(value: unknown): Record<string, string> {
+  if (!isPlainRecord(value)) throw new ProtocolValidationError();
+  const entries = Object.entries(value);
+  if (entries.length > MAX_RUNTIME_METADATA_ENTRIES) throw new ProtocolValidationError();
+  const metadata: Record<string, string> = {};
+  for (const [key, raw] of entries) {
+    if (
+      !RUNTIME_METADATA_KEY_PATTERN.test(key) ||
+      typeof raw !== "string" ||
+      CONTROL_CHARACTER_PATTERN.test(raw) ||
+      scalarLength(raw) > MAX_RUNTIME_METADATA_VALUE_SCALARS
+    ) {
+      throw new ProtocolValidationError();
+    }
+    metadata[key] = raw;
+  }
+  return metadata;
 }
 
 export function parseStartInstanceRequest(value: unknown): StartInstanceRequest {
-  requireExactKeys(value, ["runtime_kind", "cli_version"]);
-  const { runtime_kind: runtimeKind, cli_version: cliVersion } = value;
+  requireExactKeys(
+    value,
+    ["runtime_kind", "cli_version"],
+    ["agent_id", "local_instance_key", "runtime_metadata"],
+  );
+  const {
+    runtime_kind: runtimeKind,
+    cli_version: cliVersion,
+    agent_id: agentId,
+    local_instance_key: localInstanceKey,
+    runtime_metadata: runtimeMetadata,
+  } = value;
 
   if (
     (runtimeKind !== "codex" && runtimeKind !== "claude-code" && runtimeKind !== "custom") ||
@@ -449,8 +504,65 @@ export function parseStartInstanceRequest(value: unknown): StartInstanceRequest 
   ) {
     throw new ProtocolValidationError();
   }
+  if (
+    agentId !== undefined &&
+    agentId !== null &&
+    (typeof agentId !== "string" || !AGENT_ID_PATTERN.test(agentId))
+  ) {
+    throw new ProtocolValidationError();
+  }
+  if (
+    localInstanceKey !== undefined &&
+    (typeof localInstanceKey !== "string" || !LOCAL_INSTANCE_KEY_PATTERN.test(localInstanceKey))
+  ) {
+    throw new ProtocolValidationError();
+  }
 
-  return { runtime_kind: runtimeKind, cli_version: cliVersion };
+  const request: StartInstanceRequest = { runtime_kind: runtimeKind, cli_version: cliVersion };
+  if (agentId !== undefined) request.agent_id = agentId as AgentId | null;
+  if (localInstanceKey !== undefined) request.local_instance_key = localInstanceKey;
+  if (runtimeMetadata !== undefined) request.runtime_metadata = parseRuntimeMetadata(runtimeMetadata);
+  return request;
+}
+
+export interface CreateAgentRequest {
+  handle: string;
+  display_name?: string | null;
+  description?: string | null;
+}
+
+/** Handles are NFKC-normalised, trimmed and lower-cased before validation. */
+export function canonicalAgentHandle(value: string): string {
+  return value.normalize("NFKC").trim().toLowerCase();
+}
+
+export function parseCreateAgentRequest(value: unknown): CreateAgentRequest {
+  requireExactKeys(value, ["handle"], ["display_name", "description"]);
+  const { handle, display_name: displayName, description } = value;
+  if (typeof handle !== "string") throw new ProtocolValidationError();
+  const canonical = canonicalAgentHandle(handle);
+  if (!AGENT_HANDLE_PATTERN.test(canonical)) throw new ProtocolValidationError();
+  if (
+    displayName !== undefined &&
+    displayName !== null &&
+    (typeof displayName !== "string" ||
+      !hasNonWhitespaceScalar(displayName) ||
+      scalarLength(displayName) > 120 ||
+      CONTROL_CHARACTER_PATTERN.test(displayName))
+  ) {
+    throw new ProtocolValidationError();
+  }
+  if (
+    description !== undefined &&
+    description !== null &&
+    (typeof description !== "string" || scalarLength(description) > 2_000)
+  ) {
+    throw new ProtocolValidationError();
+  }
+  const request: CreateAgentRequest = { handle: canonical };
+  if (displayName !== undefined) request.display_name = (displayName as string | null)?.trim() ?? null;
+  if (description !== undefined) request.description = description as string | null;
+  return request;
 }
 
 export interface CreateRoomRequest {
@@ -613,15 +725,17 @@ export const ROUTE_CATALOGUE = [
     auth: "public",
     operationId: "getOpenApi",
   },
+  { method: "POST", path: "/api/v1/agents", auth: "api_key", operationId: "createAgent" },
+  { method: "GET", path: "/api/v1/agents", auth: "api_key", operationId: "listAgents" },
   {
-    method: "PUT",
-    path: "/api/v1/agents/default",
+    method: "GET",
+    path: "/api/v1/agents/{agent_id}",
     auth: "api_key",
-    operationId: "ensureDefaultAgent",
+    operationId: "getAgent",
   },
   {
     method: "POST",
-    path: "/api/v1/agents/{agent_id}/instances",
+    path: "/api/v1/instances",
     auth: "api_key",
     operationId: "startInstance",
   },
@@ -697,21 +811,41 @@ export const OPENAPI_DOCUMENT = {
     "/api/v1/openapi.json": {
       get: { operationId: "getOpenApi", responses: { "200": { description: "OpenAPI document" } } },
     },
-    "/api/v1/agents/default": {
-      put: {
-        operationId: "ensureDefaultAgent",
+    "/api/v1/agents": {
+      post: {
+        operationId: "createAgent",
         security: [{ accountApiKey: [] }],
-        responses: { "200": { description: "Default Agent" }, default: { description: "Error" } },
+        responses: {
+          "201": { description: "New tag" },
+          "200": { description: "Existing tag with this handle" },
+          default: { description: "Error" },
+        },
+      },
+      get: {
+        operationId: "listAgents",
+        security: [{ accountApiKey: [] }],
+        responses: { "200": { description: "Owned tags" }, default: { description: "Error" } },
       },
     },
-    "/api/v1/agents/{agent_id}/instances": {
-      post: {
-        operationId: "startInstance",
+    "/api/v1/agents/{agent_id}": {
+      get: {
+        operationId: "getAgent",
         security: [{ accountApiKey: [] }],
         parameters: [
           { name: "agent_id", in: "path", required: true, schema: { type: "string", pattern: AGENT_ID_PATTERN.source } },
         ],
-        responses: { "201": { description: "Instance and raw-once token" }, default: { description: "Error" } },
+        responses: { "200": { description: "One owned tag" }, default: { description: "Error" } },
+      },
+    },
+    "/api/v1/instances": {
+      post: {
+        operationId: "startInstance",
+        security: [{ accountApiKey: [] }],
+        responses: {
+          "201": { description: "New Instance and raw-once token" },
+          "200": { description: "Same runtime session re-registered: existing Instance, fresh raw-once token" },
+          default: { description: "Error" },
+        },
       },
     },
     "/api/v1/instances/current": {

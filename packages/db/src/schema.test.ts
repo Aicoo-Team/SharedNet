@@ -13,9 +13,12 @@ import {
 import {
   agents,
   databaseSchema,
+  decisions,
   idempotencyRecords,
   instances,
   messages,
+  roomMembers,
+  rooms,
 } from "./schema.ts";
 
 describe("hosted Postgres schema", () => {
@@ -49,15 +52,28 @@ describe("hosted Postgres schema", () => {
     expect(columns).not.toHaveProperty("instanceToken");
   });
 
-  it("keeps provenance and idempotency scope in physical columns", () => {
-    expect(Object.keys(getTableColumns(messages))).toEqual(
-      expect.arrayContaining([
-        "senderPrincipalId",
-        "senderAgentId",
-        "senderInstanceId",
-        "replyToMessageId",
-      ]),
+  it("stores who acted, never a copy of how they were grouped", () => {
+    // The Instance is the immutable fact; its tag is derived at read time from
+    // instance.agent_id, the single place a grouping lives. A stored copy would
+    // have to be rewritten on every regroup, or silently disagree.
+    const messageColumns = getTableColumns(messages);
+    expect(Object.keys(messageColumns)).toEqual(
+      expect.arrayContaining(["senderPrincipalId", "senderInstanceId", "replyToMessageId"]),
     );
+    expect(messageColumns).not.toHaveProperty("senderAgentId");
+    expect(getTableColumns(roomMembers)).not.toHaveProperty("agentId");
+    expect(getTableColumns(rooms)).not.toHaveProperty("creatorAgentId");
+    expect(getTableColumns(decisions)).not.toHaveProperty("requestedByAgentId");
+  });
+
+  it("makes the tag pointer optional and the session key a dedupe key", () => {
+    const columns = getTableColumns(instances);
+    expect(columns.agentId.notNull).toBe(false);
+    expect(columns).toHaveProperty("localInstanceKey");
+    expect(columns.localInstanceKey.notNull).toBe(false);
+  });
+
+  it("keeps idempotency scope in physical columns", () => {
     expect(Object.keys(getTableColumns(idempotencyRecords))).toEqual(
       expect.arrayContaining([
         "principalId",
@@ -68,7 +84,8 @@ describe("hosted Postgres schema", () => {
         "expiresAt",
       ]),
     );
-    expect(getTableColumns(agents)).toHaveProperty("isDefault");
+    // There is no default Agent: an untagged Instance has a null pointer.
+    expect(getTableColumns(agents)).not.toHaveProperty("isDefault");
   });
 
   it("resolves canonical and supplied Supabase environment aliases without fallback", () => {

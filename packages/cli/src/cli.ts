@@ -1,3 +1,4 @@
+import { hostname, platform } from "node:os";
 import { randomUUID } from "node:crypto";
 
 import { ApiClient, resolveBaseUrl } from "./api-client.ts";
@@ -9,7 +10,6 @@ import {
 } from "./instance-computation.ts";
 import {
   deleteSession,
-  findSessionByLocalKey,
   getOrCreateInstallationSecret,
   getStoragePaths,
   listSessions,
@@ -60,7 +60,7 @@ interface AgentShape {
 interface InstanceShape {
   id: string;
   principal_id: string;
-  agent_id: string;
+  agent_id: string | null;
   started_at: string;
   lease_expires_at: string;
   token_expires_at?: string;
@@ -76,7 +76,7 @@ interface InstanceStartPayload {
 
 interface CurrentInstancePayload {
   principal: unknown;
-  agent: AgentShape;
+  agent: AgentShape | null;
   instance: InstanceShape;
 }
 
@@ -213,20 +213,21 @@ async function resolveApiKey(
   return credential.api_key;
 }
 
-async function resolveAgent(
+/**
+ * Resolves `--agent` to a tag. An `a_` id is fetched; anything else is a
+ * handle and is created on first use, the way `git tag` behaves — the server's
+ * POST is idempotent by handle, so one call covers both "exists" and "new".
+ * `default` names the absence of a tag and resolves to nothing.
+ */
+async function resolveTag(
   client: ApiClient,
   apiKey: string,
   requested: string,
-): Promise<AgentShape> {
+): Promise<AgentShape | null> {
+  const handle = requested.normalize("NFKC").trim().toLowerCase();
+  if (handle === "default") return null;
   let agent: AgentShape;
-  if (requested === "default") {
-    const payload = await client.request<{ agent: AgentShape }>(
-      "PUT",
-      "/agents/default",
-      apiKey,
-    );
-    agent = payload.agent;
-  } else if (/^a_[A-Za-z0-9_-]+$/.test(requested)) {
+  if (/^a_[A-Za-z0-9]+$/.test(requested)) {
     const payload = await client.request<{ agent: AgentShape }>(
       "GET",
       `/agents/${encodeURIComponent(requested)}`,
@@ -234,16 +235,18 @@ async function resolveAgent(
     );
     agent = payload.agent;
   } else {
-    const payload = await client.request<{ items: AgentShape[] }>(
-      "GET",
-      "/agents?limit=100",
-      apiKey,
-    );
-    const found = payload.items.find((candidate) => candidate.handle === requested);
-    if (!found) throw new CliError("agent_not_found", "The selected Agent was not found.", 4);
-    agent = found;
+    if (!/^[a-z][a-z0-9-]{0,31}$/.test(handle)) {
+      throw localError(
+        "invalid_agent",
+        "An Agent is an a_ id or a handle matching ^[a-z][a-z0-9-]{0,31}$.",
+      );
+    }
+    const payload = await client.request<{ agent: AgentShape }>("POST", "/agents", apiKey, {
+      handle,
+    });
+    agent = payload.agent;
   }
-  if (!agent?.id || !agent.principal_id) {
+  if (!agent?.id) {
     throw new CliError(
       "invalid_server_response",
       "The SharedNet service returned an invalid Agent response.",
@@ -251,6 +254,28 @@ async function resolveAgent(
     );
   }
   return agent;
+}
+
+/**
+ * Where this session runs, for humans telling untagged sessions apart. It is
+ * shown, never trusted: the server records it as diagnostics and nothing reads
+ * it for authorization or grouping.
+ *
+ * Only the workspace's last path segment is sent. The full path is a map of
+ * this machine — home directory, user name, client folders — and none of that
+ * is needed to tell "the one in the sharednet folder" from the others.
+ */
+function runtimeMetadata(env: Environment): Record<string, string> {
+  const clean = (value: string | undefined) =>
+    (value ?? "").replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 256);
+  const metadata: Record<string, string> = {};
+  const host = clean(hostname());
+  const workspacePath = clean(env.PWD ?? process.cwd());
+  const workspace = workspacePath.split(/[\\/]+/).filter(Boolean).at(-1) ?? "";
+  if (host) metadata.hostname = host;
+  if (workspace) metadata.workspace = workspace;
+  metadata.os = platform();
+  return metadata;
 }
 
 function validateRuntime(value: string): RuntimeKind {
@@ -264,7 +289,7 @@ function storedSessionFromStart(
   payload: InstanceStartPayload,
 ): StoredSession {
   const { instance, token } = payload;
-  if (!instance?.id || !instance.principal_id || !instance.agent_id || !token) {
+  if (!instance?.id || !instance.principal_id || !token) {
     throw new CliError(
       "invalid_server_response",
       "The SharedNet service returned an invalid Instance response.",
@@ -283,7 +308,7 @@ function storedSessionFromStart(
     schema_version: 1,
     base_url: baseUrl,
     principal_id: instance.principal_id,
-    agent_id: instance.agent_id,
+    agent_id: instance.agent_id ?? null,
     instance_id: instance.id,
     local_instance_key: localInstanceKey,
     instance_token: token,
@@ -403,13 +428,6 @@ async function startSession(
   const forceNew = parsed.options.get("new") === true;
   let localInstanceKey: string | null = null;
 
-  // Resolve the API key's Principal and the requested durable Agent before any
-  // local resume decision. A runtime anchor identifies only a local execution;
-  // it is never an authorization scope by itself.
-  const apiKey = await resolveApiKey(dependencies.env, paths, baseUrl);
-  const client = new ApiClient(baseUrl, dependencies.fetch);
-  const agent = await resolveAgent(client, apiKey, option(parsed, "agent") || "default");
-
   if (!forceNew) {
     if (!detected || detected.runtimeKind !== runtimeKind) {
       throw localError(
@@ -417,55 +435,29 @@ async function startSession(
         "The current runtime session could not be detected; use --new deliberately.",
       );
     }
+    // The key goes to the server, which is the one place that can guarantee
+    // one live Instance per runtime session. The raw session id stays here.
     localInstanceKey = computeLocalInstanceKey(
       installationSecret,
       runtimeKind,
       detected.anchor,
     );
-    const existing = await findSessionByLocalKey(paths, localInstanceKey, {
-      baseUrl,
-      principalId: agent.principal_id!,
-      agentId: agent.id,
-    });
-    if (existing) {
-      try {
-        const current = await client.request<CurrentInstancePayload>(
-          "GET",
-          "/instances/current",
-          existing.instance_token,
-        );
-        if (
-          current.instance.id !== existing.instance_id ||
-          current.instance.principal_id !== agent.principal_id ||
-          current.instance.agent_id !== agent.id
-        ) {
-          throw new CliError(
-            "invalid_server_response",
-            "The SharedNet service returned a mismatched Instance identity.",
-            5,
-          );
-        }
-        return {
-          instance: current.instance,
-          session_id: current.instance.id,
-          heartbeat_after_seconds: 30,
-        };
-      } catch (error) {
-        if (error instanceof CliError && error.exitCode === 3) {
-          await deleteSession(paths, existing.instance_id);
-        } else {
-          throw error;
-        }
-      }
-    }
   }
 
-  const payload = await client.request<InstanceStartPayload>(
-    "POST",
-    `/agents/${encodeURIComponent(agent.id)}/instances`,
-    apiKey,
-    { runtime_kind: runtimeKind, cli_version: CLI_VERSION },
-  );
+  const apiKey = await resolveApiKey(dependencies.env, paths, baseUrl);
+  const client = new ApiClient(baseUrl, dependencies.fetch);
+  const requestedTag = option(parsed, "agent");
+  const tag = requestedTag ? await resolveTag(client, apiKey, requestedTag) : undefined;
+
+  // A same-session re-registration comes back 200 with the existing Instance
+  // and a fresh token; a new session comes back 201. Both are a session.
+  const payload = await client.request<InstanceStartPayload>("POST", "/instances", apiKey, {
+    runtime_kind: runtimeKind,
+    cli_version: CLI_VERSION,
+    ...(localInstanceKey ? { local_instance_key: localInstanceKey } : {}),
+    ...(tag === undefined ? {} : { agent_id: tag?.id ?? null }),
+    runtime_metadata: runtimeMetadata(dependencies.env),
+  });
   const session = storedSessionFromStart(baseUrl, localInstanceKey, payload);
   await writeSession(paths, session);
   return {

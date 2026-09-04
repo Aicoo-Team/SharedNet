@@ -7,6 +7,7 @@ import {
   type Agent,
   type AgentId,
   type ApiKeyId,
+  type CreateAgentRequest,
   type Instance,
   type InstanceId,
   type Message,
@@ -16,9 +17,11 @@ import {
   type Room,
   type RoomId,
   type RoomMember,
+  type StartInstanceRequest,
 } from "../../protocol/src/index.ts";
 import {
   INSTANCE_TOKEN_TTL_MS,
+  MAX_AGENTS_PER_PRINCIPAL,
   PRESENCE_LEASE_MS,
   RepositoryError,
   type IdempotencyResult,
@@ -39,11 +42,16 @@ type ApiKeyRecord = {
 type InstanceRecord = Instance & {
   tokenDigest: string;
   issuedByKeyId: ApiKeyId;
+  localInstanceKey: string | null;
 };
 
-type RoomRecord = Room & {
+// Records store who acted (an Instance id) and never a copy of its tag; the
+// tag is read from the Instance at projection time so regrouping follows.
+type RoomRecord = Omit<Room, "creator_agent_id"> & {
   nextSequence: number;
 };
+type MembershipRecord = Omit<RoomMember, "agent_id">;
+type MessageRecord = Omit<Message, "sender_agent_id">;
 
 type IdempotencyRecord = StoredHttpResult & {
   fingerprint: string;
@@ -91,8 +99,8 @@ export class MemorySharedNetRepository implements SharedNetRepository {
   private readonly instances = new Map<InstanceId, InstanceRecord>();
   private readonly instanceIdsByDigest = new Map<string, InstanceId>();
   private readonly rooms = new Map<RoomId, RoomRecord>();
-  private readonly memberships = new Map<string, RoomMember>();
-  private readonly messages = new Map<RoomId, Message[]>();
+  private readonly memberships = new Map<string, MembershipRecord>();
+  private readonly messages = new Map<RoomId, MessageRecord[]>();
   private readonly idempotency = new Map<string, IdempotencyRecord>();
   private readonly idempotencyInFlight = new Map<
     string,
@@ -163,58 +171,108 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     return {
       kind: "instance",
       principalId: record.principal_id,
-      agentId: record.agent_id,
       instanceId: record.id,
       actorId: record.id,
     };
   }
 
-  async ensureDefaultAgent(auth: PrincipalAuth): Promise<Agent> {
-    const existing = [...this.agents.values()].find(
-      (agent) => agent.principal_id === auth.principalId && agent.is_default,
+  async createAgent(
+    auth: PrincipalAuth,
+    input: CreateAgentRequest,
+  ): Promise<{ agent: Agent; created: boolean }> {
+    const owned = [...this.agents.values()].filter(
+      (agent) => agent.principal_id === auth.principalId,
     );
-    if (existing) return { ...existing };
-
+    const existing = owned.find((agent) => agent.handle === input.handle);
+    if (existing) return { agent: { ...existing }, created: false };
+    if (owned.length >= MAX_AGENTS_PER_PRINCIPAL) {
+      throw new RepositoryError(409, "agent_limit_reached", "Agent limit reached.");
+    }
     const agent: Agent = {
       id: generatePublicId("a"),
       principal_id: auth.principalId,
-      handle: "default",
-      display_name: null,
-      description: null,
-      is_default: true,
+      handle: input.handle,
+      display_name: input.display_name ?? null,
+      description: input.description ?? null,
       created_at: this.timestamp(),
     };
     this.agents.set(agent.id, agent);
-    return { ...agent };
+    return { agent: { ...agent }, created: true };
+  }
+
+  async listAgents(auth: PrincipalAuth): Promise<{ items: Agent[] }> {
+    const items = [...this.agents.values()]
+      .filter((agent) => agent.principal_id === auth.principalId)
+      .sort((a, b) => a.handle.localeCompare(b.handle) || a.id.localeCompare(b.id))
+      .map((agent) => ({ ...agent }));
+    return { items };
+  }
+
+  async getAgent(auth: PrincipalAuth, agentId: AgentId): Promise<{ agent: Agent }> {
+    return { agent: { ...this.ownedAgent(auth, agentId) } };
   }
 
   async startInstance(
     auth: PrincipalAuth,
-    agentId: AgentId,
-    input: { runtime_kind: Instance["runtime_kind"]; cli_version: string },
-  ): Promise<{ instance: Instance; token: string; heartbeat_after_seconds: 30 }> {
-    const agent = this.agents.get(agentId);
-    if (!agent || agent.principal_id !== auth.principalId) {
-      throw new RepositoryError(404, "agent_not_found", "Agent was not found.");
-    }
+    input: StartInstanceRequest,
+  ): Promise<{ instance: Instance; token: string; heartbeat_after_seconds: 30; created: boolean }> {
+    if (input.agent_id) this.ownedAgent(auth, input.agent_id);
 
     const now = this.now();
     const token = generateSecret("sni");
+    const tokenDigest = digestSecret(token);
+    const leaseExpiresAt = new Date(now.getTime() + PRESENCE_LEASE_MS).toISOString();
+    const tokenExpiresAt = new Date(now.getTime() + INSTANCE_TOKEN_TTL_MS).toISOString();
+
+    // One session, one live Instance: a re-registration of the same runtime
+    // session hands back the existing row with a fresh token.
+    const existing = input.local_instance_key
+      ? [...this.instances.values()].find(
+          (candidate) =>
+            candidate.principal_id === auth.principalId &&
+            candidate.localInstanceKey === input.local_instance_key &&
+            candidate.status !== "ended" &&
+            candidate.status !== "revoked",
+        )
+      : undefined;
+    if (existing) {
+      this.instanceIdsByDigest.delete(existing.tokenDigest);
+      existing.tokenDigest = tokenDigest;
+      existing.issuedByKeyId = auth.actorId;
+      existing.runtime_kind = input.runtime_kind;
+      existing.cli_version = input.cli_version;
+      if (input.agent_id !== undefined) existing.agent_id = input.agent_id;
+      if (input.runtime_metadata !== undefined) existing.runtime_metadata = { ...input.runtime_metadata };
+      existing.last_seen_at = now.toISOString();
+      existing.lease_expires_at = leaseExpiresAt;
+      existing.token_expires_at = tokenExpiresAt;
+      existing.status = "online";
+      this.instanceIdsByDigest.set(tokenDigest, existing.id);
+      return {
+        instance: this.projectInstance(existing),
+        token,
+        heartbeat_after_seconds: 30,
+        created: false,
+      };
+    }
+
     const instance: InstanceRecord = {
       id: generatePublicId("i"),
       principal_id: auth.principalId,
-      agent_id: agent.id,
+      agent_id: input.agent_id ?? null,
       runtime_kind: input.runtime_kind,
       cli_version: input.cli_version,
+      runtime_metadata: { ...(input.runtime_metadata ?? {}) },
       status: "online",
       started_at: now.toISOString(),
       last_seen_at: now.toISOString(),
-      lease_expires_at: new Date(now.getTime() + PRESENCE_LEASE_MS).toISOString(),
-      token_expires_at: new Date(now.getTime() + INSTANCE_TOKEN_TTL_MS).toISOString(),
+      lease_expires_at: leaseExpiresAt,
+      token_expires_at: tokenExpiresAt,
       ended_at: null,
       revoked_at: null,
-      tokenDigest: digestSecret(token),
+      tokenDigest,
       issuedByKeyId: auth.actorId,
+      localInstanceKey: input.local_instance_key ?? null,
     };
     this.instances.set(instance.id, instance);
     this.instanceIdsByDigest.set(instance.tokenDigest, instance.id);
@@ -222,19 +280,20 @@ export class MemorySharedNetRepository implements SharedNetRepository {
       instance: this.projectInstance(instance),
       token,
       heartbeat_after_seconds: 30,
+      created: true,
     };
   }
 
   async getCurrentInstance(auth: InstanceAuth) {
     const record = this.instanceRecord(auth);
     const principal = this.principals.get(auth.principalId);
-    const agent = this.agents.get(auth.agentId);
-    if (!principal || !agent) {
+    if (!principal) {
       throw new RepositoryError(401, "invalid_credentials", "Credentials are invalid.");
     }
+    const agent = record.agent_id ? this.agents.get(record.agent_id) : undefined;
     return {
       principal: { ...principal },
-      agent: { ...agent },
+      agent: agent ? { ...agent } : null,
       instance: this.projectInstance(record),
     };
   }
@@ -263,14 +322,13 @@ export class MemorySharedNetRepository implements SharedNetRepository {
       name: input.name,
       description: input.description ?? null,
       state: "open",
-      creator_agent_id: auth.agentId,
+      creator_instance_id: auth.instanceId,
       created_at: createdAt,
       closed_at: null,
       nextSequence: 1,
     };
-    const membership: RoomMember = {
+    const membership: MembershipRecord = {
       room_id: room.id,
-      agent_id: auth.agentId,
       instance_id: auth.instanceId,
       state: "active",
       joined_at: createdAt,
@@ -279,7 +337,7 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     this.rooms.set(room.id, room);
     this.memberships.set(membershipKey(room.id, auth.instanceId), membership);
     this.messages.set(room.id, []);
-    return { room: this.projectRoom(room), membership: { ...membership } };
+    return { room: this.projectRoom(room), membership: this.projectMembership(membership) };
   }
 
   async joinRoom(
@@ -293,12 +351,11 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     }
     const key = membershipKey(room.id, auth.instanceId);
     const existing = this.memberships.get(key);
-    const membership: RoomMember =
+    const membership: MembershipRecord =
       existing && existing.state === "active"
         ? existing
         : {
             room_id: room.id,
-            agent_id: auth.agentId,
             instance_id: auth.instanceId,
             state: "active",
             joined_at: this.timestamp(),
@@ -307,7 +364,7 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     if (membership !== existing) {
       this.memberships.set(key, membership);
     }
-    return { room: this.projectRoom(room), membership: { ...membership } };
+    return { room: this.projectRoom(room), membership: this.projectMembership(membership) };
   }
 
   async getRoom(
@@ -318,7 +375,7 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     this.requireMembership(auth, room.id);
     const memberships = [...this.memberships.values()]
       .filter((membership) => membership.room_id === room.id)
-      .map((membership) => ({ ...membership }));
+      .map((membership) => this.projectMembership(membership));
     return { room: this.projectRoom(room), memberships };
   }
 
@@ -344,12 +401,11 @@ export class MemorySharedNetRepository implements SharedNetRepository {
       );
     }
 
-    const message: Message = {
+    const message: MessageRecord = {
       id: generatePublicId("msg"),
       room_id: room.id,
       sequence: room.nextSequence,
       sender_principal_id: auth.principalId,
-      sender_agent_id: auth.agentId,
       sender_instance_id: auth.instanceId,
       content: input.content,
       reply_to_message_id: replyId,
@@ -357,7 +413,7 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     };
     room.nextSequence += 1;
     roomMessages.push(message);
-    return { message: { ...message } };
+    return { message: this.projectMessage(message) };
   }
 
   async listMessages(
@@ -370,7 +426,7 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     const matching = (this.messages.get(room.id) ?? []).filter(
       (message) => message.sequence > input.after,
     );
-    const items = matching.slice(0, input.limit).map((message) => ({ ...message }));
+    const items = matching.slice(0, input.limit).map((message) => this.projectMessage(message));
     return {
       items,
       next_cursor:
@@ -438,21 +494,39 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     const {
       tokenDigest: _tokenDigest,
       issuedByKeyId: _issuedByKeyId,
+      localInstanceKey: _localInstanceKey,
       ...projected
     } = record;
-    return { ...projected, status };
+    return { ...projected, runtime_metadata: { ...projected.runtime_metadata }, status };
   }
 
   private instanceRecord(auth: InstanceAuth): InstanceRecord {
     const record = this.instances.get(auth.instanceId);
-    if (
-      !record ||
-      record.principal_id !== auth.principalId ||
-      record.agent_id !== auth.agentId
-    ) {
+    if (!record || record.principal_id !== auth.principalId) {
       throw new RepositoryError(401, "invalid_credentials", "Credentials are invalid.");
     }
     return record;
+  }
+
+  private ownedAgent(auth: PrincipalAuth, agentId: AgentId): Agent {
+    const agent = this.agents.get(agentId);
+    if (!agent || agent.principal_id !== auth.principalId) {
+      throw new RepositoryError(404, "agent_not_found", "Agent was not found.");
+    }
+    return agent;
+  }
+
+  /** The tag an Instance is currently under — read at projection time, never copied. */
+  private tagOf(instanceId: InstanceId): AgentId | null {
+    return this.instances.get(instanceId)?.agent_id ?? null;
+  }
+
+  private projectMembership(record: MembershipRecord): RoomMember {
+    return { ...record, agent_id: this.tagOf(record.instance_id) };
+  }
+
+  private projectMessage(record: MessageRecord): Message {
+    return { ...record, sender_agent_id: this.tagOf(record.sender_instance_id) };
   }
 
   private requireOnline(auth: InstanceAuth): InstanceRecord {
@@ -471,7 +545,7 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     return room;
   }
 
-  private requireMembership(auth: InstanceAuth, roomId: RoomId): RoomMember {
+  private requireMembership(auth: InstanceAuth, roomId: RoomId): MembershipRecord {
     const membership = this.memberships.get(membershipKey(roomId, auth.instanceId));
     if (!membership || membership.state !== "active") {
       throw new RepositoryError(
@@ -485,6 +559,6 @@ export class MemorySharedNetRepository implements SharedNetRepository {
 
   private projectRoom(room: RoomRecord): Room {
     const { nextSequence: _nextSequence, ...projected } = room;
-    return { ...projected };
+    return { ...projected, creator_agent_id: this.tagOf(room.creator_instance_id) };
   }
 }

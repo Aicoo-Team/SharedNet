@@ -103,6 +103,16 @@ agent_id     = a_7Qm2Zx8WpL
 instance_id  = i_8pQ2Km7XaN
 ```
 
+**Amended 2026-09-04 — an Agent is a tag over Instances, and there is no
+default one.** An Agent holds no credential and never acts; it is the name that
+outlives the sessions it groups, which is the only reason a durable identity has
+to exist separately from a 24-hour session. `instance.agent_id` is a nullable
+pointer and the single place a grouping is stored — messages, memberships and
+rooms record the acting Instance and derive its tag at read time, so regrouping
+never rewrites history. A fresh Instance is untagged; tagging is post hoc. See
+the hosted V1 design, §5.3, for the full statement and the one-session-one-live-
+Instance registration rule.
+
 **Amended 2026-09-04 — Runtime is no longer an entity.** This section originally
 defined a fourth type, `runtime_id`, sitting between Agent and Instance. It has
 been removed. A Runtime was never addressable: nothing could hold a Runtime

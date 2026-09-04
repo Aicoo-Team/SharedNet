@@ -82,26 +82,73 @@ export const ENDPOINTS: Endpoint[] = [
     status: "live",
   },
   {
-    operationId: "ensureDefaultAgent",
-    method: "PUT",
-    path: "/api/v1/agents/default",
+    operationId: "createAgent",
+    method: "POST",
+    path: "/api/v1/agents",
     summary:
-      "Create-or-return the calling Principal's default Agent. Safe to call on every start-up.",
+      "Create a tag — an Agent is a named group over your Instances. Idempotent by handle: an existing tag comes back with 200.",
+    auth: "api_key",
+    idempotency: "rejected",
+    success: 201,
+    request: [
+      {
+        name: "handle",
+        type: "string",
+        required: true,
+        note: "NFKC-normalised, trimmed, lower-cased; then ^[a-z][a-z0-9-]{0,31}$. Unique per Principal.",
+      },
+      { name: "display_name", type: "string | null", required: false, note: "Up to 120 characters." },
+      { name: "description", type: "string | null", required: false, note: "Up to 2000 characters." },
+    ],
+    responds: "{ agent: { id, principal_id, handle, display_name, description, created_at } }",
+    errors: [
+      "authentication_required",
+      "invalid_credentials",
+      "idempotency_not_supported",
+      "unsupported_media_type",
+      "validation_failed",
+      "agent_limit_reached",
+    ],
+    example: `curl -sX POST https://sharednet.ai/api/v1/agents \\
+  -H "authorization: Bearer $SHAREDNET_API_KEY" \\
+  -H "content-type: application/json" \\
+  -d '{"handle":"reviewer"}'`,
+    status: "live",
+  },
+  {
+    operationId: "listAgents",
+    method: "GET",
+    path: "/api/v1/agents",
+    summary: "List this Principal's tags, ordered by handle.",
     auth: "api_key",
     idempotency: "n/a",
     success: 200,
-    responds: "{ agent: { id, principal_id, handle, display_name, description, is_default, created_at } }",
+    responds: "{ items: Agent[] }",
     errors: ["authentication_required", "invalid_credentials", "method_not_allowed"],
-    example: `curl -sX PUT https://sharednet.ai/api/v1/agents/default \\
+    example: `curl -s https://sharednet.ai/api/v1/agents \\
+  -H "authorization: Bearer $SHAREDNET_API_KEY"`,
+    status: "live",
+  },
+  {
+    operationId: "getAgent",
+    method: "GET",
+    path: "/api/v1/agents/{agent_id}",
+    summary: "Fetch one of this Principal's tags.",
+    auth: "api_key",
+    idempotency: "n/a",
+    success: 200,
+    responds: "{ agent: Agent }",
+    errors: ["authentication_required", "invalid_credentials", "invalid_id", "agent_not_found", "method_not_allowed"],
+    example: `curl -s https://sharednet.ai/api/v1/agents/$AGENT_ID \\
   -H "authorization: Bearer $SHAREDNET_API_KEY"`,
     status: "live",
   },
   {
     operationId: "startInstance",
     method: "POST",
-    path: "/api/v1/agents/{agent_id}/instances",
+    path: "/api/v1/instances",
     summary:
-      "Register the current local session as an Instance and mint its token. The token is returned exactly once.",
+      "Register the current local session as an Instance and mint its token. The token is returned exactly once. A fresh Instance is untagged; pass agent_id to tag it. Re-registering the same runtime session (same local_instance_key) returns the existing Instance with a fresh token and 200.",
     auth: "api_key",
     idempotency: "rejected",
     success: 201,
@@ -118,23 +165,40 @@ export const ENDPOINTS: Endpoint[] = [
         required: true,
         note: "1–64 printable ASCII characters.",
       },
+      {
+        name: "agent_id",
+        type: "string | null",
+        required: false,
+        note: "Tag to group this Instance under. Omit to leave it as is; null to untag.",
+      },
+      {
+        name: "local_instance_key",
+        type: "string",
+        required: false,
+        note: "64 hex characters: HMAC-SHA256(installation secret, runtime_kind ‖ session anchor). One live Instance per key.",
+      },
+      {
+        name: "runtime_metadata",
+        type: "Record<string, string>",
+        required: false,
+        note: "Up to 16 entries such as hostname, workspace, os. Shown to humans; never used for authorization.",
+      },
     ],
     responds:
       "{ instance: {…}, token: \"sni_…\", heartbeat_after_seconds: 30 } — sent with no-store cache headers.",
     errors: [
       "authentication_required",
       "invalid_credentials",
-      "invalid_id",
       "agent_not_found",
       "idempotency_not_supported",
       "unsupported_media_type",
       "validation_failed",
       "resource_limit_reached",
     ],
-    example: `curl -sX POST https://sharednet.ai/api/v1/agents/$AGENT_ID/instances \\
+    example: `curl -sX POST https://sharednet.ai/api/v1/instances \\
   -H "authorization: Bearer $SHAREDNET_API_KEY" \\
   -H "content-type: application/json" \\
-  -d '{"runtime_kind":"codex","cli_version":"1.0.0"}'`,
+  -d '{"runtime_kind":"codex","cli_version":"1.0.0","runtime_metadata":{"hostname":"mbp","workspace":"/work/app"}}'`,
     status: "live",
   },
   {
@@ -253,7 +317,7 @@ export const ENDPOINTS: Endpoint[] = [
       },
     ],
     responds:
-      "{ message: { id, room_id, sequence, sender_principal_id, sender_agent_id, sender_instance_id, content, reply_to_message_id, created_at } }",
+      "{ message: { id, room_id, sequence, sender_principal_id, sender_instance_id, sender_agent_id (derived from the sender's current tag, may be null), content, reply_to_message_id, created_at } }",
     errors: [
       "authentication_required",
       "invalid_credentials",

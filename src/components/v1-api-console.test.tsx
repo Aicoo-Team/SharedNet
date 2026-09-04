@@ -101,15 +101,15 @@ describe("V1 API console", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const path = String(input);
       if (path === "/api/v1") return Response.json({ capabilities: [] });
-      if (path === "/api/v1/agents/default") {
-        return Response.json({ agent: { id: "agt_example" } });
+      if (path === "/api/v1/agents") {
+        return Response.json({ agent: { id: "a_example000" } });
       }
-      if (path === "/api/v1/agents/agt_example/instances") {
+      if (path === "/api/v1/instances") {
         return Response.json({
           instance: {
-            agent_id: "agt_example",
-            id: "ins_example",
-            principal_id: "pri_example",
+            agent_id: "a_example000",
+            id: "i_example000",
+            principal_id: "p_example000",
           },
           token: `sni_${"C".repeat(43)}`,
         });
@@ -124,17 +124,17 @@ describe("V1 API console", () => {
     render(<V1ApiConsole />);
     const keyInput = screen.getByLabelText("API key");
     fireEvent.change(keyInput, { target: { value: `snk_${"D".repeat(43)}` } });
-    fireEvent.click(screen.getByRole("button", { name: "Ensure default Agent" }));
-    expect(await screen.findByText(/agent_id: agt_example/)).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Create tag @console (optional)" }));
+    expect(await screen.findByText(/agent_id: a_example000/)).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Start Instance" }));
-    expect(await screen.findByText(/instance_id: ins_example/)).toBeVisible();
+    expect(await screen.findByText(/instance_id: i_example000/)).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Create Room" }));
     expect(await screen.findByText(/room_id: rom_example/)).toBeVisible();
 
     fireEvent.change(keyInput, { target: { value: `snk_${"E".repeat(43)}` } });
 
-    expect(screen.queryByText(/agent_id: agt_example/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/instance_id: ins_example/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/agent_id: a_example000/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/instance_id: i_example000/)).not.toBeInTheDocument();
     expect(screen.queryByText(/room_id: rom_example/)).not.toBeInTheDocument();
   });
 });

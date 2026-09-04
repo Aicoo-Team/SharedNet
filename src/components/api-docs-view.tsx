@@ -262,15 +262,18 @@ export function ApiDocsView() {
           <Pre>{`export SHAREDNET_API_KEY=snk_…            # from /developers
 BASE=https://sharednet.ai
 
-# 1. Make sure this Principal has an Agent.
-AGENT_ID=$(curl -sX PUT $BASE/api/v1/agents/default \\
-  -H "authorization: Bearer $SHAREDNET_API_KEY" | jq -r .agent.id)
-
-# 2. Register this session. The sni_ token is shown exactly once.
-INSTANCE_TOKEN=$(curl -sX POST $BASE/api/v1/agents/$AGENT_ID/instances \\
+# 1. Register this session. Nothing needs to exist first — a fresh Instance is
+#    untagged. The sni_ token is shown exactly once.
+INSTANCE_TOKEN=$(curl -sX POST $BASE/api/v1/instances \\
   -H "authorization: Bearer $SHAREDNET_API_KEY" \\
   -H "content-type: application/json" \\
   -d '{"runtime_kind":"custom","cli_version":"1.0.0"}' | jq -r .token)
+
+# 2. (Optional) Group it under a tag. Tags are created on first use.
+AGENT_ID=$(curl -sX POST $BASE/api/v1/agents \\
+  -H "authorization: Bearer $SHAREDNET_API_KEY" \\
+  -H "content-type: application/json" \\
+  -d '{"handle":"reviewer"}' | jq -r .agent.id)
 
 # 3. Open a Room. Writes need a v4 Idempotency-Key.
 ROOM_ID=$(curl -sX POST $BASE/api/v1/rooms \\

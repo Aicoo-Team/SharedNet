@@ -118,9 +118,10 @@ export function V1ApiConsole() {
   }
 
   async function ensureAgent() {
-    const value = await readJson(await fetch("/api/v1/agents/default", {
-      headers: { Authorization: `Bearer ${apiKey}` },
-      method: "PUT",
+    const value = await readJson(await fetch("/api/v1/agents", {
+      body: JSON.stringify({ handle: "console" }),
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      method: "POST",
     }));
     resetInstanceState();
     setAgent(value.agent as Agent);
@@ -174,9 +175,13 @@ export function V1ApiConsole() {
   }
 
   async function startInstance() {
-    if (!agent) return;
-    const value = await readJson(await fetch(`/api/v1/agents/${agent.id}/instances`, {
-      body: JSON.stringify({ cli_version: "web-try-it/0.1.0", runtime_kind: "custom" }),
+    const value = await readJson(await fetch("/api/v1/instances", {
+      body: JSON.stringify({
+        agent_id: agent?.id ?? null,
+        cli_version: "web-try-it/0.1.0",
+        runtime_kind: "custom",
+        runtime_metadata: { hostname: "browser", workspace: "developer-console" },
+      }),
       headers: {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
@@ -283,15 +288,15 @@ export function V1ApiConsole() {
             </div>
             {keyStatus ? <p className={styles.status} role="status">{keyStatus}</p> : null}
             <button className={styles.button} disabled={busy || !apiKey} onClick={() => void perform("create-agent", ensureAgent)} type="button">
-              {pendingAction === "create-agent" ? "Ensuring Agent…" : "Ensure default Agent"}
+              {pendingAction === "create-agent" ? "Creating tag…" : "Create tag @console (optional)"}
             </button>
             {agent ? <div className={styles.identity}>agent_id: {agent.id}</div> : null}
           </section>
 
           <section className={styles.card}>
-            <h2>2. Agent → Instance</h2>
-            <p>The API generates a scoped Instance and a raw-once token.</p>
-            <button className={styles.button} disabled={busy || !agent} onClick={() => void perform("create-instance", startInstance)} type="button">
+            <h2>2. Instance</h2>
+            <p>The API generates a scoped Instance and a raw-once token. Untagged unless a tag was created above.</p>
+            <button className={styles.button} disabled={busy || !apiKey} onClick={() => void perform("create-instance", startInstance)} type="button">
               {pendingAction === "create-instance" ? "Starting Instance…" : "Start Instance"}
             </button>
             {instance ? (

@@ -41,25 +41,41 @@ async function json(response: Response) {
   return response.json() as Promise<Record<string, any>>;
 }
 
-async function ensureDefaultAgent(store: MemorySharedNetRepository) {
-  const response = await request(store, "/api/v1/agents/default", {
-    method: "PUT",
-    headers: apiHeaders(),
-  });
-  expect(response.status).toBe(200);
-  return (await json(response)).agent;
-}
-
-async function startInstance(store: MemorySharedNetRepository, agentId: string) {
-  const response = await request(store, `/api/v1/agents/${agentId}/instances`, {
+async function createAgent(store: MemorySharedNetRepository, handle: string) {
+  const response = await request(store, "/api/v1/agents", {
     method: "POST",
     headers: apiHeaders({ "content-type": "application/json" }),
-    body: JSON.stringify({ runtime_kind: "codex", cli_version: "0.1.0" }),
+    body: JSON.stringify({ handle }),
   });
-  expect(response.status).toBe(201);
+  expect([200, 201]).toContain(response.status);
+  return { status: response.status, agent: (await json(response)).agent };
+}
+
+type StartBody = {
+  runtime_kind?: string;
+  cli_version?: string;
+  agent_id?: string | null;
+  local_instance_key?: string;
+  runtime_metadata?: Record<string, string>;
+};
+
+async function startInstance(
+  store: MemorySharedNetRepository,
+  body: StartBody = {},
+  expectedStatus: 200 | 201 = 201,
+) {
+  const response = await request(store, "/api/v1/instances", {
+    method: "POST",
+    headers: apiHeaders({ "content-type": "application/json" }),
+    body: JSON.stringify({ runtime_kind: "codex", cli_version: "0.1.0", ...body }),
+  });
+  expect(response.status).toBe(expectedStatus);
   expect(response.headers.get("cache-control")).toContain("no-store");
   return json(response);
 }
+
+const SESSION_KEY = "a".repeat(64);
+const OTHER_SESSION_KEY = "b".repeat(64);
 
 describe("SharedNet V1 HTTP handler", () => {
   it("publishes the exact discovery document", async () => {
@@ -69,20 +85,20 @@ describe("SharedNet V1 HTTP handler", () => {
     expect(await response.json()).toEqual(DISCOVERY_DOCUMENT);
   });
 
-  it("ensures one default Agent and registers four independent Instances", async () => {
+  it("registers four independent untagged Instances with nothing provisioned first", async () => {
     const store = makeStore();
-    const first = await ensureDefaultAgent(store);
-    const second = await ensureDefaultAgent(store);
-    expect(second.id).toBe(first.id);
-    expect(first.handle).toBe("default");
 
     const registrations = await Promise.all(
-      Array.from({ length: 4 }, () => startInstance(store, first.id)),
+      Array.from({ length: 4 }, () => startInstance(store)),
     );
 
     expect(new Set(registrations.map(({ instance }) => instance.id)).size).toBe(4);
     expect(new Set(registrations.map(({ token }) => token)).size).toBe(4);
-    expect(registrations.every(({ instance }) => instance.agent_id === first.id)).toBe(true);
+    // A fresh Instance is untagged: there is no default Agent to be born into.
+    expect(registrations.every(({ instance }) => instance.agent_id === null)).toBe(true);
+    expect(
+      registrations.every(({ instance }) => Object.keys(instance.runtime_metadata).length === 0),
+    ).toBe(true);
     expect(registrations.every(({ token }) => /^sni_[A-Za-z0-9_-]{43}$/.test(token))).toBe(
       true,
     );
@@ -94,7 +110,7 @@ describe("SharedNet V1 HTTP handler", () => {
       expect(current.status).toBe(200);
       const currentBody = await json(current);
       expect(currentBody.instance.id).toBe(registration.instance.id);
-      expect(currentBody.agent.id).toBe(first.id);
+      expect(currentBody.agent).toBeNull();
 
       const heartbeat = await request(store, "/api/v1/instances/current/heartbeat", {
         method: "POST",
@@ -122,11 +138,178 @@ describe("SharedNet V1 HTTP handler", () => {
     }
   });
 
-  it("lets four Instances of one Agent share one chatroom with unique ordered provenance", async () => {
+  it("returns the same Instance with a fresh token when one runtime session registers twice", async () => {
     const store = makeStore();
-    const agent = await ensureDefaultAgent(store);
+
+    const first = await startInstance(store, { local_instance_key: SESSION_KEY });
+    const again = await startInstance(store, { local_instance_key: SESSION_KEY }, 200);
+    const other = await startInstance(store, { local_instance_key: OTHER_SESSION_KEY });
+
+    // One session, one live Instance — but every registration mints its own
+    // token, so a recovered session never reuses a secret it may have lost.
+    expect(again.instance.id).toBe(first.instance.id);
+    expect(again.token).not.toBe(first.token);
+    expect(other.instance.id).not.toBe(first.instance.id);
+
+    const stale = await request(store, "/api/v1/instances/current", {
+      headers: instanceHeaders(first.token),
+    });
+    expect(stale.status).toBe(401);
+    const live = await request(store, "/api/v1/instances/current", {
+      headers: instanceHeaders(again.token),
+    });
+    expect(live.status).toBe(200);
+    expect((store as any).instances.size).toBe(2);
+  });
+
+  it("moves a re-registered Instance's tag when asked and leaves it alone otherwise", async () => {
+    const store = makeStore();
+    const { agent: reviewer } = await createAgent(store, "reviewer");
+
+    const untagged = await startInstance(store, { local_instance_key: SESSION_KEY });
+    expect(untagged.instance.agent_id).toBeNull();
+
+    const tagged = await startInstance(
+      store,
+      {
+        local_instance_key: SESSION_KEY,
+        agent_id: reviewer.id,
+        runtime_metadata: { hostname: "mbp" },
+      },
+      200,
+    );
+    expect(tagged.instance.id).toBe(untagged.instance.id);
+    expect(tagged.instance.agent_id).toBe(reviewer.id);
+    expect(tagged.instance.runtime_metadata).toEqual({ hostname: "mbp" });
+
+    const untouched = await startInstance(store, { local_instance_key: SESSION_KEY }, 200);
+    expect(untouched.instance.agent_id).toBe(reviewer.id);
+    expect(untouched.instance.runtime_metadata).toEqual({ hostname: "mbp" });
+
+    const cleared = await startInstance(
+      store,
+      { local_instance_key: SESSION_KEY, agent_id: null },
+      200,
+    );
+    expect(cleared.instance.agent_id).toBeNull();
+
+    const current = await request(store, "/api/v1/instances/current", {
+      headers: instanceHeaders(cleared.token),
+    });
+    expect((await json(current)).agent).toBeNull();
+  });
+
+  it("refuses a tag that is not this Principal's and malformed session inputs", async () => {
+    const store = makeStore();
+
+    const foreign = await request(store, "/api/v1/instances", {
+      method: "POST",
+      headers: apiHeaders({ "content-type": "application/json" }),
+      body: JSON.stringify({
+        runtime_kind: "codex",
+        cli_version: "0.1.0",
+        agent_id: "a_zzzzzzzzzz",
+      }),
+    });
+    expect(foreign.status).toBe(404);
+    expect((await json(foreign)).error.code).toBe("agent_not_found");
+
+    for (const body of [
+      { local_instance_key: "not-hex" },
+      { local_instance_key: "a".repeat(63) },
+      { agent_id: "reviewer" },
+      { runtime_metadata: { "Bad Key": "x" } },
+      { runtime_metadata: { hostname: 42 } },
+      { runtime_metadata: { hostname: "line\nbreak" } },
+      {
+        runtime_metadata: Object.fromEntries(
+          Array.from({ length: 17 }, (_, index) => [`k${index}`, "v"]),
+        ),
+      },
+    ]) {
+      const response = await request(store, "/api/v1/instances", {
+        method: "POST",
+        headers: apiHeaders({ "content-type": "application/json" }),
+        body: JSON.stringify({ runtime_kind: "codex", cli_version: "0.1.0", ...body }),
+      });
+      expect(response.status, JSON.stringify(body)).toBe(422);
+    }
+  });
+
+  it("creates a tag once per handle and lists and fetches it", async () => {
+    const store = makeStore();
+
+    const first = await createAgent(store, "reviewer");
+    const second = await createAgent(store, "Reviewer ");
+    expect(first.status).toBe(201);
+    expect(second.status).toBe(200);
+    expect(second.agent.id).toBe(first.agent.id);
+    expect(first.agent.handle).toBe("reviewer");
+    expect(first.agent).not.toHaveProperty("is_default");
+
+    await createAgent(store, "builder");
+    const listed = await request(store, "/api/v1/agents", { headers: apiHeaders() });
+    expect(listed.status).toBe(200);
+    expect((await json(listed)).items.map((agent: any) => agent.handle)).toEqual([
+      "builder",
+      "reviewer",
+    ]);
+
+    const fetched = await request(store, `/api/v1/agents/${first.agent.id}`, {
+      headers: apiHeaders(),
+    });
+    expect(fetched.status).toBe(200);
+    expect((await json(fetched)).agent.id).toBe(first.agent.id);
+
+    const missing = await request(store, "/api/v1/agents/a_zzzzzzzzzz", {
+      headers: apiHeaders(),
+    });
+    expect(missing.status).toBe(404);
+    const malformed = await request(store, "/api/v1/agents/not-an-id", {
+      headers: apiHeaders(),
+    });
+    expect(malformed.status).toBe(400);
+    const wrongMethod = await request(store, `/api/v1/agents/${first.agent.id}`, {
+      method: "DELETE",
+      headers: apiHeaders(),
+    });
+    expect(wrongMethod.status).toBe(405);
+
+    for (const handle of ["", "Default!", "1abc", "a".repeat(33)]) {
+      const response = await request(store, "/api/v1/agents", {
+        method: "POST",
+        headers: apiHeaders({ "content-type": "application/json" }),
+        body: JSON.stringify({ handle }),
+      });
+      expect(response.status, handle).toBe(422);
+    }
+  });
+
+  it("caps tags per Principal", async () => {
+    const store = makeStore();
+    for (let index = 0; index < 100; index += 1) {
+      await createAgent(store, `tag-${index}`);
+    }
+    const response = await request(store, "/api/v1/agents", {
+      method: "POST",
+      headers: apiHeaders({ "content-type": "application/json" }),
+      body: JSON.stringify({ handle: "one-too-many" }),
+    });
+    expect(response.status).toBe(409);
+    expect((await json(response)).error.code).toBe("agent_limit_reached");
+    // An existing handle is still returned, not counted against the cap.
+    expect((await createAgent(store, "tag-0")).status).toBe(200);
+  });
+
+  it("lets four Instances share one chatroom with provenance that follows regrouping", async () => {
+    const store = makeStore();
+    const { agent } = await createAgent(store, "reviewer");
     const registrations = await Promise.all(
-      Array.from({ length: 4 }, () => startInstance(store, agent.id)),
+      Array.from({ length: 4 }, (_, index) =>
+        startInstance(store, {
+          local_instance_key: String.fromCharCode(99 + index).repeat(64),
+        }),
+      ),
     );
 
     const createKey = crypto.randomUUID();
@@ -142,7 +325,9 @@ describe("SharedNet V1 HTTP handler", () => {
     expect(created.status).toBe(201);
     const createdBody = await json(created);
     const roomId = createdBody.room.id as string;
-    expect(createdBody.membership.agent_id).toBe(agent.id);
+    expect(createdBody.membership.agent_id).toBeNull();
+    expect(createdBody.room.creator_instance_id).toBe(registrations[0].instance.id);
+    expect(createdBody.room.creator_agent_id).toBeNull();
 
     const replay = await request(store, "/api/v1/rooms", {
       method: "POST",
@@ -188,7 +373,7 @@ describe("SharedNet V1 HTTP handler", () => {
       });
       expect(joined.status).toBe(200);
       const membership = (await json(joined)).membership;
-      expect(membership.agent_id).toBe(agent.id);
+      expect(membership.agent_id).toBeNull();
       expect(membership.instance_id).toBe(registration.instance.id);
     }
 
@@ -215,7 +400,38 @@ describe("SharedNet V1 HTTP handler", () => {
     expect(new Set(page.items.map((message: any) => message.sender_instance_id))).toEqual(
       new Set(registrations.map(({ instance }) => instance.id)),
     );
-    expect(page.items.every((message: any) => message.sender_agent_id === agent.id)).toBe(true);
+    expect(page.items.every((message: any) => message.sender_agent_id === null)).toBe(true);
+
+    // Tag the first speaker after the fact. Nothing was written to the
+    // messages, yet history now attributes that speaker's line to the tag,
+    // because a message records who acted and derives the tag at read time.
+    await startInstance(
+      store,
+      { local_instance_key: "c".repeat(64), agent_id: agent.id },
+      200,
+    );
+    const regrouped = await json(
+      await request(store, `/api/v1/rooms/${roomId}/messages`, {
+        headers: instanceHeaders(registrations[3].token),
+      }),
+    );
+    expect(regrouped.items.map((message: any) => message.sender_agent_id)).toEqual([
+      agent.id,
+      null,
+      null,
+      null,
+    ]);
+    const detail = await json(
+      await request(store, `/api/v1/rooms/${roomId}`, {
+        headers: instanceHeaders(registrations[3].token),
+      }),
+    );
+    expect(detail.room.creator_agent_id).toBe(agent.id);
+    expect(
+      detail.memberships.find(
+        (member: any) => member.instance_id === registrations[0].instance.id,
+      ).agent_id,
+    ).toBe(agent.id);
   });
 
   it("authenticates before parsing a protected request body", async () => {
@@ -236,8 +452,7 @@ describe("SharedNet V1 HTTP handler", () => {
 
   it("executes concurrent replays only once", async () => {
     const store = makeStore();
-    const agent = await ensureDefaultAgent(store);
-    const registration = await startInstance(store, agent.id);
+    const registration = await startInstance(store);
     const key = crypto.randomUUID();
     const create = () =>
       request(store, "/api/v1/rooms", {
@@ -259,8 +474,7 @@ describe("SharedNet V1 HTTP handler", () => {
 
   it("rejects idempotency on raw Instance token issuance", async () => {
     const store = makeStore();
-    const agent = await ensureDefaultAgent(store);
-    const response = await request(store, `/api/v1/agents/${agent.id}/instances`, {
+    const response = await request(store, "/api/v1/instances", {
       method: "POST",
       headers: apiHeaders({
         "content-type": "application/json",
@@ -277,8 +491,7 @@ describe("SharedNet V1 HTTP handler", () => {
 describe("GET /api/v1/rooms/{room_id}", () => {
   async function seededRoom() {
     const store = makeStore();
-    const agent = await ensureDefaultAgent(store);
-    const { token } = await startInstance(store, agent.id);
+    const { token } = await startInstance(store);
     const created = await request(store, "/api/v1/rooms", {
       method: "POST",
       headers: instanceHeaders(token, {

@@ -22,6 +22,13 @@
       "when": 1788531540198,
       "tag": "0002_wide_power_man",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1788549877181,
+      "tag": "0003_equal_synch",
+      "breakpoints": true
     }
   ]
 }

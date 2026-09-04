@@ -74,9 +74,8 @@ function makeAgent(
     created_at: NOW,
     diagnostic_label: `Agent ${agent_id.slice(-4)}`,
     discoverability: true,
-    official: false,
+    handle: `agent-${agent_id.slice(-4).toLowerCase()}`,
     principal_id,
-    role: "Coordinator",
     summary: "Coordinates exact backend work.",
     ...overrides,
   };
@@ -263,7 +262,7 @@ describe("SharedNet Network", () => {
   it("opens an Agent card listing exactly that Agent's Instances", () => {
     const selectedAgent = makeAgent(SECOND_OWN_AGENT_ID, OWN_PRINCIPAL_ID, {
       diagnostic_label: "Evidence analyst",
-      role: "Research lead",
+      handle: "research-lead",
     });
     const otherAgent = makeAgent(OWN_AGENT_ID, OWN_PRINCIPAL_ID);
     const firstInstance = makeInstance(
@@ -294,7 +293,7 @@ describe("SharedNet Network", () => {
     const card = screen.getByRole("region", { name: "Agent Card" });
     expect(within(card).getByText(OWN_PRINCIPAL_ID)).toBeVisible();
     expect(within(card).getByText(SECOND_OWN_AGENT_ID)).toBeVisible();
-    expect(within(card).getByText("Research lead")).toBeVisible();
+    expect(within(card).getByText("@research-lead")).toBeVisible();
 
     // exactly this Agent's Instances, and no others
     expect(within(card).getByText(FIRST_INSTANCE_ID)).toBeVisible();
@@ -302,7 +301,7 @@ describe("SharedNet Network", () => {
     expect(within(card).queryByText(OTHER_INSTANCE_ID)).toBeNull();
   });
 
-  it("derives online, offline, and template labels only from exact descendants", () => {
+  it("derives presence only from exact descendants and draws no dot for an empty tag", () => {
     const onlineAgent = makeAgent(OWN_AGENT_ID, OWN_PRINCIPAL_ID, {
       diagnostic_label: "Online verifier",
     });
@@ -311,8 +310,7 @@ describe("SharedNet Network", () => {
     });
     const templateAgentId = "a_d2hNWU0Bml" as AgentId;
     const templateAgent = makeAgent(templateAgentId, OWN_PRINCIPAL_ID, {
-      diagnostic_label: "Official starter",
-      official: true,
+      diagnostic_label: "Empty tag",
     });
     const matchingOnlineInstance = makeInstance(
       FIRST_INSTANCE_ID,
@@ -547,7 +545,7 @@ describe("SharedNet Network", () => {
     const { container } = renderNetwork({ network: makeNetwork({ agents: [] }) });
 
     expect(principalGroup(OWN_PRINCIPAL_ID)).toBeVisible();
-    expect(screen.getByText("No Agents registered for this Principal.")).toBeVisible();
+    expect(screen.getByText("No Instances for this Principal.")).toBeVisible();
     expect(screen.queryByRole("button", { name: /Inspect Instance/ })).toBeNull();
     const canvas = container.querySelector<HTMLElement>(".network-canvas");
     expect(canvas).not.toBeNull();
@@ -592,9 +590,7 @@ describe("SharedNet Network", () => {
   it("never presents delegation, hosting, readiness, activity, or recruitment claims", () => {
     const network = makeNetwork({
       agents: [
-        makeAgent(OWN_AGENT_ID, OWN_PRINCIPAL_ID, {
-          official: true,
-        }),
+        makeAgent(OWN_AGENT_ID, OWN_PRINCIPAL_ID),
         makeAgent(CONNECTED_AGENT_ID, CONNECTED_PRINCIPAL_ID),
       ],
       edges: [
@@ -614,4 +610,28 @@ describe("SharedNet Network", () => {
     );
     expect(container.querySelector('[data-edge-kind="delegation"]')).toBeNull();
   });
+
+  it("renders untagged Instances under a synthetic default header without inventing a tag", () => {
+    const untagged = makeInstance(OWN_INSTANCE_ID, OWN_AGENT_ID, OWN_PRINCIPAL_ID, {
+      agent_id: null,
+      presence: "online",
+      heartbeat_state: "renewing",
+    });
+    const network = makeNetwork({ agents: [], instances: [untagged] });
+    renderNetwork({ network });
+
+    const node = inspectButton(OWN_INSTANCE_ID);
+    expect(node).toBeVisible();
+    expect(within(node).getByText("default")).toBeVisible();
+    expect(node.dataset.agentId).toBe(`default:${OWN_PRINCIPAL_ID}`);
+    // The group is a rendering device: the projection still carries no Agent.
+    expect(network.agents).toEqual([]);
+
+    fireEvent.click(node);
+    const card = screen.getByRole("region", { name: "Agent Card" });
+    expect(within(card).getByRole("heading", { level: 2 })).toHaveTextContent("default");
+    expect(within(card).getByText("@default")).toBeVisible();
+    expect(within(card).getByText(OWN_INSTANCE_ID)).toBeVisible();
+  });
+
 });

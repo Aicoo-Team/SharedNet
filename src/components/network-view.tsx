@@ -22,7 +22,6 @@ type AgentTree = Readonly<{
   agent: AgentProjection;
   instances: InstanceProjection[];
   presence: "online" | "offline";
-  template: boolean;
 }>;
 
 type VisiblePrincipal = Readonly<{
@@ -68,29 +67,64 @@ function compareOpaqueIds(left: string, right: string) {
   return 0;
 }
 
+function agentTree(agent: AgentProjection, instances: InstanceProjection[]): AgentTree {
+  const sorted = [...instances].sort((left, right) =>
+    compareOpaqueIds(left.instance_id, right.instance_id),
+  );
+  return {
+    agent,
+    instances: sorted,
+    presence: sorted.some((instance) => instance.presence === "online")
+      ? "online"
+      : "offline",
+  };
+}
+
 function joinAgentDescendants(
   agent: AgentProjection,
   network: NetworkProjection,
 ): AgentTree {
-  const instances = network.instances
-    .filter(
+  return agentTree(
+    agent,
+    network.instances.filter(
       (instance) =>
         instance.principal_id === agent.principal_id &&
         instance.agent_id === agent.agent_id,
-    )
-    .sort((left, right) =>
-      compareOpaqueIds(left.instance_id, right.instance_id),
-    );
+    ),
+  );
+}
 
-  return {
-    agent,
+/**
+ * Untagged Instances are the normal case, not an error state. They render
+ * under a synthetic "default" header so every Instance sits under exactly one
+ * header and the graph has a single rendering path — but no row exists for it,
+ * which is why the id is a UI-local sentinel rather than a real tag id.
+ */
+export function untaggedGroupId(principalId: PrincipalId): AgentId {
+  return `default:${principalId}` as AgentId;
+}
+
+function untaggedGroup(
+  principal: PrincipalProjection,
+  network: NetworkProjection,
+): AgentTree | null {
+  const instances = network.instances.filter(
+    (instance) =>
+      instance.principal_id === principal.principal_id && instance.agent_id === null,
+  );
+  if (instances.length === 0) return null;
+  return agentTree(
+    {
+      agent_id: untaggedGroupId(principal.principal_id),
+      created_at: "",
+      diagnostic_label: "default",
+      discoverability: false,
+      handle: "default",
+      principal_id: principal.principal_id,
+      summary: "Instances that have not been tagged.",
+    },
     instances,
-    presence: instances.some((instance) => instance.presence === "online")
-      ? "online"
-      : "offline",
-    template:
-      agent.official && agent.discoverability && instances.length === 0,
-  };
+  );
 }
 
 function visibleNetwork(
@@ -125,13 +159,20 @@ function visibleNetwork(
       return principalOrder || compareOpaqueIds(left.agent_id, right.agent_id);
     });
 
-  return principals.map((principal) => ({
-    agents: agents
+  return principals.map((principal) => {
+    const own = principal.principal_id === network.principal.principal_id;
+    const tagged = agents
       .filter((agent) => agent.principal_id === principal.principal_id)
-      .map((agent) => joinAgentDescendants(agent, network)),
-    own: principal.principal_id === network.principal.principal_id,
-    principal,
-  }));
+      .map((agent) => joinAgentDescendants(agent, network));
+    // Only the caller's own untagged sessions are shown; another Principal's
+    // untagged sessions are not discoverable by definition.
+    const untagged = own ? untaggedGroup(principal, network) : null;
+    return {
+      agents: untagged ? [...tagged, untagged] : tagged,
+      own,
+      principal,
+    };
+  });
 }
 
 function createNetworkLayout(principals: VisiblePrincipal[]): NetworkLayout {
@@ -258,7 +299,7 @@ function AgentCard({
   agentTree: AgentTree;
   onClose: () => void;
 }) {
-  const { agent, instances, presence, template } = agentTree;
+  const { agent, instances, presence } = agentTree;
 
   return (
     <aside aria-label="Agent Card" className="agent-card" role="region">
@@ -279,15 +320,12 @@ function AgentCard({
           <dd>{agent.agent_id}</dd>
         </div>
         <div>
-          <dt>Role</dt>
-          <dd>{agent.role}</dd>
+          <dt>Handle</dt>
+          <dd>@{agent.handle}</dd>
         </div>
         <div>
           <dt>Presence</dt>
-          <dd>
-            {presence}
-            {template ? <span className="agent-template-label">template</span> : null}
-          </dd>
+          <dd>{presence}</dd>
         </div>
       </dl>
 
@@ -550,7 +588,7 @@ export function NetworkView() {
                     {principal.agents.length === 0 ? (
                       <p className="principal-empty">
                         {principal.own
-                          ? "No Agents registered for this Principal."
+                          ? "No Instances for this Principal."
                           : "No discoverable Agents."}
                       </p>
                     ) : null}

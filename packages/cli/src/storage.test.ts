@@ -7,7 +7,6 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
-  findSessionByLocalKey,
   getOrCreateInstallationSecret,
   getStoragePaths,
   listSessions,
@@ -54,13 +53,7 @@ describe("secure local state", () => {
     expect((await stat(join(paths.sessionsDir, "i_one.json"))).mode & 0o777).toBe(
       0o600,
     );
-    expect(
-      await findSessionByLocalKey(paths, "local-one", {
-        baseUrl: "https://sharednet.ai",
-        principalId: "p_demo",
-        agentId: "a_default",
-      }),
-    ).toMatchObject({ instance_id: "i_one" });
+    expect(await listSessions(paths)).toMatchObject([{ instance_id: "i_one", agent_id: "a_default" }]);
   });
 
   it("rejects credential symlinks and permissive credential files", async () => {
@@ -132,63 +125,4 @@ describe("secure local state", () => {
     expect((await stat(paths.installationFile)).mode & 0o777).toBe(0o600);
   });
 
-  it("scopes the same local runtime key by Principal and Agent", async () => {
-    const root = await fixtureRoot();
-    const paths = getStoragePaths({
-      HOME: root,
-      XDG_CONFIG_HOME: join(root, "config"),
-      XDG_STATE_HOME: join(root, "state"),
-    });
-    const common = {
-      schema_version: 1 as const,
-      base_url: "https://sharednet.ai",
-      local_instance_key: "same-runtime-anchor",
-      created_at: "2026-09-04T00:00:00.000Z",
-      lease_expires_at: "2099-09-04T00:01:30.000Z",
-      expires_at: "2099-09-05T00:00:00.000Z",
-    };
-    await writeSession(paths, {
-      ...common,
-      principal_id: "p_first",
-      agent_id: "a_default_first",
-      instance_id: "i_first",
-      instance_token: "sni_first",
-    });
-    await writeSession(paths, {
-      ...common,
-      principal_id: "p_second",
-      agent_id: "a_default_second",
-      instance_id: "i_second",
-      instance_token: "sni_second",
-    });
-    await writeSession(paths, {
-      ...common,
-      principal_id: "p_first",
-      agent_id: "a_reviewer",
-      instance_id: "i_reviewer",
-      instance_token: "sni_reviewer",
-    });
-
-    await expect(
-      findSessionByLocalKey(paths, "same-runtime-anchor", {
-        baseUrl: "https://sharednet.ai",
-        principalId: "p_first",
-        agentId: "a_default_first",
-      }),
-    ).resolves.toMatchObject({ instance_id: "i_first" });
-    await expect(
-      findSessionByLocalKey(paths, "same-runtime-anchor", {
-        baseUrl: "https://sharednet.ai",
-        principalId: "p_second",
-        agentId: "a_default_second",
-      }),
-    ).resolves.toMatchObject({ instance_id: "i_second" });
-    await expect(
-      findSessionByLocalKey(paths, "same-runtime-anchor", {
-        baseUrl: "https://sharednet.ai",
-        principalId: "p_first",
-        agentId: "a_reviewer",
-      }),
-    ).resolves.toMatchObject({ instance_id: "i_reviewer" });
-  });
 });

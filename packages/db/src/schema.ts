@@ -1,6 +1,5 @@
 import { sql } from "drizzle-orm";
 import {
-  boolean,
   check,
   foreignKey,
   index,
@@ -57,6 +56,16 @@ export const principals = sharednetSchema.table(
   ],
 );
 
+/**
+ * An Agent is a named tag over a Principal's Instances, nothing more. It holds
+ * no credential and never acts; it is the name that outlives the sessions it
+ * groups. An Instance points at at most one Agent, and that pointer is the
+ * single place the grouping lives — nothing else stores an agent id, so
+ * regrouping an Instance changes one column and every projection follows.
+ *
+ * There is no default Agent. An untagged Instance has a null pointer, which
+ * the Dashboard renders under a synthetic "default" header.
+ */
 export const agents = sharednetSchema.table(
   "agent",
   {
@@ -68,21 +77,13 @@ export const agents = sharednetSchema.table(
     handle: text("handle").notNull(),
     displayName: text("display_name"),
     description: text("description"),
-    isDefault: boolean("is_default").default(false).notNull(),
     createdAt: domainTimestamp("created_at").defaultNow().notNull(),
   },
   (table) => [
     unique("agent_principal_id_id_unique").on(table.principalId, table.id),
     unique("agent_principal_handle_unique").on(table.principalId, table.handle),
-    uniqueIndex("agent_one_default_per_principal")
-      .on(table.principalId)
-      .where(sql`${table.isDefault}`),
     check("agent_id_format", sql`${table.id} ~ ${AGENT_ID_RE}`),
     check("agent_handle_format", sql`${table.handle} ~ '^[a-z][a-z0-9-]{0,31}$'`),
-    check(
-      "agent_default_handle_consistent",
-      sql`(${table.isDefault} AND ${table.handle} = 'default') OR (NOT ${table.isDefault} AND ${table.handle} <> 'default')`,
-    ),
   ],
 );
 
@@ -91,9 +92,22 @@ export const instances = sharednetSchema.table(
   {
     id: text("id").$type<InstanceId>().primaryKey(),
     principalId: text("principal_id").$type<PrincipalId>().notNull(),
-    agentId: text("agent_id").$type<AgentId>().notNull(),
+    /** The tag this Instance is grouped under, or null for untagged. */
+    agentId: text("agent_id").$type<AgentId>(),
     issuedByKeyId: text("issued_by_key_id").$type<ApiKeyId>().notNull(),
     tokenDigest: text("token_digest").notNull(),
+    /**
+     * HMAC-SHA256(installation secret, runtime kind ‖ provider session anchor),
+     * computed by the CLI. It lets the server recognise a re-registration of the
+     * same runtime session and hand back the same Instance instead of minting a
+     * ghost — the invariant is one session, one live Instance. The raw session
+     * id never leaves the machine; the server learns only that two calls are
+     * the same session, not which session. It is a dedupe key, never authority:
+     * the API key has already established the Principal, and this only selects
+     * among that Principal's own Instances. Null when the caller cannot or does
+     * not identify its session, in which case every call is a fresh Instance.
+     */
+    localInstanceKey: text("local_instance_key"),
     runtimeKind: text("runtime_kind").$type<"codex" | "claude-code" | "custom">().notNull(),
     cliVersion: text("cli_version").notNull(),
     /**
@@ -114,19 +128,30 @@ export const instances = sharednetSchema.table(
     revokedAt: domainTimestamp("revoked_at"),
   },
   (table) => [
-    unique("instance_principal_agent_id_unique").on(
-      table.principalId,
-      table.agentId,
-      table.id,
-    ),
-    /** Referenced by room_member's Principal-scoped Instance foreign key. */
+    /** Referenced by every Principal-scoped foreign key onto an Instance. */
     unique("instance_principal_id_unique").on(table.principalId, table.id),
     unique("instance_token_digest_unique").on(table.tokenDigest),
+    /**
+     * One live Instance per runtime session. Ended and revoked rows keep their
+     * key as history, so a session that ends and starts again gets a fresh row
+     * rather than reviving a closed fact.
+     */
+    uniqueIndex("instance_principal_active_local_key_unique")
+      .on(table.principalId, table.localInstanceKey)
+      .where(sql`${table.state} = 'active' AND ${table.localInstanceKey} IS NOT NULL`),
+    foreignKey({
+      name: "instance_principal_fk",
+      columns: [table.principalId],
+      foreignColumns: [principals.id],
+    }).onDelete("cascade"),
+    // Composite so an Instance can only point at a tag of its own Principal.
+    // MATCH SIMPLE skips the check while agent_id is null. No cascade: deleting
+    // a tag must not delete sessions; the repository untags first.
     foreignKey({
       name: "instance_principal_agent_fk",
       columns: [table.principalId, table.agentId],
       foreignColumns: [agents.principalId, agents.id],
-    }).onDelete("cascade"),
+    }),
     index("instance_principal_idx").on(table.principalId),
     index("instance_agent_idx").on(table.agentId),
     index("instance_issued_by_key_idx").on(table.issuedByKeyId),
@@ -137,6 +162,10 @@ export const instances = sharednetSchema.table(
       sql`${table.issuedByKeyId} ~ '^key_[0-9A-Za-z]{10}$'`,
     ),
     check("instance_token_digest_format", sql`${table.tokenDigest} ~ ${SHA256_HEX_RE}`),
+    check(
+      "instance_local_instance_key_format",
+      sql`${table.localInstanceKey} IS NULL OR ${table.localInstanceKey} ~ ${SHA256_HEX_RE}`,
+    ),
     check(
       "instance_runtime_kind_valid",
       sql`${table.runtimeKind} IN ('codex', 'claude-code', 'custom')`,
@@ -166,7 +195,8 @@ export const rooms = sharednetSchema.table(
     name: text("name").notNull(),
     description: text("description"),
     state: text("state").$type<"open" | "closed">().default("open").notNull(),
-    creatorAgentId: text("creator_agent_id").$type<AgentId>().notNull(),
+    /** The Instance that created the Room — the immutable fact; its tag is derived. */
+    creatorInstanceId: text("creator_instance_id").$type<InstanceId>().notNull(),
     nextSequence: integer("next_sequence").default(1).notNull(),
     createdAt: domainTimestamp("created_at").defaultNow().notNull(),
     closedAt: domainTimestamp("closed_at"),
@@ -179,12 +209,13 @@ export const rooms = sharednetSchema.table(
       foreignColumns: [principals.id],
     }).onDelete("cascade"),
     foreignKey({
-      name: "room_creator_agent_fk",
-      columns: [table.principalId, table.creatorAgentId],
-      foreignColumns: [agents.principalId, agents.id],
+      name: "room_creator_instance_fk",
+      columns: [table.principalId, table.creatorInstanceId],
+      foreignColumns: [instances.principalId, instances.id],
     }),
     index("room_principal_created_at_idx").on(table.principalId, table.createdAt),
     check("room_id_format", sql`${table.id} ~ ${ROOM_ID_RE}`),
+    check("room_creator_instance_id_format", sql`${table.creatorInstanceId} ~ ${INSTANCE_ID_RE}`),
     check("room_name_length", sql`length(${table.name}) BETWEEN 1 AND 120`),
     check("room_description_length", sql`${table.description} IS NULL OR length(${table.description}) <= 2000`),
     check("room_next_sequence_positive", sql`${table.nextSequence} >= 1`),
@@ -199,9 +230,9 @@ export const rooms = sharednetSchema.table(
 export const roomMembers = sharednetSchema.table(
   "room_member",
   {
+    /** The member's own Principal, tied to the Instance below. */
     principalId: text("principal_id").$type<PrincipalId>().notNull(),
     roomId: text("room_id").$type<RoomId>().notNull(),
-    agentId: text("agent_id").$type<AgentId>().notNull(),
     /**
      * Membership is per Instance, not per Agent. Two Codex sessions of the same
      * Agent are two participants: they hold separate credentials, join and
@@ -222,19 +253,13 @@ export const roomMembers = sharednetSchema.table(
       foreignColumns: [rooms.principalId, rooms.id],
     }).onDelete("cascade"),
     foreignKey({
-      name: "room_member_agent_fk",
-      columns: [table.principalId, table.agentId],
-      foreignColumns: [agents.principalId, agents.id],
-    }).onDelete("cascade"),
-    foreignKey({
       name: "room_member_instance_fk",
       columns: [table.principalId, table.instanceId],
       foreignColumns: [instances.principalId, instances.id],
     }).onDelete("cascade"),
-    index("room_member_principal_agent_idx").on(table.principalId, table.agentId),
+    index("room_member_principal_idx").on(table.principalId),
     index("room_member_instance_idx").on(table.instanceId),
     check("room_member_room_id_format", sql`${table.roomId} ~ ${ROOM_ID_RE}`),
-    check("room_member_agent_id_format", sql`${table.agentId} ~ ${AGENT_ID_RE}`),
     check("room_member_instance_id_format", sql`${table.instanceId} ~ ${INSTANCE_ID_RE}`),
     check(
       "room_member_state_consistent",
@@ -251,7 +276,7 @@ export const messages = sharednetSchema.table(
     roomId: text("room_id").$type<RoomId>().notNull(),
     sequence: integer("sequence").notNull(),
     senderPrincipalId: text("sender_principal_id").$type<PrincipalId>().notNull(),
-    senderAgentId: text("sender_agent_id").$type<AgentId>().notNull(),
+    /** Who acted. The sender's tag is derived from this at read time. */
     senderInstanceId: text("sender_instance_id").$type<InstanceId>().notNull(),
     content: text("content").notNull(),
     replyToMessageId: text("reply_to_message_id").$type<MessageId>(),
@@ -266,14 +291,9 @@ export const messages = sharednetSchema.table(
       foreignColumns: [rooms.principalId, rooms.id],
     }).onDelete("cascade"),
     foreignKey({
-      name: "message_sender_agent_fk",
-      columns: [table.senderPrincipalId, table.senderAgentId],
-      foreignColumns: [agents.principalId, agents.id],
-    }),
-    foreignKey({
       name: "message_sender_instance_fk",
-      columns: [table.senderPrincipalId, table.senderAgentId, table.senderInstanceId],
-      foreignColumns: [instances.principalId, instances.agentId, instances.id],
+      columns: [table.senderPrincipalId, table.senderInstanceId],
+      foreignColumns: [instances.principalId, instances.id],
     }),
     foreignKey({
       name: "message_sender_membership_fk",
@@ -310,7 +330,6 @@ export const decisions = sharednetSchema.table(
       .$type<"pending" | "approved" | "denied" | "answered">()
       .default("pending")
       .notNull(),
-    requestedByAgentId: text("requested_by_agent_id").$type<AgentId>().notNull(),
     requestedByInstanceId: text("requested_by_instance_id").$type<InstanceId>().notNull(),
     roomId: text("room_id").$type<RoomId>(),
     answer: text("answer"),
@@ -324,18 +343,9 @@ export const decisions = sharednetSchema.table(
       foreignColumns: [principals.id],
     }).onDelete("cascade"),
     foreignKey({
-      name: "decision_requester_agent_fk",
-      columns: [table.principalId, table.requestedByAgentId],
-      foreignColumns: [agents.principalId, agents.id],
-    }),
-    foreignKey({
       name: "decision_requester_instance_fk",
-      columns: [
-        table.principalId,
-        table.requestedByAgentId,
-        table.requestedByInstanceId,
-      ],
-      foreignColumns: [instances.principalId, instances.agentId, instances.id],
+      columns: [table.principalId, table.requestedByInstanceId],
+      foreignColumns: [instances.principalId, instances.id],
     }),
     foreignKey({
       name: "decision_room_fk",

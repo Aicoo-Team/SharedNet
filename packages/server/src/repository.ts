@@ -2,6 +2,7 @@ import type {
   Agent,
   AgentId,
   ApiKeyId,
+  CreateAgentRequest,
   Instance,
   InstanceId,
   Message,
@@ -11,9 +12,11 @@ import type {
   Room,
   RoomId,
   RoomMember,
+  StartInstanceRequest,
 } from "../../protocol/src/index.ts";
 
 export const PRESENCE_LEASE_MS = 90_000;
+export const MAX_AGENTS_PER_PRINCIPAL = 100;
 export const INSTANCE_TOKEN_TTL_MS = 86_400_000;
 export const IDEMPOTENCY_RETENTION_MS = 86_400_000;
 
@@ -23,10 +26,14 @@ export type PrincipalAuth = {
   actorId: ApiKeyId;
 };
 
+/**
+ * An Instance token identifies an Instance and, through it, a Principal. It
+ * deliberately does not carry the Instance's tag: the tag is a mutable pointer
+ * that may change between requests, so anything that needs it reads the row.
+ */
 export type InstanceAuth = {
   kind: "instance";
   principalId: PrincipalId;
-  agentId: AgentId;
   instanceId: InstanceId;
   actorId: InstanceId;
 };
@@ -63,15 +70,31 @@ export class RepositoryError extends Error {
 export interface SharedNetRepository {
   authenticateApiKey(token: string): Promise<PrincipalAuth | null>;
   authenticateInstance(token: string): Promise<InstanceAuth | null>;
-  ensureDefaultAgent(auth: PrincipalAuth): Promise<Agent>;
+  /** Idempotent by canonical handle: `created` is false when the tag existed. */
+  createAgent(
+    auth: PrincipalAuth,
+    input: CreateAgentRequest,
+  ): Promise<{ agent: Agent; created: boolean }>;
+  listAgents(auth: PrincipalAuth): Promise<{ items: Agent[] }>;
+  getAgent(auth: PrincipalAuth, agentId: AgentId): Promise<{ agent: Agent }>;
+  /**
+   * Registers the caller's session. When `local_instance_key` matches a live
+   * Instance of this Principal the existing Instance is returned with a fresh
+   * token and `created` is false; its tag and metadata are updated from the
+   * request. Otherwise a new Instance is created.
+   */
   startInstance(
     auth: PrincipalAuth,
-    agentId: AgentId,
-    input: { runtime_kind: Instance["runtime_kind"]; cli_version: string },
-  ): Promise<{ instance: Instance; token: string; heartbeat_after_seconds: 30 }>;
+    input: StartInstanceRequest,
+  ): Promise<{
+    instance: Instance;
+    token: string;
+    heartbeat_after_seconds: 30;
+    created: boolean;
+  }>;
   getCurrentInstance(auth: InstanceAuth): Promise<{
     principal: Principal;
-    agent: Agent;
+    agent: Agent | null;
     instance: Instance;
   }>;
   heartbeat(

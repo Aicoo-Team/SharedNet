@@ -332,7 +332,7 @@ export function ChatView() {
                           <div>
                             <dt>Agent</dt>
                             <dd className="room-canonical-id">
-                              {member.membership.agent_id}
+                              {member.membership.agent_id ?? "default"}
                             </dd>
                           </div>
                           <div>
@@ -406,7 +406,7 @@ export function ChatView() {
                         <div>
                           <dt>Agent</dt>
                           <dd className="room-canonical-id">
-                            {message.sender.agent_id}
+                            {message.sender.agent_id ?? "default"}
                           </dd>
                         </div>
                         <div>

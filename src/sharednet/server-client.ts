@@ -121,13 +121,13 @@ function principalProjection(row: {
   };
 }
 
+/** An Agent is a named tag over Instances; the projection is its name and id. */
 function agentProjection(row: {
   id: string;
   principalId: string;
   handle: string;
   displayName: string | null;
   description: string | null;
-  isDefault: boolean;
   createdAt: Date | string;
 }): AgentProjection {
   return {
@@ -135,26 +135,45 @@ function agentProjection(row: {
     created_at: requiredIso(row.createdAt),
     diagnostic_label: row.displayName ?? `@${row.handle}`,
     discoverability: false,
-    official: row.isDefault,
+    handle: row.handle,
     principal_id: row.principalId as PrincipalId,
-    role: row.isDefault ? "default" : "agent",
-    summary: row.description ?? `Agent @${row.handle}`,
+    summary: row.description ?? `Tag @${row.handle}`,
   };
 }
 
+/**
+ * The tag an Instance is currently under. Nothing stores a copy of it beside
+ * a message or membership, so every projection resolves it through the
+ * Instance at read time and regrouping shows up everywhere at once.
+ */
+type TagLookup = (instanceId: string) => AgentId | null;
+
+function tagLookup(rows: Array<{ id: string; agentId: string | null }>): TagLookup {
+  const byInstance = new Map(rows.map((row) => [row.id, row.agentId]));
+  return (instanceId) => (byInstance.get(instanceId) ?? null) as AgentId | null;
+}
+
 function actor(
-  agentId: string,
+  agentId: AgentId | null,
   principalId: string,
   instanceId?: string,
 ): ActorProjection {
   const projection: ActorProjection = {
-    agent_id: agentId as AgentId,
+    agent_id: agentId,
     principal_id: principalId as PrincipalId,
   };
   if (instanceId !== undefined) {
     projection.instance_id = instanceId as InstanceId;
   }
   return projection;
+}
+
+/** A human tells untagged sessions apart by where they run. */
+function workspaceLabel(metadata: Record<string, string> | null | undefined): string | null {
+  const workspace = metadata?.workspace?.trim();
+  if (!workspace) return null;
+  const segments = workspace.split(/[\\/]+/).filter(Boolean);
+  return segments[segments.length - 1] ?? workspace;
 }
 
 export class SharedNetServerClient {
@@ -206,21 +225,25 @@ export class SharedNetServerClient {
     if (roomRows.length === 0) return { rooms: [] };
 
     const roomIds = roomRows.map((row) => row.id);
-    const memberRows = await database
-      .select()
-      .from(roomMembers)
-      .where(inArray(roomMembers.roomId, roomIds));
+    const [memberRows, tagOf] = await Promise.all([
+      database
+        .select()
+        .from(roomMembers)
+        .where(inArray(roomMembers.roomId, roomIds)),
+      this.tagsFor(principal.id),
+    ]);
 
     const summaries: RoomSummary[] = roomRows.map((room) => {
       const members = memberRows.filter((member) => member.roomId === room.id);
       const latestSequence = room.nextSequence - 1;
+      const creatorTag = tagOf(room.creatorInstanceId);
       return {
         description: room.description,
         latest_cursor: cursor(latestSequence),
         latest_sequence: latestSequence,
         member_count: members.filter((member) => member.state === "active").length,
         name: room.name,
-        owner_agent_ids: [room.creatorAgentId as AgentId],
+        owner_agent_ids: creatorTag ? [creatorTag] : [],
         room_id: room.id as RoomId,
         status: room.state,
         updated_at: requiredIso(room.createdAt),
@@ -244,18 +267,19 @@ export class SharedNetServerClient {
       throw new SharedNetApiError("room_not_found", 404, "Room not found");
     }
 
-    const [memberRows, messageRows] = await Promise.all([
+    const [memberRows, messageRows, tagOf] = await Promise.all([
       database.select().from(roomMembers).where(eq(roomMembers.roomId, room.id)),
       database
         .select()
         .from(messages)
         .where(eq(messages.roomId, room.id))
         .orderBy(asc(messages.sequence)),
+      this.tagsFor(principal.id),
     ]);
 
 
     const memberships: RoomMembership[] = memberRows.map((member) => ({
-      agent_id: member.agentId as AgentId,
+      agent_id: tagOf(member.instanceId),
       instance_id: member.instanceId as InstanceId,
       joined_at: requiredIso(member.joinedAt),
       last_read_sequence: 0,
@@ -274,7 +298,7 @@ export class SharedNetServerClient {
       resolution_state: "not_required",
       room_id: message.roomId as RoomId,
       sender: actor(
-        message.senderAgentId,
+        tagOf(message.senderInstanceId),
         message.senderPrincipalId,
         message.senderInstanceId,
       ),
@@ -289,7 +313,7 @@ export class SharedNetServerClient {
       room: {
         access_policy: "principal_only",
         created_at: requiredIso(room.createdAt),
-        creator: actor(room.creatorAgentId, room.principalId),
+        creator: actor(tagOf(room.creatorInstanceId), room.principalId, room.creatorInstanceId),
         description: room.description,
         name: room.name,
         room_id: room.id as RoomId,
@@ -318,7 +342,7 @@ export class SharedNetServerClient {
     ]);
 
     const projectedInstances: InstanceProjection[] = instanceRows.map((instance) => ({
-      agent_id: instance.agentId as AgentId,
+      agent_id: (instance.agentId ?? null) as AgentId | null,
       ended_at: iso(instance.endedAt),
       expires_at: requiredIso(instance.tokenExpiresAt),
       instance_id: instance.id as InstanceId,
@@ -332,7 +356,7 @@ export class SharedNetServerClient {
       },
       started_at: requiredIso(instance.startedAt),
       status: instance.state === "active" ? "online" : "ended",
-      workspace_label: instance.cliVersion || null,
+      workspace_label: workspaceLabel(instance.runtimeMetadata),
     }));
 
     /**
@@ -402,8 +426,9 @@ export class SharedNetServerClient {
       .where(eq(decisions.principalId, principal.id))
       .orderBy(desc(decisions.createdAt));
 
+    const tagOf = await this.tagsFor(principal.id);
     return {
-      decisions: rows.map((row) => this.decisionProjection(row)),
+      decisions: rows.map((row) => this.decisionProjection(row, tagOf)),
     };
   }
 
@@ -457,11 +482,21 @@ export class SharedNetServerClient {
       .where(eq(decisions.id, decisionId as never))
       .returning();
 
-    return this.decisionProjection(updated);
+    return this.decisionProjection(updated, await this.tagsFor(principal.id));
+  }
+
+  /** Current tag per Instance of one Principal, resolved once per request. */
+  private async tagsFor(principalId: string): Promise<TagLookup> {
+    const rows = await this.database()
+      .select({ id: instances.id, agentId: instances.agentId })
+      .from(instances)
+      .where(eq(instances.principalId, principalId as never));
+    return tagLookup(rows);
   }
 
   private decisionProjection(
     row: typeof decisions.$inferSelect,
+    tagOf: TagLookup,
   ): DecisionProjection {
     return {
       consequence: null,
@@ -469,7 +504,7 @@ export class SharedNetServerClient {
       decision_id: row.id as DecisionId,
       description: row.description,
       requester: {
-        agent_id: row.requestedByAgentId as AgentId,
+        agent_id: tagOf(row.requestedByInstanceId),
         instance_id: row.requestedByInstanceId as InstanceId,
         principal_id: row.principalId as PrincipalId,
       },

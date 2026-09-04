@@ -16,7 +16,8 @@ export type OpaqueId = BrandedId<"OpaqueId">;
 export type RoomCursor = BrandedId<"RoomCursor">;
 
 export type ActorProjection = {
-  agent_id: AgentId;
+  /** The actor's current tag, derived from its Instance; null when untagged. */
+  agent_id: AgentId | null;
   instance_id?: InstanceId;
   principal_id: PrincipalId;
 };
@@ -29,19 +30,20 @@ export type PrincipalProjection = {
   summary: string;
 };
 
+/** A named tag over a Principal's Instances. It holds nothing and never acts. */
 export type AgentProjection = {
   agent_id: AgentId;
   created_at: string;
   diagnostic_label: string;
   discoverability: boolean;
-  official: boolean;
+  handle: string;
   principal_id: PrincipalId;
-  role: string;
   summary: string;
 };
 
 export type InstanceProjection = {
-  agent_id: AgentId;
+  /** Tag pointer; null renders under the synthetic "default" header. */
+  agent_id: AgentId | null;
   ended_at: string | null;
   expires_at: string;
   instance_id: InstanceId;
@@ -86,7 +88,7 @@ export type RoomProjection = {
 };
 
 export type RoomMembership = {
-  agent_id: AgentId;
+  agent_id: AgentId | null;
   instance_id: InstanceId;
   joined_at: string;
   last_read_sequence: number;
@@ -284,7 +286,7 @@ function isActorProjection(value: unknown): value is ActorProjection {
   if (!withInstance && !withoutInstance) return false;
   return (
     isPrincipalId(value.principal_id) &&
-    isAgentId(value.agent_id) &&
+    isNullable(value.agent_id, isAgentId) &&
     (!withInstance || isInstanceId(value.instance_id))
   );
 }
@@ -295,7 +297,7 @@ function isInstanceActorProjection(
   return (
     hasExactKeys(value, ["principal_id", "agent_id", "instance_id"]) &&
     isPrincipalId(value.principal_id) &&
-    isAgentId(value.agent_id) &&
+    isNullable(value.agent_id, isAgentId) &&
     isInstanceId(value.instance_id)
   );
 }
@@ -325,19 +327,17 @@ export function isAgentProjection(value: unknown): value is AgentProjection {
       "agent_id",
       "principal_id",
       "diagnostic_label",
-      "role",
+      "handle",
       "summary",
       "discoverability",
-      "official",
       "created_at",
     ]) &&
     isAgentId(value.agent_id) &&
     isPrincipalId(value.principal_id) &&
     isNonEmptyString(value.diagnostic_label) &&
-    isNonEmptyString(value.role) &&
+    isNonEmptyString(value.handle) &&
     isString(value.summary) &&
     typeof value.discoverability === "boolean" &&
-    typeof value.official === "boolean" &&
     isTimestamp(value.created_at)
   );
 }
@@ -363,7 +363,7 @@ export function isInstanceProjection(
     ]) &&
     isInstanceId(value.instance_id) &&
     isPrincipalId(value.principal_id) &&
-    isAgentId(value.agent_id) &&
+    isNullable(value.agent_id, isAgentId) &&
     isNonEmptyString(value.runtime_type) &&
     isStringRecord(value.runtime_metadata) &&
     isNullable(value.workspace_label, isNonEmptyString) &&
@@ -442,7 +442,7 @@ function isRoomMembership(value: unknown): value is RoomMembership {
     ]) &&
     isIdentifier(value.room_id) &&
     isPrincipalId(value.principal_id) &&
-    isAgentId(value.agent_id) &&
+    isNullable(value.agent_id, isAgentId) &&
     isInstanceId(value.instance_id) &&
     (value.status === "active" || value.status === "left") &&
     isTimestamp(value.joined_at) &&

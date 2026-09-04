@@ -6,6 +6,7 @@ import {
   createErrorEnvelope,
   digestSecret,
   generateRequestId,
+  parseCreateAgentRequest,
   parseCreateRoomRequest,
   parseEmptyRequest,
   parseJsonBody,
@@ -214,28 +215,44 @@ export async function handleRequest(
 
     const getRepository = () => store ?? sharedNetStore();
 
-    if (path === "/api/v1/agents/default") {
-      if (request.method !== "PUT") return routeMethodNotAllowed("PUT");
+    if (path === "/api/v1/agents") {
       const repository = getRepository();
       const auth = await authenticateApiKey(request, repository);
       if (isResponse(auth)) return auth;
-      return jsonResponse(
-        { agent: await repository.ensureDefaultAgent(auth) },
-        { status: 200 },
-      );
+      if (request.method === "POST") {
+        requireNoIdempotency(request);
+        const input = await requiredJson(request, parseCreateAgentRequest);
+        const { agent, created } = await repository.createAgent(auth, input);
+        return jsonResponse({ agent }, { status: created ? 201 : 200 });
+      }
+      if (request.method === "GET") {
+        return jsonResponse(await repository.listAgents(auth), { status: 200 });
+      }
+      return routeMethodNotAllowed("GET, POST");
     }
 
-    const startInstanceMatch = /^\/api\/v1\/agents\/([^/]+)\/instances$/.exec(path);
-    if (startInstanceMatch) {
+    const agentMatch = /^\/api\/v1\/agents\/([^/]+)$/.exec(path);
+    if (agentMatch) {
+      if (request.method !== "GET") return routeMethodNotAllowed("GET");
+      const repository = getRepository();
+      const auth = await authenticateApiKey(request, repository);
+      if (isResponse(auth)) return auth;
+      const agentId = parsePublicId(agentMatch[1], "a");
+      return jsonResponse(await repository.getAgent(auth, agentId), { status: 200 });
+    }
+
+    if (path === "/api/v1/instances") {
       if (request.method !== "POST") return routeMethodNotAllowed("POST");
       const repository = getRepository();
       const auth = await authenticateApiKey(request, repository);
       if (isResponse(auth)) return auth;
+      // local_instance_key is this route's idempotency; a key header would
+      // only create a second, weaker notion of "the same request".
       requireNoIdempotency(request);
-      const agentId = parsePublicId(startInstanceMatch[1], "a");
       const input = await requiredJson(request, parseStartInstanceRequest);
-      return jsonResponse(await repository.startInstance(auth, agentId, input), {
-        status: 201,
+      const { created, ...result } = await repository.startInstance(auth, input);
+      return jsonResponse(result, {
+        status: created ? 201 : 200,
         headers: NO_STORE_HEADERS,
       });
     }

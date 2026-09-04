@@ -24,32 +24,32 @@ const NOW = new Date("2026-09-04T07:00:00.000Z");
 
 const principalRow = { id: PRINCIPAL, authUserId: "auth-user-1", displayName: "Xisen", createdAt: NOW };
 const agentRow = {
-  id: AGENT, principalId: PRINCIPAL, handle: "default", displayName: null,
-  description: null, isDefault: true, createdAt: NOW,
+  id: AGENT, principalId: PRINCIPAL, handle: "reviewer", displayName: null,
+  description: null, createdAt: NOW,
 };
 const instanceRow = {
   id: INSTANCE, principalId: PRINCIPAL, agentId: AGENT, issuedByKeyId: "key_x",
   tokenDigest: "d", runtimeKind: "codex", cliVersion: "0.1.0", state: "active",
-  runtimeMetadata: { device_id: "dev-1" },
+  runtimeMetadata: { device_id: "dev-1", workspace: "/Users/x/proj/sharednet" }, localInstanceKey: null,
   startedAt: NOW, lastSeenAt: new Date(NOW.getTime() + 1_000), leaseExpiresAt: new Date(Date.now() + 60_000),
   tokenExpiresAt: new Date(Date.now() + 86_400_000), endedAt: null, revokedAt: null,
 };
 const roomRow = {
   id: ROOM, principalId: PRINCIPAL, name: "Hosted V1 migration", description: "seeded",
-  state: "open", creatorAgentId: AGENT, nextSequence: 3, createdAt: NOW,
+  state: "open", creatorInstanceId: INSTANCE, nextSequence: 3, createdAt: NOW,
 };
 const memberRow = {
-  principalId: PRINCIPAL, roomId: ROOM, agentId: AGENT, instanceId: INSTANCE,
+  principalId: PRINCIPAL, roomId: ROOM, instanceId: INSTANCE,
   state: "active", joinedAt: NOW, leftAt: null,
 };
 const messageRow = {
   id: MESSAGE, roomId: ROOM, sequence: 1, senderPrincipalId: PRINCIPAL,
-  senderAgentId: AGENT, senderInstanceId: INSTANCE, content: "first message",
+  senderInstanceId: INSTANCE, content: "first message",
   replyToMessageId: null, createdAt: NOW,
 };
 const decisionRow = {
   id: DECISION, principalId: PRINCIPAL, mode: "approval", title: "Deploy?",
-  description: "Ship the migration", status: "pending", requestedByAgentId: AGENT,
+  description: "Ship the migration", status: "pending",
   requestedByInstanceId: INSTANCE, roomId: ROOM, answer: null,
   createdAt: NOW, resolvedAt: null,
 };

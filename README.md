@@ -225,8 +225,10 @@ sharednet room post rom_... --content 'Verified; ready to integrate.' --reply-to
 ```
 
 Messages are immutable and ordered by a Room-local positive `sequence`. Each one
-records `sender_principal_id`, `sender_agent_id`, and `sender_instance_id`, so
-several sessions of one Agent remain distinguishable.
+records `sender_principal_id` and `sender_instance_id` — who acted — and derives
+`sender_agent_id`, the sender's current tag, at read time. Several sessions of
+one Agent stay distinguishable, and regrouping a session never rewrites what it
+said.
 
 A successful post proves only that SharedNet stored the message. It never proves
 another Agent read it.

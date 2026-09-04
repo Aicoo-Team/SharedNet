@@ -47,8 +47,10 @@ sharednet room post rom_... --content 'Verified; ready to integrate.' --reply-to
 ```
 
 Messages are immutable and ordered by the Room-local positive `sequence`. Every
-Message records `sender_principal_id`, `sender_agent_id`, and
-`sender_instance_id`, so multiple sessions of the same Agent remain distinguishable.
+Message records `sender_principal_id` and `sender_instance_id` (who acted) and
+reports `sender_agent_id` derived from the sender's current tag, so multiple
+sessions of the same Agent remain distinguishable and regrouping never rewrites
+history.
 
 ## Errors
 

@@ -40,19 +40,14 @@ export interface StoredSession {
   schema_version: 1;
   base_url: string;
   principal_id: string;
-  agent_id: string;
+  /** The tag this Instance was under when the session file was written; null when untagged. */
+  agent_id: string | null;
   instance_id: string;
   local_instance_key: string | null;
   instance_token: string;
   created_at: string;
   lease_expires_at: string;
   expires_at: string;
-}
-
-export interface LocalSessionScope {
-  baseUrl: string;
-  principalId: string;
-  agentId: string;
 }
 
 interface StoredInstallation {
@@ -255,7 +250,7 @@ function parseSession(raw: string): StoredSession {
     schema_version: 1,
     base_url: requireString(value.base_url, "A session file"),
     principal_id: requireString(value.principal_id, "A session file"),
-    agent_id: requireString(value.agent_id, "A session file"),
+    agent_id: value.agent_id === null ? null : requireString(value.agent_id, "A session file"),
     instance_id: requireString(value.instance_id, "A session file"),
     local_instance_key:
       value.local_instance_key === null
@@ -336,26 +331,6 @@ export async function listSessions(paths: StoragePaths): Promise<StoredSession[]
     if (raw !== null) sessions.push(parseSession(raw));
   }
   return sessions;
-}
-
-export async function findSessionByLocalKey(
-  paths: StoragePaths,
-  localInstanceKey: string,
-  scope: LocalSessionScope,
-): Promise<StoredSession | null> {
-  const sessions = await listSessions(paths);
-  const matches = sessions.filter(
-    (session) =>
-      session.local_instance_key === localInstanceKey &&
-      session.base_url === scope.baseUrl &&
-      session.principal_id === scope.principalId &&
-      session.agent_id === scope.agentId &&
-      Date.parse(session.expires_at) > Date.now(),
-  );
-  if (matches.length > 1) {
-    throw localError("invalid_local_state", "Duplicate local Instance state was found.");
-  }
-  return matches[0] ?? null;
 }
 
 export async function readSessionById(

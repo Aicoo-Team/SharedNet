@@ -54,17 +54,24 @@ async function harness(
   return { exitCode, stdout, stderr, requests };
 }
 
-const defaultAgent = {
-  id: "a_default",
-  principal_id: "p_demo",
-  handle: "default",
-};
+const HEX_64 = /^[0-9a-f]{64}$/;
+
+function registered(id: string, extra: Record<string, unknown> = {}) {
+  return {
+    status: 201,
+    body: { instance: { ...instance(id), ...extra }, token: `sni_${id}`, heartbeat_after_seconds: 30 },
+  };
+}
+
+function sentBody(request: { init: RequestInit }): Record<string, any> {
+  return JSON.parse(String(request.init.body));
+}
 
 function instance(id: string) {
   return {
     id,
     principal_id: "p_demo",
-    agent_id: "a_default",
+    agent_id: null,
     runtime_kind: "codex",
     cli_version: "0.1.0",
     status: "online",
@@ -81,7 +88,6 @@ describe("sharednet CLI vertical slice", () => {
     const result = await harness(
       ["session", "start", "--json"],
       [
-        { body: { agent: defaultAgent } },
         {
           status: 201,
           body: {
@@ -100,14 +106,22 @@ describe("sharednet CLI vertical slice", () => {
       heartbeat_after_seconds: 30,
     });
     expect(result.stderr).toEqual([]);
+    // Nothing is provisioned first: one call registers the session.
     expect(result.requests.map((request) => request.url)).toEqual([
-      "http://127.0.0.1:3001/api/v1/agents/default",
-      "http://127.0.0.1:3001/api/v1/agents/a_default/instances",
+      "http://127.0.0.1:3001/api/v1/instances",
     ]);
-    const registration = JSON.stringify(result.requests[1]?.init.body);
+    const registration = JSON.stringify(result.requests[0]?.init.body);
     expect(registration).not.toContain("provider-session-must-remain-local");
     expect(registration).not.toContain("lineage-only");
     expect(registration).not.toContain("snk_never-send-in-json");
+    const body = sentBody(result.requests[0]!);
+    // The session is identified to the server only by its HMAC, never its id.
+    expect(body.local_instance_key).toMatch(HEX_64);
+    expect(body).not.toHaveProperty("agent_id");
+    expect(body.runtime_metadata).toMatchObject({ os: process.platform });
+    // Only the last path segment is sent; the directory hierarchy stays local.
+    expect(body.runtime_metadata.workspace).not.toContain("/");
+    expect(registration).not.toContain(process.cwd());
   });
 
   it("reuses the same computed session and registers four distinct Codex sessions", async () => {
@@ -117,17 +131,7 @@ describe("sharednet CLI vertical slice", () => {
     for (const [index, anchor] of ["one", "two", "three", "four"].entries()) {
       const run = await harness(
         ["session", "start", "--json"],
-        [
-          { body: { agent: defaultAgent } },
-          {
-            status: 201,
-            body: {
-              instance: instance(`i_${index + 1}`),
-              token: `sni_${index + 1}`,
-              heartbeat_after_seconds: 30,
-            },
-          },
-        ],
+        [registered(`i_${index + 1}`)],
         { ...sharedEnv, CODEX_SESSION_ID: anchor },
       );
       sessions.push(JSON.parse(run.stdout[0]!).session_id);
@@ -137,20 +141,7 @@ describe("sharednet CLI vertical slice", () => {
   });
 
   it("supports global --session before or after room commands and forwards API payloads", async () => {
-    const start = await harness(
-      ["session", "start", "--json"],
-      [
-        { body: { agent: defaultAgent } },
-        {
-          status: 201,
-          body: {
-            instance: instance("i_chat"),
-            token: "sni_room-token",
-            heartbeat_after_seconds: 30,
-          },
-        },
-      ],
-    );
+    const start = await harness(["session", "start", "--json"], [registered("i_chat")]);
     expect(start.exitCode).toBe(0);
 
     // A single harness cannot share a generated temp state, so exercise command parsing
@@ -209,7 +200,7 @@ describe("sharednet CLI vertical slice", () => {
     expect(domain.exitCode).toBe(4);
   });
 
-  it("does not resume a computed Instance after the API key changes Principal", async () => {
+  it("sends the same session key under two API keys and lets the server scope it by Principal", async () => {
     const sharedRoot = await mkdtemp(join(tmpdir(), "sharednet-cli-principal-scope-"));
     cleanup.push(sharedRoot);
     const sharedStorage = {
@@ -217,113 +208,73 @@ describe("sharednet CLI vertical slice", () => {
       XDG_STATE_HOME: join(sharedRoot, "state"),
       CODEX_SESSION_ID: "same-codex-session",
     };
-    const firstAgent = { ...defaultAgent, id: "a_first", principal_id: "p_first" };
-    const secondAgent = { ...defaultAgent, id: "a_second", principal_id: "p_second" };
 
     const first = await harness(
       ["session", "start", "--json"],
-      [
-        { body: { agent: firstAgent } },
-        {
-          status: 201,
-          body: {
-            instance: {
-              ...instance("i_first"),
-              principal_id: "p_first",
-              agent_id: "a_first",
-            },
-            token: "sni_first",
-            heartbeat_after_seconds: 30,
-          },
-        },
-      ],
+      [registered("i_first", { principal_id: "p_first" })],
       { ...sharedStorage, SHAREDNET_API_KEY: "snk_first" },
     );
-    expect(first.exitCode).toBe(0);
-
     const second = await harness(
       ["session", "start", "--json"],
-      [
-        { body: { agent: secondAgent } },
-        {
-          status: 201,
-          body: {
-            instance: {
-              ...instance("i_second"),
-              principal_id: "p_second",
-              agent_id: "a_second",
-            },
-            token: "sni_second",
-            heartbeat_after_seconds: 30,
-          },
-        },
-      ],
+      [registered("i_second", { principal_id: "p_second" })],
       { ...sharedStorage, SHAREDNET_API_KEY: "snk_second" },
     );
 
+    expect(first.exitCode).toBe(0);
     expect(second.exitCode).toBe(0);
     expect(JSON.parse(second.stdout.join(""))).toMatchObject({ session_id: "i_second" });
-    expect(second.requests.map((request) => request.url)).toEqual([
-      "http://127.0.0.1:3001/api/v1/agents/default",
-      "http://127.0.0.1:3001/api/v1/agents/a_second/instances",
-    ]);
+    // Same installation, same runtime session: the same key goes up both
+    // times. Deduplication is per Principal, and that is the server's job.
+    expect(sentBody(second.requests[0]!).local_instance_key).toBe(
+      sentBody(first.requests[0]!).local_instance_key,
+    );
   });
 
-  it("does not resume the same computed runtime under a different explicit Agent", async () => {
-    const sharedRoot = await mkdtemp(join(tmpdir(), "sharednet-cli-agent-scope-"));
-    cleanup.push(sharedRoot);
-    const sharedStorage = {
-      XDG_CONFIG_HOME: join(sharedRoot, "config"),
-      XDG_STATE_HOME: join(sharedRoot, "state"),
-      CODEX_SESSION_ID: "same-codex-session",
-      SHAREDNET_API_KEY: "snk_one-principal",
-    };
-    const first = await harness(
-      ["session", "start", "--json"],
+  it("tags a session on request, creating the tag on first use", async () => {
+    const byHandle = await harness(
+      ["session", "start", "--agent", "Reviewer", "--json"],
       [
-        { body: { agent: defaultAgent } },
-        {
-          status: 201,
-          body: {
-            instance: instance("i_default"),
-            token: "sni_default",
-            heartbeat_after_seconds: 30,
-          },
-        },
+        { status: 201, body: { agent: { id: "a_reviewer", handle: "reviewer" } } },
+        registered("i_reviewer", { agent_id: "a_reviewer" }),
       ],
-      sharedStorage,
     );
-    expect(first.exitCode).toBe(0);
+    expect(byHandle.exitCode).toBe(0);
+    expect(byHandle.requests.map((request) => request.url)).toEqual([
+      "http://127.0.0.1:3001/api/v1/agents",
+      "http://127.0.0.1:3001/api/v1/instances",
+    ]);
+    expect(sentBody(byHandle.requests[0]!)).toEqual({ handle: "reviewer" });
+    expect(sentBody(byHandle.requests[1]!).agent_id).toBe("a_reviewer");
+    expect(JSON.parse(byHandle.stdout.join(""))).toMatchObject({ session_id: "i_reviewer" });
 
-    const reviewerAgent = {
-      ...defaultAgent,
-      id: "a_reviewer",
-      handle: "reviewer",
-      is_default: false,
-    };
-    const switched = await harness(
+    const byId = await harness(
       ["session", "start", "--agent", "a_reviewer", "--json"],
       [
-        { body: { agent: reviewerAgent } },
-        {
-          status: 201,
-          body: {
-            instance: { ...instance("i_reviewer"), agent_id: "a_reviewer" },
-            token: "sni_reviewer",
-            heartbeat_after_seconds: 30,
-          },
-        },
+        { body: { agent: { id: "a_reviewer", handle: "reviewer" } } },
+        { status: 200, body: registered("i_reviewer", { agent_id: "a_reviewer" }).body },
       ],
-      sharedStorage,
     );
-
-    expect(switched.exitCode).toBe(0);
-    expect(JSON.parse(switched.stdout.join(""))).toMatchObject({
-      session_id: "i_reviewer",
-    });
-    expect(switched.requests.map((request) => request.url)).toEqual([
+    expect(byId.exitCode).toBe(0);
+    expect(byId.requests.map((request) => request.url)).toEqual([
       "http://127.0.0.1:3001/api/v1/agents/a_reviewer",
-      "http://127.0.0.1:3001/api/v1/agents/a_reviewer/instances",
+      "http://127.0.0.1:3001/api/v1/instances",
     ]);
+
+    // "default" names the absence of a tag: no tag call, and agent_id is sent
+    // as null so a session that was tagged earlier is moved back out of it.
+    const untagged = await harness(
+      ["session", "start", "--agent", "default", "--json"],
+      [registered("i_plain")],
+    );
+    expect(untagged.exitCode).toBe(0);
+    expect(untagged.requests.map((request) => request.url)).toEqual([
+      "http://127.0.0.1:3001/api/v1/instances",
+    ]);
+    expect(sentBody(untagged.requests[0]!).agent_id).toBeNull();
+
+    const malformed = await harness(["session", "start", "--agent", "Not a handle!", "--json"]);
+    expect(malformed.exitCode).toBe(2);
+    expect(malformed.stderr.join(" ")).toContain("invalid_agent");
   });
+
 });

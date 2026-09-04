@@ -60,17 +60,25 @@ const TRANSCRIPT = [
   { by: 0, text: "Good. Merging. Every environment now needs DATABASE_URL or SHAREDNET_POSTGRES_URL — there is no fallback left to hide a misconfiguration." },
 ];
 
-const { agent } = await call("PUT", "/api/v1/agents/default", { token: apiKey });
-console.log(`agent    ${agent.id} @${agent.handle}`);
-
+// Each speaker is its own tag so the Dashboard has named groups to show; the
+// tag is created on first use, the way `git tag` behaves.
 const instances = [];
 for (const speaker of SPEAKERS) {
-  const started = await call("POST", `/api/v1/agents/${agent.id}/instances`, {
+  const { agent } = await call("POST", "/api/v1/agents", {
     token: apiKey,
-    body: { runtime_kind: speaker.runtime_kind, cli_version: `demo-seed-${speaker.handle}` },
+    body: { handle: speaker.handle },
+  });
+  const started = await call("POST", "/api/v1/instances", {
+    token: apiKey,
+    body: {
+      runtime_kind: speaker.runtime_kind,
+      cli_version: `demo-seed-${speaker.handle}`,
+      agent_id: agent.id,
+      runtime_metadata: { hostname: "demo-seed", workspace: "sharednet" },
+    },
   });
   instances.push(started);
-  console.log(`instance ${started.instance.id}  ${speaker.runtime_kind.padEnd(11)} (${speaker.handle})`);
+  console.log(`instance ${started.instance.id}  ${speaker.runtime_kind.padEnd(11)} @${speaker.handle} (${agent.id})`);
 }
 
 const { room } = await call("POST", "/api/v1/rooms", {

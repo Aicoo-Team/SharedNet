@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
 import { defaultKeyHasher } from "@better-auth/api-key";
-import { and, asc, eq, gt, lte, sql } from "drizzle-orm";
+import { and, asc, count, eq, gt, lte, sql } from "drizzle-orm";
 
 import {
   agents,
@@ -21,6 +21,7 @@ import {
   type Agent,
   type AgentId,
   type ApiKeyId,
+  type CreateAgentRequest,
   type Instance,
   type InstanceId,
   type Message,
@@ -29,10 +30,12 @@ import {
   type Room,
   type RoomId,
   type RoomMember,
+  type StartInstanceRequest,
 } from "../../protocol/src/index.ts";
 import {
   IDEMPOTENCY_RETENTION_MS,
   INSTANCE_TOKEN_TTL_MS,
+  MAX_AGENTS_PER_PRINCIPAL,
   PRESENCE_LEASE_MS,
   RepositoryError,
   type IdempotencyResult,
@@ -70,7 +73,6 @@ function projectAgent(row: typeof agents.$inferSelect): Agent {
     handle: row.handle,
     display_name: row.displayName,
     description: row.description,
-    is_default: row.isDefault,
     created_at: timestamp(row.createdAt),
   };
 }
@@ -90,6 +92,7 @@ function projectInstance(row: InstanceRow, now: Date): Instance {
     agent_id: row.agentId,
     runtime_kind: row.runtimeKind,
     cli_version: row.cliVersion,
+    runtime_metadata: { ...(row.runtimeMetadata ?? {}) },
     status: instanceStatus(row, now),
     started_at: timestamp(row.startedAt),
     last_seen_at: timestamp(row.lastSeenAt),
@@ -100,23 +103,29 @@ function projectInstance(row: InstanceRow, now: Date): Instance {
   };
 }
 
-function projectRoom(row: RoomRow): Room {
+// Tags are derived at read time from the acting Instance, never stored beside
+// the fact, so every projection below takes the current tag as an argument.
+function projectRoom(row: RoomRow, creatorAgentId: AgentId | null): Room {
   return {
     id: row.id,
     principal_id: row.principalId,
     name: row.name,
     description: row.description,
     state: row.state,
-    creator_agent_id: row.creatorAgentId,
+    creator_instance_id: row.creatorInstanceId,
+    creator_agent_id: creatorAgentId,
     created_at: timestamp(row.createdAt),
     closed_at: row.closedAt ? timestamp(row.closedAt) : null,
   };
 }
 
-function projectMembership(row: typeof roomMembers.$inferSelect): RoomMember {
+function projectMembership(
+  row: typeof roomMembers.$inferSelect,
+  agentId: AgentId | null,
+): RoomMember {
   return {
     room_id: row.roomId,
-    agent_id: row.agentId,
+    agent_id: agentId,
     instance_id: row.instanceId,
     state: row.state,
     joined_at: timestamp(row.joinedAt),
@@ -124,13 +133,16 @@ function projectMembership(row: typeof roomMembers.$inferSelect): RoomMember {
   };
 }
 
-function projectMessage(row: typeof messages.$inferSelect): Message {
+function projectMessage(
+  row: typeof messages.$inferSelect,
+  senderAgentId: AgentId | null,
+): Message {
   return {
     id: row.id,
     room_id: row.roomId,
     sequence: row.sequence,
     sender_principal_id: row.senderPrincipalId,
-    sender_agent_id: row.senderAgentId,
+    sender_agent_id: senderAgentId,
     sender_instance_id: row.senderInstanceId,
     content: row.content,
     reply_to_message_id: row.replyToMessageId,
@@ -236,116 +248,194 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
     return {
       kind: "instance",
       principalId: record.principalId,
-      agentId: record.agentId,
       instanceId: record.id,
       actorId: record.id,
     };
   }
 
-  async ensureDefaultAgent(auth: PrincipalAuth): Promise<Agent> {
+  async createAgent(
+    auth: PrincipalAuth,
+    input: CreateAgentRequest,
+  ): Promise<{ agent: Agent; created: boolean }> {
     return this.inTransaction(async () => {
-      let [agent] = await this.executor()
-        .select()
+      const existing = await this.agentByHandle(auth, input.handle);
+      if (existing) return { agent: projectAgent(existing), created: false };
+
+      const [{ total }] = await this.executor()
+        .select({ total: count() })
         .from(agents)
-        .where(and(eq(agents.principalId, auth.principalId), eq(agents.isDefault, true)))
-        .limit(1);
-      if (!agent) {
-        await this.executor()
+        .where(eq(agents.principalId, auth.principalId));
+      if (Number(total) >= MAX_AGENTS_PER_PRINCIPAL) {
+        throw new RepositoryError(409, "agent_limit_reached", "Agent limit reached.");
+      }
+
+      try {
+        const [created] = await this.executor()
           .insert(agents)
           .values({
             id: generatePublicId("a"),
             principalId: auth.principalId,
-            handle: "default",
-            displayName: null,
-            description: null,
-            isDefault: true,
+            handle: input.handle,
+            displayName: input.display_name ?? null,
+            description: input.description ?? null,
             createdAt: this.now(),
           })
-          .onConflictDoNothing();
-        [agent] = await this.executor()
-          .select()
-          .from(agents)
-          .where(and(eq(agents.principalId, auth.principalId), eq(agents.isDefault, true)))
-          .limit(1);
+          .returning();
+        if (!created) {
+          throw new RepositoryError(500, "internal_error", "Agent creation failed.");
+        }
+        return { agent: projectAgent(created), created: true };
+      } catch (error) {
+        // Lost a race to the same handle: the other writer's row is the answer.
+        if (!isUniqueViolation(error)) throw error;
+        const winner = await this.agentByHandle(auth, input.handle, this.database);
+        if (!winner) throw error;
+        return { agent: projectAgent(winner), created: false };
       }
-      if (!agent) {
-        throw new RepositoryError(500, "internal_error", "Default Agent provisioning failed.");
-      }
-      return projectAgent(agent);
     });
+  }
+
+  async listAgents(auth: PrincipalAuth): Promise<{ items: Agent[] }> {
+    const rows = await this.executor()
+      .select()
+      .from(agents)
+      .where(eq(agents.principalId, auth.principalId))
+      .orderBy(asc(agents.handle), asc(agents.id))
+      .limit(MAX_AGENTS_PER_PRINCIPAL);
+    return { items: rows.map(projectAgent) };
+  }
+
+  async getAgent(auth: PrincipalAuth, agentId: AgentId): Promise<{ agent: Agent }> {
+    return { agent: projectAgent(await this.ownedAgent(auth, agentId)) };
   }
 
   async startInstance(
     auth: PrincipalAuth,
-    agentId: AgentId,
-    input: { runtime_kind: Instance["runtime_kind"]; cli_version: string },
-  ): Promise<{ instance: Instance; token: string; heartbeat_after_seconds: 30 }> {
-    return this.inTransaction(async () => {
-      const [agent] = await this.executor()
-        .select({ id: agents.id })
-        .from(agents)
-        .where(and(eq(agents.id, agentId), eq(agents.principalId, auth.principalId)))
-        .limit(1);
-      if (!agent) {
-        throw new RepositoryError(404, "agent_not_found", "Agent was not found.");
-      }
+    input: StartInstanceRequest,
+    retried = false,
+  ): Promise<{ instance: Instance; token: string; heartbeat_after_seconds: 30; created: boolean }> {
+    try {
+      return await this.inTransaction(async () => {
+        if (input.agent_id) await this.ownedAgent(auth, input.agent_id);
 
-      const now = this.now();
-      const token = generateSecret("sni");
-      const [record] = await this.executor()
-        .insert(instances)
-        .values({
-          id: generatePublicId("i"),
-          principalId: auth.principalId,
-          agentId,
-          issuedByKeyId: auth.actorId,
-          tokenDigest: digestSecret(token),
-          runtimeKind: input.runtime_kind,
-          cliVersion: input.cli_version,
-          state: "active",
-          startedAt: now,
-          lastSeenAt: now,
-          leaseExpiresAt: new Date(now.getTime() + PRESENCE_LEASE_MS),
-          tokenExpiresAt: new Date(now.getTime() + INSTANCE_TOKEN_TTL_MS),
-          endedAt: null,
-          revokedAt: null,
-        })
-        .returning();
-      if (!record) {
-        throw new RepositoryError(500, "internal_error", "Instance registration failed.");
+        const now = this.now();
+        const token = generateSecret("sni");
+        const tokenDigest = digestSecret(token);
+        const leaseExpiresAt = new Date(now.getTime() + PRESENCE_LEASE_MS);
+        const tokenExpiresAt = new Date(now.getTime() + INSTANCE_TOKEN_TTL_MS);
+
+        // One session, one live Instance. A re-registration of a session that
+        // is still active — after a crash, from a second CLI invocation, on a
+        // machine that lost its local state — gets the same row and a fresh
+        // token rather than a ghost holding a parallel lease.
+        if (input.local_instance_key) {
+          const [existing] = await this.executor()
+            .select()
+            .from(instances)
+            .where(
+              and(
+                eq(instances.principalId, auth.principalId),
+                eq(instances.localInstanceKey, input.local_instance_key),
+                eq(instances.state, "active"),
+              ),
+            )
+            .for("update")
+            .limit(1);
+          if (existing) {
+            const [updated] = await this.executor()
+              .update(instances)
+              .set({
+                tokenDigest,
+                issuedByKeyId: auth.actorId,
+                runtimeKind: input.runtime_kind,
+                cliVersion: input.cli_version,
+                ...(input.agent_id !== undefined ? { agentId: input.agent_id } : {}),
+                ...(input.runtime_metadata !== undefined
+                  ? { runtimeMetadata: input.runtime_metadata }
+                  : {}),
+                lastSeenAt: now,
+                leaseExpiresAt,
+                tokenExpiresAt,
+              })
+              .where(eq(instances.id, existing.id))
+              .returning();
+            if (!updated) {
+              throw new RepositoryError(500, "internal_error", "Instance re-registration failed.");
+            }
+            return {
+              instance: projectInstance(updated, now),
+              token,
+              heartbeat_after_seconds: 30 as const,
+              created: false,
+            };
+          }
+        }
+
+        const [record] = await this.executor()
+          .insert(instances)
+          .values({
+            id: generatePublicId("i"),
+            principalId: auth.principalId,
+            agentId: input.agent_id ?? null,
+            issuedByKeyId: auth.actorId,
+            tokenDigest,
+            localInstanceKey: input.local_instance_key ?? null,
+            runtimeKind: input.runtime_kind,
+            cliVersion: input.cli_version,
+            runtimeMetadata: input.runtime_metadata ?? {},
+            state: "active",
+            startedAt: now,
+            lastSeenAt: now,
+            leaseExpiresAt,
+            tokenExpiresAt,
+            endedAt: null,
+            revokedAt: null,
+          })
+          .returning();
+        if (!record) {
+          throw new RepositoryError(500, "internal_error", "Instance registration failed.");
+        }
+        return {
+          instance: projectInstance(record, now),
+          token,
+          heartbeat_after_seconds: 30 as const,
+          created: true,
+        };
+      });
+    } catch (error) {
+      // Two registrations of one session raced past the lookup; the partial
+      // unique index caught the loser. Look again in a fresh transaction.
+      if (isUniqueViolation(error) && input.local_instance_key && !retried) {
+        return this.startInstance(auth, input, true);
       }
-      return {
-        instance: projectInstance(record, now),
-        token,
-        heartbeat_after_seconds: 30,
-      };
-    });
+      throw error;
+    }
   }
 
   async getCurrentInstance(auth: InstanceAuth): Promise<{
     principal: Principal;
-    agent: Agent;
+    agent: Agent | null;
     instance: Instance;
   }> {
     const record = await this.instanceRecord(auth);
-    const [[principal], [agent]] = await Promise.all([
-      this.executor()
-        .select()
-        .from(principals)
-        .where(eq(principals.id, auth.principalId))
-        .limit(1),
-      this.executor()
-        .select()
-        .from(agents)
-        .where(and(eq(agents.id, auth.agentId), eq(agents.principalId, auth.principalId)))
-        .limit(1),
-    ]);
-    if (!principal || !agent) {
+    const [principal] = await this.executor()
+      .select()
+      .from(principals)
+      .where(eq(principals.id, auth.principalId))
+      .limit(1);
+    if (!principal) {
       throw new RepositoryError(401, "invalid_credentials", "Credentials are invalid.");
     }
+    const [agent] = record.agentId
+      ? await this.executor()
+          .select()
+          .from(agents)
+          .where(and(eq(agents.id, record.agentId), eq(agents.principalId, auth.principalId)))
+          .limit(1)
+      : [];
     return {
       principal: projectPrincipal(principal),
-      agent: projectAgent(agent),
+      agent: agent ? projectAgent(agent) : null,
       instance: projectInstance(record, this.now()),
     };
   }
@@ -368,7 +458,6 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
         and(
           eq(instances.id, auth.instanceId),
           eq(instances.principalId, auth.principalId),
-          eq(instances.agentId, auth.agentId),
           eq(instances.state, "active"),
           gt(instances.tokenExpiresAt, now),
         ),
@@ -385,7 +474,7 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
     input: { name: string; description?: string | null },
   ): Promise<{ room: Room; membership: RoomMember }> {
     return this.inTransaction(async () => {
-      await this.requireOnline(auth);
+      const creator = await this.requireOnline(auth);
       const createdAt = this.now();
       const [room] = await this.executor()
         .insert(rooms)
@@ -395,7 +484,7 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
           name: input.name,
           description: input.description ?? null,
           state: "open",
-          creatorAgentId: auth.agentId,
+          creatorInstanceId: auth.instanceId,
           nextSequence: 1,
           createdAt,
           closedAt: null,
@@ -409,7 +498,6 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
         .values({
           principalId: auth.principalId,
           roomId: room.id,
-          agentId: auth.agentId,
           instanceId: auth.instanceId,
           state: "active",
           joinedAt: createdAt,
@@ -419,7 +507,10 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
       if (!membership) {
         throw new RepositoryError(500, "internal_error", "Room membership creation failed.");
       }
-      return { room: projectRoom(room), membership: projectMembership(membership) };
+      return {
+        room: projectRoom(room, creator.agentId),
+        membership: projectMembership(membership, creator.agentId),
+      };
     });
   }
 
@@ -428,7 +519,7 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
     roomId: RoomId,
   ): Promise<{ room: Room; membership: RoomMember }> {
     return this.inTransaction(async () => {
-      await this.requireOnline(auth);
+      const joiner = await this.requireOnline(auth);
       const room = await this.ownedRoom(auth, roomId);
       if (room.state === "closed") {
         throw new RepositoryError(409, "room_closed", "Room is closed.");
@@ -439,7 +530,6 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
         .values({
           principalId: auth.principalId,
           roomId,
-          agentId: auth.agentId,
           instanceId: auth.instanceId,
           state: "active",
           joinedAt,
@@ -457,7 +547,10 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
       if (!membership) {
         throw new RepositoryError(500, "internal_error", "Room membership update failed.");
       }
-      return { room: projectRoom(room), membership: projectMembership(membership) };
+      return {
+        room: await this.projectRoomRow(room),
+        membership: projectMembership(membership, joiner.agentId),
+      };
     });
   }
 
@@ -468,10 +561,14 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
     const room = await this.ownedRoom(auth, roomId);
     await this.requireMembership(auth, room.id);
     const rows = await this.executor()
-      .select()
+      .select({ member: roomMembers, agentId: instances.agentId })
       .from(roomMembers)
+      .leftJoin(instances, eq(instances.id, roomMembers.instanceId))
       .where(eq(roomMembers.roomId, room.id));
-    return { room: projectRoom(room), memberships: rows.map(projectMembership) };
+    return {
+      room: await this.projectRoomRow(room),
+      memberships: rows.map((row) => projectMembership(row.member, row.agentId ?? null)),
+    };
   }
 
   async postMessage(
@@ -480,7 +577,7 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
     input: { content: string; reply_to_message_id?: MessageId | null },
   ): Promise<{ message: Message }> {
     return this.inTransaction(async () => {
-      await this.requireOnline(auth);
+      const sender = await this.requireOnline(auth);
       const [room] = await this.executor()
         .select()
         .from(rooms)
@@ -515,7 +612,6 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
           roomId: room.id,
           sequence: room.nextSequence,
           senderPrincipalId: auth.principalId,
-          senderAgentId: auth.agentId,
           senderInstanceId: auth.instanceId,
           content: input.content,
           replyToMessageId: replyId,
@@ -529,7 +625,7 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
         .update(rooms)
         .set({ nextSequence: room.nextSequence + 1 })
         .where(eq(rooms.id, room.id));
-      return { message: projectMessage(message) };
+      return { message: projectMessage(message, sender.agentId) };
     });
   }
 
@@ -541,13 +637,16 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
     const room = await this.ownedRoom(auth, roomId);
     await this.requireMembership(auth, room.id);
     const rows = await this.executor()
-      .select()
+      .select({ message: messages, agentId: instances.agentId })
       .from(messages)
+      .leftJoin(instances, eq(instances.id, messages.senderInstanceId))
       .where(and(eq(messages.roomId, room.id), gt(messages.sequence, input.after)))
       .orderBy(asc(messages.sequence))
       .limit(input.limit + 1);
     const hasMore = rows.length > input.limit;
-    const items = rows.slice(0, input.limit).map(projectMessage);
+    const items = rows
+      .slice(0, input.limit)
+      .map((row) => projectMessage(row.message, row.agentId ?? null));
     return {
       items,
       next_cursor:
@@ -621,17 +720,55 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
       .select()
       .from(instances)
       .where(
-        and(
-          eq(instances.id, auth.instanceId),
-          eq(instances.principalId, auth.principalId),
-          eq(instances.agentId, auth.agentId),
-        ),
+        and(eq(instances.id, auth.instanceId), eq(instances.principalId, auth.principalId)),
       )
       .limit(1);
     if (!record) {
       throw new RepositoryError(401, "invalid_credentials", "Credentials are invalid.");
     }
     return record;
+  }
+
+  private async ownedAgent(
+    auth: PrincipalAuth,
+    agentId: AgentId,
+  ): Promise<typeof agents.$inferSelect> {
+    const [agent] = await this.executor()
+      .select()
+      .from(agents)
+      .where(and(eq(agents.id, agentId), eq(agents.principalId, auth.principalId)))
+      .limit(1);
+    if (!agent) {
+      throw new RepositoryError(404, "agent_not_found", "Agent was not found.");
+    }
+    return agent;
+  }
+
+  private async agentByHandle(
+    auth: PrincipalAuth,
+    handle: string,
+    database: SharedNetDatabase = this.executor(),
+  ): Promise<typeof agents.$inferSelect | undefined> {
+    const [agent] = await database
+      .select()
+      .from(agents)
+      .where(and(eq(agents.principalId, auth.principalId), eq(agents.handle, handle)))
+      .limit(1);
+    return agent;
+  }
+
+  /** The tag an Instance is under right now; read, never copied. */
+  private async tagOf(instanceId: InstanceId): Promise<AgentId | null> {
+    const [row] = await this.executor()
+      .select({ agentId: instances.agentId })
+      .from(instances)
+      .where(eq(instances.id, instanceId))
+      .limit(1);
+    return row?.agentId ?? null;
+  }
+
+  private async projectRoomRow(room: RoomRow): Promise<Room> {
+    return projectRoom(room, await this.tagOf(room.creatorInstanceId));
   }
 
   private async requireOnline(auth: InstanceAuth): Promise<InstanceRow> {

@@ -166,19 +166,85 @@ Decision   dec_...
 
 Names such as `default`, `reviewer`, or `frontend` are human-facing Agent handles, unique only within a Principal. A handle resolves to an opaque Agent ID; it is never itself an authorization boundary. V1 has no rename operation, so handles remain stable after creation even though future versions may add a rename without changing the Agent ID.
 
-### 5.3 Default Agent
+### 5.3 Agents are tags, and there is no default one
 
-Every Principal may have exactly one Agent whose handle is `default`. Principal provisioning creates it; `PUT /api/v1/agents/default` always returns `200` and idempotently repairs/returns it. Explicit Agents use `POST /api/v1/agents`; that route rejects the reserved `default` handle. The total limit of 100 Agents reserves one slot for `default`, so at most 99 explicit Agents may exist.
+**Amended 2026-09-04.** This section originally reserved a `default` Agent per
+Principal, created at provisioning and repaired by `PUT /api/v1/agents/default`.
+That is gone, and so is the idea that an Instance is *born into* an Agent.
 
-Agent handles are canonicalized with Unicode NFKC, surrounding whitespace removal, and ASCII lowercase, then must match `^[a-z][a-z0-9-]{0,31}$`. The canonical handle is unique per Principal. `default` is protected by both a database constraint and the dedicated ensure operation; a non-default Agent with that canonical handle cannot exist. A duplicate explicit handle returns `409 agent_handle_conflict`, while `default` through `POST /agents` returns `422 reserved_agent_handle`.
+An Agent is a named tag over a Principal's Instances. It holds no credential and
+never acts. It exists for one reason: **Instances die and names should not.** A
+session's token expires in 24 hours; "the reviewer" has to mean the same thing
+on Tuesday as it did on Monday, across two different Instances. The Agent is the
+name that outlives the sessions it groups.
 
-Four ordinary Codex tasks on the same account therefore default to:
+What that implies, and what the schema now enforces:
+
+- **Grouping lives in exactly one column.** `instance.agent_id` is a nullable
+  pointer to a tag of the same Principal. Nothing else stores an agent id:
+  `message`, `room_member`, `room` and `decision` record the acting *Instance*
+  and derive its tag at read time. Regrouping an Instance changes one column and
+  every projection follows; history is never rewritten, because history never
+  copied the grouping in the first place — it records who acted, which is the
+  Instance, and that is immutable.
+- **A fresh Instance is untagged.** `agent_id` is null. A new Principal has zero
+  Agents and nothing is provisioned. The Dashboard renders untagged Instances
+  under a synthetic `default` header so every Instance always sits under
+  exactly one header, but no row exists for it.
+- **Tagging is post hoc.** The common case is thirty sessions with no names at
+  all. When a role has proven itself worth a name, the tag is created and the
+  Instances that turned out to be that role are pointed at it — the sessions
+  you discovered were "the reviewer" *are* the reviewer, with their history
+  intact. Sessions started later with that tag join it directly.
+- **Untagged Instances are identified by where they run; tagged ones by what
+  they are called.** `instance.runtime_metadata` (host, workspace, OS) is what a
+  human uses to tell unnamed sessions apart. It is diagnostic only and never an
+  input to authorization or grouping: where a session runs is orthogonal to
+  what it is for, and an Agent derived from the environment would simply be the
+  removed Runtime tier under another name.
+- **A tag is display within its Principal and identity across Principals.**
+  Inside one account a tag may be reassigned freely. Once cross-Principal Rooms
+  exist, changing the membership of a tag that other Principals can see must be
+  an explicit, visible act — a self-asserted grouping is not an identity anyone
+  else should rely on. Not implemented in V1; recorded here so it is not
+  forgotten.
+
+Agent handles are canonicalized with Unicode NFKC, surrounding whitespace
+removal, and ASCII lowercase, then must match `^[a-z][a-z0-9-]{0,31}$`. The
+canonical handle is unique per Principal; `default` is no longer reserved. A
+duplicate handle returns the existing tag from `POST /agents`, which is
+idempotent by handle. At most 100 tags may exist per Principal.
+
+Four ordinary Codex tasks on the same account therefore look like:
 
 ```text
 one Principal
-  -> one default Agent
-       -> four concurrent Instances
+  -> four concurrent Instances, agent_id = null
 ```
+
+and, once two of them are recognised as a role:
+
+```text
+one Principal
+  -> Agent @reviewer  <- two Instances
+  -> two Instances, agent_id = null
+```
+
+#### One session, one live Instance
+
+Registration accepts an optional `local_instance_key`: the CLI's
+HMAC-SHA256(installation secret, runtime kind ‖ provider session anchor). It is
+unique per Principal among *active* Instances, so re-registering the same
+runtime session — after a crash, on a machine whose local state was lost, from
+a second CLI invocation inside one Codex session — returns the existing Instance
+with a freshly minted token instead of creating a ghost that keeps a lease alive
+next to the real one. Ended and revoked rows keep their key as history and do
+not block a new registration. The raw session id never leaves the machine; the
+server learns only that two calls are the same session. The key is a dedupe
+key, never authority: the API key has already established the Principal, and
+the key only selects among that Principal's own Instances. Callers that cannot
+identify their session omit it and get a fresh Instance every time, which is
+the honest behaviour rather than a degraded one.
 
 A user creates multiple Agents only when they want durable, separately named personas or capability identities.
 
@@ -262,11 +328,10 @@ Hosted browser requests use Better Auth cookies with `Secure`, `HttpOnly`, and `
 
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
-| `PUT` | `/api/v1/agents/default` | API key or Web session | Idempotently ensure the default Agent |
-| `POST` | `/api/v1/agents` | API key or Web session | Register a named Agent |
-| `GET` | `/api/v1/agents` | API key or Web session | List owned Agents |
-| `GET` | `/api/v1/agents/{agent_id}` | API key or Web session | Get one owned Agent |
-| `POST` | `/api/v1/agents/{agent_id}/instances` | API key | Start an Instance and return its token once |
+| `POST` | `/api/v1/agents` | API key or Web session | Create a tag, idempotent by handle |
+| `GET` | `/api/v1/agents` | API key or Web session | List owned tags |
+| `GET` | `/api/v1/agents/{agent_id}` | API key or Web session | Get one owned tag |
+| `POST` | `/api/v1/instances` | API key | Start an Instance, optionally tagged, and return its token once; same-session re-registration returns the existing Instance |
 | `GET` | `/api/v1/agents/{agent_id}/instances` | API key or Web session | List the Agent's Instances |
 | `GET` | `/api/v1/instances/current` | Instance token | Resolve current Instance-safe identity |
 | `POST` | `/api/v1/instances/current/heartbeat` | Instance token | Extend the presence lease |
@@ -381,14 +446,16 @@ type Agent = {
   handle: string;
   display_name: string | null;
   description: string | null;
-  is_default: boolean;
   created_at: Timestamp;
 };
 
 type Instance = {
   id: InstanceId;
   principal_id: PrincipalId;
-  agent_id: AgentId;
+  /** The tag this Instance is grouped under; null when untagged. */
+  agent_id: AgentId | null;
+  /** Physical diagnostics: host, workspace, OS. Never authorization. */
+  runtime_metadata: Record<string, string>;
   runtime_kind: "codex" | "claude-code" | "custom";
   cli_version: string;
   status: "online" | "offline" | "ended" | "revoked" | "expired";
@@ -502,11 +569,10 @@ Each API key and Instance token is limited to 600 authenticated requests per rol
 | `POST /api-keys` | `{ name: string, expires_at?: Timestamp }` | `201 { api_key: ApiKey, token: SnkSecret }`, raw-once/no-store |
 | `GET /api-keys` | `?cursor&limit` | `200 Page<ApiKey>`, ordered newest first then ID |
 | `DELETE /api-keys/{key_id}` | no body | `204`, also when already revoked |
-| `PUT /agents/default` | no body | `200 { agent: Agent }` |
-| `POST /agents` | `{ handle: string, display_name?: string \| null, description?: string \| null }` | `201 { agent: Agent }` |
+| `POST /agents` | `{ handle: string, display_name?: string \| null, description?: string \| null }` | `201 { agent: Agent }`, or `200` with the existing tag when the handle already exists |
 | `GET /agents` | `?cursor&limit` | `200 Page<Agent>`, ordered handle then ID |
 | `GET /agents/{agent_id}` | none | `200 { agent: Agent }` |
-| `POST /agents/{agent_id}/instances` | `{ runtime_kind: "codex" \| "claude-code" \| "custom", cli_version: string }` | `201 { instance: Instance, token: SniSecret, heartbeat_after_seconds: 30 }`, raw-once/no-store |
+| `POST /instances` | `{ runtime_kind: "codex" \| "claude-code" \| "custom", cli_version: string, agent_id?: AgentId \| null, local_instance_key?: string, runtime_metadata?: Record<string, string> }` | `201 { instance: Instance, token: SniSecret, heartbeat_after_seconds: 30 }` for a new Instance, `200` with the same shape and a fresh token when `local_instance_key` matches a live one; raw-once/no-store |
 | `GET /agents/{agent_id}/instances` | `?cursor&limit&status=online\|offline\|ended\|revoked\|expired` | `200 Page<Instance>`, ordered `started_at DESC, id DESC` |
 | `GET /instances/current` | none | `200 { principal: Principal, agent: Agent, instance: Instance }` |
 | `POST /instances/current/heartbeat` | `{}` or no body | `200 { instance: Instance, heartbeat_after_seconds: 30 }` |
