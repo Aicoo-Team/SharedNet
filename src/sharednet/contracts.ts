@@ -180,10 +180,18 @@ type UnknownRecord = Record<string, unknown>;
 type Predicate<T> = (value: unknown) => value is T;
 
 const IDENTIFIER = /^[A-Za-z][A-Za-z0-9_.:-]{0,127}$/;
-const PRINCIPAL_ID = /^p_[0-9A-Za-z]{10}$/;
-const AGENT_ID = /^a_[0-9A-Za-z]{10}$/;
-const RUNTIME_ID = /^r_[0-9A-Za-z]{10}$/;
-const INSTANCE_ID = /^i_[0-9A-Za-z]{10}$/;
+
+/**
+ * V1 public identifiers: a typed prefix plus 26 Crockford base32 characters,
+ * exactly as `packages/protocol` issues them. `rt_` is the one exception: V1
+ * has no Runtime entity, so the Dashboard derives a stable Runtime id per
+ * (Agent, runtime kind) pair — see deriveRuntimeId in server-client.ts.
+ */
+const ULID_BODY = "[0-9a-hjkmnp-tv-z]{26}";
+const PRINCIPAL_ID = new RegExp(`^pri_${ULID_BODY}$`);
+const AGENT_ID = new RegExp(`^agt_${ULID_BODY}$`);
+const RUNTIME_ID = new RegExp(`^rt_${ULID_BODY}$`);
+const INSTANCE_ID = new RegExp(`^ins_${ULID_BODY}$`);
 const CURSOR = /^cursor_(?:0|[1-9][0-9]*)$/;
 
 function hasExactKeys(

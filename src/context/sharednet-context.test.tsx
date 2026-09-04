@@ -22,11 +22,11 @@ import {
 } from "./sharednet-context";
 
 const NOW = "2026-09-03T05:00:00+00:00";
-const PRINCIPAL_ID = "p_15COsXY9aK";
-const FRESH_PRINCIPAL_ID = "p_2FreshData";
-const AGENT_ID = "a_7Qm2Zx8WpL";
-const RUNTIME_ID = "r_4Nk8Vm2QaT";
-const INSTANCE_ID = "i_8pQ2Km7XaN";
+const PRINCIPAL_ID = "pri_w7ytve6398hy7gmjsk1c9q78hb";
+const FRESH_PRINCIPAL_ID = "pri_aazfk64j9gfsx8jqge5sexpnt9";
+const AGENT_ID = "agt_9na1xvqrr7jxaf5wr0pmabdk31";
+const RUNTIME_ID = "rt_brv633yxv2c0vbranwet0ekyfp";
+const INSTANCE_ID = "ins_wtw6f0hj3gvhftknfr99370v1j";
 const ROOM_ID = "room_launch";
 const SECOND_ROOM_ID = "room_review";
 const DECISION_ID = "decision_region";

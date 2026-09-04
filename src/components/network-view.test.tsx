@@ -31,23 +31,23 @@ vi.mock("@/src/context/sharednet-context", () => ({
 }));
 
 const NOW = "2026-09-03T05:12:00+00:00";
-const OWN_PRINCIPAL_ID = "p_7Hq2Lm9XsA" as PrincipalId;
-const CONNECTED_PRINCIPAL_ID = "p_4Nv8Qk1RtB" as PrincipalId;
-const SECOND_CONNECTED_PRINCIPAL_ID = "p_9Za3Wp6UcC" as PrincipalId;
-const UNKNOWN_PRINCIPAL_ID = "p_5Jd9Fy2VeD" as PrincipalId;
-const OWN_AGENT_ID = "a_2Kx7Vm4QpD" as AgentId;
-const SECOND_OWN_AGENT_ID = "a_8Rt1Hs6ZnE" as AgentId;
-const CONNECTED_AGENT_ID = "a_3Bw9Lc5YfF" as AgentId;
-const PRIVATE_AGENT_ID = "a_6Pg2Jm8XuG" as AgentId;
-const UNKNOWN_AGENT_ID = "a_1Qv7Nd4SkH" as AgentId;
-const FIRST_RUNTIME_ID = "r_6Lb3Tn8HsE" as RuntimeId;
-const SECOND_RUNTIME_ID = "r_9Wc4Kp1ZaF" as RuntimeId;
-const ORPHAN_RUNTIME_ID = "r_2Gm7Vx5QdG" as RuntimeId;
-const OTHER_RUNTIME_ID = "r_8Sr1Bj6NeH" as RuntimeId;
-const FIRST_INSTANCE_ID = "i_4Tf9Mn2YwJ" as InstanceId;
-const SECOND_INSTANCE_ID = "i_7Cx3Lp8RaK" as InstanceId;
-const ORPHAN_INSTANCE_ID = "i_5Zh1Qv6DsL" as InstanceId;
-const OTHER_INSTANCE_ID = "i_9Nk4Wb2PgM" as InstanceId;
+const OWN_PRINCIPAL_ID = "pri_7xx61367c6rqjtqp0vhte2xvnc" as PrincipalId;
+const CONNECTED_PRINCIPAL_ID = "pri_425fdbshy6vwvye409k470yhdv" as PrincipalId;
+const SECOND_CONNECTED_PRINCIPAL_ID = "pri_azxdhy66rxf10xbfbm5f7xpa0e" as PrincipalId;
+const UNKNOWN_PRINCIPAL_ID = "pri_ctk7axbb437dt71fqkjbsvzg0n" as PrincipalId;
+const OWN_AGENT_ID = "agt_bpmxqvtm3xjd3x7ze0mdhwt4qv" as AgentId;
+const SECOND_OWN_AGENT_ID = "agt_9xzwjb8mbggjk8kryrzcgd29c5" as AgentId;
+const CONNECTED_AGENT_ID = "agt_eg3p94kfcth369499aws862g72" as AgentId;
+const PRIVATE_AGENT_ID = "agt_91m5027m23bd1fwv7q7m53735e" as AgentId;
+const UNKNOWN_AGENT_ID = "agt_rara2rnasgb4xb8rgwbqkazg1q" as AgentId;
+const FIRST_RUNTIME_ID = "rt_4d8z3m66g64fndv62rsp0a24t0" as RuntimeId;
+const SECOND_RUNTIME_ID = "rt_nq8xfc9jkeeyw9vgkdvvs32e77" as RuntimeId;
+const ORPHAN_RUNTIME_ID = "rt_3efymsj9v9m9n7q0a963jbffzf" as RuntimeId;
+const OTHER_RUNTIME_ID = "rt_6a03183ya0yma72rgt27r5dw8v" as RuntimeId;
+const FIRST_INSTANCE_ID = "ins_qkwjmrxn5pbaqvb31ft4y9pvx5" as InstanceId;
+const SECOND_INSTANCE_ID = "ins_z5kqdfx1yc9x8j1he7rhg959t9" as InstanceId;
+const ORPHAN_INSTANCE_ID = "ins_t5gsjssgghjhrjvgxs4kbf6en4" as InstanceId;
+const OTHER_INSTANCE_ID = "ins_r850k3qsdwka6qb51a9gks0yvf" as InstanceId;
 const PRODUCT_SHELL_CSS = readFileSync(
   resolve(process.cwd(), "app/product-shell.css"),
   "utf8",
@@ -360,7 +360,7 @@ describe("SharedNet Network", () => {
     const runtimeOnlyAgent = makeAgent(SECOND_OWN_AGENT_ID, OWN_PRINCIPAL_ID, {
       diagnostic_label: "Runtime-only worker",
     });
-    const templateAgentId = "a_5Mz8Qc2LvN" as AgentId;
+    const templateAgentId = "agt_2wmyszcqywcj6dtwamy1dbcq0j" as AgentId;
     const templateAgent = makeAgent(templateAgentId, OWN_PRINCIPAL_ID, {
       diagnostic_label: "Official starter",
       official: true,
@@ -588,8 +588,8 @@ describe("SharedNet Network", () => {
   });
 
   it("sorts opaque IDs into deterministic non-overlapping coordinates for many Agents", () => {
-    const thirdOwnAgentId = "a_4Hs9Yn1CqP" as AgentId;
-    const secondExternalAgentId = "a_7Dj2Wm5KrQ" as AgentId;
+    const thirdOwnAgentId = "agt_0xjta1b78602qy7gjp3m78nks4" as AgentId;
+    const secondExternalAgentId = "agt_3tsq64ad3sbjr4phqgha40ahgx" as AgentId;
     const secondConnectedPrincipal = makePrincipal(
       SECOND_CONNECTED_PRINCIPAL_ID,
       "Pacific partner",

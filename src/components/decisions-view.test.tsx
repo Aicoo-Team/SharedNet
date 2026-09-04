@@ -54,10 +54,10 @@ const APPROVED_ID = "decision_History:Approved.1" as DecisionId;
 const DENIED_ID = "decision_History:Denied.2" as DecisionId;
 const ANSWERED_ID = "decision_History:Answered.3" as DecisionId;
 const ROOM_ID = "room_Launch:Alpha.7" as RoomId;
-const PRINCIPAL_ID = "p_15COsXY9aK" as PrincipalId;
-const AGENT_ID = "a_7Qm2Zx8WpL" as AgentId;
-const RUNTIME_ID = "r_4Nk8Vm2QaT" as RuntimeId;
-const INSTANCE_ID = "i_8pQ2Km7XaN" as InstanceId;
+const PRINCIPAL_ID = "pri_w7ytve6398hy7gmjsk1c9q78hb" as PrincipalId;
+const AGENT_ID = "agt_9na1xvqrr7jxaf5wr0pmabdk31" as AgentId;
+const RUNTIME_ID = "rt_brv633yxv2c0vbranwet0ekyfp" as RuntimeId;
+const INSTANCE_ID = "ins_wtw6f0hj3gvhftknfr99370v1j" as InstanceId;
 const PAIRING_ID = "pairing_Launch:Alpha.7" as PairingId;
 
 const approvalDecision: DecisionProjection = {
@@ -537,11 +537,11 @@ describe("SharedNet Decisions", () => {
     const claim = deferredVoid();
     const claimPairing = vi.fn(() => claim.promise);
     navigationMocks.searchParams = new URLSearchParams({
-      agent_id: "a_Attacker01",
-      instance_id: "i_Attacker01",
+      agent_id: "agt_wk3kes7255q403s93rzq90dpxx",
+      instance_id: "ins_219mydnwpsmecsb4yc9hx73p77",
       pairing: PAIRING_ID,
-      principal_id: "p_Attacker01",
-      runtime_id: "r_Attacker01",
+      principal_id: "pri_n17f14hjy48spp61g31yd837ry",
+      runtime_id: "rt_2pqs69xxsxqry551s838ddmfxy",
     });
     const { rerender } = renderDecisions({ decisions: [], claimPairing });
 
@@ -583,10 +583,10 @@ describe("SharedNet Decisions", () => {
   it("rejects an invalid pairing locally without trusting any URL identity", async () => {
     const claimPairing = vi.fn(async () => undefined);
     navigationMocks.searchParams = new URLSearchParams({
-      agent_id: "a_7Qm2Zx8WpL",
+      agent_id: "agt_9na1xvqrr7jxaf5wr0pmabdk31",
       pairing: "1-invalid-pairing",
-      principal_id: "p_15COsXY9aK",
-      runtime_id: "r_4Nk8Vm2QaT",
+      principal_id: "pri_w7ytve6398hy7gmjsk1c9q78hb",
+      runtime_id: "rt_brv633yxv2c0vbranwet0ekyfp",
     });
     renderDecisions({ decisions: [], claimPairing });
 
