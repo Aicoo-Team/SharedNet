@@ -119,6 +119,8 @@ export const instances = sharednetSchema.table(
       table.agentId,
       table.id,
     ),
+    /** Referenced by room_member's Principal-scoped Instance foreign key. */
+    unique("instance_principal_id_unique").on(table.principalId, table.id),
     unique("instance_token_digest_unique").on(table.tokenDigest),
     foreignKey({
       name: "instance_principal_agent_fk",
@@ -275,8 +277,10 @@ export const messages = sharednetSchema.table(
     }),
     foreignKey({
       name: "message_sender_membership_fk",
-      columns: [table.roomId, table.senderAgentId],
-      foreignColumns: [roomMembers.roomId, roomMembers.agentId],
+      // The sending Instance must be a member, not merely some Instance of a
+      // member Agent, which is what keying this on sender_agent_id allowed.
+      columns: [table.roomId, table.senderInstanceId],
+      foreignColumns: [roomMembers.roomId, roomMembers.instanceId],
     }),
     foreignKey({
       name: "message_same_room_reply_fk",

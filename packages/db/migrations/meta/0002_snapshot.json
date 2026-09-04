@@ -1,5 +1,5 @@
 {
-  "id": "c05b53fa-b108-44ef-a6b3-4a998f46b26c",
+  "id": "6a5f0bc3-52a3-4e15-8656-79cfc4cd09be",
   "prevId": "ed2918b0-774e-4de3-9971-cfb058f20b5a",
   "version": "7",
   "dialect": "postgresql",
@@ -1251,6 +1251,14 @@
             "id"
           ]
         },
+        "instance_principal_id_unique": {
+          "name": "instance_principal_id_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "principal_id",
+            "id"
+          ]
+        },
         "instance_token_digest_unique": {
           "name": "instance_token_digest_unique",
           "nullsNotDistinct": false,
@@ -1452,11 +1460,11 @@
           "schemaTo": "sharednet",
           "columnsFrom": [
             "room_id",
-            "sender_agent_id"
+            "sender_instance_id"
           ],
           "columnsTo": [
             "room_id",
-            "agent_id"
+            "instance_id"
           ],
           "onDelete": "no action",
           "onUpdate": "no action"

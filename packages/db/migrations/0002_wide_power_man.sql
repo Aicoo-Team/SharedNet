@@ -1,3 +1,7 @@
+-- Reordered by hand. drizzle-kit emits these in an order PostgreSQL rejects:
+-- it drops a primary key while a foreign key still points at it, and it adds
+-- foreign keys before the primary key and unique constraint they reference.
+ALTER TABLE "sharednet"."message" DROP CONSTRAINT "message_sender_membership_fk";--> statement-breakpoint
 ALTER TABLE "sharednet_auth"."apikey" DROP CONSTRAINT "auth_apikey_id_format";--> statement-breakpoint
 ALTER TABLE "sharednet"."agent" DROP CONSTRAINT "agent_id_format";--> statement-breakpoint
 ALTER TABLE "sharednet"."decision" DROP CONSTRAINT "decision_id_format";--> statement-breakpoint
@@ -9,13 +13,14 @@ ALTER TABLE "sharednet"."principal" DROP CONSTRAINT "principal_id_format";--> st
 ALTER TABLE "sharednet"."room_member" DROP CONSTRAINT "room_member_room_id_format";--> statement-breakpoint
 ALTER TABLE "sharednet"."room_member" DROP CONSTRAINT "room_member_agent_id_format";--> statement-breakpoint
 ALTER TABLE "sharednet"."room" DROP CONSTRAINT "room_id_format";--> statement-breakpoint
+ALTER TABLE "sharednet"."room_member" DROP CONSTRAINT "room_member_pk";--> statement-breakpoint
 ALTER TABLE "sharednet"."instance" ADD COLUMN "runtime_metadata" jsonb DEFAULT '{}'::jsonb NOT NULL;--> statement-breakpoint
 ALTER TABLE "sharednet"."room_member" ADD COLUMN "instance_id" text NOT NULL;--> statement-breakpoint
+ALTER TABLE "sharednet"."room_member" ADD CONSTRAINT "room_member_pk" PRIMARY KEY("room_id","instance_id");--> statement-breakpoint
+ALTER TABLE "sharednet"."instance" ADD CONSTRAINT "instance_principal_id_unique" UNIQUE("principal_id","id");--> statement-breakpoint
+ALTER TABLE "sharednet"."message" ADD CONSTRAINT "message_sender_membership_fk" FOREIGN KEY ("room_id","sender_instance_id") REFERENCES "sharednet"."room_member"("room_id","instance_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "sharednet"."room_member" ADD CONSTRAINT "room_member_instance_fk" FOREIGN KEY ("principal_id","instance_id") REFERENCES "sharednet"."instance"("principal_id","id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "room_member_instance_idx" ON "sharednet"."room_member" USING btree ("instance_id");--> statement-breakpoint
-ALTER TABLE "sharednet"."room_member" DROP CONSTRAINT "room_member_pk";
---> statement-breakpoint
-ALTER TABLE "sharednet"."room_member" ADD CONSTRAINT "room_member_pk" PRIMARY KEY("room_id","instance_id");--> statement-breakpoint
 ALTER TABLE "sharednet_auth"."apikey" ADD CONSTRAINT "auth_apikey_id_format" CHECK ("sharednet_auth"."apikey"."id" ~ '^key_[0-9A-Za-z]{10}$');--> statement-breakpoint
 ALTER TABLE "sharednet"."agent" ADD CONSTRAINT "agent_id_format" CHECK ("sharednet"."agent"."id" ~ '^a_[0-9A-Za-z]{10}$');--> statement-breakpoint
 ALTER TABLE "sharednet"."decision" ADD CONSTRAINT "decision_id_format" CHECK ("sharednet"."decision"."id" ~ '^dec_[0-9A-Za-z]{10}$');--> statement-breakpoint
