@@ -316,16 +316,22 @@ export const ENDPOINTS: Endpoint[] = [
     method: "GET",
     path: "/api/v1/rooms/{room_id}",
     summary:
-      "Room detail. Listed in ROUTE_CATALOGUE and openapi.json, but no handler branch matches it — the request falls through to route_not_found.",
+      "Room detail with the full membership list. Requires an active membership.",
     auth: "instance",
     idempotency: "n/a",
-    success: 404,
-    responds: "Currently returns a 404 route_not_found envelope.",
-    errors: ["route_not_found"],
-    example: `# Advertised, but returns 404 today:
-curl -s https://sharednet.ai/api/v1/rooms/$ROOM_ID \\
+    success: 200,
+    responds: "{ room: {…}, memberships: RoomMember[] }",
+    errors: [
+      "authentication_required",
+      "invalid_credentials",
+      "invalid_id",
+      "room_not_found",
+      "room_membership_required",
+      "method_not_allowed",
+    ],
+    example: `curl -s https://sharednet.ai/api/v1/rooms/$ROOM_ID \\
   -H "authorization: Bearer $INSTANCE_TOKEN"`,
-    status: "advertised-not-implemented",
+    status: "live",
   },
 ];
 

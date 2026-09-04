@@ -308,6 +308,18 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     return { room: this.projectRoom(room), membership: { ...membership } };
   }
 
+  async getRoom(
+    auth: InstanceAuth,
+    roomId: RoomId,
+  ): Promise<{ room: Room; memberships: RoomMember[] }> {
+    const room = this.ownedRoom(auth, roomId);
+    this.requireMembership(auth, room.id);
+    const memberships = [...this.memberships.values()]
+      .filter((membership) => membership.room_id === room.id)
+      .map((membership) => ({ ...membership }));
+    return { room: this.projectRoom(room), memberships };
+  }
+
   async postMessage(
     auth: InstanceAuth,
     roomId: RoomId,

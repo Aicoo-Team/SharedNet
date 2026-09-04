@@ -606,8 +606,25 @@ export const ROUTE_CATALOGUE = [
     auth: "api_key",
     operationId: "startInstance",
   },
+  {
+    method: "GET",
+    path: "/api/v1/instances/current",
+    auth: "instance",
+    operationId: "getCurrentInstance",
+  },
+  {
+    method: "POST",
+    path: "/api/v1/instances/current/heartbeat",
+    auth: "instance",
+    operationId: "heartbeat",
+  },
   { method: "POST", path: "/api/v1/rooms", auth: "instance", operationId: "createRoom" },
-  { method: "GET", path: "/api/v1/rooms/{room_id}", auth: "any", operationId: "getRoom" },
+  {
+    method: "GET",
+    path: "/api/v1/rooms/{room_id}",
+    auth: "instance",
+    operationId: "getRoom",
+  },
   {
     method: "POST",
     path: "/api/v1/rooms/{room_id}/join",
@@ -623,7 +640,7 @@ export const ROUTE_CATALOGUE = [
   {
     method: "GET",
     path: "/api/v1/rooms/{room_id}/messages",
-    auth: "any",
+    auth: "instance",
     operationId: "listMessages",
   },
 ] as const satisfies readonly RouteDefinition[];
@@ -678,6 +695,20 @@ export const OPENAPI_DOCUMENT = {
         responses: { "201": { description: "Instance and raw-once token" }, default: { description: "Error" } },
       },
     },
+    "/api/v1/instances/current": {
+      get: {
+        operationId: "getCurrentInstance",
+        security: [{ instanceToken: [] }],
+        responses: { "200": { description: "Principal, Agent, and Instance" }, default: { description: "Error" } },
+      },
+    },
+    "/api/v1/instances/current/heartbeat": {
+      post: {
+        operationId: "heartbeat",
+        security: [{ instanceToken: [] }],
+        responses: { "200": { description: "Renewed presence lease" }, default: { description: "Error" } },
+      },
+    },
     "/api/v1/rooms": {
       post: {
         operationId: "createRoom",
@@ -688,6 +719,7 @@ export const OPENAPI_DOCUMENT = {
     "/api/v1/rooms/{room_id}": {
       get: {
         operationId: "getRoom",
+        security: [{ instanceToken: [] }],
         parameters: [
           { name: "room_id", in: "path", required: true, schema: { type: "string", pattern: ROOM_ID_PATTERN.source } },
         ],
@@ -715,6 +747,7 @@ export const OPENAPI_DOCUMENT = {
       },
       get: {
         operationId: "listMessages",
+        security: [{ instanceToken: [] }],
         parameters: [
           { name: "room_id", in: "path", required: true, schema: { type: "string", pattern: ROOM_ID_PATTERN.source } },
         ],

@@ -257,3 +257,79 @@ describe("SharedNet V1 HTTP handler", () => {
     expect((await json(response)).error.code).toBe("idempotency_not_supported");
   });
 });
+
+describe("GET /api/v1/rooms/{room_id}", () => {
+  async function seededRoom() {
+    const store = makeStore();
+    const agent = await ensureDefaultAgent(store);
+    const { token } = await startInstance(store, agent.id);
+    const created = await request(store, "/api/v1/rooms", {
+      method: "POST",
+      headers: instanceHeaders(token, {
+        "content-type": "application/json",
+        "idempotency-key": crypto.randomUUID(),
+      }),
+      body: JSON.stringify({ name: "Detail room" }),
+    });
+    expect(created.status).toBe(201);
+    return { store, token, roomId: (await json(created)).room.id as string };
+  }
+
+  it("returns the Room and its memberships for a member Instance", async () => {
+    const { store, token, roomId } = await seededRoom();
+
+    const response = await request(store, `/api/v1/rooms/${roomId}`, {
+      headers: instanceHeaders(token),
+    });
+    const body = await json(response);
+
+    expect(response.status).toBe(200);
+    expect(body.room.id).toBe(roomId);
+    expect(body.memberships).toHaveLength(1);
+    expect(body.memberships[0].state).toBe("active");
+  });
+
+  it("rejects an account API key, which is the wrong credential class", async () => {
+    const { store, roomId } = await seededRoom();
+
+    const response = await request(store, `/api/v1/rooms/${roomId}`, {
+      headers: apiHeaders(),
+    });
+
+    expect(response.status).toBe(401);
+  });
+
+  it("answers 404 for a Room this Principal does not own", async () => {
+    const { store, token } = await seededRoom();
+
+    const response = await request(
+      store,
+      "/api/v1/rooms/rom_01m1nm376xd3cyszra28hdh6ar",
+      { headers: instanceHeaders(token) },
+    );
+
+    expect(response.status).toBe(404);
+  });
+
+  it("rejects a malformed Room id before any lookup", async () => {
+    const { store, token } = await seededRoom();
+
+    const response = await request(store, "/api/v1/rooms/not-a-room-id", {
+      headers: instanceHeaders(token),
+    });
+
+    expect(response.status).toBe(400);
+  });
+
+  it("allows only GET", async () => {
+    const { store, token, roomId } = await seededRoom();
+
+    const response = await request(store, `/api/v1/rooms/${roomId}`, {
+      method: "DELETE",
+      headers: instanceHeaders(token),
+    });
+
+    expect(response.status).toBe(405);
+    expect(response.headers.get("allow")).toBe("GET");
+  });
+});

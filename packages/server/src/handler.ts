@@ -297,6 +297,16 @@ export async function handleRequest(
       );
     }
 
+    const roomMatch = /^\/api\/v1\/rooms\/([^/]+)$/.exec(path);
+    if (roomMatch) {
+      if (request.method !== "GET") return routeMethodNotAllowed("GET");
+      const repository = getRepository();
+      const auth = await authenticateInstance(request, repository);
+      if (isResponse(auth)) return auth;
+      const roomId = parsePublicId(roomMatch[1], "rom");
+      return jsonResponse(await repository.getRoom(auth, roomId), { status: 200 });
+    }
+
     const messagesMatch = /^\/api\/v1\/rooms\/([^/]+)\/messages$/.exec(path);
     if (messagesMatch) {
       const repository = getRepository();

@@ -85,6 +85,10 @@ export interface SharedNetRepository {
     auth: InstanceAuth,
     roomId: RoomId,
   ): Promise<{ room: Room; membership: RoomMember }>;
+  getRoom(
+    auth: InstanceAuth,
+    roomId: RoomId,
+  ): Promise<{ room: Room; memberships: RoomMember[] }>;
   postMessage(
     auth: InstanceAuth,
     roomId: RoomId,

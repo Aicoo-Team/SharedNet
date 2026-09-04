@@ -458,6 +458,19 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
     });
   }
 
+  async getRoom(
+    auth: InstanceAuth,
+    roomId: RoomId,
+  ): Promise<{ room: Room; memberships: RoomMember[] }> {
+    const room = await this.ownedRoom(auth, roomId);
+    await this.requireMembership(auth, room.id);
+    const rows = await this.executor()
+      .select()
+      .from(roomMembers)
+      .where(eq(roomMembers.roomId, room.id));
+    return { room: projectRoom(room), memberships: rows.map(projectMembership) };
+  }
+
   async postMessage(
     auth: InstanceAuth,
     roomId: RoomId,

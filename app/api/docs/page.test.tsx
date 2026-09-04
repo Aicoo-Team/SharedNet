@@ -1,8 +1,8 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import { ENDPOINTS } from "@/src/api-docs/catalogue";
-import { ERROR_STATUS } from "@/packages/protocol/src/index.ts";
+import { ERROR_STATUS, ROUTE_CATALOGUE } from "@/packages/protocol/src/index.ts";
 
 import ApiDocsPage from "./page";
 
@@ -19,12 +19,19 @@ describe("SharedNet API reference page", () => {
     }
   });
 
-  it("marks routes that are advertised but unimplemented", () => {
+  it("documents every published route as implemented", () => {
     render(<ApiDocsPage />);
 
-    const card = document.getElementById("getRoom");
-    expect(card).not.toBeNull();
-    expect(within(card as HTMLElement).getByText("Not implemented")).toBeVisible();
+    expect(ENDPOINTS.every((endpoint) => endpoint.status === "live")).toBe(true);
+    expect(screen.queryByText("Not implemented")).toBeNull();
+  });
+
+  it("keeps the reference in step with the published route catalogue", () => {
+    render(<ApiDocsPage />);
+
+    for (const route of ROUTE_CATALOGUE) {
+      expect(document.getElementById(route.operationId)).not.toBeNull();
+    }
   });
 
   it("renders every protocol error code so the table cannot drift", () => {
