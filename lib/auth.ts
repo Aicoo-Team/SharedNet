@@ -24,6 +24,61 @@ const POSTGRES_ENVIRONMENT_NAMES = [
   "SHAREDNET_POSTGRES_URL",
 ] as const;
 
+/**
+ * The origins the Dashboard is actually served from in production.
+ *
+ * Better Auth checks the Origin header against this list before accepting a
+ * state-changing request, so it is CSRF defence and not merely configuration:
+ * an origin listed here can drive an authenticated session.
+ */
+const PRODUCTION_ORIGINS = [
+  "https://sharednet.ai",
+  "https://www.sharednet.ai",
+] as const;
+
+/**
+ * Loopback origins for local development. Both spellings of both ports are
+ * listed because `localhost` and `127.0.0.1` are distinct origins to a browser,
+ * and `next dev` lands on 3000 or 3001 depending on what is already bound.
+ *
+ * These are deliberately withheld in production: trusting a developer's
+ * loopback origin there would let any page they happen to be running drive a
+ * live session, which is exactly the request the Origin check exists to reject.
+ */
+const DEVELOPMENT_ORIGINS = [
+  "http://localhost:3000",
+  "http://localhost:3001",
+  "http://127.0.0.1:3000",
+  "http://127.0.0.1:3001",
+] as const;
+
+/**
+ * Resolves the origins trusted in addition to `baseURL`, whose own origin Better
+ * Auth always trusts.
+ *
+ * `VERCEL_URL` is the deployment's own hostname, so a preview build trusts
+ * itself without every preview URL having to be configured by hand.
+ */
+export function resolveTrustedOrigins(
+  env: Record<string, string | undefined>,
+): string[] {
+  const origins = new Set<string>(PRODUCTION_ORIGINS);
+
+  if (env.NODE_ENV !== "production") {
+    for (const origin of DEVELOPMENT_ORIGINS) origins.add(origin);
+  }
+
+  const deploymentHost = env.VERCEL_URL?.trim();
+  if (deploymentHost) origins.add(`https://${deploymentHost}`);
+
+  for (const entry of (env.SHAREDNET_TRUSTED_ORIGINS ?? "").split(",")) {
+    const origin = entry.trim();
+    if (origin) origins.add(origin);
+  }
+
+  return [...origins];
+}
+
 type AuthDatabase = NonNullable<BetterAuthOptions["database"]>;
 
 export type CreateSharedNetAuthOptions = {
@@ -31,6 +86,7 @@ export type CreateSharedNetAuthOptions = {
   baseURL: string;
   database: AuthDatabase;
   secret: string;
+  trustedOrigins?: string[];
 };
 
 function requiredEnvironment(name: string): string {
@@ -76,6 +132,7 @@ export function createSharedNetAuth({
   baseURL,
   database,
   secret,
+  trustedOrigins,
 }: CreateSharedNetAuthOptions) {
   return betterAuth({
     advanced: {
@@ -105,6 +162,7 @@ export function createSharedNetAuth({
         }
       }),
     },
+    trustedOrigins,
     plugins: [
       apiKey({
         customKeyGenerator: () => generateSecret("snk"),
@@ -145,6 +203,7 @@ function createRuntimeAuth() {
     baseURL: requiredEnvironment("BETTER_AUTH_URL"),
     database: resolveAuthDatabase(),
     secret: requiredEnvironment("BETTER_AUTH_SECRET"),
+    trustedOrigins: resolveTrustedOrigins(process.env),
   });
 }
 
