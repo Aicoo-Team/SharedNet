@@ -227,16 +227,21 @@ function AuthenticatedProductShell({ children }: { children: ReactNode }) {
   );
 }
 
+/** Routes that render without a session and outside the product chrome. */
+const PUBLIC_PATHS = new Set([
+  "/",
+  "/about",
+  "/api/docs",
+  "/developers",
+  "/login",
+  "/protocol",
+  "/skills",
+]);
+
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
 
-  if (
-    pathname === "/" ||
-    pathname === "/about" ||
-    pathname === "/login" ||
-    pathname === "/protocol" ||
-    pathname === "/developers"
-  ) {
+  if (PUBLIC_PATHS.has(pathname)) {
     return <>{children}</>;
   }
   return <AuthenticatedProductShell>{children}</AuthenticatedProductShell>;
