@@ -22,11 +22,11 @@ import {
 } from "./sharednet-context";
 
 const NOW = "2026-09-03T05:00:00+00:00";
-const PRINCIPAL_ID = "pri_w7ytve6398hy7gmjsk1c9q78hb";
-const FRESH_PRINCIPAL_ID = "pri_aazfk64j9gfsx8jqge5sexpnt9";
-const AGENT_ID = "agt_9na1xvqrr7jxaf5wr0pmabdk31";
+const PRINCIPAL_ID = "p_7CPHtWFsFn";
+const FRESH_PRINCIPAL_ID = "p_odPBQxqOcm";
+const AGENT_ID = "a_XHEYHw3zh8";
 const RUNTIME_ID = "rt_brv633yxv2c0vbranwet0ekyfp";
-const INSTANCE_ID = "ins_wtw6f0hj3gvhftknfr99370v1j";
+const INSTANCE_ID = "i_xQqH1Bafyt";
 const ROOM_ID = "room_launch";
 const SECOND_ROOM_ID = "room_review";
 const DECISION_ID = "decision_region";
@@ -49,7 +49,6 @@ const network = {
   edges: [],
   instances: [],
   principal,
-  runtimes: [],
 };
 
 const freshNetwork = {
@@ -84,13 +83,13 @@ const actor = {
   agent_id: AGENT_ID,
   instance_id: INSTANCE_ID,
   principal_id: PRINCIPAL_ID,
-  runtime_id: RUNTIME_ID,
 };
 
 const roomDetail = {
   memberships: [
     {
       agent_id: AGENT_ID,
+      instance_id: INSTANCE_ID,
       joined_at: NOW,
       last_read_sequence: 1,
       left_at: null,
@@ -136,7 +135,6 @@ const decision = {
     agent_id: AGENT_ID,
     instance_id: INSTANCE_ID,
     principal_id: PRINCIPAL_ID,
-    runtime_id: RUNTIME_ID,
   },
   resolved_at: null,
   response_mode: "text",

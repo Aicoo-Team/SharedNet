@@ -127,7 +127,7 @@ async function provisionPrincipalForUser(user: { id: string; name: string }) {
       .values({
         authUserId: user.id,
         displayName: user.name,
-        id: generatePublicId("pri"),
+        id: generatePublicId("p"),
       })
       .onConflictDoNothing({ target: principals.authUserId });
   } catch {

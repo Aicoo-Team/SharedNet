@@ -313,7 +313,7 @@ export async function writeSession(
   paths: StoragePaths,
   session: StoredSession,
 ): Promise<void> {
-  if (!/^ins_[A-Za-z0-9_-]+$/.test(session.instance_id)) {
+  if (!/^i_[A-Za-z0-9_-]+$/.test(session.instance_id)) {
     throw localError("invalid_local_state", "The Instance ID is invalid.");
   }
   await writeSecureJson(join(paths.sessionsDir, `${session.instance_id}.json`), session);
@@ -362,7 +362,7 @@ export async function readSessionById(
   paths: StoragePaths,
   instanceId: string,
 ): Promise<StoredSession | null> {
-  if (!/^ins_[A-Za-z0-9_-]+$/.test(instanceId)) {
+  if (!/^i_[A-Za-z0-9_-]+$/.test(instanceId)) {
     throw localError("invalid_session_id", "The Instance ID is invalid.");
   }
   const raw = await readSecureFile(join(paths.sessionsDir, `${instanceId}.json`));
@@ -370,7 +370,7 @@ export async function readSessionById(
 }
 
 export async function deleteSession(paths: StoragePaths, instanceId: string): Promise<void> {
-  if (!/^ins_[A-Za-z0-9_-]+$/.test(instanceId)) return;
+  if (!/^i_[A-Za-z0-9_-]+$/.test(instanceId)) return;
   const path = join(paths.sessionsDir, `${instanceId}.json`);
   const raw = await readSecureFile(path);
   if (raw === null) return;

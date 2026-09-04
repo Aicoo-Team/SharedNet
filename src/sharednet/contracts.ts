@@ -6,7 +6,6 @@ type BrandedId<Name extends string> = string & {
 
 export type PrincipalId = BrandedId<"PrincipalId">;
 export type AgentId = BrandedId<"AgentId">;
-export type RuntimeId = BrandedId<"RuntimeId">;
 export type InstanceId = BrandedId<"InstanceId">;
 export type PairingId = BrandedId<"PairingId">;
 export type RoomId = BrandedId<"RoomId">;
@@ -20,7 +19,6 @@ export type ActorProjection = {
   agent_id: AgentId;
   instance_id?: InstanceId;
   principal_id: PrincipalId;
-  runtime_id: RuntimeId;
 };
 
 export type PrincipalProjection = {
@@ -33,25 +31,13 @@ export type PrincipalProjection = {
 
 export type AgentProjection = {
   agent_id: AgentId;
-  capabilities: string[];
   created_at: string;
   diagnostic_label: string;
   discoverability: boolean;
   official: boolean;
   principal_id: PrincipalId;
   role: string;
-  runtime_kind: string;
   summary: string;
-};
-
-export type RuntimeProjection = {
-  agent_id: AgentId;
-  created_at: string;
-  principal_id: PrincipalId;
-  runtime_id: RuntimeId;
-  runtime_kind: string;
-  status: "active" | "revoked";
-  workspace_label: string | null;
 };
 
 export type InstanceProjection = {
@@ -60,10 +46,17 @@ export type InstanceProjection = {
   expires_at: string;
   instance_id: InstanceId;
   last_seen_at: string;
+  /**
+   * Presence is lease-driven, so it answers "is something actively renewing
+   * this?" rather than "did this ever exist". heartbeat_state names which of
+   * those two the caller is looking at.
+   */
+  heartbeat_state: "renewing" | "never_started" | "stopped";
   presence: "online" | "offline";
   principal_id: PrincipalId;
-  runtime_id: RuntimeId;
   runtime_type: string;
+  /** Runtime build, device id, workspace, OS — diagnostic, never authorization. */
+  runtime_metadata: Record<string, string>;
   started_at: string;
   status: "online" | "ended";
   workspace_label: string | null;
@@ -94,6 +87,7 @@ export type RoomProjection = {
 
 export type RoomMembership = {
   agent_id: AgentId;
+  instance_id: InstanceId;
   joined_at: string;
   last_read_sequence: number;
   left_at: string | null;
@@ -143,10 +137,17 @@ export type DecisionProjection = {
   title: string;
 };
 
+/**
+ * One dot per Instance. `room_co_membership` is undirected and rendered dashed,
+ * weighted by how many Rooms the two Instances share.
+ *
+ * `delegation` and `verification` are directed and are not emitted yet: nothing
+ * in the schema records either. See the TODO in the V1 design spec.
+ */
 export type NetworkEdge = {
-  kind: "principal_connection" | "room_co_membership";
-  source_id: PrincipalId | AgentId;
-  target_id: PrincipalId | AgentId;
+  kind: "room_co_membership" | "delegation" | "verification";
+  source_id: InstanceId;
+  target_id: InstanceId;
   weight: number;
 };
 
@@ -156,7 +157,6 @@ export type NetworkProjection = {
   edges: NetworkEdge[];
   instances: InstanceProjection[];
   principal: PrincipalProjection;
-  runtimes: RuntimeProjection[];
 };
 
 export type ProvisionAccountResponse = {
@@ -182,16 +182,13 @@ type Predicate<T> = (value: unknown) => value is T;
 const IDENTIFIER = /^[A-Za-z][A-Za-z0-9_.:-]{0,127}$/;
 
 /**
- * V1 public identifiers: a typed prefix plus 26 Crockford base32 characters,
- * exactly as `packages/protocol` issues them. `rt_` is the one exception: V1
- * has no Runtime entity, so the Dashboard derives a stable Runtime id per
- * (Agent, runtime kind) pair — see deriveRuntimeId in server-client.ts.
+ * Public identifiers, per design spec section 4.1: a type prefix plus ten
+ * Base62 characters. There is no Runtime id — a Runtime is not addressable, so
+ * where an Instance runs is metadata on the Instance rather than an entity.
  */
-const ULID_BODY = "[0-9a-hjkmnp-tv-z]{26}";
-const PRINCIPAL_ID = new RegExp(`^pri_${ULID_BODY}$`);
-const AGENT_ID = new RegExp(`^agt_${ULID_BODY}$`);
-const RUNTIME_ID = new RegExp(`^rt_${ULID_BODY}$`);
-const INSTANCE_ID = new RegExp(`^ins_${ULID_BODY}$`);
+const PRINCIPAL_ID = /^p_[0-9A-Za-z]{10}$/;
+const AGENT_ID = /^a_[0-9A-Za-z]{10}$/;
+const INSTANCE_ID = /^i_[0-9A-Za-z]{10}$/;
 const CURSOR = /^cursor_(?:0|[1-9][0-9]*)$/;
 
 function hasExactKeys(
@@ -222,6 +219,15 @@ function isNullable<T>(value: unknown, predicate: Predicate<T>): value is T | nu
 
 function isArrayOf<T>(value: unknown, predicate: Predicate<T>): value is T[] {
   return Array.isArray(value) && value.every(predicate);
+}
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.values(value).every((entry) => typeof entry === "string")
+  );
 }
 
 function isNonNegativeInteger(value: unknown): value is number {
@@ -264,10 +270,6 @@ function isAgentId(value: unknown): value is AgentId {
   return isString(value) && AGENT_ID.test(value);
 }
 
-function isRuntimeId(value: unknown): value is RuntimeId {
-  return isString(value) && RUNTIME_ID.test(value);
-}
-
 function isInstanceId(value: unknown): value is InstanceId {
   return isString(value) && INSTANCE_ID.test(value);
 }
@@ -277,22 +279,12 @@ function isRoomCursor(value: unknown): value is RoomCursor {
 }
 
 function isActorProjection(value: unknown): value is ActorProjection {
-  const withInstance = hasExactKeys(value, [
-    "principal_id",
-    "agent_id",
-    "runtime_id",
-    "instance_id",
-  ]);
-  const withoutInstance = hasExactKeys(value, [
-    "principal_id",
-    "agent_id",
-    "runtime_id",
-  ]);
+  const withInstance = hasExactKeys(value, ["principal_id", "agent_id", "instance_id"]);
+  const withoutInstance = hasExactKeys(value, ["principal_id", "agent_id"]);
   if (!withInstance && !withoutInstance) return false;
   return (
     isPrincipalId(value.principal_id) &&
     isAgentId(value.agent_id) &&
-    isRuntimeId(value.runtime_id) &&
     (!withInstance || isInstanceId(value.instance_id))
   );
 }
@@ -301,15 +293,9 @@ function isInstanceActorProjection(
   value: unknown,
 ): value is Required<ActorProjection> {
   return (
-    hasExactKeys(value, [
-      "principal_id",
-      "agent_id",
-      "runtime_id",
-      "instance_id",
-    ]) &&
+    hasExactKeys(value, ["principal_id", "agent_id", "instance_id"]) &&
     isPrincipalId(value.principal_id) &&
     isAgentId(value.agent_id) &&
-    isRuntimeId(value.runtime_id) &&
     isInstanceId(value.instance_id)
   );
 }
@@ -341,8 +327,6 @@ export function isAgentProjection(value: unknown): value is AgentProjection {
       "diagnostic_label",
       "role",
       "summary",
-      "runtime_kind",
-      "capabilities",
       "discoverability",
       "official",
       "created_at",
@@ -352,31 +336,8 @@ export function isAgentProjection(value: unknown): value is AgentProjection {
     isNonEmptyString(value.diagnostic_label) &&
     isNonEmptyString(value.role) &&
     isString(value.summary) &&
-    isNonEmptyString(value.runtime_kind) &&
-    isArrayOf(value.capabilities, isNonEmptyString) &&
     typeof value.discoverability === "boolean" &&
     typeof value.official === "boolean" &&
-    isTimestamp(value.created_at)
-  );
-}
-
-export function isRuntimeProjection(value: unknown): value is RuntimeProjection {
-  return (
-    hasExactKeys(value, [
-      "runtime_id",
-      "principal_id",
-      "agent_id",
-      "runtime_kind",
-      "workspace_label",
-      "status",
-      "created_at",
-    ]) &&
-    isRuntimeId(value.runtime_id) &&
-    isPrincipalId(value.principal_id) &&
-    isAgentId(value.agent_id) &&
-    isNonEmptyString(value.runtime_kind) &&
-    isNullable(value.workspace_label, isNonEmptyString) &&
-    (value.status === "active" || value.status === "revoked") &&
     isTimestamp(value.created_at)
   );
 }
@@ -389,11 +350,12 @@ export function isInstanceProjection(
       "instance_id",
       "principal_id",
       "agent_id",
-      "runtime_id",
       "runtime_type",
+      "runtime_metadata",
       "workspace_label",
       "status",
       "presence",
+      "heartbeat_state",
       "started_at",
       "last_seen_at",
       "expires_at",
@@ -402,11 +364,14 @@ export function isInstanceProjection(
     isInstanceId(value.instance_id) &&
     isPrincipalId(value.principal_id) &&
     isAgentId(value.agent_id) &&
-    isRuntimeId(value.runtime_id) &&
     isNonEmptyString(value.runtime_type) &&
+    isStringRecord(value.runtime_metadata) &&
     isNullable(value.workspace_label, isNonEmptyString) &&
     (value.status === "online" || value.status === "ended") &&
     (value.presence === "online" || value.presence === "offline") &&
+    (value.heartbeat_state === "renewing" ||
+      value.heartbeat_state === "never_started" ||
+      value.heartbeat_state === "stopped") &&
     isTimestamp(value.started_at) &&
     isTimestamp(value.last_seen_at) &&
     isTimestamp(value.expires_at) &&
@@ -469,6 +434,7 @@ function isRoomMembership(value: unknown): value is RoomMembership {
       "room_id",
       "principal_id",
       "agent_id",
+      "instance_id",
       "status",
       "joined_at",
       "left_at",
@@ -477,6 +443,7 @@ function isRoomMembership(value: unknown): value is RoomMembership {
     isIdentifier(value.room_id) &&
     isPrincipalId(value.principal_id) &&
     isAgentId(value.agent_id) &&
+    isInstanceId(value.instance_id) &&
     (value.status === "active" || value.status === "left") &&
     isTimestamp(value.joined_at) &&
     isNullable(value.left_at, isTimestamp) &&
@@ -583,19 +550,14 @@ export function isDecisionProjection(
 }
 
 function isNetworkEdge(value: unknown): value is NetworkEdge {
-  if (
-    !hasExactKeys(value, ["kind", "source_id", "target_id", "weight"]) ||
-    !isPositiveInteger(value.weight)
-  ) {
-    return false;
-  }
-  if (value.kind === "principal_connection") {
-    return isPrincipalId(value.source_id) && isPrincipalId(value.target_id);
-  }
   return (
-    value.kind === "room_co_membership" &&
-    isAgentId(value.source_id) &&
-    isAgentId(value.target_id)
+    hasExactKeys(value, ["kind", "source_id", "target_id", "weight"]) &&
+    isPositiveInteger(value.weight) &&
+    (value.kind === "room_co_membership" ||
+      value.kind === "delegation" ||
+      value.kind === "verification") &&
+    isInstanceId(value.source_id) &&
+    isInstanceId(value.target_id)
   );
 }
 
@@ -605,14 +567,12 @@ export function isNetworkProjection(value: unknown): value is NetworkProjection 
       "principal",
       "connected_principals",
       "agents",
-      "runtimes",
       "instances",
       "edges",
     ]) &&
     isPrincipalProjection(value.principal) &&
     isArrayOf(value.connected_principals, isPrincipalProjection) &&
     isArrayOf(value.agents, isAgentProjection) &&
-    isArrayOf(value.runtimes, isRuntimeProjection) &&
     isArrayOf(value.instances, isInstanceProjection) &&
     isArrayOf(value.edges, isNetworkEdge)
   );

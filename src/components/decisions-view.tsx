@@ -85,10 +85,6 @@ function DecisionFacts({ decision }: { decision: DecisionProjection }) {
             <dd>{decision.requester.agent_id}</dd>
           </div>
           <div>
-            <dt>Requester Runtime</dt>
-            <dd>{decision.requester.runtime_id}</dd>
-          </div>
-          <div>
             <dt>Requester Instance</dt>
             <dd>{decision.requester.instance_id}</dd>
           </div>

@@ -36,8 +36,6 @@ import {
   type RoomMembership,
   type RoomMessage,
   type RoomSummary,
-  type RuntimeId,
-  type RuntimeProjection,
 } from "./contracts";
 
 /**
@@ -78,25 +76,35 @@ function cursor(sequence: number): RoomCursor {
 }
 
 /**
- * V1 has no Runtime entity — an Instance carries its runtime kind directly.
- * The Dashboard still groups Instances under a Runtime, so derive one stable
- * id per (Agent, runtime kind) pair by reusing the Agent's ULID body. The same
- * pair always yields the same id, which is what the network graph needs.
+ * Presence is a lease, not a flag. An Instance counts as online only while
+ * something is actively renewing it through the heartbeat endpoint; the lease
+ * is PRESENCE_LEASE_MS wide, so a session that registers and stops calling goes
+ * offline shortly after. heartbeat_state separates the two ways an Instance can
+ * be offline, because "nothing ever drove this" and "the driver stopped" look
+ * identical otherwise.
  */
-function deriveRuntimeId(agentId: AgentId, runtimeKind: string): RuntimeId {
-  const body = String(agentId).slice(4);
-  const marker = runtimeKind === "codex" ? "c" : runtimeKind === "claude-code" ? "d" : "z";
-  return `rt_${marker}${body.slice(1)}` as RuntimeId;
-}
+function presenceOf(
+  instance: {
+    state: string;
+    leaseExpiresAt: Date | string;
+    lastSeenAt: Date | string;
+    startedAt: Date | string;
+  },
+  now: number,
+): { presence: "online" | "offline"; heartbeat_state: "renewing" | "never_started" | "stopped" } {
+  const ms = (value: Date | string) =>
+    value instanceof Date ? value.getTime() : Date.parse(String(value));
 
-function isOnline(instance: {
-  state: string;
-  leaseExpiresAt: Date | string;
-}, now: number): boolean {
-  const lease = instance.leaseExpiresAt instanceof Date
-    ? instance.leaseExpiresAt.getTime()
-    : Date.parse(String(instance.leaseExpiresAt));
-  return instance.state === "active" && lease + PRESENCE_LEASE_GRACE_MS > now;
+  if (instance.state === "active" && ms(instance.leaseExpiresAt) > now) {
+    return { presence: "online", heartbeat_state: "renewing" };
+  }
+  // lastSeenAt only advances on heartbeat, so an Instance still carrying its
+  // registration timestamp was never driven by anything.
+  const neverRenewed = ms(instance.lastSeenAt) <= ms(instance.startedAt);
+  return {
+    presence: "offline",
+    heartbeat_state: neverRenewed ? "never_started" : "stopped",
+  };
 }
 
 function principalProjection(row: {
@@ -121,17 +129,15 @@ function agentProjection(row: {
   description: string | null;
   isDefault: boolean;
   createdAt: Date | string;
-}, runtimeKind: string): AgentProjection {
+}): AgentProjection {
   return {
     agent_id: row.id as AgentId,
-    capabilities: ["rooms", "rooms.messages"],
     created_at: requiredIso(row.createdAt),
     diagnostic_label: row.displayName ?? `@${row.handle}`,
     discoverability: false,
     official: row.isDefault,
     principal_id: row.principalId as PrincipalId,
     role: row.isDefault ? "default" : "agent",
-    runtime_kind: runtimeKind,
     summary: row.description ?? `Agent @${row.handle}`,
   };
 }
@@ -139,13 +145,11 @@ function agentProjection(row: {
 function actor(
   agentId: string,
   principalId: string,
-  runtimeKind: string,
   instanceId?: string,
 ): ActorProjection {
   const projection: ActorProjection = {
     agent_id: agentId as AgentId,
     principal_id: principalId as PrincipalId,
-    runtime_id: deriveRuntimeId(agentId as AgentId, runtimeKind),
   };
   if (instanceId !== undefined) {
     projection.instance_id = instanceId as InstanceId;
@@ -170,27 +174,6 @@ export class SharedNetServerClient {
       throw new SharedNetApiError("principal_not_found", 404, "No Principal for this account");
     }
     return row;
-  }
-
-  /** Runtime kind of an Agent's most recent Instance, for display only. */
-  private async runtimeKinds(agentIds: string[]): Promise<Map<string, string>> {
-    const kinds = new Map<string, string>();
-    if (agentIds.length === 0) return kinds;
-
-    const rows = await this.database()
-      .select({
-        agentId: instances.agentId,
-        runtimeKind: instances.runtimeKind,
-        startedAt: instances.startedAt,
-      })
-      .from(instances)
-      .where(inArray(instances.agentId, agentIds as `agt_${string}`[]))
-      .orderBy(desc(instances.startedAt));
-
-    for (const row of rows) {
-      if (!kinds.has(row.agentId)) kinds.set(row.agentId, row.runtimeKind);
-    }
-    return kinds;
   }
 
   async provisionAccount(authUserId: string): Promise<ProvisionAccountResponse> {
@@ -270,18 +253,10 @@ export class SharedNetServerClient {
         .orderBy(asc(messages.sequence)),
     ]);
 
-    const agentIds = [
-      ...new Set([
-        room.creatorAgentId,
-        ...memberRows.map((member) => member.agentId),
-        ...messageRows.map((message) => message.senderAgentId),
-      ]),
-    ];
-    const kinds = await this.runtimeKinds(agentIds);
-    const kindOf = (agentId: string) => kinds.get(agentId) ?? "custom";
 
     const memberships: RoomMembership[] = memberRows.map((member) => ({
       agent_id: member.agentId as AgentId,
+      instance_id: member.instanceId as InstanceId,
       joined_at: requiredIso(member.joinedAt),
       last_read_sequence: 0,
       left_at: iso(member.leftAt),
@@ -301,7 +276,6 @@ export class SharedNetServerClient {
       sender: actor(
         message.senderAgentId,
         message.senderPrincipalId,
-        kindOf(message.senderAgentId),
         message.senderInstanceId,
       ),
       sequence: message.sequence,
@@ -315,7 +289,7 @@ export class SharedNetServerClient {
       room: {
         access_policy: "principal_only",
         created_at: requiredIso(room.createdAt),
-        creator: actor(room.creatorAgentId, room.principalId, kindOf(room.creatorAgentId)),
+        creator: actor(room.creatorAgentId, room.principalId),
         description: room.description,
         name: room.name,
         room_id: room.id as RoomId,
@@ -343,41 +317,31 @@ export class SharedNetServerClient {
         .orderBy(desc(instances.startedAt)),
     ]);
 
-    const kinds = await this.runtimeKinds(agentRows.map((agent) => agent.id));
-    const kindOf = (agentId: string) => kinds.get(agentId) ?? "custom";
-
     const projectedInstances: InstanceProjection[] = instanceRows.map((instance) => ({
       agent_id: instance.agentId as AgentId,
       ended_at: iso(instance.endedAt),
       expires_at: requiredIso(instance.tokenExpiresAt),
       instance_id: instance.id as InstanceId,
       last_seen_at: requiredIso(instance.lastSeenAt),
-      presence: isOnline(instance, now) ? "online" : "offline",
+      ...presenceOf(instance, now),
       principal_id: instance.principalId as PrincipalId,
-      runtime_id: deriveRuntimeId(instance.agentId as AgentId, instance.runtimeKind),
       runtime_type: instance.runtimeKind,
+      runtime_metadata: {
+        cli_version: instance.cliVersion,
+        ...(instance.runtimeMetadata ?? {}),
+      },
       started_at: requiredIso(instance.startedAt),
       status: instance.state === "active" ? "online" : "ended",
       workspace_label: instance.cliVersion || null,
     }));
 
-    /** One Runtime per (Agent, runtime kind) actually observed. */
-    const runtimeMap = new Map<string, RuntimeProjection>();
-    for (const instance of instanceRows) {
-      const runtimeId = deriveRuntimeId(instance.agentId as AgentId, instance.runtimeKind);
-      if (runtimeMap.has(runtimeId)) continue;
-      runtimeMap.set(runtimeId, {
-        agent_id: instance.agentId as AgentId,
-        created_at: requiredIso(instance.startedAt),
-        principal_id: instance.principalId as PrincipalId,
-        runtime_id: runtimeId,
-        runtime_kind: instance.runtimeKind,
-        status: instance.revokedAt ? "revoked" : "active",
-        workspace_label: instance.cliVersion || null,
-      });
-    }
-
-    /** Agents that share a Room are connected. */
+    /**
+     * One dot per Instance. A dashed edge joins two Instances for every Room
+     * they are both active in; weight is how many Rooms they share.
+     *
+     * Directed delegation and verification edges are not emitted: nothing in
+     * the schema records either yet. See the TODO in the V1 design spec.
+     */
     const roomRows = await database
       .select({ id: rooms.id })
       .from(rooms)
@@ -393,14 +357,17 @@ export class SharedNetServerClient {
       const byRoom = new Map<string, string[]>();
       for (const member of memberRows) {
         if (member.state !== "active") continue;
-        byRoom.set(member.roomId, [...(byRoom.get(member.roomId) ?? []), member.agentId]);
+        byRoom.set(member.roomId, [
+          ...(byRoom.get(member.roomId) ?? []),
+          member.instanceId,
+        ]);
       }
       const weights = new Map<string, NetworkEdge>();
-      for (const agentIds of byRoom.values()) {
-        for (let i = 0; i < agentIds.length; i += 1) {
-          for (let j = i + 1; j < agentIds.length; j += 1) {
-            const [source, target] = [agentIds[i], agentIds[j]].sort();
-            const key = `${source}|${target}`;
+      for (const instanceIds of byRoom.values()) {
+        const unique = [...new Set(instanceIds)].sort();
+        for (let i = 0; i < unique.length; i += 1) {
+          for (let j = i + 1; j < unique.length; j += 1) {
+            const key = `${unique[i]}|${unique[j]}`;
             const existing = weights.get(key);
             if (existing) {
               existing.weight += 1;
@@ -408,8 +375,8 @@ export class SharedNetServerClient {
             }
             weights.set(key, {
               kind: "room_co_membership",
-              source_id: source as AgentId,
-              target_id: target as AgentId,
+              source_id: unique[i] as InstanceId,
+              target_id: unique[j] as InstanceId,
               weight: 1,
             });
           }
@@ -419,12 +386,11 @@ export class SharedNetServerClient {
     }
 
     return {
-      agents: agentRows.map((agent) => agentProjection(agent, kindOf(agent.id))),
+      agents: agentRows.map((agent) => agentProjection(agent)),
       connected_principals: [],
       edges,
       instances: projectedInstances,
       principal: principalProjection(principal),
-      runtimes: [...runtimeMap.values()],
     };
   }
 
@@ -436,9 +402,8 @@ export class SharedNetServerClient {
       .where(eq(decisions.principalId, principal.id))
       .orderBy(desc(decisions.createdAt));
 
-    const kinds = await this.runtimeKinds(rows.map((row) => row.requestedByAgentId));
     return {
-      decisions: rows.map((row) => this.decisionProjection(row, kinds)),
+      decisions: rows.map((row) => this.decisionProjection(row)),
     };
   }
 
@@ -492,13 +457,11 @@ export class SharedNetServerClient {
       .where(eq(decisions.id, decisionId as never))
       .returning();
 
-    const kinds = await this.runtimeKinds([updated.requestedByAgentId]);
-    return this.decisionProjection(updated, kinds);
+    return this.decisionProjection(updated);
   }
 
   private decisionProjection(
     row: typeof decisions.$inferSelect,
-    kinds: Map<string, string>,
   ): DecisionProjection {
     return {
       consequence: null,
@@ -509,10 +472,6 @@ export class SharedNetServerClient {
         agent_id: row.requestedByAgentId as AgentId,
         instance_id: row.requestedByInstanceId as InstanceId,
         principal_id: row.principalId as PrincipalId,
-        runtime_id: deriveRuntimeId(
-          row.requestedByAgentId as AgentId,
-          kinds.get(row.requestedByAgentId) ?? "custom",
-        ),
       },
       resolved_at: iso(row.resolvedAt),
       response_mode: row.mode,

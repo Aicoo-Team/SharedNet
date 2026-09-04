@@ -22,7 +22,6 @@ import type {
   RoomDetail,
   RoomId,
   RoomSummary,
-  RuntimeId,
 } from "@/src/sharednet/contracts";
 
 import { ChatView } from "./chat-view";
@@ -43,14 +42,12 @@ const NOW = "2026-09-03T05:12:00+00:00";
 const EARLIER = "2026-09-03T04:45:00+00:00";
 const ROOM_ID = "room_Launch:Alpha.7" as RoomId;
 const SECOND_ROOM_ID = "room_Review:Beta.2" as RoomId;
-const PRINCIPAL_ID = "pri_w7ytve6398hy7gmjsk1c9q78hb" as PrincipalId;
-const SECOND_PRINCIPAL_ID = "pri_6rhsfa99r2k4k1maeznwjqmvjq" as PrincipalId;
-const AGENT_ID = "agt_9na1xvqrr7jxaf5wr0pmabdk31" as AgentId;
-const SECOND_AGENT_ID = "agt_3d66bhm9wapsp7ctpknettc3d9" as AgentId;
-const RUNTIME_ID = "rt_brv633yxv2c0vbranwet0ekyfp" as RuntimeId;
-const SECOND_RUNTIME_ID = "rt_5c7z5dta42rkp1bzrhgkj293zw" as RuntimeId;
-const INSTANCE_ID = "ins_wtw6f0hj3gvhftknfr99370v1j" as InstanceId;
-const SECOND_INSTANCE_ID = "ins_a8wagc2788k6rc9p37eza14ass" as InstanceId;
+const PRINCIPAL_ID = "p_7CPHtWFsFn" as PrincipalId;
+const SECOND_PRINCIPAL_ID = "p_V80npHhNlU" as PrincipalId;
+const AGENT_ID = "a_XHEYHw3zh8" as AgentId;
+const SECOND_AGENT_ID = "a_5NyJVth3Ci" as AgentId;
+const INSTANCE_ID = "i_xQqH1Bafyt" as InstanceId;
+const SECOND_INSTANCE_ID = "i_GbUH57mxOZ" as InstanceId;
 const FIRST_MESSAGE_ID = "message_launch.7" as MessageId;
 const REPLY_MESSAGE_ID = "message_launch.12" as MessageId;
 const PRODUCT_SHELL_CSS = readFileSync(
@@ -90,6 +87,7 @@ const roomDetail: RoomDetail = {
   memberships: [
     {
       agent_id: AGENT_ID,
+      instance_id: INSTANCE_ID,
       joined_at: EARLIER,
       last_read_sequence: 12,
       left_at: null,
@@ -99,6 +97,7 @@ const roomDetail: RoomDetail = {
     },
     {
       agent_id: SECOND_AGENT_ID,
+      instance_id: SECOND_INSTANCE_ID,
       joined_at: EARLIER,
       last_read_sequence: 10,
       left_at: null,
@@ -120,7 +119,6 @@ const roomDetail: RoomDetail = {
         agent_id: SECOND_AGENT_ID,
         instance_id: SECOND_INSTANCE_ID,
         principal_id: SECOND_PRINCIPAL_ID,
-        runtime_id: SECOND_RUNTIME_ID,
       },
       sequence: 12,
       tags: [],
@@ -137,7 +135,6 @@ const roomDetail: RoomDetail = {
         agent_id: AGENT_ID,
         instance_id: INSTANCE_ID,
         principal_id: PRINCIPAL_ID,
-        runtime_id: RUNTIME_ID,
       },
       sequence: 7,
       tags: [],
@@ -151,7 +148,6 @@ const roomDetail: RoomDetail = {
       agent_id: AGENT_ID,
       instance_id: INSTANCE_ID,
       principal_id: PRINCIPAL_ID,
-      runtime_id: RUNTIME_ID,
     },
     description: roomSummary.description,
     name: roomSummary.name,
@@ -165,26 +161,22 @@ const networkProjection: NetworkProjection = {
   agents: [
     {
       agent_id: AGENT_ID,
-      capabilities: ["rooms"],
       created_at: EARLIER,
       diagnostic_label: "Codex",
       discoverability: false,
       official: false,
       principal_id: PRINCIPAL_ID,
       role: "Local agent",
-      runtime_kind: "codex",
       summary: "Launch owner",
     },
     {
       agent_id: SECOND_AGENT_ID,
-      capabilities: ["verification"],
       created_at: EARLIER,
       diagnostic_label: "Reviewer",
       discoverability: true,
       official: false,
       principal_id: SECOND_PRINCIPAL_ID,
       role: "Review agent",
-      runtime_kind: "claude-code",
       summary: "Launch reviewer",
     },
   ],
@@ -205,9 +197,10 @@ const networkProjection: NetworkProjection = {
       expires_at: "2026-09-03T05:13:30+00:00",
       instance_id: INSTANCE_ID,
       last_seen_at: NOW,
+      heartbeat_state: "renewing",
+      runtime_metadata: { cli_version: "0.1.0", device_id: "dev-a" },
       presence: "online",
       principal_id: PRINCIPAL_ID,
-      runtime_id: RUNTIME_ID,
       runtime_type: "codex",
       started_at: EARLIER,
       status: "online",
@@ -219,9 +212,10 @@ const networkProjection: NetworkProjection = {
       expires_at: EARLIER,
       instance_id: SECOND_INSTANCE_ID,
       last_seen_at: EARLIER,
+      heartbeat_state: "stopped",
+      runtime_metadata: { cli_version: "0.1.0" },
       presence: "offline",
       principal_id: SECOND_PRINCIPAL_ID,
-      runtime_id: SECOND_RUNTIME_ID,
       runtime_type: "claude-code",
       started_at: EARLIER,
       status: "online",
@@ -235,26 +229,6 @@ const networkProjection: NetworkProjection = {
     principal_id: PRINCIPAL_ID,
     summary: "Signed-in account",
   },
-  runtimes: [
-    {
-      agent_id: AGENT_ID,
-      created_at: EARLIER,
-      principal_id: PRINCIPAL_ID,
-      runtime_id: RUNTIME_ID,
-      runtime_kind: "codex",
-      status: "active",
-      workspace_label: "/workspace/sharednet",
-    },
-    {
-      agent_id: SECOND_AGENT_ID,
-      created_at: EARLIER,
-      principal_id: SECOND_PRINCIPAL_ID,
-      runtime_id: SECOND_RUNTIME_ID,
-      runtime_kind: "claude-code",
-      status: "active",
-      workspace_label: null,
-    },
-  ],
 };
 
 const DRAFT = "Review the release evidence before launch.";
@@ -440,30 +414,29 @@ describe("SharedNet Rooms", () => {
     expect(screen.getByText("Latest cursor cursor_12")).toBeVisible();
   });
 
-  it("shows active member identities with lease-derived Runtime and Instance presence", () => {
+  it("shows member identities per Instance with heartbeat-derived presence", () => {
     renderChat({ network: networkProjection });
 
-    const members = screen.getByRole("list", { name: "Active Room members" });
+    fireEvent.click(screen.getByRole("button", { name: "Room actions" }));
+    const members = screen.getByRole("list", { name: "Room members" });
     const owner = within(members).getByRole("article", {
-      name: `Room member ${AGENT_ID}`,
+      name: `Room member ${INSTANCE_ID}`,
     });
     const reviewer = within(members).getByRole("article", {
-      name: `Room member ${SECOND_AGENT_ID}`,
+      name: `Room member ${SECOND_INSTANCE_ID}`,
     });
 
     expect(owner).toHaveAttribute("data-presence", "online");
     expect(owner).toHaveTextContent(`Principal${PRINCIPAL_ID}`);
     expect(owner).toHaveTextContent(`Agent${AGENT_ID}`);
-    expect(owner).toHaveTextContent(`Runtime${RUNTIME_ID}`);
     expect(owner).toHaveTextContent(`Instance${INSTANCE_ID}`);
-    expect(owner).toHaveTextContent("Online · lease active");
+    expect(owner).toHaveTextContent("Heartbeat renewing · lease active");
 
     expect(reviewer).toHaveAttribute("data-presence", "offline");
     expect(reviewer).toHaveTextContent(`Principal${SECOND_PRINCIPAL_ID}`);
     expect(reviewer).toHaveTextContent(`Agent${SECOND_AGENT_ID}`);
-    expect(reviewer).toHaveTextContent(`Runtime${SECOND_RUNTIME_ID}`);
     expect(reviewer).toHaveTextContent(`Instance${SECOND_INSTANCE_ID}`);
-    expect(reviewer).toHaveTextContent("Offline · lease expired or ended");
+    expect(reviewer).toHaveTextContent("Heartbeat stopped");
   });
 
   it("keeps active membership and presence visible when the Room has no messages", () => {
@@ -472,9 +445,10 @@ describe("SharedNet Rooms", () => {
       selectedRoom: { ...roomDetail, messages: [] },
     });
 
-    expect(screen.getByRole("list", { name: "Active Room members" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Room actions" }));
+    expect(screen.getByRole("list", { name: "Room members" })).toBeVisible();
     expect(
-      screen.getByRole("article", { name: `Room member ${AGENT_ID}` }),
+      screen.getByRole("article", { name: `Room member ${INSTANCE_ID}` }),
     ).toBeVisible();
     expect(screen.getByText("No messages yet")).toBeVisible();
   });
@@ -500,7 +474,6 @@ describe("SharedNet Rooms", () => {
 
     expect(provenance).toHaveTextContent(`Principal${PRINCIPAL_ID}`);
     expect(provenance).toHaveTextContent(`Agent${AGENT_ID}`);
-    expect(provenance).toHaveTextContent(`Runtime${RUNTIME_ID}`);
     expect(provenance).toHaveTextContent(`Instance${INSTANCE_ID}`);
   });
 
@@ -511,7 +484,7 @@ describe("SharedNet Rooms", () => {
     const provenance = within(
       screen.getByRole("article", { name: "Message 7" }),
     ).getByLabelText("Sender provenance");
-    for (const id of [PRINCIPAL_ID, AGENT_ID, RUNTIME_ID, INSTANCE_ID]) {
+    for (const id of [PRINCIPAL_ID, AGENT_ID, INSTANCE_ID]) {
       expect(within(provenance).getByText(id)).toHaveClass("room-canonical-id");
     }
 

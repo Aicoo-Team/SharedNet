@@ -117,6 +117,7 @@ function projectMembership(row: typeof roomMembers.$inferSelect): RoomMember {
   return {
     room_id: row.roomId,
     agent_id: row.agentId,
+    instance_id: row.instanceId,
     state: row.state,
     joined_at: timestamp(row.joinedAt),
     left_at: row.leftAt ? timestamp(row.leftAt) : null,
@@ -189,7 +190,7 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
         await this.executor()
           .insert(principals)
           .values({
-            id: generatePublicId("pri"),
+            id: generatePublicId("p"),
             authUserId: keyRecord.referenceId,
             displayName: null,
             createdAt: now,
@@ -252,7 +253,7 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
         await this.executor()
           .insert(agents)
           .values({
-            id: generatePublicId("agt"),
+            id: generatePublicId("a"),
             principalId: auth.principalId,
             handle: "default",
             displayName: null,
@@ -294,7 +295,7 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
       const [record] = await this.executor()
         .insert(instances)
         .values({
-          id: generatePublicId("ins"),
+          id: generatePublicId("i"),
           principalId: auth.principalId,
           agentId,
           issuedByKeyId: auth.actorId,
@@ -409,6 +410,7 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
           principalId: auth.principalId,
           roomId: room.id,
           agentId: auth.agentId,
+          instanceId: auth.instanceId,
           state: "active",
           joinedAt: createdAt,
           leftAt: null,
@@ -438,12 +440,13 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
           principalId: auth.principalId,
           roomId,
           agentId: auth.agentId,
+          instanceId: auth.instanceId,
           state: "active",
           joinedAt,
           leftAt: null,
         })
         .onConflictDoUpdate({
-          target: [roomMembers.roomId, roomMembers.agentId],
+          target: [roomMembers.roomId, roomMembers.instanceId],
           set: {
             state: "active",
             leftAt: null,
@@ -662,7 +665,7 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
         and(
           eq(roomMembers.principalId, auth.principalId),
           eq(roomMembers.roomId, roomId),
-          eq(roomMembers.agentId, auth.agentId),
+          eq(roomMembers.instanceId, auth.instanceId),
           eq(roomMembers.state, "active"),
         ),
       )

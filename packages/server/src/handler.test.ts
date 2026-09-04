@@ -167,14 +167,30 @@ describe("SharedNet V1 HTTP handler", () => {
     expect(conflict.status).toBe(409);
     expect((await json(conflict)).error.code).toBe("idempotency_conflict");
 
-    const joined = await request(store, `/api/v1/rooms/${roomId}/join`, {
+    // Membership is per Instance, so a sibling Instance of the same Agent is
+    // not a member until it joins for itself.
+    const strangerPost = await request(store, `/api/v1/rooms/${roomId}/messages`, {
       method: "POST",
       headers: instanceHeaders(registrations[1].token, {
+        "content-type": "application/json",
         "idempotency-key": crypto.randomUUID(),
       }),
+      body: JSON.stringify({ content: "should not land" }),
     });
-    expect(joined.status).toBe(200);
-    expect((await json(joined)).membership.agent_id).toBe(agent.id);
+    expect(strangerPost.status).toBe(403);
+
+    for (const registration of registrations.slice(1)) {
+      const joined = await request(store, `/api/v1/rooms/${roomId}/join`, {
+        method: "POST",
+        headers: instanceHeaders(registration.token, {
+          "idempotency-key": crypto.randomUUID(),
+        }),
+      });
+      expect(joined.status).toBe(200);
+      const membership = (await json(joined)).membership;
+      expect(membership.agent_id).toBe(agent.id);
+      expect(membership.instance_id).toBe(registration.instance.id);
+    }
 
     const posted = await Promise.all(
       registrations.map(({ token }, index) =>
@@ -304,7 +320,7 @@ describe("GET /api/v1/rooms/{room_id}", () => {
 
     const response = await request(
       store,
-      "/api/v1/rooms/rom_01m1nm376xd3cyszra28hdh6ar",
+      "/api/v1/rooms/rom_lxw0rfaLIb",
       { headers: instanceHeaders(token) },
     );
 

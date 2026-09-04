@@ -20,6 +20,24 @@ function buildLocalInstruction(draft: string, roomId: RoomId | null): string {
   return `Use SharedNet Room ${roomId}. Join it if needed, retrieve its current history first, then post this draft locally as a plain-text message from your current local Agent Instance. Return the resulting message ID/cursor:\n\n${draft}`;
 }
 
+/**
+ * Presence is a lease that something has to keep renewing, so "Offline" alone
+ * cannot distinguish a session that stopped from one that never ran. Say which.
+ */
+function describeHeartbeat(
+  instance: { heartbeat_state: string; last_seen_at: string } | undefined,
+): string {
+  if (!instance) return "No Instance presence is projected.";
+  switch (instance.heartbeat_state) {
+    case "renewing":
+      return "Heartbeat renewing · lease active";
+    case "never_started":
+      return "No heartbeat ever received · nothing is driving this Instance";
+    default:
+      return `Heartbeat stopped · last seen ${instance.last_seen_at}`;
+  }
+}
+
 export function ChatView() {
   const {
     error,
@@ -33,6 +51,7 @@ export function ChatView() {
   const [copyState, setCopyState] = useState<CopyState>("idle");
   const [draft, setDraft] = useState("");
   const [instruction, setInstruction] = useState<LocalInstruction | null>(null);
+  const [membersOpen, setMembersOpen] = useState(false);
   const continueButtonRef = useRef<HTMLButtonElement>(null);
   const copyOperationRevisionRef = useRef(0);
   const copyButtonRef = useRef<HTMLButtonElement>(null);
@@ -41,6 +60,7 @@ export function ChatView() {
   const restoreFocusRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const selectedSummary = rooms.find((room) => room.room_id === selectedRoomId);
+
   const detail =
     selectedRoom?.room.room_id === selectedRoomId ? selectedRoom : null;
   const orderedMessages = useMemo(
@@ -50,6 +70,12 @@ export function ChatView() {
       ),
     [detail],
   );
+  /**
+   * A member is an Instance, not an Agent. Two sessions of one Agent are two
+   * rows here, because they hold separate credentials and join and leave
+   * independently. The Runtime tier that used to sit between Agent and Instance
+   * is gone: where a session runs is metadata on the Instance itself.
+   */
   const activeMembers = useMemo(
     () =>
       (detail?.memberships ?? [])
@@ -60,43 +86,23 @@ export function ChatView() {
               candidate.agent_id === membership.agent_id &&
               candidate.principal_id === membership.principal_id,
           );
-          const runtimes = (network?.runtimes ?? [])
-            .filter(
-              (runtime) =>
-                runtime.agent_id === membership.agent_id &&
-                runtime.principal_id === membership.principal_id,
-            )
-            .map((runtime) => {
-              const instances = (network?.instances ?? []).filter(
-                (instance) =>
-                  instance.runtime_id === runtime.runtime_id &&
-                  instance.agent_id === membership.agent_id &&
-                  instance.principal_id === membership.principal_id,
-              );
-              return {
-                instances,
-                presence:
-                  runtime.status === "active" &&
-                  instances.some((instance) => instance.presence === "online")
-                    ? "online"
-                    : "offline",
-                runtime,
-              };
-            });
+          const instance = (network?.instances ?? []).find(
+            (candidate) => candidate.instance_id === membership.instance_id,
+          );
           return {
             agent,
+            instance,
             membership,
             presence:
-              network === null
-                ? "unknown"
-                : runtimes.some((runtime) => runtime.presence === "online")
-                  ? "online"
-                  : "offline",
-            runtimes,
+              network === null ? "unknown" : (instance?.presence ?? "offline"),
           };
         }),
     [detail, network],
   );
+
+  useEffect(() => {
+    setMembersOpen(false);
+  }, [selectedRoomId]);
 
   useEffect(() => {
     if (instruction !== null) {
@@ -254,18 +260,25 @@ export function ChatView() {
             </div>
             {detail ? (
               <div className="room-facts" aria-label="Room facts">
-                <span>
-                  {selectedSummary?.member_count ??
-                    detail.memberships.filter(
-                      (membership) => membership.status === "active",
-                    ).length} members
-                </span>
+                <span>{activeMembers.length} members</span>
                 <span>{`Latest cursor ${detail.next_cursor}`}</span>
                 <time
                   dateTime={selectedSummary?.updated_at ?? detail.room.updated_at}
                 >
                   {selectedSummary?.updated_at ?? detail.room.updated_at}
                 </time>
+                <button
+                  aria-expanded={membersOpen}
+                  aria-label="Room actions"
+                  className="room-overflow"
+                  onClick={() => setMembersOpen((open) => !open)}
+                  type="button"
+                >
+                  &#8943;
+                </button>
+                {membersOpen ? null : (
+                  <span className="room-overflow-hint" role="none" />
+                )}
               </div>
             ) : null}
           </header>
@@ -277,16 +290,24 @@ export function ChatView() {
               <section
                 aria-labelledby="active-room-members-title"
                 className="room-members"
+                hidden={!membersOpen}
               >
                 <header>
-                  <h2 id="active-room-members-title">Active members</h2>
+                  <h2 id="active-room-members-title">Members</h2>
                   <span>{activeMembers.length}</span>
+                  <button
+                    className="room-members-close"
+                    onClick={() => setMembersOpen(false)}
+                    type="button"
+                  >
+                    Close
+                  </button>
                 </header>
-                <ul aria-label="Active Room members" className="room-member-list">
+                <ul aria-label="Room members" className="room-member-list">
                   {activeMembers.map((member) => (
-                    <li key={member.membership.agent_id}>
+                    <li key={member.membership.instance_id}>
                       <article
-                        aria-label={`Room member ${member.membership.agent_id}`}
+                        aria-label={`Room member ${member.membership.instance_id}`}
                         data-presence={member.presence}
                       >
                         <header>
@@ -303,9 +324,9 @@ export function ChatView() {
                         </header>
                         <dl>
                           <div>
-                            <dt>Principal</dt>
+                            <dt>Instance</dt>
                             <dd className="room-canonical-id">
-                              {member.membership.principal_id}
+                              {member.membership.instance_id}
                             </dd>
                           </div>
                           <div>
@@ -314,59 +335,34 @@ export function ChatView() {
                               {member.membership.agent_id}
                             </dd>
                           </div>
+                          <div>
+                            <dt>Principal</dt>
+                            <dd className="room-canonical-id">
+                              {member.membership.principal_id}
+                            </dd>
+                          </div>
                         </dl>
-                        {member.presence === "unknown" ? (
-                          <p>Runtime and Instance presence is unavailable.</p>
-                        ) : member.runtimes.length === 0 ? (
-                          <p>No Runtime or Instance presence is projected.</p>
-                        ) : (
-                          <ul
-                            aria-label={`Runtime presence for ${member.membership.agent_id}`}
-                            className="room-runtime-list"
-                          >
-                            {member.runtimes.map((runtime) => (
-                              <li
-                                data-presence={runtime.presence}
-                                key={runtime.runtime.runtime_id}
-                              >
-                                <span>Runtime</span>
-                                <code className="room-canonical-id">
-                                  {runtime.runtime.runtime_id}
-                                </code>
-                                <small>
-                                  {runtime.presence === "online"
-                                    ? "Online · active Instance lease"
-                                    : "Offline · no active Instance lease"}
-                                </small>
-                                {runtime.instances.length > 0 ? (
-                                  <ul
-                                    aria-label={`Instances for ${runtime.runtime.runtime_id}`}
-                                    className="room-instance-list"
-                                  >
-                                    {runtime.instances.map((instance) => (
-                                      <li
-                                        data-presence={instance.presence}
-                                        key={instance.instance_id}
-                                      >
-                                        <span>Instance</span>
-                                        <code className="room-canonical-id">
-                                          {instance.instance_id}
-                                        </code>
-                                        <small>
-                                          {instance.presence === "online"
-                                            ? "Online · lease active"
-                                            : "Offline · lease expired or ended"}
-                                        </small>
-                                      </li>
-                                    ))}
-                                  </ul>
-                                ) : (
-                                  <p>No Instances projected.</p>
-                                )}
-                              </li>
-                            ))}
-                          </ul>
-                        )}
+                        <p className="room-member-heartbeat">
+                          {describeHeartbeat(member.instance)}
+                        </p>
+                        {member.instance &&
+                        Object.keys(member.instance.runtime_metadata).length > 0 ? (
+                          <details className="room-member-runtime">
+                            <summary>
+                              Runtime · {member.instance.runtime_type}
+                            </summary>
+                            <dl>
+                              {Object.entries(member.instance.runtime_metadata).map(
+                                ([key, value]) => (
+                                  <div key={key}>
+                                    <dt>{key}</dt>
+                                    <dd>{value}</dd>
+                                  </div>
+                                ),
+                              )}
+                            </dl>
+                          </details>
+                        ) : null}
                       </article>
                     </li>
                   ))}
@@ -411,12 +407,6 @@ export function ChatView() {
                           <dt>Agent</dt>
                           <dd className="room-canonical-id">
                             {message.sender.agent_id}
-                          </dd>
-                        </div>
-                        <div>
-                          <dt>Runtime</dt>
-                          <dd className="room-canonical-id">
-                            {message.sender.runtime_id}
                           </dd>
                         </div>
                         <div>

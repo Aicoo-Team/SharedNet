@@ -1,24 +1,35 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 
-export const PUBLIC_ID_PREFIXES = ["pri", "key", "agt", "ins", "rom", "msg", "dec"] as const;
+export const PUBLIC_ID_PREFIXES = ["p", "key", "a", "i", "rom", "msg", "dec"] as const;
 export type PublicIdPrefix = (typeof PUBLIC_ID_PREFIXES)[number];
 
-export const PUBLIC_ID_PATTERN = /^(?:pri|key|agt|ins|rom|msg|dec)_[0-9a-hjkmnp-tv-z]{26}$/;
-export const PRINCIPAL_ID_PATTERN = /^pri_[0-9a-hjkmnp-tv-z]{26}$/;
-export const API_KEY_ID_PATTERN = /^key_[0-9a-hjkmnp-tv-z]{26}$/;
-export const AGENT_ID_PATTERN = /^agt_[0-9a-hjkmnp-tv-z]{26}$/;
-export const INSTANCE_ID_PATTERN = /^ins_[0-9a-hjkmnp-tv-z]{26}$/;
-export const ROOM_ID_PATTERN = /^rom_[0-9a-hjkmnp-tv-z]{26}$/;
-export const MESSAGE_ID_PATTERN = /^msg_[0-9a-hjkmnp-tv-z]{26}$/;
-export const DECISION_ID_PATTERN = /^dec_[0-9a-hjkmnp-tv-z]{26}$/;
-export const REQUEST_ID_PATTERN = /^req_[0-9a-hjkmnp-tv-z]{26}$/;
+/**
+ * Opaque identifier format, per design spec section 4.1: a type prefix plus a
+ * case-sensitive ten-character Base62 body drawn from a cryptographically
+ * secure source.
+ *
+ * The body is deliberately NOT sortable. An earlier implementation used a
+ * ULID-style time prefix, which leaks each record's creation time and relative
+ * order to anyone who sees an id. These are stable public addresses that appear
+ * in URLs and logs, so they carry no timestamp and no ordering.
+ */
+export const ID_BODY = "[0-9A-Za-z]{10}";
+export const PUBLIC_ID_PATTERN = /^(?:p|key|a|i|rom|msg|dec)_[0-9A-Za-z]{10}$/;
+export const PRINCIPAL_ID_PATTERN = /^p_[0-9A-Za-z]{10}$/;
+export const API_KEY_ID_PATTERN = /^key_[0-9A-Za-z]{10}$/;
+export const AGENT_ID_PATTERN = /^a_[0-9A-Za-z]{10}$/;
+export const INSTANCE_ID_PATTERN = /^i_[0-9A-Za-z]{10}$/;
+export const ROOM_ID_PATTERN = /^rom_[0-9A-Za-z]{10}$/;
+export const MESSAGE_ID_PATTERN = /^msg_[0-9A-Za-z]{10}$/;
+export const DECISION_ID_PATTERN = /^dec_[0-9A-Za-z]{10}$/;
+export const REQUEST_ID_PATTERN = /^req_[0-9A-Za-z]{10}$/;
 export const SNK_SECRET_PATTERN = /^snk_[A-Za-z0-9_-]{43}$/;
 export const SNI_SECRET_PATTERN = /^sni_[A-Za-z0-9_-]{43}$/;
 
-export type PrincipalId = `pri_${string}`;
+export type PrincipalId = `p_${string}`;
 export type ApiKeyId = `key_${string}`;
-export type AgentId = `agt_${string}`;
-export type InstanceId = `ins_${string}`;
+export type AgentId = `a_${string}`;
+export type InstanceId = `i_${string}`;
 export type RoomId = `rom_${string}`;
 export type MessageId = `msg_${string}`;
 export type DecisionId = `dec_${string}`;
@@ -36,13 +47,13 @@ export type PublicId =
   | MessageId
   | DecisionId;
 
-export type IdForPrefix<P extends PublicIdPrefix> = P extends "pri"
+export type IdForPrefix<P extends PublicIdPrefix> = P extends "p"
   ? PrincipalId
   : P extends "key"
     ? ApiKeyId
-    : P extends "agt"
+    : P extends "a"
       ? AgentId
-      : P extends "ins"
+      : P extends "i"
         ? InstanceId
         : P extends "rom"
           ? RoomId
@@ -51,10 +62,10 @@ export type IdForPrefix<P extends PublicIdPrefix> = P extends "pri"
             : DecisionId;
 
 const ID_PATTERNS: Record<PublicIdPrefix, RegExp> = {
-  pri: PRINCIPAL_ID_PATTERN,
+  p: PRINCIPAL_ID_PATTERN,
   key: API_KEY_ID_PATTERN,
-  agt: AGENT_ID_PATTERN,
-  ins: INSTANCE_ID_PATTERN,
+  a: AGENT_ID_PATTERN,
+  i: INSTANCE_ID_PATTERN,
   rom: ROOM_ID_PATTERN,
   msg: MESSAGE_ID_PATTERN,
   dec: DECISION_ID_PATTERN,
@@ -62,28 +73,34 @@ const ID_PATTERNS: Record<PublicIdPrefix, RegExp> = {
 
 const CROCKFORD_LOWER = "0123456789abcdefghjkmnpqrstvwxyz";
 
-function encodeBase32(value: bigint, length: number): string {
-  let output = "";
-  let remaining = value;
-  for (let index = 0; index < length; index += 1) {
-    output = CROCKFORD_LOWER[Number(remaining & 31n)] + output;
-    remaining >>= 5n;
-  }
-  return output;
-}
+const BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+const ID_BODY_LENGTH = 10;
 
-function sortableBody(now = Date.now()): string {
-  const timestamp = encodeBase32(BigInt(now), 10);
-  const random = BigInt(`0x${randomBytes(10).toString("hex")}`);
-  return `${timestamp}${encodeBase32(random, 16)}`;
+/**
+ * Ten Base62 characters from a cryptographically secure source.
+ *
+ * Bytes >= 248 are rejected rather than reduced: 256 is not a multiple of 62,
+ * so a plain `byte % 62` would make the first eight characters measurably more
+ * likely than the rest. 248 is the largest multiple of 62 below 256.
+ */
+function randomBody(length = ID_BODY_LENGTH): string {
+  let body = "";
+  while (body.length < length) {
+    for (const byte of randomBytes(length)) {
+      if (byte >= 248) continue;
+      body += BASE62[byte % 62];
+      if (body.length === length) break;
+    }
+  }
+  return body;
 }
 
 export function generatePublicId<P extends PublicIdPrefix>(prefix: P): IdForPrefix<P> {
-  return `${prefix}_${sortableBody()}` as IdForPrefix<P>;
+  return `${prefix}_${randomBody()}` as IdForPrefix<P>;
 }
 
 export function generateRequestId(): RequestId {
-  return `req_${sortableBody()}`;
+  return `req_${randomBody()}`;
 }
 
 export function isPublicId<P extends PublicIdPrefix>(
@@ -182,6 +199,8 @@ export interface Room {
 export interface RoomMember {
   room_id: RoomId;
   agent_id: AgentId;
+  /** Membership is per Instance: two sessions of one Agent are two members. */
+  instance_id: InstanceId;
   state: "active" | "left";
   joined_at: Timestamp;
   left_at: Timestamp | null;

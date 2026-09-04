@@ -55,16 +55,16 @@ async function harness(
 }
 
 const defaultAgent = {
-  id: "agt_default",
-  principal_id: "pri_demo",
+  id: "a_default",
+  principal_id: "p_demo",
   handle: "default",
 };
 
 function instance(id: string) {
   return {
     id,
-    principal_id: "pri_demo",
-    agent_id: "agt_default",
+    principal_id: "p_demo",
+    agent_id: "a_default",
     runtime_kind: "codex",
     cli_version: "0.1.0",
     status: "online",
@@ -85,7 +85,7 @@ describe("sharednet CLI vertical slice", () => {
         {
           status: 201,
           body: {
-            instance: instance("ins_one"),
+            instance: instance("i_one"),
             token: "sni_do-not-print",
             heartbeat_after_seconds: 30,
           },
@@ -95,14 +95,14 @@ describe("sharednet CLI vertical slice", () => {
 
     expect(result.exitCode).toBe(0);
     expect(JSON.parse(result.stdout.join(""))).toEqual({
-      instance: instance("ins_one"),
-      session_id: "ins_one",
+      instance: instance("i_one"),
+      session_id: "i_one",
       heartbeat_after_seconds: 30,
     });
     expect(result.stderr).toEqual([]);
     expect(result.requests.map((request) => request.url)).toEqual([
       "http://127.0.0.1:3001/api/v1/agents/default",
-      "http://127.0.0.1:3001/api/v1/agents/agt_default/instances",
+      "http://127.0.0.1:3001/api/v1/agents/a_default/instances",
     ]);
     const registration = JSON.stringify(result.requests[1]?.init.body);
     expect(registration).not.toContain("provider-session-must-remain-local");
@@ -122,7 +122,7 @@ describe("sharednet CLI vertical slice", () => {
           {
             status: 201,
             body: {
-              instance: instance(`ins_${index + 1}`),
+              instance: instance(`i_${index + 1}`),
               token: `sni_${index + 1}`,
               heartbeat_after_seconds: 30,
             },
@@ -133,7 +133,7 @@ describe("sharednet CLI vertical slice", () => {
       sessions.push(JSON.parse(run.stdout[0]!).session_id);
     }
 
-    expect(sessions).toEqual(["ins_1", "ins_2", "ins_3", "ins_4"]);
+    expect(sessions).toEqual(["i_1", "i_2", "i_3", "i_4"]);
   });
 
   it("supports global --session before or after room commands and forwards API payloads", async () => {
@@ -144,7 +144,7 @@ describe("sharednet CLI vertical slice", () => {
         {
           status: 201,
           body: {
-            instance: instance("ins_chat"),
+            instance: instance("i_chat"),
             token: "sni_room-token",
             heartbeat_after_seconds: 30,
           },
@@ -157,7 +157,7 @@ describe("sharednet CLI vertical slice", () => {
     // with an explicit state root in the dedicated integration test below.
     const missing = await harness([
       "--session",
-      "ins_chat",
+      "i_chat",
       "room",
       "post",
       "rom_team",
@@ -173,7 +173,7 @@ describe("sharednet CLI vertical slice", () => {
       "messages",
       "rom_team",
       "--session",
-      "ins_chat",
+      "i_chat",
       "--json",
     ]);
     expect(after.exitCode).toBe(2);
@@ -217,8 +217,8 @@ describe("sharednet CLI vertical slice", () => {
       XDG_STATE_HOME: join(sharedRoot, "state"),
       CODEX_SESSION_ID: "same-codex-session",
     };
-    const firstAgent = { ...defaultAgent, id: "agt_first", principal_id: "pri_first" };
-    const secondAgent = { ...defaultAgent, id: "agt_second", principal_id: "pri_second" };
+    const firstAgent = { ...defaultAgent, id: "a_first", principal_id: "p_first" };
+    const secondAgent = { ...defaultAgent, id: "a_second", principal_id: "p_second" };
 
     const first = await harness(
       ["session", "start", "--json"],
@@ -228,9 +228,9 @@ describe("sharednet CLI vertical slice", () => {
           status: 201,
           body: {
             instance: {
-              ...instance("ins_first"),
-              principal_id: "pri_first",
-              agent_id: "agt_first",
+              ...instance("i_first"),
+              principal_id: "p_first",
+              agent_id: "a_first",
             },
             token: "sni_first",
             heartbeat_after_seconds: 30,
@@ -249,9 +249,9 @@ describe("sharednet CLI vertical slice", () => {
           status: 201,
           body: {
             instance: {
-              ...instance("ins_second"),
-              principal_id: "pri_second",
-              agent_id: "agt_second",
+              ...instance("i_second"),
+              principal_id: "p_second",
+              agent_id: "a_second",
             },
             token: "sni_second",
             heartbeat_after_seconds: 30,
@@ -262,10 +262,10 @@ describe("sharednet CLI vertical slice", () => {
     );
 
     expect(second.exitCode).toBe(0);
-    expect(JSON.parse(second.stdout.join(""))).toMatchObject({ session_id: "ins_second" });
+    expect(JSON.parse(second.stdout.join(""))).toMatchObject({ session_id: "i_second" });
     expect(second.requests.map((request) => request.url)).toEqual([
       "http://127.0.0.1:3001/api/v1/agents/default",
-      "http://127.0.0.1:3001/api/v1/agents/agt_second/instances",
+      "http://127.0.0.1:3001/api/v1/agents/a_second/instances",
     ]);
   });
 
@@ -285,7 +285,7 @@ describe("sharednet CLI vertical slice", () => {
         {
           status: 201,
           body: {
-            instance: instance("ins_default"),
+            instance: instance("i_default"),
             token: "sni_default",
             heartbeat_after_seconds: 30,
           },
@@ -297,18 +297,18 @@ describe("sharednet CLI vertical slice", () => {
 
     const reviewerAgent = {
       ...defaultAgent,
-      id: "agt_reviewer",
+      id: "a_reviewer",
       handle: "reviewer",
       is_default: false,
     };
     const switched = await harness(
-      ["session", "start", "--agent", "agt_reviewer", "--json"],
+      ["session", "start", "--agent", "a_reviewer", "--json"],
       [
         { body: { agent: reviewerAgent } },
         {
           status: 201,
           body: {
-            instance: { ...instance("ins_reviewer"), agent_id: "agt_reviewer" },
+            instance: { ...instance("i_reviewer"), agent_id: "a_reviewer" },
             token: "sni_reviewer",
             heartbeat_after_seconds: 30,
           },
@@ -319,11 +319,11 @@ describe("sharednet CLI vertical slice", () => {
 
     expect(switched.exitCode).toBe(0);
     expect(JSON.parse(switched.stdout.join(""))).toMatchObject({
-      session_id: "ins_reviewer",
+      session_id: "i_reviewer",
     });
     expect(switched.requests.map((request) => request.url)).toEqual([
-      "http://127.0.0.1:3001/api/v1/agents/agt_reviewer",
-      "http://127.0.0.1:3001/api/v1/agents/agt_reviewer/instances",
+      "http://127.0.0.1:3001/api/v1/agents/a_reviewer",
+      "http://127.0.0.1:3001/api/v1/agents/a_reviewer/instances",
     ]);
   });
 });

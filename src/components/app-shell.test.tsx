@@ -18,8 +18,8 @@ vi.mock("next/navigation", () => ({
 }));
 
 const NOW = "2026-09-03T05:00:00+00:00";
-const PRINCIPAL_ID = "pri_w7ytve6398hy7gmjsk1c9q78hb";
-const SECOND_PRINCIPAL_ID = "pri_6rhsfa99r2k4k1maeznwjqmvjq";
+const PRINCIPAL_ID = "p_7CPHtWFsFn";
+const SECOND_PRINCIPAL_ID = "p_V80npHhNlU";
 
 const principal = {
   created_at: NOW,
@@ -35,7 +35,6 @@ const network = {
   edges: [],
   instances: [],
   principal,
-  runtimes: [],
 };
 
 const pendingDecision = {

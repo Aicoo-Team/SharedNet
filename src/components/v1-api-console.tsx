@@ -137,7 +137,7 @@ export function V1ApiConsole() {
     const key = value.key;
     if (
       typeof id !== "string" ||
-      !/^key_[0-9a-hjkmnp-tv-z]{26}$/.test(id) ||
+      !/^key_[0-9A-Za-z]{10}$/.test(id) ||
       typeof key !== "string" ||
       !/^snk_[A-Za-z0-9_-]{43}$/.test(key)
     ) {

@@ -6,27 +6,22 @@ import { useSharedNet } from "@/src/context/sharednet-context";
 import type {
   AgentId,
   AgentProjection,
+  InstanceId,
   InstanceProjection,
   NetworkEdge,
   NetworkProjection,
   PrincipalId,
   PrincipalProjection,
-  RuntimeProjection,
 } from "@/src/sharednet/contracts";
 
 type RelationshipScope = "intra" | "cross";
 
 type Point = Readonly<{ x: number; y: number }>;
 
-type RuntimeTree = Readonly<{
-  instances: InstanceProjection[];
-  runtime: RuntimeProjection;
-}>;
-
 type AgentTree = Readonly<{
   agent: AgentProjection;
+  instances: InstanceProjection[];
   presence: "online" | "offline";
-  runtimes: RuntimeTree[];
   template: boolean;
 }>;
 
@@ -43,9 +38,14 @@ type PrincipalPosition = Point &
     width: number;
   }>;
 
+/**
+ * The graph draws one dot per Instance. An Instance is the only thing that
+ * actually holds a credential, joins a Room, and sends a message, so it is the
+ * only node an edge can meaningfully connect.
+ */
 type NetworkLayout = Readonly<{
-  agentPositions: Map<AgentId, Point>;
   height: number;
+  instancePositions: Map<InstanceId, Point>;
   principalPositions: Map<PrincipalId, PrincipalPosition>;
   width: number;
 }>;
@@ -58,6 +58,7 @@ const PRINCIPAL_GROUP_GAP = 28;
 const PRINCIPAL_GROUP_TOP = 18;
 const PRINCIPAL_Y = 55;
 const AGENT_START_Y = 148;
+const INSTANCE_SPREAD = 46;
 const AGENT_GAP = 88;
 const MAX_VISIBLE_ROOM_EDGE_LINES = 8;
 
@@ -71,40 +72,24 @@ function joinAgentDescendants(
   agent: AgentProjection,
   network: NetworkProjection,
 ): AgentTree {
-  const runtimes = network.runtimes
+  const instances = network.instances
     .filter(
-      (runtime) =>
-        runtime.principal_id === agent.principal_id &&
-        runtime.agent_id === agent.agent_id,
+      (instance) =>
+        instance.principal_id === agent.principal_id &&
+        instance.agent_id === agent.agent_id,
     )
     .sort((left, right) =>
-      compareOpaqueIds(left.runtime_id, right.runtime_id),
-    )
-    .map((runtime) => ({
-      runtime,
-      instances: network.instances
-        .filter(
-          (instance) =>
-            instance.principal_id === agent.principal_id &&
-            instance.agent_id === agent.agent_id &&
-            instance.runtime_id === runtime.runtime_id,
-        )
-        .sort((left, right) =>
-          compareOpaqueIds(left.instance_id, right.instance_id),
-        ),
-    }));
-  const presence = runtimes.some((runtime) =>
-    runtime.instances.some((instance) => instance.presence === "online"),
-  )
-    ? "online"
-    : "offline";
+      compareOpaqueIds(left.instance_id, right.instance_id),
+    );
 
   return {
     agent,
-    presence,
-    runtimes,
+    instances,
+    presence: instances.some((instance) => instance.presence === "online")
+      ? "online"
+      : "offline",
     template:
-      agent.official && agent.discoverability && runtimes.length === 0,
+      agent.official && agent.discoverability && instances.length === 0,
   };
 }
 
@@ -168,7 +153,7 @@ function createNetworkLayout(principals: VisiblePrincipal[]): NetworkLayout {
     AGENT_START_Y + Math.max(0, maxAgentCount - 1) * AGENT_GAP + 86,
   );
   const firstGroupLeft = (width - contentWidth) / 2;
-  const agentPositions = new Map<AgentId, Point>();
+  const instancePositions = new Map<InstanceId, Point>();
   const principalPositions = new Map<PrincipalId, PrincipalPosition>();
 
   principals.forEach((principal, principalIndex) => {
@@ -183,15 +168,22 @@ function createNetworkLayout(principals: VisiblePrincipal[]): NetworkLayout {
       x,
       y: PRINCIPAL_Y,
     });
-    principal.agents.forEach(({ agent }, agentIndex) => {
-      agentPositions.set(agent.agent_id, {
-        x,
-        y: AGENT_START_Y + agentIndex * AGENT_GAP,
+    // Instances of one Agent fan out horizontally from that Agent's row so a
+    // dot always sits under the Agent it belongs to.
+    let row = 0;
+    principal.agents.forEach(({ instances }) => {
+      instances.forEach((instance, index) => {
+        const spread = (index - (instances.length - 1) / 2) * INSTANCE_SPREAD;
+        instancePositions.set(instance.instance_id, {
+          x: x + spread,
+          y: AGENT_START_Y + row * AGENT_GAP,
+        });
       });
+      row += 1;
     });
   });
 
-  return { agentPositions, height, principalPositions, width };
+  return { height, instancePositions, principalPositions, width };
 }
 
 function lineCoordinates(
@@ -219,20 +211,12 @@ function visibleNetworkEdges(
   edges: NetworkEdge[],
   layout: NetworkLayout,
 ): NetworkEdge[] {
-  return edges.filter((edge) => {
-    if (edge.kind === "room_co_membership") {
-      return (
-        layout.agentPositions.has(edge.source_id as AgentId) &&
-        layout.agentPositions.has(edge.target_id as AgentId)
-      );
-    }
-
-    return (
+  return edges.filter(
+    (edge) =>
       edge.source_id !== edge.target_id &&
-      layout.principalPositions.has(edge.source_id as PrincipalId) &&
-      layout.principalPositions.has(edge.target_id as PrincipalId)
-    );
-  });
+      layout.instancePositions.has(edge.source_id) &&
+      layout.instancePositions.has(edge.target_id),
+  );
 }
 
 function visibleEdgeLines(
@@ -240,41 +224,32 @@ function visibleEdgeLines(
   layout: NetworkLayout,
 ) {
   return edges.flatMap((edge, edgeIndex) => {
-    if (edge.kind === "room_co_membership") {
-      const source = layout.agentPositions.get(edge.source_id as AgentId);
-      const target = layout.agentPositions.get(edge.target_id as AgentId);
-      if (!source || !target) return [];
-      const visibleLineCount = Math.min(
-        edge.weight,
-        MAX_VISIBLE_ROOM_EDGE_LINES,
-      );
-      return Array.from({ length: visibleLineCount }, (_, weightIndex) => (
-        <line
-          {...lineCoordinates(source, target, weightIndex, visibleLineCount)}
-          data-edge-kind={edge.kind}
-          data-edge-source={edge.source_id}
-          data-edge-target={edge.target_id}
-          data-edge-weight={edge.weight}
-          key={`${edge.kind}:${edge.source_id}:${edge.target_id}:${edgeIndex}:${weightIndex}`}
-        />
-      ));
-    }
+    const source = layout.instancePositions.get(edge.source_id);
+    const target = layout.instancePositions.get(edge.target_id);
+    if (!source || !target) return [];
 
-    const source = layout.principalPositions.get(edge.source_id as PrincipalId);
-    const target = layout.principalPositions.get(edge.target_id as PrincipalId);
-    if (!source || !target || edge.source_id === edge.target_id) return [];
-    return [
+    // Shared-Room edges are undirected and drawn as one dashed line per Room,
+    // up to a cap. Delegation and verification are directed and drawn once;
+    // neither is emitted yet — nothing records them. See the design spec TODO.
+    const visibleLineCount =
+      edge.kind === "room_co_membership"
+        ? Math.min(edge.weight, MAX_VISIBLE_ROOM_EDGE_LINES)
+        : 1;
+
+    return Array.from({ length: visibleLineCount }, (_, weightIndex) => (
       <line
-        {...lineCoordinates(source, target, 0, 1)}
+        {...lineCoordinates(source, target, weightIndex, visibleLineCount)}
         data-edge-kind={edge.kind}
         data-edge-source={edge.source_id}
         data-edge-target={edge.target_id}
         data-edge-weight={edge.weight}
-        key={`${edge.kind}:${edge.source_id}:${edge.target_id}:${edgeIndex}`}
-      />,
-    ];
+        key={`${edge.kind}:${edge.source_id}:${edge.target_id}:${edgeIndex}:${weightIndex}`}
+        markerEnd={edge.kind === "room_co_membership" ? undefined : "url(#edge-arrow)"}
+      />
+    ));
   });
 }
+
 
 function AgentCard({
   agentTree,
@@ -283,7 +258,7 @@ function AgentCard({
   agentTree: AgentTree;
   onClose: () => void;
 }) {
-  const { agent, presence, runtimes, template } = agentTree;
+  const { agent, instances, presence, template } = agentTree;
 
   return (
     <aside aria-label="Agent Card" className="agent-card" role="region">
@@ -314,52 +289,40 @@ function AgentCard({
             {template ? <span className="agent-template-label">template</span> : null}
           </dd>
         </div>
-        <div>
-          <dt>Capabilities</dt>
-          <dd>
-            {agent.capabilities.length > 0 ? (
-              <ul className="agent-capabilities">
-                {agent.capabilities.map((capability) => (
-                  <li key={capability}>{capability}</li>
-                ))}
-              </ul>
-            ) : (
-              "None declared"
-            )}
-          </dd>
-        </div>
       </dl>
 
-      <section
-        aria-label="Registered Runtime and Instance descendants"
-        className="agent-descendants"
-      >
-        <h3>Runtime → Instance</h3>
-        {runtimes.length === 0 ? (
-          <p>No Runtimes registered.</p>
+      <section aria-label="Registered Instances" className="agent-descendants">
+        <h3>Instances</h3>
+        {instances.length === 0 ? (
+          <p>No Instances registered.</p>
         ) : (
-          <ol className="runtime-list">
-            {runtimes.map(({ instances, runtime }) => (
-              <li
-                aria-label={`Runtime ${runtime.runtime_id}`}
-                key={runtime.runtime_id}
-                role="group"
-              >
-                <span>Runtime ID</span>
-                <code>{runtime.runtime_id}</code>
-                {instances.length === 0 ? (
-                  <p>No Instances registered.</p>
-                ) : (
-                  <ol className="instance-list">
-                    {instances.map((instance) => (
-                      <li key={instance.instance_id}>
-                        <span>Instance ID</span>
-                        <code>{instance.instance_id}</code>
-                        <small>{instance.presence}</small>
-                      </li>
-                    ))}
-                  </ol>
-                )}
+          <ol className="instance-list">
+            {instances.map((instance) => (
+              <li key={instance.instance_id}>
+                <span>Instance ID</span>
+                <code>{instance.instance_id}</code>
+                <small>
+                  {instance.presence === "online"
+                    ? "Online · heartbeat renewing"
+                    : instance.heartbeat_state === "never_started"
+                      ? "Offline · no heartbeat ever received"
+                      : "Offline · heartbeat stopped"}
+                </small>
+                {Object.keys(instance.runtime_metadata).length > 0 ? (
+                  <details>
+                    <summary>Runtime · {instance.runtime_type}</summary>
+                    <dl>
+                      {Object.entries(instance.runtime_metadata).map(
+                        ([key, value]) => (
+                          <div key={key}>
+                            <dt>{key}</dt>
+                            <dd>{value}</dd>
+                          </div>
+                        ),
+                      )}
+                    </dl>
+                  </details>
+                ) : null}
               </li>
             ))}
           </ol>
@@ -369,32 +332,38 @@ function AgentCard({
   );
 }
 
-function AgentNode({
-  agentTree,
+/**
+ * One dot per Instance. The label carries the Agent it belongs to, because an
+ * Instance id alone says nothing about whose session it is, but the node's
+ * identity — and every edge endpoint — is the Instance.
+ */
+function InstanceNode({
+  agent,
+  instance,
   own,
   position,
   principalLeft,
   selected,
   onInspect,
 }: {
-  agentTree: AgentTree;
+  agent: AgentProjection;
+  instance: InstanceProjection;
   own: boolean;
   position: Point;
   principalLeft: number;
   selected: boolean;
   onInspect: () => void;
 }) {
-  const { agent, presence, template } = agentTree;
-
   return (
     <button
-      aria-label={`Inspect Agent ${agent.agent_id}`}
+      aria-label={`Inspect Instance ${instance.instance_id}`}
       aria-pressed={selected}
       className="relationship-node"
       data-agent-id={agent.agent_id}
+      data-instance-id={instance.instance_id}
       data-layout-x={position.x}
       data-layout-y={position.y}
-      data-presence={presence}
+      data-presence={instance.presence}
       data-principal={own ? "self" : "external"}
       onClick={onInspect}
       style={{
@@ -405,10 +374,9 @@ function AgentNode({
     >
       <span aria-hidden="true" className="relationship-node-mark" />
       <strong>{agent.diagnostic_label}</strong>
-      <code>{agent.agent_id}</code>
+      <code>{instance.instance_id}</code>
       <small>
-        <span>{presence}</span>
-        {template ? <em>template</em> : null}
+        <span>{instance.presence}</span>
       </small>
     </button>
   );
@@ -554,25 +522,30 @@ export function NetworkView() {
                       <code>{principalId}</code>
                     </header>
 
-                    {principal.agents.map((agentTree) => {
-                      const agentId = agentTree.agent.agent_id;
-                      const agentPosition = layout.agentPositions.get(agentId);
-                      if (!agentPosition) return null;
-                      return (
-                        <AgentNode
-                          agentTree={agentTree}
-                          key={agentId}
-                          onInspect={() => {
-                            setSelectedAgentId(agentId);
-                            setCardOpen(true);
-                          }}
-                          own={principal.own}
-                          position={agentPosition}
-                          principalLeft={position.left}
-                          selected={selectedAgent?.agent.agent_id === agentId}
-                        />
-                      );
-                    })}
+                    {principal.agents.flatMap((agentTree) =>
+                      agentTree.instances.map((instance) => {
+                        const nodePosition = layout.instancePositions.get(
+                          instance.instance_id,
+                        );
+                        if (!nodePosition) return null;
+                        const agentId = agentTree.agent.agent_id;
+                        return (
+                          <InstanceNode
+                            agent={agentTree.agent}
+                            instance={instance}
+                            key={instance.instance_id}
+                            onInspect={() => {
+                              setSelectedAgentId(agentId);
+                              setCardOpen(true);
+                            }}
+                            own={principal.own}
+                            position={nodePosition}
+                            principalLeft={position.left}
+                            selected={selectedAgent?.agent.agent_id === agentId}
+                          />
+                        );
+                      }),
+                    )}
 
                     {principal.agents.length === 0 ? (
                       <p className="principal-empty">

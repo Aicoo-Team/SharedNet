@@ -13,12 +13,12 @@ import {
   isRoomListResponse,
 } from "./contracts";
 
-const PRINCIPAL = "pri_01m1nj90d5wy76rb32rbnwzej5";
-const AGENT = "agt_01m1nj969rkab3r7zp7chy7mbb";
-const INSTANCE = "ins_01m1nm307r7h5hdnzkj8nf8asj";
-const ROOM = "rom_01m1nm376xd3cyszra28hdh6ar";
-const MESSAGE = "msg_01m1nhyqat4v2sbj0egzhvz0j1";
-const DECISION = "dec_01m1nhyx83r27x1pb5zv88sbkc";
+const PRINCIPAL = "p_ESSNaHrLYm";
+const AGENT = "a_2xSwgdZOcI";
+const INSTANCE = "i_u7x7i4uL6s";
+const ROOM = "rom_lxw0rfaLIb";
+const MESSAGE = "msg_H6egtDJW8q";
+const DECISION = "dec_pqQbp2Md9a";
 
 const NOW = new Date("2026-09-04T07:00:00.000Z");
 
@@ -30,7 +30,8 @@ const agentRow = {
 const instanceRow = {
   id: INSTANCE, principalId: PRINCIPAL, agentId: AGENT, issuedByKeyId: "key_x",
   tokenDigest: "d", runtimeKind: "codex", cliVersion: "0.1.0", state: "active",
-  startedAt: NOW, lastSeenAt: NOW, leaseExpiresAt: new Date(Date.now() + 60_000),
+  runtimeMetadata: { device_id: "dev-1" },
+  startedAt: NOW, lastSeenAt: new Date(NOW.getTime() + 1_000), leaseExpiresAt: new Date(Date.now() + 60_000),
   tokenExpiresAt: new Date(Date.now() + 86_400_000), endedAt: null, revokedAt: null,
 };
 const roomRow = {
@@ -38,8 +39,8 @@ const roomRow = {
   state: "open", creatorAgentId: AGENT, nextSequence: 3, createdAt: NOW,
 };
 const memberRow = {
-  principalId: PRINCIPAL, roomId: ROOM, agentId: AGENT, state: "active",
-  joinedAt: NOW, leftAt: null,
+  principalId: PRINCIPAL, roomId: ROOM, agentId: AGENT, instanceId: INSTANCE,
+  state: "active", joinedAt: NOW, leftAt: null,
 };
 const messageRow = {
   id: MESSAGE, roomId: ROOM, sequence: 1, senderPrincipalId: PRINCIPAL,
@@ -143,17 +144,19 @@ describe("SharedNetServerClient reads the V1 Postgres tables", () => {
       instance_id: INSTANCE,
       principal_id: PRINCIPAL,
     });
-    expect(detail.room.creator.runtime_id).toMatch(/^rt_[0-9a-hjkmnp-tv-z]{26}$/);
+    expect(detail.room.creator.agent_id).toBe(AGENT);
   });
 
-  it("derives one Runtime per agent and runtime kind, and reports presence", async () => {
+  it("projects Instances with lease-derived presence and no Runtime tier", async () => {
     const client = clientWith(BASE_TABLES);
     const network = await client.getNetwork("auth-user-1");
 
     expect(isNetworkProjection(network)).toBe(true);
-    expect(network.runtimes).toHaveLength(1);
+    expect(network.instances).toHaveLength(1);
     expect(network.instances[0].presence).toBe("online");
-    expect(network.instances[0].runtime_id).toBe(network.runtimes[0].runtime_id);
+    expect(network.instances[0].heartbeat_state).toBe("renewing");
+    expect(network.instances[0]).not.toHaveProperty("runtime_id");
+    expect(network).not.toHaveProperty("runtimes");
   });
 
   it("marks an instance offline once its presence lease has expired", async () => {

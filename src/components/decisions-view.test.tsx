@@ -19,7 +19,6 @@ import type {
   PairingId,
   PrincipalId,
   RoomId,
-  RuntimeId,
 } from "@/src/sharednet/contracts";
 
 import { DecisionsView } from "./decisions-view";
@@ -54,10 +53,9 @@ const APPROVED_ID = "decision_History:Approved.1" as DecisionId;
 const DENIED_ID = "decision_History:Denied.2" as DecisionId;
 const ANSWERED_ID = "decision_History:Answered.3" as DecisionId;
 const ROOM_ID = "room_Launch:Alpha.7" as RoomId;
-const PRINCIPAL_ID = "pri_w7ytve6398hy7gmjsk1c9q78hb" as PrincipalId;
-const AGENT_ID = "agt_9na1xvqrr7jxaf5wr0pmabdk31" as AgentId;
-const RUNTIME_ID = "rt_brv633yxv2c0vbranwet0ekyfp" as RuntimeId;
-const INSTANCE_ID = "ins_wtw6f0hj3gvhftknfr99370v1j" as InstanceId;
+const PRINCIPAL_ID = "p_7CPHtWFsFn" as PrincipalId;
+const AGENT_ID = "a_XHEYHw3zh8" as AgentId;
+const INSTANCE_ID = "i_xQqH1Bafyt" as InstanceId;
 const PAIRING_ID = "pairing_Launch:Alpha.7" as PairingId;
 
 const approvalDecision: DecisionProjection = {
@@ -69,7 +67,6 @@ const approvalDecision: DecisionProjection = {
     agent_id: AGENT_ID,
     instance_id: INSTANCE_ID,
     principal_id: PRINCIPAL_ID,
-    runtime_id: RUNTIME_ID,
   },
   resolved_at: null,
   response_mode: "approval",
@@ -205,7 +202,6 @@ describe("SharedNet Decisions", () => {
     expect(within(workbench).getByText(ROOM_ID)).toBeVisible();
     expect(within(workbench).getByText(PRINCIPAL_ID)).toBeVisible();
     expect(within(workbench).getByText(AGENT_ID)).toBeVisible();
-    expect(within(workbench).getByText(RUNTIME_ID)).toBeVisible();
     expect(within(workbench).getByText(INSTANCE_ID)).toBeVisible();
   });
 
@@ -219,7 +215,6 @@ describe("SharedNet Decisions", () => {
     expect(within(workbench).getByText("Requester not available")).toBeVisible();
     expect(within(workbench).queryByText(PRINCIPAL_ID)).toBeNull();
     expect(within(workbench).queryByText(AGENT_ID)).toBeNull();
-    expect(within(workbench).queryByText(RUNTIME_ID)).toBeNull();
     expect(within(workbench).queryByText(INSTANCE_ID)).toBeNull();
   });
 
@@ -537,11 +532,10 @@ describe("SharedNet Decisions", () => {
     const claim = deferredVoid();
     const claimPairing = vi.fn(() => claim.promise);
     navigationMocks.searchParams = new URLSearchParams({
-      agent_id: "agt_wk3kes7255q403s93rzq90dpxx",
-      instance_id: "ins_219mydnwpsmecsb4yc9hx73p77",
+      agent_id: "a_pS0epN3RsY",
+      instance_id: "i_uWXBpep8RP",
       pairing: PAIRING_ID,
-      principal_id: "pri_n17f14hjy48spp61g31yd837ry",
-      runtime_id: "rt_2pqs69xxsxqry551s838ddmfxy",
+      principal_id: "p_G1Hsy86THY",
     });
     const { rerender } = renderDecisions({ decisions: [], claimPairing });
 
@@ -583,10 +577,9 @@ describe("SharedNet Decisions", () => {
   it("rejects an invalid pairing locally without trusting any URL identity", async () => {
     const claimPairing = vi.fn(async () => undefined);
     navigationMocks.searchParams = new URLSearchParams({
-      agent_id: "agt_9na1xvqrr7jxaf5wr0pmabdk31",
+      agent_id: "a_XHEYHw3zh8",
       pairing: "1-invalid-pairing",
-      principal_id: "pri_w7ytve6398hy7gmjsk1c9q78hb",
-      runtime_id: "rt_brv633yxv2c0vbranwet0ekyfp",
+      principal_id: "p_7CPHtWFsFn",
     });
     renderDecisions({ decisions: [], claimPairing });
 

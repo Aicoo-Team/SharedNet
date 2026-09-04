@@ -69,8 +69,8 @@ function secureDigestEquals(left: string, right: string): boolean {
   return leftBytes.length === rightBytes.length && timingSafeEqual(leftBytes, rightBytes);
 }
 
-function membershipKey(roomId: RoomId, agentId: AgentId): string {
-  return `${roomId}\0${agentId}`;
+function membershipKey(roomId: RoomId, instanceId: InstanceId): string {
+  return `${roomId}\0${instanceId}`;
 }
 
 function idempotencyKey(scope: IdempotencyScope): string {
@@ -105,7 +105,7 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     if (options.devApiKey) {
       const createdAt = this.timestamp();
       const principal: Principal = {
-        id: generatePublicId("pri"),
+        id: generatePublicId("p"),
         display_name: null,
         created_at: createdAt,
       };
@@ -176,7 +176,7 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     if (existing) return { ...existing };
 
     const agent: Agent = {
-      id: generatePublicId("agt"),
+      id: generatePublicId("a"),
       principal_id: auth.principalId,
       handle: "default",
       display_name: null,
@@ -201,7 +201,7 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     const now = this.now();
     const token = generateSecret("sni");
     const instance: InstanceRecord = {
-      id: generatePublicId("ins"),
+      id: generatePublicId("i"),
       principal_id: auth.principalId,
       agent_id: agent.id,
       runtime_kind: input.runtime_kind,
@@ -271,12 +271,13 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     const membership: RoomMember = {
       room_id: room.id,
       agent_id: auth.agentId,
+      instance_id: auth.instanceId,
       state: "active",
       joined_at: createdAt,
       left_at: null,
     };
     this.rooms.set(room.id, room);
-    this.memberships.set(membershipKey(room.id, auth.agentId), membership);
+    this.memberships.set(membershipKey(room.id, auth.instanceId), membership);
     this.messages.set(room.id, []);
     return { room: this.projectRoom(room), membership: { ...membership } };
   }
@@ -290,7 +291,7 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     if (room.state === "closed") {
       throw new RepositoryError(409, "room_closed", "Room is closed.");
     }
-    const key = membershipKey(room.id, auth.agentId);
+    const key = membershipKey(room.id, auth.instanceId);
     const existing = this.memberships.get(key);
     const membership: RoomMember =
       existing && existing.state === "active"
@@ -298,6 +299,7 @@ export class MemorySharedNetRepository implements SharedNetRepository {
         : {
             room_id: room.id,
             agent_id: auth.agentId,
+            instance_id: auth.instanceId,
             state: "active",
             joined_at: this.timestamp(),
             left_at: null,
@@ -470,7 +472,7 @@ export class MemorySharedNetRepository implements SharedNetRepository {
   }
 
   private requireMembership(auth: InstanceAuth, roomId: RoomId): RoomMember {
-    const membership = this.memberships.get(membershipKey(roomId, auth.agentId));
+    const membership = this.memberships.get(membershipKey(roomId, auth.instanceId));
     if (!membership || membership.state !== "active") {
       throw new RepositoryError(
         403,

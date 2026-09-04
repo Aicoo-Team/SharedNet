@@ -232,7 +232,7 @@ export async function handleRequest(
       const auth = await authenticateApiKey(request, repository);
       if (isResponse(auth)) return auth;
       requireNoIdempotency(request);
-      const agentId = parsePublicId(startInstanceMatch[1], "agt");
+      const agentId = parsePublicId(startInstanceMatch[1], "a");
       const input = await requiredJson(request, parseStartInstanceRequest);
       return jsonResponse(await repository.startInstance(auth, agentId, input), {
         status: 201,

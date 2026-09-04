@@ -114,7 +114,7 @@ function extractGlobals(argv: string[]): GlobalArguments {
         throw localError("duplicate_option", "The --session option may be supplied only once.");
       }
       const value = argument === "--session" ? argv[++index] : argument.slice("--session=".length);
-      if (!value || !/^ins_[A-Za-z0-9_-]+$/.test(value)) {
+      if (!value || !/^i_[A-Za-z0-9_-]+$/.test(value)) {
         throw localError("invalid_session_id", "The --session value must be an Instance ID.");
       }
       sessionId = value;
@@ -226,7 +226,7 @@ async function resolveAgent(
       apiKey,
     );
     agent = payload.agent;
-  } else if (/^agt_[A-Za-z0-9_-]+$/.test(requested)) {
+  } else if (/^a_[A-Za-z0-9_-]+$/.test(requested)) {
     const payload = await client.request<{ agent: AgentShape }>(
       "GET",
       `/agents/${encodeURIComponent(requested)}`,
@@ -301,7 +301,7 @@ async function selectSession(
 ): Promise<StoredSession> {
   const selectedId = explicitId || env.SHAREDNET_SESSION?.trim();
   if (selectedId) {
-    if (!/^ins_[A-Za-z0-9_-]+$/.test(selectedId)) {
+    if (!/^i_[A-Za-z0-9_-]+$/.test(selectedId)) {
       throw localError("invalid_session_id", "SHAREDNET_SESSION must be an Instance ID.");
     }
     const selected = await readSessionById(paths, selectedId);

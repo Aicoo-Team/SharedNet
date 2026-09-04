@@ -40,9 +40,9 @@ describe("secure local state", () => {
     await writeSession(paths, {
       schema_version: 1,
       base_url: "https://sharednet.ai",
-      principal_id: "pri_demo",
-      agent_id: "agt_default",
-      instance_id: "ins_one",
+      principal_id: "p_demo",
+      agent_id: "a_default",
+      instance_id: "i_one",
       local_instance_key: "local-one",
       instance_token: "sni_super-secret",
       created_at: "2026-09-04T00:00:00.000Z",
@@ -51,16 +51,16 @@ describe("secure local state", () => {
     });
 
     expect((await stat(paths.sessionsDir)).mode & 0o777).toBe(0o700);
-    expect((await stat(join(paths.sessionsDir, "ins_one.json"))).mode & 0o777).toBe(
+    expect((await stat(join(paths.sessionsDir, "i_one.json"))).mode & 0o777).toBe(
       0o600,
     );
     expect(
       await findSessionByLocalKey(paths, "local-one", {
         baseUrl: "https://sharednet.ai",
-        principalId: "pri_demo",
-        agentId: "agt_default",
+        principalId: "p_demo",
+        agentId: "a_default",
       }),
-    ).toMatchObject({ instance_id: "ins_one" });
+    ).toMatchObject({ instance_id: "i_one" });
   });
 
   it("rejects credential symlinks and permissive credential files", async () => {
@@ -98,9 +98,9 @@ describe("secure local state", () => {
     await writeSession(paths, {
       schema_version: 1,
       base_url: "http://127.0.0.1:3001",
-      principal_id: "pri_demo",
-      agent_id: "agt_default",
-      instance_id: "ins_two",
+      principal_id: "p_demo",
+      agent_id: "a_default",
+      instance_id: "i_two",
       local_instance_key: "hmac-only",
       instance_token: "sni_secret",
       created_at: "2026-09-04T00:00:00.000Z",
@@ -108,10 +108,10 @@ describe("secure local state", () => {
       expires_at: "2026-09-05T00:00:00.000Z",
     });
 
-    const serialized = await readFile(join(paths.sessionsDir, "ins_two.json"), "utf8");
+    const serialized = await readFile(join(paths.sessionsDir, "i_two.json"), "utf8");
     expect(serialized).not.toContain("CODEX_SESSION_ID");
     expect((await listSessions(paths)).map((session) => session.instance_id)).toEqual([
-      "ins_two",
+      "i_two",
     ]);
   });
 
@@ -149,46 +149,46 @@ describe("secure local state", () => {
     };
     await writeSession(paths, {
       ...common,
-      principal_id: "pri_first",
-      agent_id: "agt_default_first",
-      instance_id: "ins_first",
+      principal_id: "p_first",
+      agent_id: "a_default_first",
+      instance_id: "i_first",
       instance_token: "sni_first",
     });
     await writeSession(paths, {
       ...common,
-      principal_id: "pri_second",
-      agent_id: "agt_default_second",
-      instance_id: "ins_second",
+      principal_id: "p_second",
+      agent_id: "a_default_second",
+      instance_id: "i_second",
       instance_token: "sni_second",
     });
     await writeSession(paths, {
       ...common,
-      principal_id: "pri_first",
-      agent_id: "agt_reviewer",
-      instance_id: "ins_reviewer",
+      principal_id: "p_first",
+      agent_id: "a_reviewer",
+      instance_id: "i_reviewer",
       instance_token: "sni_reviewer",
     });
 
     await expect(
       findSessionByLocalKey(paths, "same-runtime-anchor", {
         baseUrl: "https://sharednet.ai",
-        principalId: "pri_first",
-        agentId: "agt_default_first",
+        principalId: "p_first",
+        agentId: "a_default_first",
       }),
-    ).resolves.toMatchObject({ instance_id: "ins_first" });
+    ).resolves.toMatchObject({ instance_id: "i_first" });
     await expect(
       findSessionByLocalKey(paths, "same-runtime-anchor", {
         baseUrl: "https://sharednet.ai",
-        principalId: "pri_second",
-        agentId: "agt_default_second",
+        principalId: "p_second",
+        agentId: "a_default_second",
       }),
-    ).resolves.toMatchObject({ instance_id: "ins_second" });
+    ).resolves.toMatchObject({ instance_id: "i_second" });
     await expect(
       findSessionByLocalKey(paths, "same-runtime-anchor", {
         baseUrl: "https://sharednet.ai",
-        principalId: "pri_first",
-        agentId: "agt_reviewer",
+        principalId: "p_first",
+        agentId: "a_reviewer",
       }),
-    ).resolves.toMatchObject({ instance_id: "ins_reviewer" });
+    ).resolves.toMatchObject({ instance_id: "i_reviewer" });
   });
 });

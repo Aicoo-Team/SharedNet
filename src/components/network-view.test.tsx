@@ -12,8 +12,6 @@ import type {
   NetworkProjection,
   PrincipalId,
   PrincipalProjection,
-  RuntimeId,
-  RuntimeProjection,
 } from "@/src/sharednet/contracts";
 
 import { NetworkView } from "./network-view";
@@ -31,23 +29,23 @@ vi.mock("@/src/context/sharednet-context", () => ({
 }));
 
 const NOW = "2026-09-03T05:12:00+00:00";
-const OWN_PRINCIPAL_ID = "pri_7xx61367c6rqjtqp0vhte2xvnc" as PrincipalId;
-const CONNECTED_PRINCIPAL_ID = "pri_425fdbshy6vwvye409k470yhdv" as PrincipalId;
-const SECOND_CONNECTED_PRINCIPAL_ID = "pri_azxdhy66rxf10xbfbm5f7xpa0e" as PrincipalId;
-const UNKNOWN_PRINCIPAL_ID = "pri_ctk7axbb437dt71fqkjbsvzg0n" as PrincipalId;
-const OWN_AGENT_ID = "agt_bpmxqvtm3xjd3x7ze0mdhwt4qv" as AgentId;
-const SECOND_OWN_AGENT_ID = "agt_9xzwjb8mbggjk8kryrzcgd29c5" as AgentId;
-const CONNECTED_AGENT_ID = "agt_eg3p94kfcth369499aws862g72" as AgentId;
-const PRIVATE_AGENT_ID = "agt_91m5027m23bd1fwv7q7m53735e" as AgentId;
-const UNKNOWN_AGENT_ID = "agt_rara2rnasgb4xb8rgwbqkazg1q" as AgentId;
-const FIRST_RUNTIME_ID = "rt_4d8z3m66g64fndv62rsp0a24t0" as RuntimeId;
-const SECOND_RUNTIME_ID = "rt_nq8xfc9jkeeyw9vgkdvvs32e77" as RuntimeId;
-const ORPHAN_RUNTIME_ID = "rt_3efymsj9v9m9n7q0a963jbffzf" as RuntimeId;
-const OTHER_RUNTIME_ID = "rt_6a03183ya0yma72rgt27r5dw8v" as RuntimeId;
-const FIRST_INSTANCE_ID = "ins_qkwjmrxn5pbaqvb31ft4y9pvx5" as InstanceId;
-const SECOND_INSTANCE_ID = "ins_z5kqdfx1yc9x8j1he7rhg959t9" as InstanceId;
-const ORPHAN_INSTANCE_ID = "ins_t5gsjssgghjhrjvgxs4kbf6en4" as InstanceId;
-const OTHER_INSTANCE_ID = "ins_r850k3qsdwka6qb51a9gks0yvf" as InstanceId;
+const OWN_PRINCIPAL_ID = "p_LKTYW3LByD" as PrincipalId;
+const CONNECTED_PRINCIPAL_ID = "p_RkiSMcCIZl" as PrincipalId;
+const SECOND_CONNECTED_PRINCIPAL_ID = "p_FP7b48IvOT" as PrincipalId;
+const UNKNOWN_PRINCIPAL_ID = "p_1DxfhWuuZc" as PrincipalId;
+const OWN_AGENT_ID = "a_Wdn8m8sB8q" as AgentId;
+const SECOND_OWN_AGENT_ID = "a_USg2hJVzyZ" as AgentId;
+const CONNECTED_AGENT_ID = "a_MnlsrBKS5T" as AgentId;
+const PRIVATE_AGENT_ID = "a_qdAc5s3QBa" as AgentId;
+const UNKNOWN_AGENT_ID = "a_1hEuF7ZrWP" as AgentId;
+const FIRST_INSTANCE_ID = "i_xNr0mlza8I" as InstanceId;
+const SECOND_INSTANCE_ID = "i_F9wNA7geV0" as InstanceId;
+const ORPHAN_INSTANCE_ID = "i_IVuD2vNMyr" as InstanceId;
+const OTHER_INSTANCE_ID = "i_lrfdChtuKj" as InstanceId;
+const OWN_INSTANCE_ID = "i_Wdn8m8sB8q" as InstanceId;
+const CONNECTED_INSTANCE_ID = "i_MnlsrBKS5T" as InstanceId;
+const PRIVATE_INSTANCE_ID = "i_qdAc5s3QBa" as InstanceId;
+const UNKNOWN_INSTANCE_ID = "i_1hEuF7ZrWP" as InstanceId;
 const PRODUCT_SHELL_CSS = readFileSync(
   resolve(process.cwd(), "app/product-shell.css"),
   "utf8",
@@ -73,40 +71,19 @@ function makeAgent(
 ): AgentProjection {
   return {
     agent_id,
-    capabilities: ["coordination"],
     created_at: NOW,
     diagnostic_label: `Agent ${agent_id.slice(-4)}`,
     discoverability: true,
     official: false,
     principal_id,
     role: "Coordinator",
-    runtime_kind: "codex",
     summary: "Coordinates exact backend work.",
-    ...overrides,
-  };
-}
-
-function makeRuntime(
-  runtime_id: RuntimeId,
-  agent_id: AgentId,
-  principal_id: PrincipalId,
-  overrides: Partial<RuntimeProjection> = {},
-): RuntimeProjection {
-  return {
-    agent_id,
-    created_at: NOW,
-    principal_id,
-    runtime_id,
-    runtime_kind: "codex",
-    status: "active",
-    workspace_label: null,
     ...overrides,
   };
 }
 
 function makeInstance(
   instance_id: InstanceId,
-  runtime_id: RuntimeId,
   agent_id: AgentId,
   principal_id: PrincipalId,
   overrides: Partial<InstanceProjection> = {},
@@ -117,9 +94,10 @@ function makeInstance(
     expires_at: "2026-09-03T06:12:00+00:00",
     instance_id,
     last_seen_at: NOW,
+    heartbeat_state: "stopped",
+    runtime_metadata: {},
     presence: "offline",
     principal_id,
-    runtime_id,
     runtime_type: "desktop",
     started_at: "2026-09-03T04:12:00+00:00",
     status: "online",
@@ -134,16 +112,27 @@ const connectedPrincipal = makePrincipal(
   "Atlantic partner",
 );
 
+/** Nodes are Instances, so a fixture Agent needs one to be drawn at all. */
+function instanceIdFor(agentId: AgentId): InstanceId {
+  return `i_${String(agentId).slice(2)}` as InstanceId;
+}
+
 function makeNetwork(
   overrides: Partial<NetworkProjection> = {},
 ): NetworkProjection {
+  const agents = overrides.agents ?? [makeAgent(OWN_AGENT_ID, OWN_PRINCIPAL_ID)];
   return {
-    agents: [makeAgent(OWN_AGENT_ID, OWN_PRINCIPAL_ID)],
+    agents,
     connected_principals: [connectedPrincipal],
     edges: [],
-    instances: [],
+    instances: agents.map((agent) =>
+      makeInstance(
+        instanceIdFor(agent.agent_id),
+        agent.agent_id,
+        agent.principal_id,
+      ),
+    ),
     principal: ownPrincipal,
-    runtimes: [],
     ...overrides,
   };
 }
@@ -173,8 +162,8 @@ function renderNetwork(overrides: Partial<SharedNetState> = {}) {
   return { state, ...render(<NetworkView />) };
 }
 
-function inspectButton(agentId: AgentId) {
-  return screen.getByRole("button", { name: `Inspect Agent ${agentId}` });
+function inspectButton(id: InstanceId) {
+  return screen.getByRole("button", { name: `Inspect Instance ${id}` });
 }
 
 function principalGroup(principalId: PrincipalId) {
@@ -235,18 +224,18 @@ describe("SharedNet Network", () => {
       "true",
     );
     expect(principalGroup(OWN_PRINCIPAL_ID)).toBeVisible();
-    expect(inspectButton(OWN_AGENT_ID)).toBeVisible();
+    expect(inspectButton(OWN_INSTANCE_ID)).toBeVisible();
     expect(screen.queryByRole("group", { name: `Principal ${CONNECTED_PRINCIPAL_ID}` })).toBeNull();
-    expect(screen.queryByRole("button", { name: `Inspect Agent ${CONNECTED_AGENT_ID}` })).toBeNull();
+    expect(screen.queryByRole("button", { name: `Inspect Instance ${CONNECTED_INSTANCE_ID}` })).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Cross-Principal" }));
 
     expect(principalGroup(OWN_PRINCIPAL_ID)).toBeVisible();
     expect(principalGroup(CONNECTED_PRINCIPAL_ID)).toBeVisible();
-    expect(inspectButton(OWN_AGENT_ID)).toBeVisible();
-    expect(inspectButton(CONNECTED_AGENT_ID)).toBeVisible();
-    expect(screen.queryByRole("button", { name: `Inspect Agent ${PRIVATE_AGENT_ID}` })).toBeNull();
-    expect(screen.queryByRole("button", { name: `Inspect Agent ${UNKNOWN_AGENT_ID}` })).toBeNull();
+    expect(inspectButton(OWN_INSTANCE_ID)).toBeVisible();
+    expect(inspectButton(CONNECTED_INSTANCE_ID)).toBeVisible();
+    expect(screen.queryByRole("button", { name: `Inspect Instance ${PRIVATE_INSTANCE_ID}` })).toBeNull();
+    expect(screen.queryByRole("button", { name: `Inspect Instance ${UNKNOWN_INSTANCE_ID}` })).toBeNull();
     expect(screen.queryByText("Unrelated context Principal")).toBeNull();
   });
 
@@ -264,93 +253,53 @@ describe("SharedNet Network", () => {
     const externalGroup = principalGroup(CONNECTED_PRINCIPAL_ID);
     expect(within(ownGroup).getByText("Northstar")).toBeVisible();
     expect(within(ownGroup).getByText(OWN_PRINCIPAL_ID)).toBeVisible();
-    expect(within(ownGroup).getByRole("button", { name: `Inspect Agent ${OWN_AGENT_ID}` })).toBeVisible();
-    expect(within(ownGroup).queryByRole("button", { name: `Inspect Agent ${CONNECTED_AGENT_ID}` })).toBeNull();
+    expect(within(ownGroup).getByRole("button", { name: `Inspect Instance ${OWN_INSTANCE_ID}` })).toBeVisible();
+    expect(within(ownGroup).queryByRole("button", { name: `Inspect Instance ${CONNECTED_INSTANCE_ID}` })).toBeNull();
     expect(within(externalGroup).getByText("Atlantic partner")).toBeVisible();
     expect(within(externalGroup).getByText(CONNECTED_PRINCIPAL_ID)).toBeVisible();
-    expect(within(externalGroup).getByRole("button", { name: `Inspect Agent ${CONNECTED_AGENT_ID}` })).toBeVisible();
+    expect(within(externalGroup).getByRole("button", { name: `Inspect Instance ${CONNECTED_INSTANCE_ID}` })).toBeVisible();
   });
 
-  it("opens an exact Agent → Runtime → Instance card without inventing descendants", () => {
+  it("opens an Agent card listing exactly that Agent's Instances", () => {
     const selectedAgent = makeAgent(SECOND_OWN_AGENT_ID, OWN_PRINCIPAL_ID, {
-      capabilities: ["research", "verification"],
       diagnostic_label: "Evidence analyst",
       role: "Research lead",
     });
     const otherAgent = makeAgent(OWN_AGENT_ID, OWN_PRINCIPAL_ID);
-    const runtimeWithoutInstance = makeRuntime(
-      FIRST_RUNTIME_ID,
-      SECOND_OWN_AGENT_ID,
-      OWN_PRINCIPAL_ID,
-    );
-    const runtimeWithInstances = makeRuntime(
-      SECOND_RUNTIME_ID,
-      SECOND_OWN_AGENT_ID,
-      OWN_PRINCIPAL_ID,
-    );
     const firstInstance = makeInstance(
       FIRST_INSTANCE_ID,
-      SECOND_RUNTIME_ID,
       SECOND_OWN_AGENT_ID,
       OWN_PRINCIPAL_ID,
-      { presence: "online" },
+      { presence: "online", heartbeat_state: "renewing" },
     );
     const secondInstance = makeInstance(
       SECOND_INSTANCE_ID,
-      SECOND_RUNTIME_ID,
       SECOND_OWN_AGENT_ID,
-      OWN_PRINCIPAL_ID,
-    );
-    const otherRuntime = makeRuntime(
-      OTHER_RUNTIME_ID,
-      OWN_AGENT_ID,
       OWN_PRINCIPAL_ID,
     );
     const otherInstance = makeInstance(
       OTHER_INSTANCE_ID,
-      OTHER_RUNTIME_ID,
       OWN_AGENT_ID,
       OWN_PRINCIPAL_ID,
-    );
-    const orphanInstance = makeInstance(
-      ORPHAN_INSTANCE_ID,
-      ORPHAN_RUNTIME_ID,
-      SECOND_OWN_AGENT_ID,
-      OWN_PRINCIPAL_ID,
-      { presence: "online" },
     );
     renderNetwork({
       network: makeNetwork({
         agents: [otherAgent, selectedAgent],
-        instances: [otherInstance, orphanInstance, secondInstance, firstInstance],
-        runtimes: [otherRuntime, runtimeWithInstances, runtimeWithoutInstance],
+        instances: [otherInstance, secondInstance, firstInstance],
       }),
     });
 
-    fireEvent.click(inspectButton(SECOND_OWN_AGENT_ID));
+    fireEvent.click(inspectButton(FIRST_INSTANCE_ID));
 
     const card = screen.getByRole("region", { name: "Agent Card" });
     expect(within(card).getByText(OWN_PRINCIPAL_ID)).toBeVisible();
     expect(within(card).getByText(SECOND_OWN_AGENT_ID)).toBeVisible();
     expect(within(card).getByText("Research lead")).toBeVisible();
-    expect(within(card).getByText("research")).toBeVisible();
-    expect(within(card).getByText("verification")).toBeVisible();
 
-    const firstRuntime = within(card).getByRole("group", {
-      name: `Runtime ${FIRST_RUNTIME_ID}`,
-    });
-    expect(within(firstRuntime).getByText(FIRST_RUNTIME_ID)).toBeVisible();
-    expect(within(firstRuntime).getByText("No Instances registered.")).toBeVisible();
-
-    const secondRuntime = within(card).getByRole("group", {
-      name: `Runtime ${SECOND_RUNTIME_ID}`,
-    });
-    expect(within(secondRuntime).getByText(FIRST_INSTANCE_ID)).toBeVisible();
-    expect(within(secondRuntime).getByText(SECOND_INSTANCE_ID)).toBeVisible();
-    expect(within(card).queryByText(OTHER_RUNTIME_ID)).toBeNull();
+    // exactly this Agent's Instances, and no others
+    expect(within(card).getByText(FIRST_INSTANCE_ID)).toBeVisible();
+    expect(within(card).getByText(SECOND_INSTANCE_ID)).toBeVisible();
     expect(within(card).queryByText(OTHER_INSTANCE_ID)).toBeNull();
-    expect(within(card).queryByText(ORPHAN_RUNTIME_ID)).toBeNull();
-    expect(within(card).queryByText(ORPHAN_INSTANCE_ID)).toBeNull();
   });
 
   it("derives online, offline, and template labels only from exact descendants", () => {
@@ -360,101 +309,70 @@ describe("SharedNet Network", () => {
     const runtimeOnlyAgent = makeAgent(SECOND_OWN_AGENT_ID, OWN_PRINCIPAL_ID, {
       diagnostic_label: "Runtime-only worker",
     });
-    const templateAgentId = "agt_2wmyszcqywcj6dtwamy1dbcq0j" as AgentId;
+    const templateAgentId = "a_d2hNWU0Bml" as AgentId;
     const templateAgent = makeAgent(templateAgentId, OWN_PRINCIPAL_ID, {
       diagnostic_label: "Official starter",
       official: true,
     });
-    const onlineRuntime = makeRuntime(
-      FIRST_RUNTIME_ID,
-      OWN_AGENT_ID,
-      OWN_PRINCIPAL_ID,
-      { status: "revoked" },
-    );
-    const runtimeWithoutInstance = makeRuntime(
-      SECOND_RUNTIME_ID,
-      SECOND_OWN_AGENT_ID,
-      OWN_PRINCIPAL_ID,
-    );
     const matchingOnlineInstance = makeInstance(
       FIRST_INSTANCE_ID,
-      FIRST_RUNTIME_ID,
       OWN_AGENT_ID,
       OWN_PRINCIPAL_ID,
-      { presence: "online" },
+      { presence: "online", heartbeat_state: "renewing" },
     );
     const unjoinedOnlineInstance = makeInstance(
       ORPHAN_INSTANCE_ID,
-      ORPHAN_RUNTIME_ID,
       SECOND_OWN_AGENT_ID,
       OWN_PRINCIPAL_ID,
-      { presence: "online" },
+      { presence: "online", heartbeat_state: "renewing" },
     );
     renderNetwork({
       network: makeNetwork({
         agents: [templateAgent, runtimeOnlyAgent, onlineAgent],
         instances: [unjoinedOnlineInstance, matchingOnlineInstance],
-        runtimes: [runtimeWithoutInstance, onlineRuntime],
       }),
     });
 
-    expect(within(inspectButton(OWN_AGENT_ID)).getByText("online")).toBeVisible();
-    expect(within(inspectButton(SECOND_OWN_AGENT_ID)).getByText("offline")).toBeVisible();
-    const templateButton = inspectButton(templateAgentId);
-    expect(within(templateButton).getByText("offline")).toBeVisible();
-    expect(within(templateButton).getByText("template")).toBeVisible();
+    expect(within(inspectButton(FIRST_INSTANCE_ID)).getByText("online")).toBeVisible();
+    expect(within(inspectButton(ORPHAN_INSTANCE_ID)).getByText("online")).toBeVisible();
+    // An Agent with no Instances draws no dot at all.
+    expect(
+      screen.queryByRole("button", { name: `Inspect Instance ${templateAgentId}` }),
+    ).toBeNull();
   });
 
-  it("renders weighted room co-membership and Principal connections from backend edges", () => {
+  it("draws one dashed line per shared Room between two Instances", () => {
     const ownAgent = makeAgent(OWN_AGENT_ID, OWN_PRINCIPAL_ID);
-    const connectedAgent = makeAgent(
-      CONNECTED_AGENT_ID,
-      CONNECTED_PRINCIPAL_ID,
-    );
+    const first = makeInstance(FIRST_INSTANCE_ID, OWN_AGENT_ID, OWN_PRINCIPAL_ID);
+    const second = makeInstance(SECOND_INSTANCE_ID, OWN_AGENT_ID, OWN_PRINCIPAL_ID);
     renderNetwork({
       network: makeNetwork({
-        agents: [ownAgent, connectedAgent],
+        agents: [ownAgent],
+        instances: [first, second],
         edges: [
           {
             kind: "room_co_membership",
-            source_id: OWN_AGENT_ID,
-            target_id: CONNECTED_AGENT_ID,
+            source_id: FIRST_INSTANCE_ID,
+            target_id: SECOND_INSTANCE_ID,
             weight: 3,
-          },
-          {
-            kind: "principal_connection",
-            source_id: OWN_PRINCIPAL_ID,
-            target_id: CONNECTED_PRINCIPAL_ID,
-            weight: 1,
           },
         ],
       }),
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Cross-Principal" }));
     const graph = screen.getByRole("region", { name: "Relationship graph" });
     expect(
       graph.querySelectorAll(
-        `[data-edge-kind="room_co_membership"][data-edge-source="${OWN_AGENT_ID}"][data-edge-target="${CONNECTED_AGENT_ID}"]`,
+        `[data-edge-kind="room_co_membership"][data-edge-source="${FIRST_INSTANCE_ID}"][data-edge-target="${SECOND_INSTANCE_ID}"]`,
       ),
     ).toHaveLength(3);
-    expect(
-      graph.querySelectorAll(
-        `[data-edge-kind="principal_connection"][data-edge-source="${OWN_PRINCIPAL_ID}"][data-edge-target="${CONNECTED_PRINCIPAL_ID}"]`,
-      ),
-    ).toHaveLength(1);
     const relationships = within(graph).getByRole("list", {
       name: "Visible relationships",
     });
-    expect(within(relationships).getAllByRole("listitem")).toHaveLength(2);
+    expect(within(relationships).getAllByRole("listitem")).toHaveLength(1);
     expect(relationships).toHaveTextContent(
-      `room_co_membership: source ${OWN_AGENT_ID}; target ${CONNECTED_AGENT_ID}; weight 3`,
+      `room_co_membership: source ${FIRST_INSTANCE_ID}; target ${SECOND_INSTANCE_ID}; weight 3`,
     );
-    expect(relationships).toHaveTextContent(
-      `principal_connection: source ${OWN_PRINCIPAL_ID}; target ${CONNECTED_PRINCIPAL_ID}; weight 1`,
-    );
-    expect(within(graph).getByText("dotted · shared rooms × weight")).toBeVisible();
-    expect(within(graph).getByText("solid · Principal connection")).toBeVisible();
   });
 
   it("bounds huge room-edge multiplicity while reporting the exact backend weight", () => {
@@ -468,8 +386,8 @@ describe("SharedNet Network", () => {
         edges: [
           {
             kind: "room_co_membership",
-            source_id: OWN_AGENT_ID,
-            target_id: CONNECTED_AGENT_ID,
+            source_id: OWN_INSTANCE_ID,
+            target_id: CONNECTED_INSTANCE_ID,
             weight: hugeWeight,
           },
         ],
@@ -479,7 +397,7 @@ describe("SharedNet Network", () => {
     fireEvent.click(screen.getByRole("button", { name: "Cross-Principal" }));
     const graph = screen.getByRole("region", { name: "Relationship graph" });
     const lines = graph.querySelectorAll(
-      `[data-edge-kind="room_co_membership"][data-edge-source="${OWN_AGENT_ID}"][data-edge-target="${CONNECTED_AGENT_ID}"]`,
+      `[data-edge-kind="room_co_membership"][data-edge-source="${OWN_INSTANCE_ID}"][data-edge-target="${CONNECTED_INSTANCE_ID}"]`,
     );
     expect(lines).toHaveLength(8);
     for (const line of lines) {
@@ -488,7 +406,7 @@ describe("SharedNet Network", () => {
     expect(
       within(graph).getByRole("list", { name: "Visible relationships" }),
     ).toHaveTextContent(
-      `room_co_membership: source ${OWN_AGENT_ID}; target ${CONNECTED_AGENT_ID}; weight ${hugeWeight}`,
+      `room_co_membership: source ${OWN_INSTANCE_ID}; target ${CONNECTED_INSTANCE_ID}; weight ${hugeWeight}`,
     );
   });
 
@@ -507,27 +425,21 @@ describe("SharedNet Network", () => {
         edges: [
           {
             kind: "room_co_membership",
-            source_id: OWN_AGENT_ID,
-            target_id: CONNECTED_AGENT_ID,
+            source_id: OWN_INSTANCE_ID,
+            target_id: CONNECTED_INSTANCE_ID,
             weight: 1,
           },
           {
             kind: "room_co_membership",
-            source_id: OWN_AGENT_ID,
-            target_id: PRIVATE_AGENT_ID,
+            source_id: OWN_INSTANCE_ID,
+            target_id: PRIVATE_INSTANCE_ID,
             weight: 2,
           },
           {
             kind: "room_co_membership",
-            source_id: OWN_AGENT_ID,
-            target_id: UNKNOWN_AGENT_ID,
+            source_id: OWN_INSTANCE_ID,
+            target_id: UNKNOWN_INSTANCE_ID,
             weight: 4,
-          },
-          {
-            kind: "principal_connection",
-            source_id: OWN_PRINCIPAL_ID,
-            target_id: UNKNOWN_PRINCIPAL_ID,
-            weight: 1,
           },
         ],
       }),
@@ -536,7 +448,7 @@ describe("SharedNet Network", () => {
     fireEvent.click(screen.getByRole("button", { name: "Cross-Principal" }));
     const graph = screen.getByRole("region", { name: "Relationship graph" });
     expect(graph.querySelectorAll('[data-edge-kind="room_co_membership"]')).toHaveLength(1);
-    expect(graph.querySelector('[data-edge-target="' + PRIVATE_AGENT_ID + '"]')).toBeNull();
+    expect(graph.querySelector('[data-edge-target="' + PRIVATE_INSTANCE_ID + '"]')).toBeNull();
     expect(graph.querySelector('[data-edge-target="' + UNKNOWN_AGENT_ID + '"]')).toBeNull();
     expect(graph.querySelector('[data-edge-target="' + UNKNOWN_PRINCIPAL_ID + '"]')).toBeNull();
     const relationships = within(graph).getByRole("list", {
@@ -544,7 +456,7 @@ describe("SharedNet Network", () => {
     });
     expect(within(relationships).getAllByRole("listitem")).toHaveLength(1);
     expect(relationships).toHaveTextContent(
-      `room_co_membership: source ${OWN_AGENT_ID}; target ${CONNECTED_AGENT_ID}; weight 1`,
+      `room_co_membership: source ${OWN_INSTANCE_ID}; target ${CONNECTED_INSTANCE_ID}; weight 1`,
     );
     expect(relationships).not.toHaveTextContent(PRIVATE_AGENT_ID);
     expect(relationships).not.toHaveTextContent(UNKNOWN_AGENT_ID);
@@ -588,8 +500,8 @@ describe("SharedNet Network", () => {
   });
 
   it("sorts opaque IDs into deterministic non-overlapping coordinates for many Agents", () => {
-    const thirdOwnAgentId = "agt_0xjta1b78602qy7gjp3m78nks4" as AgentId;
-    const secondExternalAgentId = "agt_3tsq64ad3sbjr4phqgha40ahgx" as AgentId;
+    const thirdOwnAgentId = "a_sMaPxgLQhO" as AgentId;
+    const secondExternalAgentId = "a_u8i1FruyXe" as AgentId;
     const secondConnectedPrincipal = makePrincipal(
       SECOND_CONNECTED_PRINCIPAL_ID,
       "Pacific partner",
@@ -636,7 +548,7 @@ describe("SharedNet Network", () => {
 
     expect(principalGroup(OWN_PRINCIPAL_ID)).toBeVisible();
     expect(screen.getByText("No Agents registered for this Principal.")).toBeVisible();
-    expect(screen.queryByRole("button", { name: /Inspect Agent/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Inspect Instance/ })).toBeNull();
     const canvas = container.querySelector<HTMLElement>(".network-canvas");
     expect(canvas).not.toBeNull();
     expect(Number.isFinite(Number.parseFloat(canvas!.style.width))).toBe(true);
@@ -674,7 +586,7 @@ describe("SharedNet Network", () => {
     expect(freshness).toHaveTextContent("SharedNet data may be out of date.");
     expect(freshness).not.toHaveTextContent("Network data may be out of date.");
     expect(screen.getByRole("region", { name: "Relationship graph" })).toBeVisible();
-    expect(inspectButton(OWN_AGENT_ID)).toBeVisible();
+    expect(inspectButton(OWN_INSTANCE_ID)).toBeVisible();
   });
 
   it("never presents delegation, hosting, readiness, activity, or recruitment claims", () => {
@@ -688,8 +600,8 @@ describe("SharedNet Network", () => {
       edges: [
         {
           kind: "room_co_membership",
-          source_id: OWN_AGENT_ID,
-          target_id: CONNECTED_AGENT_ID,
+          source_id: OWN_INSTANCE_ID,
+          target_id: CONNECTED_INSTANCE_ID,
           weight: 2,
         },
       ],

@@ -5,6 +5,7 @@ import {
   foreignKey,
   index,
   integer,
+  jsonb,
   pgSchema,
   primaryKey,
   text,
@@ -32,12 +33,12 @@ const domainTimestamp = (name: string) =>
 
 // Static SQL fragments are intentionally raw: interpolating plain strings would make
 // drizzle-kit emit unusable `$1` placeholders inside migration CHECK constraints.
-const PRINCIPAL_ID_RE = sql.raw("'^pri_[0-9a-hjkmnp-tv-z]{26}$'");
-const AGENT_ID_RE = sql.raw("'^agt_[0-9a-hjkmnp-tv-z]{26}$'");
-const INSTANCE_ID_RE = sql.raw("'^ins_[0-9a-hjkmnp-tv-z]{26}$'");
-const ROOM_ID_RE = sql.raw("'^rom_[0-9a-hjkmnp-tv-z]{26}$'");
-const MESSAGE_ID_RE = sql.raw("'^msg_[0-9a-hjkmnp-tv-z]{26}$'");
-const DECISION_ID_RE = sql.raw("'^dec_[0-9a-hjkmnp-tv-z]{26}$'");
+const PRINCIPAL_ID_RE = sql.raw("'^p_[0-9A-Za-z]{10}$'");
+const AGENT_ID_RE = sql.raw("'^a_[0-9A-Za-z]{10}$'");
+const INSTANCE_ID_RE = sql.raw("'^i_[0-9A-Za-z]{10}$'");
+const ROOM_ID_RE = sql.raw("'^rom_[0-9A-Za-z]{10}$'");
+const MESSAGE_ID_RE = sql.raw("'^msg_[0-9A-Za-z]{10}$'");
+const DECISION_ID_RE = sql.raw("'^dec_[0-9A-Za-z]{10}$'");
 const SHA256_HEX_RE = sql.raw("'^[0-9a-f]{64}$'");
 
 export const principals = sharednetSchema.table(
@@ -95,6 +96,15 @@ export const instances = sharednetSchema.table(
     tokenDigest: text("token_digest").notNull(),
     runtimeKind: text("runtime_kind").$type<"codex" | "claude-code" | "custom">().notNull(),
     cliVersion: text("cli_version").notNull(),
+    /**
+     * Everything a caller reports about where this Instance runs: runtime
+     * build, device or host identifier, workspace label, OS. There is no
+     * Runtime entity — a Runtime is not addressable and never was reachable on
+     * its own, so recording it as an addressable row only added a layer the UI
+     * had to flatten again. This is diagnostic metadata hanging off the one id
+     * that is actually addressable, and it is never used for authorization.
+     */
+    runtimeMetadata: jsonb("runtime_metadata").$type<Record<string, string>>().default({}).notNull(),
     state: text("state").$type<"active" | "ended" | "revoked">().default("active").notNull(),
     startedAt: domainTimestamp("started_at").defaultNow().notNull(),
     lastSeenAt: domainTimestamp("last_seen_at").notNull(),
@@ -122,7 +132,7 @@ export const instances = sharednetSchema.table(
     check("instance_id_format", sql`${table.id} ~ ${INSTANCE_ID_RE}`),
     check(
       "instance_issued_by_key_id_format",
-      sql`${table.issuedByKeyId} ~ '^key_[0-9a-hjkmnp-tv-z]{26}$'`,
+      sql`${table.issuedByKeyId} ~ '^key_[0-9A-Za-z]{10}$'`,
     ),
     check("instance_token_digest_format", sql`${table.tokenDigest} ~ ${SHA256_HEX_RE}`),
     check(
@@ -190,12 +200,20 @@ export const roomMembers = sharednetSchema.table(
     principalId: text("principal_id").$type<PrincipalId>().notNull(),
     roomId: text("room_id").$type<RoomId>().notNull(),
     agentId: text("agent_id").$type<AgentId>().notNull(),
+    /**
+     * Membership is per Instance, not per Agent. Two Codex sessions of the same
+     * Agent are two participants: they hold separate credentials, join and
+     * leave independently, and the member list has to show both. Keying this on
+     * agent_id collapsed them into one row and made a three-way conversation
+     * report a single member.
+     */
+    instanceId: text("instance_id").$type<InstanceId>().notNull(),
     state: text("state").$type<"active" | "left">().default("active").notNull(),
     joinedAt: domainTimestamp("joined_at").defaultNow().notNull(),
     leftAt: domainTimestamp("left_at"),
   },
   (table) => [
-    primaryKey({ name: "room_member_pk", columns: [table.roomId, table.agentId] }),
+    primaryKey({ name: "room_member_pk", columns: [table.roomId, table.instanceId] }),
     foreignKey({
       name: "room_member_room_fk",
       columns: [table.principalId, table.roomId],
@@ -206,9 +224,16 @@ export const roomMembers = sharednetSchema.table(
       columns: [table.principalId, table.agentId],
       foreignColumns: [agents.principalId, agents.id],
     }).onDelete("cascade"),
+    foreignKey({
+      name: "room_member_instance_fk",
+      columns: [table.principalId, table.instanceId],
+      foreignColumns: [instances.principalId, instances.id],
+    }).onDelete("cascade"),
     index("room_member_principal_agent_idx").on(table.principalId, table.agentId),
+    index("room_member_instance_idx").on(table.instanceId),
     check("room_member_room_id_format", sql`${table.roomId} ~ ${ROOM_ID_RE}`),
     check("room_member_agent_id_format", sql`${table.agentId} ~ ${AGENT_ID_RE}`),
+    check("room_member_instance_id_format", sql`${table.instanceId} ~ ${INSTANCE_ID_RE}`),
     check(
       "room_member_state_consistent",
       sql`(${table.state} = 'active' AND ${table.leftAt} IS NULL)
@@ -374,7 +399,7 @@ export const idempotencyRecords = sharednetSchema.table(
     check(
       "idempotency_actor_id_valid",
       sql`(${table.credentialClass} = 'web_session' AND length(${table.actorId}) > 0)
-          OR (${table.credentialClass} = 'api_key' AND ${table.actorId} ~ '^key_[0-9a-hjkmnp-tv-z]{26}$')
+          OR (${table.credentialClass} = 'api_key' AND ${table.actorId} ~ '^key_[0-9A-Za-z]{10}$')
           OR (${table.credentialClass} = 'instance' AND ${table.actorId} ~ ${INSTANCE_ID_RE})`,
     ),
     check(

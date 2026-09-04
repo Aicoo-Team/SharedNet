@@ -16,7 +16,7 @@ describe("V1 API console", () => {
         return Response.json({ capabilities: ["instances", "rooms", "messages"] });
       }
       if (path === "/api/auth/api-key/create") {
-        return Response.json({ id: `key_${"0".repeat(26)}`, key });
+        return Response.json({ id: `key_${"0".repeat(10)}`, key });
       }
       return Response.json({ message: "unexpected request" }, { status: 500 });
     });
@@ -41,7 +41,7 @@ describe("V1 API console", () => {
   });
 
   it("revokes the key created in this tab and clears it from memory", async () => {
-    const id = `key_${"1".repeat(26)}`;
+    const id = `key_${"1".repeat(10)}`;
     const key = `snk_${"B".repeat(43)}`;
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const path = String(input);
@@ -72,7 +72,7 @@ describe("V1 API console", () => {
   });
 
   it("does not erase a separately pasted key when revoking the generated key", async () => {
-    const id = `key_${"2".repeat(26)}`;
+    const id = `key_${"2".repeat(10)}`;
     const generatedKey = `snk_${"F".repeat(43)}`;
     const pastedKey = `snk_${"G".repeat(43)}`;
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {

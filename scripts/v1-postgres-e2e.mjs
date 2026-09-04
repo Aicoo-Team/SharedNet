@@ -91,7 +91,7 @@ const keyResponse = await authRequest(
 );
 await assertStatus(keyResponse, 200, "create-api-key");
 const keyPayload = await keyResponse.json();
-assert.match(keyPayload.id, /^key_[0-9a-hjkmnp-tv-z]{26}$/);
+assert.match(keyPayload.id, /^key_[0-9A-Za-z]{10}$/);
 assert.match(keyPayload.key, /^snk_[A-Za-z0-9_-]{43}$/);
 const apiKey = keyPayload.key;
 

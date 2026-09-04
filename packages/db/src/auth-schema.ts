@@ -140,7 +140,7 @@ export const apiKey = sharednetAuthSchema.table(
     unique("auth_apikey_key_unique").on(table.key),
     index("auth_apikey_config_id_idx").on(table.configId),
     index("auth_apikey_reference_id_idx").on(table.referenceId),
-    check("auth_apikey_id_format", sql`${table.id} ~ '^key_[0-9a-hjkmnp-tv-z]{26}$'`),
+    check("auth_apikey_id_format", sql`${table.id} ~ '^key_[0-9A-Za-z]{10}$'`),
   ],
 );
 

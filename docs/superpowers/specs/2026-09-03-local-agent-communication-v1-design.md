@@ -100,9 +100,17 @@ Principal, Agent, Runtime, and Instance IDs are server-generated opaque codes. T
 ```text
 principal_id = p_15COsXY9aK
 agent_id     = a_7Qm2Zx8WpL
-runtime_id   = r_4Nk8Vm2QaT
 instance_id  = i_8pQ2Km7XaN
 ```
+
+**Amended 2026-09-04 — Runtime is no longer an entity.** This section originally
+defined a fourth type, `runtime_id`, sitting between Agent and Instance. It has
+been removed. A Runtime was never addressable: nothing could hold a Runtime
+credential, join a Room as a Runtime, or send a message from one, so the tier
+existed only to be flattened again by every view that displayed it. Where a
+session runs — runtime build, device identifier, workspace, OS — is now
+diagnostic metadata on the Instance (`instance.runtime_metadata`), reachable
+from the one id that is addressable, and never consulted for authorization.
 
 The body is a case-sensitive ten-character Base62 code generated from a cryptographically secure random source. The database enforces uniqueness in each typed namespace; generation retries on collision. Type prefixes remain part of the canonical ID so logs, URLs, and references are unambiguous.
 
@@ -153,7 +161,38 @@ runtime_id
 instance_id
 ```
 
-The Network UI aggregates by Agent and can expand active Runtime and Instance nodes.
+The Network UI draws one node per Instance. An Instance is the only thing that
+holds a credential, joins a Room, and sends a message, so it is the only node an
+edge can meaningfully connect.
+
+Edges, as of 2026-09-04:
+
+| Edge | Direction | Weight | Status |
+| --- | --- | --- | --- |
+| shared Rooms | undirected, dashed | number of Rooms both Instances are active in | implemented |
+| delegation | directed, solid blue | times the source delegated work to the target | **TODO — no data source** |
+| verification | directed, solid yellow | times the source verified the target's work | **TODO — no data source** |
+
+> **TODO — record delegation and verification.**
+> Requested 2026-09-04.
+>
+> Neither edge can be emitted today: nothing in the schema records either. The
+> `message` table stores `content` and `reply_to_message_id` and nothing else,
+> and there is no delegation or verification relation anywhere in
+> `packages/db/src/schema.ts`.
+>
+> The pre-V1 Python model had a `CoordinationTagProjection` with kinds
+> `human_review | verification | delegation` parsed out of message text. That is
+> the wrong shape to restore as-is: a tag scraped from prose is a claim by the
+> sender, not a fact, and an edge that says "A verified B's work" is exactly the
+> kind of claim that should not be self-asserted and unverifiable.
+>
+> Whatever is designed needs to settle, at minimum: who may assert the edge, what
+> the target is (a message, a Room, a unit of work that does not exist as an
+> entity yet), whether the counterparty has to acknowledge it, and what stops an
+> Instance from inflating its own verification count. Until then the projection
+> emits shared-Room edges only, and the two directed kinds exist in the type but
+> are never produced.
 
 ### 4.7 DNS-like resolution direction
 
@@ -168,6 +207,27 @@ human alias
 ```
 
 This is a future DNS-like product direction, not a V1 alias feature. Resolution must be caller-relative, policy-aware, integrity-bound, and unable to turn a friendly name into authority. Canonical opaque IDs remain the database keys and audit identity beneath every alias.
+
+> **TODO — human-readable aliases for Principal, Agent, and Instance.**
+> Requested 2026-09-04. Deferred here, not dropped.
+>
+> The constraint that makes this non-trivial is the sentence above: an alias must
+> not turn a friendly name into authority. Anything built has to satisfy all of:
+>
+> - resolution is **caller-relative** — the same alias may resolve differently,
+>   or not at all, for different callers, so an alias can never be a global
+>   namespace that one party can squat;
+> - an alias is **never accepted as an identifier on the wire**. Requests carry
+>   canonical IDs; aliases are display and lookup only. Otherwise an alias
+>   becomes a second, weaker addressing path into the same authority;
+> - **rename is not re-identification**. Changing an alias must not rewrite
+>   canonical IDs, historical messages, or audit provenance, so past records keep
+>   pointing at who actually acted;
+> - **collision and impersonation** are policy questions, not storage ones. Two
+>   Principals wanting the same alias is the normal case, and the resolution rule
+>   has to make impersonating a known Agent unattractive rather than merely rare.
+>
+> Until that is designed, IDs stay opaque and the UI shows canonical IDs.
 
 ## 5. Account pairing and credential boundary
 

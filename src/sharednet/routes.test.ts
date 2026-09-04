@@ -35,7 +35,7 @@ import { POST as claimPairing } from "../../app/api/sharednet/pairings/[pairingI
 import { SharedNetApiError } from "./server-client";
 
 const AUTH_USER_ID = "auth-user-1";
-const PRINCIPAL_ID = "pri_w7ytve6398hy7gmjsk1c9q78hb";
+const PRINCIPAL_ID = "p_7CPHtWFsFn";
 const DECISION = {
   decision_id: "decision_1",
   response_text: null,
@@ -53,7 +53,6 @@ const NETWORK = {
   edges: [],
   instances: [],
   principal: { principal_id: PRINCIPAL_ID },
-  runtimes: [],
 };
 
 function request(
@@ -171,7 +170,7 @@ describe("authenticated SharedNet Dashboard routes", () => {
           request(
             undefined,
             "GET",
-            "/api/sharednet/rooms?principalId=pri_apszmrq9c8v09wg5pa6btzk1w7",
+            "/api/sharednet/rooms?principalId=p_ww7tGenO2m",
           ),
         ),
       method: sharedNetClient.listRooms,
@@ -209,7 +208,7 @@ describe("authenticated SharedNet Dashboard routes", () => {
           request(
             undefined,
             "GET",
-            "/api/sharednet/decisions?agentId=agt_g2fraebny9xajpc0evtcwf501c",
+            "/api/sharednet/decisions?agentId=a_Rv1ov75Ma8",
           ),
         ),
       method: sharedNetClient.listDecisions,
@@ -223,7 +222,7 @@ describe("authenticated SharedNet Dashboard routes", () => {
           rawRequest(
             "{not-json",
             "POST",
-            "/api/sharednet/pairings/pairing_1/claim?principalId=pri_apszmrq9c8v09wg5pa6btzk1w7",
+            "/api/sharednet/pairings/pairing_1/claim?principalId=p_ww7tGenO2m",
           ),
           { params: Promise.resolve({ pairingId: "pairing_1" }) },
         ),
@@ -247,10 +246,10 @@ describe("authenticated SharedNet Dashboard routes", () => {
   it.each([
     {
       body: {
-        agentId: "agt_g2fraebny9xajpc0evtcwf501c",
-        instanceId: "ins_hjxe2fgyw5m6wgjxyqs8qerr7p",
+        agentId: "a_Rv1ov75Ma8",
+        instanceId: "i_Qi6RVkZATU",
         outcome: "approved",
-        principalId: "pri_apszmrq9c8v09wg5pa6btzk1w7",
+        principalId: "p_ww7tGenO2m",
         runtimeId: "rt_wapy580nh3zst2d6nw98vr6r42",
       },
       expectedResolution: { outcome: "approved", responseText: undefined },
@@ -259,7 +258,7 @@ describe("authenticated SharedNet Dashboard routes", () => {
     {
       body: {
         outcome: "answered",
-        principalId: "pri_apszmrq9c8v09wg5pa6btzk1w7",
+        principalId: "p_ww7tGenO2m",
         responseText: "Singapore",
       },
       expectedResolution: { outcome: "answered", responseText: "Singapore" },

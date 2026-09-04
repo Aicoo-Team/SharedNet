@@ -21,19 +21,19 @@ import {
 } from "./index";
 
 describe("public IDs and credentials", () => {
-  it.each(["pri", "key", "agt", "ins", "rom", "msg", "dec"] as const)(
+  it.each(["p", "key", "a", "i", "rom", "msg", "dec"] as const)(
     "generates an opaque %s ID with the normative format",
     (prefix) => {
       const id = generatePublicId(prefix);
 
       expect(id).toMatch(PUBLIC_ID_PATTERN);
       expect(isPublicId(id, prefix)).toBe(true);
-      expect(isPublicId(id, prefix === "pri" ? "agt" : "pri")).toBe(false);
+      expect(isPublicId(id, prefix === "p" ? "a" : "p")).toBe(false);
     },
   );
 
   it("generates a request ID and both 256-bit secret formats", () => {
-    expect(generateRequestId()).toMatch(/^req_[0-9a-hjkmnp-tv-z]{26}$/);
+    expect(generateRequestId()).toMatch(/^req_[0-9A-Za-z]{10}$/);
     expect(generateSecret("snk")).toMatch(SNK_SECRET_PATTERN);
     expect(generateSecret("sni")).toMatch(SNI_SECRET_PATTERN);
   });
