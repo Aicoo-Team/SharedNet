@@ -1,15 +1,11 @@
 // @vitest-environment node
 
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
 const projectRoot = fileURLToPath(new URL("../..", import.meta.url));
-const temporaryDirectories: string[] = [];
 const secret = "runtime-config-test-secret-with-at-least-thirty-two-characters";
 
 function isolatedEnvironment(): NodeJS.ProcessEnv {
@@ -19,7 +15,6 @@ function isolatedEnvironment(): NodeJS.ProcessEnv {
     "DATABASE_URL_UNPOOLED",
     "SHAREDNET_POSTGRES_URL",
     "SHAREDNET_POSTGRES_URL_NON_POOLING",
-    "BETTER_AUTH_DATABASE_PATH",
   ]) {
     delete environment[name];
   }
@@ -49,12 +44,6 @@ function importAuth(environment: NodeJS.ProcessEnv) {
   );
 }
 
-afterEach(() => {
-  for (const directory of temporaryDirectories.splice(0)) {
-    rmSync(directory, { force: true, recursive: true });
-  }
-});
-
 describe("Better Auth runtime database selection", () => {
   it("can be imported during a production build without runtime configuration", () => {
     const result = spawnSync(
@@ -77,20 +66,14 @@ describe("Better Auth runtime database selection", () => {
     expect(result.status, `${result.stdout ?? ""}${result.stderr ?? ""}`).toBe(0);
   });
 
-  it("rejects the SQLite compatibility path in production", () => {
-    const directory = mkdtempSync(join(tmpdir(), "sharednet-auth-config-"));
-    temporaryDirectories.push(directory);
-    const databasePath = join(directory, "must-not-be-created.sqlite");
-    const result = importAuth({
-      ...isolatedEnvironment(),
-      BETTER_AUTH_DATABASE_PATH: databasePath,
-    });
+  it("refuses to start without a Postgres URL, with no fallback of any kind", () => {
+    const result = importAuth(isolatedEnvironment());
     const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
 
     expect(result.error).toBeUndefined();
     expect(result.status).not.toBe(0);
     expect(output).toContain("DATABASE_URL or SHAREDNET_POSTGRES_URL is required");
-    expect(existsSync(databasePath)).toBe(false);
+    expect(output).toContain("no SQLite or in-memory fallback");
   });
 
   it.each(["DATABASE_URL", "SHAREDNET_POSTGRES_URL"] as const)(

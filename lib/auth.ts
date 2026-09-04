@@ -1,11 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { chmodSync } from "node:fs";
 
 import { apiKey } from "@better-auth/api-key";
 import { drizzleAdapter } from "@better-auth/drizzle-adapter";
 import { betterAuth, type BetterAuthOptions } from "better-auth";
 import { createAuthMiddleware } from "better-auth/api";
-import Database from "better-sqlite3";
 
 import {
   apiKey as apiKeyTable,
@@ -47,19 +45,6 @@ function hasPostgresEnvironment(): boolean {
   return POSTGRES_ENVIRONMENT_NAMES.some((name) => process.env[name]?.trim());
 }
 
-function openOwnerOnlyDatabase(path: string): Database.Database {
-  const previousMask = process.umask(0o077);
-
-  try {
-    const database = new Database(path);
-
-    chmodSync(/* turbopackIgnore: true */ path, 0o600);
-    return database;
-  } finally {
-    process.umask(previousMask);
-  }
-}
-
 function createPostgresAdapter(): AuthDatabase {
   return drizzleAdapter(getDatabase(), {
     provider: "pg",
@@ -80,14 +65,9 @@ function resolveAuthDatabase(): AuthDatabase {
     return createPostgresAdapter();
   }
 
-  const sqlitePath = process.env.BETTER_AUTH_DATABASE_PATH?.trim();
-  if (process.env.NODE_ENV !== "production" && sqlitePath) {
-    return openOwnerOnlyDatabase(sqlitePath);
-  }
-
   throw new Error(
     "DATABASE_URL or SHAREDNET_POSTGRES_URL is required for SharedNet authentication. " +
-      "BETTER_AUTH_DATABASE_PATH is supported only as an explicit local development/test compatibility path.",
+      "SharedNet has no SQLite or in-memory fallback.",
   );
 }
 

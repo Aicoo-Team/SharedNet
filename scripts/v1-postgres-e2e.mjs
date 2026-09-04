@@ -35,7 +35,6 @@ process.env.DATABASE_URL = databaseUrl;
 process.env.DATABASE_URL_UNPOOLED = databaseUrl;
 process.env.BETTER_AUTH_URL = baseURL;
 process.env.BETTER_AUTH_SECRET = secret;
-delete process.env.BETTER_AUTH_DATABASE_PATH;
 delete process.env.SHAREDNET_DEV_API_KEY;
 
 const { migrateDatabase } = await import("../packages/db/src/migrate.ts");
