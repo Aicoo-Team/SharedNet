@@ -1,1 +1,0 @@
-"""SharedNet coordination package."""

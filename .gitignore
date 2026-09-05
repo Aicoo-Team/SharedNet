@@ -14,3 +14,7 @@ __pycache__/
 *.egg-info/
 .sharednet/
 .vercel
+
+# authoring-tool working files
+.superpowers/
+.impeccable.md
