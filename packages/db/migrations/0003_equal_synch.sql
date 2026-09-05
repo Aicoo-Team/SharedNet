@@ -1,5 +1,13 @@
 -- Reordered by hand: drizzle-kit dropped instance_principal_agent_id_unique
 -- before the two foreign keys that reference it, which PostgreSQL rejects.
+--
+-- Data-preserving: the generator emitted creator_instance_id as NOT NULL with
+-- no default, which cannot apply to a database that already has Rooms. It is
+-- added nullable, backfilled from each Room's creator membership (the one whose
+-- joined_at equals the Room's created_at, else the earliest), then made NOT
+-- NULL. At the end, Instances that sat under the old automatic "default" Agent
+-- become untagged and those Agent rows are removed: under the tag model an
+-- untagged Instance is a null pointer, not a member of a tag named default.
 ALTER TABLE "sharednet"."agent" DROP CONSTRAINT "agent_default_handle_consistent";--> statement-breakpoint
 ALTER TABLE "sharednet"."room_member" DROP CONSTRAINT "room_member_agent_id_format";--> statement-breakpoint
 ALTER TABLE "sharednet"."decision" DROP CONSTRAINT "decision_requester_agent_fk";--> statement-breakpoint
@@ -14,7 +22,14 @@ DROP INDEX "sharednet"."agent_one_default_per_principal";--> statement-breakpoin
 DROP INDEX "sharednet"."room_member_principal_agent_idx";--> statement-breakpoint
 ALTER TABLE "sharednet"."instance" ALTER COLUMN "agent_id" DROP NOT NULL;--> statement-breakpoint
 ALTER TABLE "sharednet"."instance" ADD COLUMN "local_instance_key" text;--> statement-breakpoint
-ALTER TABLE "sharednet"."room" ADD COLUMN "creator_instance_id" text NOT NULL;--> statement-breakpoint
+ALTER TABLE "sharednet"."room" ADD COLUMN "creator_instance_id" text;--> statement-breakpoint
+UPDATE "sharednet"."room" r SET "creator_instance_id" = (
+  SELECT m."instance_id" FROM "sharednet"."room_member" m
+   WHERE m."room_id" = r."id"
+   ORDER BY (m."joined_at" = r."created_at") DESC, m."joined_at" ASC, m."instance_id" ASC
+   LIMIT 1
+);--> statement-breakpoint
+ALTER TABLE "sharednet"."room" ALTER COLUMN "creator_instance_id" SET NOT NULL;--> statement-breakpoint
 ALTER TABLE "sharednet"."decision" ADD CONSTRAINT "decision_requester_instance_fk" FOREIGN KEY ("principal_id","requested_by_instance_id") REFERENCES "sharednet"."instance"("principal_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "sharednet"."instance" ADD CONSTRAINT "instance_principal_fk" FOREIGN KEY ("principal_id") REFERENCES "sharednet"."principal"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "sharednet"."instance" ADD CONSTRAINT "instance_principal_agent_fk" FOREIGN KEY ("principal_id","agent_id") REFERENCES "sharednet"."agent"("principal_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -28,4 +43,6 @@ ALTER TABLE "sharednet"."message" DROP COLUMN "sender_agent_id";--> statement-br
 ALTER TABLE "sharednet"."room_member" DROP COLUMN "agent_id";--> statement-breakpoint
 ALTER TABLE "sharednet"."room" DROP COLUMN "creator_agent_id";--> statement-breakpoint
 ALTER TABLE "sharednet"."instance" ADD CONSTRAINT "instance_local_instance_key_format" CHECK ("sharednet"."instance"."local_instance_key" IS NULL OR "sharednet"."instance"."local_instance_key" ~ '^[0-9a-f]{64}$');--> statement-breakpoint
-ALTER TABLE "sharednet"."room" ADD CONSTRAINT "room_creator_instance_id_format" CHECK ("sharednet"."room"."creator_instance_id" ~ '^i_[0-9A-Za-z]{10}$');
+ALTER TABLE "sharednet"."room" ADD CONSTRAINT "room_creator_instance_id_format" CHECK ("sharednet"."room"."creator_instance_id" ~ '^i_[0-9A-Za-z]{10}$');--> statement-breakpoint
+UPDATE "sharednet"."instance" SET "agent_id" = NULL WHERE "agent_id" IN (SELECT "id" FROM "sharednet"."agent" WHERE "handle" = 'default');--> statement-breakpoint
+DELETE FROM "sharednet"."agent" WHERE "handle" = 'default';
