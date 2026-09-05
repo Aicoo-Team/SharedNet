@@ -2063,13 +2063,6 @@ main {
   }
 }
 
-.auth-dot-field {
-  background-image: radial-gradient(circle, rgb(209 212 216 / 16%) 1px, transparent 1.25px);
-  background-position: center;
-  background-size: 19px 19px;
-  mask-image: radial-gradient(circle at center, #000 0%, #000 42%, transparent 86%);
-}
-
 /* Standalone marketing page */
 
 .marketing-page {

@@ -19,6 +19,7 @@ const navigation = vi.hoisted(() => ({
 }));
 
 vi.mock("../../lib/auth-client", () => ({ authClient }));
+vi.mock("next/script", () => ({ default: () => null }));
 vi.mock("next/navigation", () => ({
   useRouter: () => ({
     refresh: navigation.refresh,
@@ -54,11 +55,13 @@ describe("ModernLoginSignup", () => {
     vi.restoreAllMocks();
   });
 
-  it("uses an accessible blue accent for the SharedNet word", () => {
+  it("sets the SharedNet word in the homepage navy display face", () => {
     render(<ModernLoginSignup />);
 
     const heading = screen.getByRole("heading", { name: "Sign in to SharedNet" });
-    expect(within(heading).getByText("SharedNet")).toHaveClass("text-[#75AADB]");
+    const word = within(heading).getByText("SharedNet");
+    expect(word).toHaveClass("text-[#002147]");
+    expect(word).toHaveClass("font-display");
   });
 
   it("gives credential fields browser-readable names and email input hints", () => {
@@ -74,12 +77,28 @@ describe("ModernLoginSignup", () => {
     expect(screen.getByLabelText("Name")).toHaveAttribute("name", "name");
   });
 
-  it("uses a static full-viewport backdrop without allocating a WebGL canvas", () => {
+  it("reuses the homepage particle field behind a blurred layer that keeps the panel sharp", () => {
     render(<ModernLoginSignup />);
 
-    expect(screen.getByRole("main")).toHaveClass("min-h-screen");
-    expect(document.querySelector(".auth-dot-field")).not.toBeNull();
-    expect(document.querySelector("canvas")).toBeNull();
+    const main = screen.getByRole("main");
+    expect(main).toHaveClass("min-h-screen!");
+    expect(main).not.toHaveClass("[color-scheme:dark]");
+    expect(document.querySelector("#particles-js")).not.toBeNull();
+    expect(document.querySelector(".auth-dot-field")).toBeNull();
+
+    const blur = document.querySelector(".auth-particle-blur");
+    expect(blur).toHaveClass("backdrop-blur-[3px]");
+    expect(blur).toHaveClass("pointer-events-none");
+    expect(screen.getByLabelText("Authentication mode").closest("section")).toHaveClass("z-10");
+  });
+
+  it("keeps the submit label legible despite the global button font and color reset", () => {
+    render(<ModernLoginSignup />);
+
+    const submit = screen.getByRole("button", { name: "Sign in to SharedNet" });
+    expect(submit).toHaveClass("text-white!");
+    expect(submit).toHaveClass("font-semibold!");
+    expect(screen.getByRole("button", { name: "Sign in" })).toHaveClass("text-[#002147]!");
   });
 
   it("signs in with email and password, then returns to a safe requested page", async () => {

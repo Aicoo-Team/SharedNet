@@ -5,11 +5,21 @@ import { useRouter, useSearchParams } from "next/navigation";
 
 import { authClient } from "../../lib/auth-client";
 import { safePostAuthPath } from "../../src/auth/redirect";
+import ParticlesComponent from "./particles-bg";
 
 type AuthMode = "sign-in" | "sign-up";
 
-function DottedField() {
-  return <div aria-hidden="true" className="auth-dot-field absolute inset-0" />;
+const FIELD_CLASS =
+  "h-11 rounded-[6px] border border-[#002147]/25 bg-white/85 px-3 text-[0.9rem] text-[#002147] outline-none transition-colors placeholder:text-[#0e3560]/45 focus:border-[#205f91] focus:ring-1 focus:ring-[#205f91] disabled:cursor-wait disabled:opacity-60";
+
+const LABEL_CLASS = "flex flex-col gap-2 text-[0.78rem] font-medium text-[#0e3560]";
+
+function modeTabClass(active: boolean) {
+  return `-mb-px border-x-0 border-t-0 border-b-2 bg-transparent px-0 py-2 text-sm! font-medium! transition-colors focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#002147] ${
+    active
+      ? "border-[#002147] text-[#002147]!"
+      : "border-transparent text-[#0e3560]/60! hover:text-[#002147]!"
+  }`;
 }
 
 function errorMessage(error: unknown, mode: AuthMode): string {
@@ -92,48 +102,47 @@ export default function ModernLoginSignup() {
   const isSignIn = mode === "sign-in";
 
   return (
-    <main className="relative isolate flex min-h-screen w-full items-center justify-center overflow-hidden bg-[oklch(0.115_0.005_250)] px-4 py-8 text-[oklch(0.965_0.004_250)] [color-scheme:dark] sm:px-6">
-      <DottedField />
+    <main className="relative isolate flex min-h-screen! w-full items-center justify-center overflow-hidden bg-[oklch(96.8%_0.025_240)] px-4 py-8 text-[#002147] sm:px-6">
+      <ParticlesComponent />
       <div
         aria-hidden="true"
-        className="absolute inset-0 bg-[radial-gradient(circle_at_center,oklch(0.115_0.005_250/0.28)_0%,oklch(0.115_0.005_250/0.78)_72%,oklch(0.09_0.004_250)_100%)]"
+        className="auth-particle-blur pointer-events-none absolute inset-0 z-[1] bg-[oklch(98%_0.015_240/0.08)] backdrop-blur-[3px]"
       />
 
       <section
         aria-labelledby="auth-heading"
-        className="relative z-10 w-full max-w-[25rem] rounded-[6px] border border-[oklch(0.31_0.008_250)] bg-[oklch(0.155_0.006_250/0.97)] px-6 py-7 sm:px-8 sm:py-8"
+        className="relative z-10 w-full max-w-[25rem] rounded-xl border border-[#002147]/25 bg-[oklch(98.5%_0.012_240/0.86)] px-6 py-7 shadow-[0_18px_50px_rgba(0,33,71,0.14)] backdrop-blur-md sm:px-8 sm:py-8"
       >
-        <div className="mb-8 flex items-center justify-between gap-6 border-b border-[oklch(0.29_0.007_250)] pb-3 text-[0.72rem] leading-none tracking-[0.16em] text-[oklch(0.66_0.012_250)] uppercase">
+        <div className="mb-8 flex items-center justify-between gap-6 border-b border-[#002147]/15 pb-3 text-[0.72rem] leading-none font-semibold tracking-[0.16em] text-[#0e3560]/70 uppercase">
           <span>SharedNet</span>
           <span>Account access</span>
         </div>
 
         <div className="mb-7">
-          <h1 id="auth-heading" className="text-[1.5rem] leading-[1.2] font-semibold tracking-[-0.025em]">
+          <h1 id="auth-heading" className="text-[1.5rem] leading-[1.2] font-semibold tracking-[-0.025em] text-[#002147]">
             {isSignIn ? (
               <>
-                Sign in to <span className="text-[#75AADB]">SharedNet</span>
+                Sign in to{" "}
+                <span className="font-display font-extrabold tracking-[-0.05em] text-[#002147]">
+                  SharedNet
+                </span>
               </>
             ) : (
               "Create your SharedNet account"
             )}
           </h1>
-          <p className="mt-2 max-w-[34ch] text-[0.9rem] leading-[1.55] text-[oklch(0.69_0.01_250)]">
+          <p className="mt-2 max-w-[34ch] text-[0.9rem] leading-[1.55] text-[#0e3560]/80">
             {isSignIn
               ? "Continue to the SharedNet Rooms available in this deployment."
               : "Create an account for your SharedNet workspace."}
           </p>
         </div>
 
-        <div className="mb-6 flex gap-6 border-b border-[oklch(0.29_0.007_250)]" aria-label="Authentication mode">
+        <div className="mb-6 flex gap-6 border-b border-[#002147]/15" aria-label="Authentication mode">
           <button
             type="button"
             aria-pressed={isSignIn}
-            className={`-mb-px border-x-0 border-t-0 border-b bg-transparent px-0 py-2 text-sm transition-colors focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[oklch(0.72_0.1_245)] ${
-              isSignIn
-                ? "border-[oklch(0.9_0.006_250)] text-[oklch(0.96_0.004_250)]"
-                : "border-transparent text-[oklch(0.61_0.01_250)] hover:text-[oklch(0.85_0.008_250)]"
-            }`}
+            className={modeTabClass(isSignIn)}
             disabled={pending}
             onClick={() => switchMode("sign-in")}
           >
@@ -142,11 +151,7 @@ export default function ModernLoginSignup() {
           <button
             type="button"
             aria-pressed={!isSignIn}
-            className={`-mb-px border-x-0 border-t-0 border-b bg-transparent px-0 py-2 text-sm transition-colors focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[oklch(0.72_0.1_245)] ${
-              !isSignIn
-                ? "border-[oklch(0.9_0.006_250)] text-[oklch(0.96_0.004_250)]"
-                : "border-transparent text-[oklch(0.61_0.01_250)] hover:text-[oklch(0.85_0.008_250)]"
-            }`}
+            className={modeTabClass(!isSignIn)}
             disabled={pending}
             onClick={() => switchMode("sign-up")}
           >
@@ -156,13 +161,13 @@ export default function ModernLoginSignup() {
 
         <form className="flex flex-col gap-4" onSubmit={submit}>
           {!isSignIn ? (
-            <label className="flex flex-col gap-2 text-[0.78rem] font-medium text-[oklch(0.76_0.008_250)]">
+            <label className={LABEL_CLASS}>
               Name
               <input
                 type="text"
                 autoComplete="name"
                 name="name"
-                className="h-11 rounded-[4px] border border-[oklch(0.33_0.008_250)] bg-[oklch(0.115_0.005_250)] px-3 text-[0.9rem] text-[oklch(0.96_0.004_250)] outline-none transition-colors placeholder:text-[oklch(0.48_0.009_250)] focus:border-[oklch(0.68_0.08_245)] focus:ring-1 focus:ring-[oklch(0.68_0.08_245)] disabled:cursor-wait disabled:opacity-60"
+                className={FIELD_CLASS}
                 disabled={pending}
                 onChange={(event) => setName(event.target.value)}
                 placeholder="Your name"
@@ -172,7 +177,7 @@ export default function ModernLoginSignup() {
             </label>
           ) : null}
 
-          <label className="flex flex-col gap-2 text-[0.78rem] font-medium text-[oklch(0.76_0.008_250)]">
+          <label className={LABEL_CLASS}>
             Email
             <input
               type="email"
@@ -180,7 +185,7 @@ export default function ModernLoginSignup() {
               autoComplete="email"
               name="email"
               spellCheck={false}
-              className="h-11 rounded-[4px] border border-[oklch(0.33_0.008_250)] bg-[oklch(0.115_0.005_250)] px-3 text-[0.9rem] text-[oklch(0.96_0.004_250)] outline-none transition-colors placeholder:text-[oklch(0.48_0.009_250)] focus:border-[oklch(0.68_0.08_245)] focus:ring-1 focus:ring-[oklch(0.68_0.08_245)] disabled:cursor-wait disabled:opacity-60"
+              className={FIELD_CLASS}
               disabled={pending}
               onChange={(event) => setEmail(event.target.value)}
               placeholder="name@work-email.com"
@@ -189,13 +194,13 @@ export default function ModernLoginSignup() {
             />
           </label>
 
-          <label className="flex flex-col gap-2 text-[0.78rem] font-medium text-[oklch(0.76_0.008_250)]">
+          <label className={LABEL_CLASS}>
             Password
             <input
               type="password"
               autoComplete={isSignIn ? "current-password" : "new-password"}
               name="password"
-              className="h-11 rounded-[4px] border border-[oklch(0.33_0.008_250)] bg-[oklch(0.115_0.005_250)] px-3 text-[0.9rem] text-[oklch(0.96_0.004_250)] outline-none transition-colors placeholder:text-[oklch(0.48_0.009_250)] focus:border-[oklch(0.68_0.08_245)] focus:ring-1 focus:ring-[oklch(0.68_0.08_245)] disabled:cursor-wait disabled:opacity-60"
+              className={FIELD_CLASS}
               disabled={pending}
               minLength={8}
               onChange={(event) => setPassword(event.target.value)}
@@ -206,14 +211,14 @@ export default function ModernLoginSignup() {
           </label>
 
           {error ? (
-            <p role="alert" className="rounded-[4px] border border-[oklch(0.48_0.09_25)] bg-[oklch(0.2_0.035_25)] px-3 py-2.5 text-[0.82rem] leading-[1.45] text-[oklch(0.84_0.055_25)]">
+            <p role="alert" className="rounded-[6px] border border-[#b91c1c]/35 bg-[#fef2f2]/90 px-3 py-2.5 text-[0.82rem] leading-[1.45] text-[#991b1b]">
               {error}
             </p>
           ) : null}
 
           <button
             type="submit"
-            className="mt-2 flex h-11 items-center justify-center rounded-[4px] border border-[oklch(0.91_0.005_250)] bg-[oklch(0.93_0.005_250)] px-4 text-[0.875rem] font-semibold text-[oklch(0.16_0.006_250)] transition-colors hover:bg-[oklch(0.86_0.006_250)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[oklch(0.72_0.1_245)] disabled:cursor-wait disabled:border-[oklch(0.45_0.006_250)] disabled:bg-[oklch(0.35_0.006_250)] disabled:text-[oklch(0.72_0.006_250)]"
+            className="mt-2 flex h-11 items-center justify-center rounded-[6px] border border-[#002147] bg-[#002147] px-4 text-[0.875rem]! font-semibold! text-white! transition-colors hover:border-[#0e3560] hover:bg-[#0e3560] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#002147] disabled:cursor-wait disabled:border-[#002147]/40 disabled:bg-[#002147]/40 disabled:text-white/85!"
             disabled={pending}
           >
             {pending
@@ -222,7 +227,7 @@ export default function ModernLoginSignup() {
           </button>
         </form>
 
-        <p className="mt-6 border-t border-[oklch(0.29_0.007_250)] pt-4 text-[0.72rem] leading-[1.5] text-[oklch(0.57_0.009_250)]">
+        <p className="mt-6 border-t border-[#002147]/15 pt-4 text-[0.72rem] leading-[1.5] text-[#0e3560]/65">
           Account identity and connected agent runtime identity remain separately attributable.
         </p>
       </section>

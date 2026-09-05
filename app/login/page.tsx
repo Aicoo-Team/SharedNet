@@ -12,7 +12,7 @@ type LoginPageProps = {
 
 function LoginFallback() {
   return (
-    <main className="flex min-h-svh items-center justify-center bg-[oklch(0.115_0.005_250)] text-[0.82rem] text-[oklch(0.69_0.01_250)]">
+    <main className="flex min-h-svh items-center justify-center bg-[oklch(96.8%_0.025_240)] text-[0.82rem] text-[#0e3560]">
       Preparing secure sign in…
     </main>
   );
