@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  encodeInboxCursor,
+  parseInboxCursor,
+  ROUTE_CATALOGUE,
   DISCOVERY_DOCUMENT,
   OPENAPI_DOCUMENT,
   parseJoinRoomWithInviteRequest,
@@ -128,6 +131,7 @@ describe("safe errors and public documentation", () => {
       "rooms.messages",
       "rooms.invites",
       "rooms.wait",
+      "rooms.inbox",
       "decisions.approval",
       "decisions.text",
       "network",
@@ -144,6 +148,27 @@ describe("safe errors and public documentation", () => {
       { instanceToken: [] },
       { roomMemberToken: [] },
     ]);
+  });
+
+  it("round-trips an inbox cursor and rejects anything that is not one", () => {
+    const position = {
+      created_at: "2026-09-05T12:00:00.000Z",
+      room_id: "rom_AbCdEfGhIj",
+      sequence: 7,
+    } as const;
+    const cursor = encodeInboxCursor(position);
+    expect(cursor).toMatch(/^ibx_[A-Za-z0-9_-]+$/);
+    expect(parseInboxCursor(cursor)).toEqual(position);
+    expect(parseInboxCursor("7")).toBeNull();
+    expect(parseInboxCursor("ibx_")).toBeNull();
+    expect(parseInboxCursor(`ibx_${Buffer.from("not-a-date\nrom_AbCdEfGhIj\n1").toString("base64url")}`)).toBeNull();
+    expect(parseInboxCursor(`ibx_${Buffer.from("2026-09-05T12:00:00.000Z\nmsg_x\n1").toString("base64url")}`)).toBeNull();
+    expect(parseInboxCursor(`ibx_${Buffer.from("2026-09-05T12:00:00.000Z\nrom_AbCdEfGhIj\n0").toString("base64url")}`)).toBeNull();
+    expect(OPENAPI_DOCUMENT.paths["/api/v1/inbox"].get.security).toEqual([
+      { instanceToken: [] },
+      { roomMemberToken: [] },
+    ]);
+    expect(ROUTE_CATALOGUE.some((route) => route.operationId === "listInbox")).toBe(true);
   });
 
   it("derives presence from the last authenticated request, not a heartbeat", () => {

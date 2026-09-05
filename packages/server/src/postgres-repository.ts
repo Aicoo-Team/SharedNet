@@ -17,6 +17,8 @@ import {
   type SharedNetDatabase,
 } from "../../db/src/index.ts";
 import {
+  encodeInboxCursor,
+  type InboxPosition,
   digestSecret,
   generatePublicId,
   generateSecret,
@@ -864,6 +866,58 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
     const room = await this.roomById(roomId);
     await this.requireMembership(auth, room.id);
     return this.pageMessages(room.id, input);
+  }
+
+  async listInbox(
+    auth: RoomAuth,
+    input: { after: InboxPosition | null; limit: number },
+  ): Promise<Page<Message>> {
+    const after = input.after;
+    // Membership is checked per message row, so a Room the caller left or was
+    // removed from drops out of the inbox at once, and a guest never sees past
+    // its one Room.
+    const membership =
+      auth.kind === "guest"
+        ? and(
+            eq(messages.roomId, auth.roomId),
+            sql`EXISTS (SELECT 1 FROM ${roomGuests} WHERE ${roomGuests.id} = ${auth.memberId} AND ${roomGuests.roomId} = ${messages.roomId} AND ${roomGuests.state} = 'active')`,
+          )
+        : sql`EXISTS (SELECT 1 FROM ${roomMembers} WHERE ${roomMembers.roomId} = ${messages.roomId} AND ${roomMembers.instanceId} = ${auth.instanceId} AND ${roomMembers.state} = 'active')`;
+    const position =
+      after === null
+        ? undefined
+        : sql`(${messages.createdAt}, ${messages.roomId}, ${messages.sequence}) > (${new Date(after.created_at)}::timestamptz, ${after.room_id}, ${after.sequence})`;
+    const rows = await this.executor()
+      .select({
+        message: messages,
+        agentId: instances.agentId,
+        guestId: roomGuests.id,
+        guestName: roomGuests.name,
+      })
+      .from(messages)
+      .leftJoin(instances, eq(instances.id, messages.senderInstanceId))
+      .leftJoin(roomGuests, eq(roomGuests.id, messages.senderGuestId))
+      .where(position ? and(membership, position) : membership)
+      .orderBy(asc(messages.createdAt), asc(messages.roomId), asc(messages.sequence))
+      .limit(input.limit + 1);
+    const hasMore = rows.length > input.limit;
+    const items = rows.slice(0, input.limit).map((row) =>
+      projectMessage(
+        row.message,
+        row.agentId ?? null,
+        row.guestId ? { id: row.guestId, name: row.guestName! } : null,
+      ),
+    );
+    const last = items.at(-1);
+    return {
+      items,
+      next_cursor: last
+        ? encodeInboxCursor({ created_at: last.created_at, room_id: last.room_id, sequence: last.sequence })
+        : after
+          ? encodeInboxCursor(after)
+          : null,
+      has_more: hasMore,
+    };
   }
 
   private async pageMessages(

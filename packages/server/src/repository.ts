@@ -1,4 +1,5 @@
 import type {
+  InboxPosition,
   Agent,
   AgentId,
   ApiKeyId,
@@ -174,6 +175,15 @@ export interface SharedNetRepository {
     auth: RoomAuth,
     roomId: RoomId,
     input: { after: number; limit: number },
+  ): Promise<Page<Message>>;
+  /**
+   * Every message after the cursor across the Rooms the caller is an active
+   * member of, oldest first. A guest sits in one Room; an Instance in many.
+   * `next_cursor` is an opaque inbox cursor, never a sequence.
+   */
+  listInbox(
+    auth: RoomAuth,
+    input: { after: InboxPosition | null; limit: number },
   ): Promise<Page<Message>>;
   executeIdempotent(
     scope: IdempotencyScope,
