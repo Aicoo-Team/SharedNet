@@ -58,5 +58,6 @@ license that lived in `LICENSES/RAC-MIT.txt` is now the root `LICENSE`.
 3. ~~The removal PR above~~ done.
 4. `noUncheckedIndexedAccess`, fixing what it surfaces.
 5. ~~Coverage report in CI~~ done; Playwright smoke of the Dashboard.
-6. Point the Vercel **Preview** environment at a dev database — today it
-   shares production's — then move migrations into the build command.
+6. ~~Move migrations into the build command~~ done for production builds;
+   previews never migrate. A dev database is deliberately deferred — see
+   `docs/decisions/2026-09-05-one-database-for-now.md` for when and how.
