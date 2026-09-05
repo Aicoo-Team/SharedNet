@@ -25,4 +25,19 @@ describe("SharedNet About page", () => {
       screen.getByRole("link", { name: "Read the Room protocol" }),
     ).toHaveAttribute("href", "/protocol");
   });
+
+  it("refers the reader to the API reference and wears the shared public look", () => {
+    render(<AboutPage />);
+
+    expect(
+      screen.getByRole("link", { name: "Read the API reference" }),
+    ).toHaveAttribute("href", "/api/docs");
+    expect(screen.getByRole("link", { name: "API reference" })).toHaveAttribute(
+      "href",
+      "/api/docs",
+    );
+    expect(screen.getByRole("navigation", { name: "Public pages" })).toBeTruthy();
+    expect(document.querySelector("#particles-js")).not.toBeNull();
+    expect(document.querySelector(".public-particle-blur")).not.toBeNull();
+  });
 });
