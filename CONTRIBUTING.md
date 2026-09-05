@@ -117,12 +117,14 @@ drizzle-kit prompts on a same-type drop+add ("created or renamed?"); answer
 honestly, because a rename keeps old values under a new name.
 
 **Deployment order.** Code that needs a migration must never run before it.
-Today that is a manual step: migrate the hosted database, then merge. The
-intended end state is that Vercel's build command becomes
-`pnpm run db:migrate && next build`, so a failed migration fails the build
-and nothing deploys ahead of the schema — which is safe only once the Preview
-environment points at a dev database rather than production. Until then,
-migrate first, merge second.
+This is automated: Vercel's build command (`vercel.json` →
+`scripts/vercel-build.mjs`) applies migrations inside the **production**
+build, so a failed migration fails the build and nothing deploys ahead of the
+schema. Preview builds never migrate — there is one database and it is
+production's (`docs/decisions/2026-09-05-one-database-for-now.md`) — so a
+preview of a PR with a pending migration will show schema errors until it
+merges. For a breaking migration, use expand/contract or state in the PR
+that a minute of errors between migration and rollout is accepted.
 
 For a personal dev database, `drizzle-kit push` (no migration file) is fine;
 never against a shared one.

@@ -14,7 +14,7 @@ before it is done. `pnpm test` is the fast loop; CI is the source of truth.
 | PostgreSQL end-to-end | `pnpm run test:e2e:postgres` | every PR, every push | sign-up, sign-in, API key issuance, Instance registration and a Room against a real database; raw keys never stored |
 | Production build | `pnpm run build` | every PR, every push | the Dashboard builds with placeholder env and no database |
 | Coverage | `pnpm run test:coverage` (v8) | every PR, every push, **report-only** | lines/branches/functions in the job summary and an `lcov` artifact; baseline 2026-09-05: 77.6% lines, 66.5% branches |
-| Production smoke | `node scripts/smoke-production.mjs` | **manual**, after every deploy | the deployed system end to end: 25 checks from sign-up to a cross-Instance Room; creates one `probe-*@example.test` account |
+| Production smoke | `scripts/smoke-production.mjs` via `.github/workflows/smoke.yml` | after every successful **production deployment**, daily, on demand | the deployed system end to end as the fixed `smoke-ci@sharednet.ai` account: 23 checks from sign-in to a cross-Instance Room. A manual run without the secrets signs up a throwaway `probe-*@example.test` account instead |
 | Acceptance | see below | **manual**, before a milestone | the browser UI and the CLI as a user meets them, across two accounts |
 
 Both CI jobs must be green before merge. There is no "skip CI".
@@ -53,9 +53,13 @@ TEST_DATABASE_URL=postgres://localhost:5432/sharednet_e2e pnpm run test:e2e:post
 ```
 
 **Production smoke** (`scripts/smoke-production.mjs`) runs against
-`https://www.sharednet.ai` by default (`PROBE_BASE` overrides). It creates a
-throwaway account each run; delete `probe-*` accounts periodically. Run it
-after every deploy and paste the last line into the PR or the deploy note.
+`https://www.sharednet.ai` by default (`PROBE_BASE` overrides). In CI it runs
+as the fixed smoke account from the `SMOKE_*` secrets, after every successful
+production deployment and once a day, so the real database is exercised by
+one known account rather than a growing pile of throwaway ones. Run it by
+hand without the secrets and it signs up a `probe-*` account instead; delete
+those periodically. There is one database and it is production's — see
+`docs/decisions/2026-09-05-one-database-for-now.md` for what that implies.
 
 ## What a change must prove
 
@@ -69,7 +73,7 @@ after every deploy and paste the last line into the PR or the deploy note.
 | `src/sharednet/server-client.ts` (Dashboard BFF) | the projection passes the contract validator in a `server-client.test.ts` case driven by the Drizzle stub |
 | `src/components`, `app/` | a component test asserts the visible behaviour by role/text; nullable fields (a null tag, an empty room) render |
 | `packages/cli` | `cli.test.ts` asserts the exact requests sent and that no local-only value leaks; `test:e2e:v1` still passes |
-| A deploy | `/api/health` returns 200 and the production smoke passes |
+| A deploy | `/api/health` returns 200 and the post-deploy smoke workflow is green |
 
 ## Rules that keep tests honest
 

@@ -14,6 +14,7 @@
     "db:migrate": "node --experimental-strip-types scripts/migrate-auth.mjs",
     "dev": "next dev --webpack -p 3001",
     "build": "next build --webpack",
+    "build:vercel": "node scripts/vercel-build.mjs",
     "start": "next start -p 3001",
     "sharednet": "node --experimental-strip-types packages/cli/src/main.ts",
     "test": "vitest run",
