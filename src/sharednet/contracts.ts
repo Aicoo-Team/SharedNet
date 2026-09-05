@@ -22,6 +22,14 @@ export type ActorProjection = {
   principal_id: PrincipalId;
 };
 
+/**
+ * Who said a Message. An Instance sender is an ActorProjection; a guest
+ * sender has no Instance and carries the name it gave when it joined.
+ */
+export type MessageSender =
+  | ActorProjection
+  | { agent_id: null; name: string; principal_id: PrincipalId };
+
 export type PrincipalProjection = {
   created_at: string;
   diagnostic_label: string;
@@ -87,15 +95,42 @@ export type RoomProjection = {
   updated_at: string;
 };
 
+export type MemberPresence = "online" | "away" | "offline";
+
 export type RoomMembership = {
   agent_id: AgentId | null;
-  instance_id: InstanceId;
+  /** Null for a guest admitted by an invite; guests have no Instance. */
+  instance_id: InstanceId | null;
   joined_at: string;
+  /** `instance` joined with an Instance token; `guest` with a Room invite. */
+  kind: "instance" | "guest";
   last_read_sequence: number;
   left_at: string | null;
+  /** The Instance id for an Instance member, `mem_…` for a guest. */
+  member_id: string;
+  /** A guest's self-declared name; null for an Instance. */
+  name: string | null;
+  /** Derived on the server from the member's last authenticated request. */
+  presence: MemberPresence;
+  /** For a guest, the Principal whose invite admitted it. */
   principal_id: PrincipalId;
   room_id: RoomId;
   status: "active" | "left";
+};
+
+export type RoomInviteProjection = {
+  created_at: string;
+  expires_at: string | null;
+  invite_id: string;
+  revoked_at: string | null;
+  room_id: RoomId;
+  uses: number;
+};
+
+/** The raw invite token is returned once, here, and never stored. */
+export type CreateRoomInviteResponse = {
+  invite: RoomInviteProjection;
+  token: string;
 };
 
 export type CoordinationTagProjection = {
@@ -112,7 +147,7 @@ export type RoomMessage = {
   reply_to: MessageId | null;
   resolution_state: "not_required" | "pending" | "resolved" | "rejected";
   room_id: RoomId;
-  sender: ActorProjection;
+  sender: MessageSender;
   sequence: number;
   tags: CoordinationTagProjection[];
 };
@@ -291,6 +326,16 @@ function isActorProjection(value: unknown): value is ActorProjection {
   );
 }
 
+function isMessageSender(value: unknown): value is MessageSender {
+  if (isActorProjection(value)) return true;
+  return (
+    hasExactKeys(value, ["principal_id", "agent_id", "name"]) &&
+    isPrincipalId(value.principal_id) &&
+    value.agent_id === null &&
+    isNonEmptyString(value.name)
+  );
+}
+
 function isInstanceActorProjection(
   value: unknown,
 ): value is Required<ActorProjection> {
@@ -428,26 +473,57 @@ function isRoomProjection(value: unknown): value is RoomProjection {
   );
 }
 
+function isMemberPresence(value: unknown): value is MemberPresence {
+  return value === "online" || value === "away" || value === "offline";
+}
+
 function isRoomMembership(value: unknown): value is RoomMembership {
-  return (
-    hasExactKeys(value, [
+  if (
+    !hasExactKeys(value, [
       "room_id",
       "principal_id",
       "agent_id",
       "instance_id",
+      "kind",
+      "member_id",
+      "name",
+      "presence",
       "status",
       "joined_at",
       "left_at",
       "last_read_sequence",
-    ]) &&
-    isIdentifier(value.room_id) &&
-    isPrincipalId(value.principal_id) &&
-    isNullable(value.agent_id, isAgentId) &&
-    isInstanceId(value.instance_id) &&
-    (value.status === "active" || value.status === "left") &&
-    isTimestamp(value.joined_at) &&
-    isNullable(value.left_at, isTimestamp) &&
-    isNonNegativeInteger(value.last_read_sequence)
+    ]) ||
+    !isIdentifier(value.room_id) ||
+    !isPrincipalId(value.principal_id) ||
+    !isNullable(value.agent_id, isAgentId) ||
+    !isMemberPresence(value.presence) ||
+    !isNonEmptyString(value.member_id) ||
+    (value.status !== "active" && value.status !== "left") ||
+    !isTimestamp(value.joined_at) ||
+    !isNullable(value.left_at, isTimestamp) ||
+    !isNonNegativeInteger(value.last_read_sequence)
+  ) {
+    return false;
+  }
+  if (value.kind === "instance") {
+    return isInstanceId(value.instance_id) && value.name === null;
+  }
+  return value.kind === "guest" && value.instance_id === null && isNonEmptyString(value.name);
+}
+
+export function isCreateRoomInviteResponse(value: unknown): value is CreateRoomInviteResponse {
+  if (!hasExactKeys(value, ["invite", "token"]) || !isNonEmptyString(value.token)) {
+    return false;
+  }
+  const invite = value.invite;
+  return (
+    hasExactKeys(invite, ["invite_id", "room_id", "expires_at", "revoked_at", "uses", "created_at"]) &&
+    isNonEmptyString(invite.invite_id) &&
+    isIdentifier(invite.room_id) &&
+    isNullable(invite.expires_at, isTimestamp) &&
+    isNullable(invite.revoked_at, isTimestamp) &&
+    isNonNegativeInteger(invite.uses) &&
+    isTimestamp(invite.created_at)
   );
 }
 
@@ -490,7 +566,7 @@ export function isRoomMessage(value: unknown): value is RoomMessage {
     isIdentifier(value.message_id) &&
     isIdentifier(value.room_id) &&
     isPositiveInteger(value.sequence) &&
-    isActorProjection(value.sender) &&
+    isMessageSender(value.sender) &&
     isNonEmptyString(value.content) &&
     isNullable(value.reply_to, isIdentifier) &&
     isArrayOf(value.tags, isCoordinationTagProjection) &&

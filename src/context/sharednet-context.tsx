@@ -25,6 +25,8 @@ import {
   type NetworkProjection,
   type PairingId,
   type PrincipalProjection,
+  isCreateRoomInviteResponse,
+  type CreateRoomInviteResponse,
   type RoomDetail,
   type RoomId,
   type RoomSummary,
@@ -36,6 +38,8 @@ export type CreateRoomInput = { description?: string | null; name: string };
 
 type SharedNetContextValue = {
   claimPairing: (pairingId: PairingId) => Promise<void>;
+  /** Mint an invite token for a Room this account owns. The token is returned once. */
+  createInvite: (roomId: RoomId) => Promise<CreateRoomInviteResponse>;
   /** Schedule an empty Room owned by this account, then select it. */
   createRoom: (input: CreateRoomInput) => Promise<RoomSummary>;
   decisions: DecisionProjection[];
@@ -346,6 +350,22 @@ export function SharedNetProvider({ children }: { children: ReactNode }) {
     [refresh],
   );
 
+  const createInvite = useCallback(async (roomId: RoomId) => {
+    const mutationController = mutationAbortControllerRef.current;
+    if (
+      !mountedRef.current ||
+      mutationController === null ||
+      mutationController.signal.aborted
+    ) {
+      throw mutationUnavailableError();
+    }
+    return requestJson(
+      `/api/sharednet/rooms/${encodeURIComponent(roomId)}/invites`,
+      isCreateRoomInviteResponse,
+      { method: "POST", signal: mutationController.signal },
+    );
+  }, []);
+
   const claimPairing = useCallback(
     async (pairingId: PairingId) => {
       const mutationController = mutationAbortControllerRef.current;
@@ -433,6 +453,7 @@ export function SharedNetProvider({ children }: { children: ReactNode }) {
   const value = useMemo(
     () => ({
       claimPairing,
+      createInvite,
       createRoom,
       decisions,
       error,
@@ -448,6 +469,7 @@ export function SharedNetProvider({ children }: { children: ReactNode }) {
     }),
     [
       claimPairing,
+      createInvite,
       createRoom,
       decisions,
       error,

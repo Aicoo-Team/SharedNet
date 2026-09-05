@@ -122,6 +122,7 @@ const answeredDecision: DecisionProjection = {
 function makeState(overrides: Partial<SharedNetState> = {}): SharedNetState {
   return {
     claimPairing: vi.fn(async () => undefined),
+    createInvite: vi.fn(async () => { throw new Error("createInvite not stubbed"); }),
     createRoom: vi.fn(async () => { throw new Error("createRoom not stubbed"); }),
     decisions: [
       approvalDecision,

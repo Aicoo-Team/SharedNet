@@ -90,6 +90,10 @@ const roomDetail = {
     {
       agent_id: AGENT_ID,
       instance_id: INSTANCE_ID,
+      kind: "instance",
+      member_id: INSTANCE_ID,
+      name: null,
+      presence: "online",
       joined_at: NOW,
       last_read_sequence: 1,
       left_at: null,
@@ -208,6 +212,16 @@ function StateProbe() {
         type="button"
       >
         Schedule room
+      </button>
+      <button
+        onClick={() => {
+          void state.createInvite(parsedSecondRoomId).then((minted) => {
+            document.title = minted.token;
+          });
+        }}
+        type="button"
+      >
+        Mint invite
       </button>
     </dl>
   );
@@ -1178,6 +1192,48 @@ describe("SharedNetProvider", () => {
       method: "POST",
     });
     expect(screen.getByTestId("room-list")).toHaveTextContent("rom_sched00001:");
+  });
+
+  it("mints a Room invite through the account session and hands the token back once", async () => {
+    const requestLog: Array<{ init?: RequestInit; path: string }> = [];
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const path = String(input);
+      requestLog.push({ init, path });
+      if (path === `/api/sharednet/rooms/${SECOND_ROOM_ID}/invites` && init?.method === "POST") {
+        return Promise.resolve(
+          Response.json({
+            invite: {
+              created_at: "2026-09-06T00:00:00.000Z",
+              expires_at: null,
+              invite_id: "inv_0000000001",
+              revoked_at: null,
+              room_id: SECOND_ROOM_ID,
+              uses: 0,
+            },
+            token: `rit_${"t".repeat(43)}`,
+          }),
+        );
+      }
+      return successfulFetch(input);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <SharedNetProvider>
+        <StateProbe />
+      </SharedNetProvider>,
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId("selected-room-id")).toHaveTextContent(ROOM_ID);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Mint invite" }));
+    await waitFor(() => {
+      expect(document.title).toBe(`rit_${"t".repeat(43)}`);
+    });
+    const mint = requestLog.find(({ path }) => path.endsWith("/invites"));
+    expect(mint?.init?.method).toBe("POST");
+    expect(mint?.init?.body).toBeUndefined();
   });
 
   it("resolves a durable decision and then refreshes projections", async () => {
