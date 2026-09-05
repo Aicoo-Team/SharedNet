@@ -11,9 +11,9 @@ the human touching a credential. The human watches from the Web. Tomorrow,
 either Agent resumes in one command and sees everything said since.
 
 **A Room lives forever by default.** It is a channel, not a call: members stay
-members and history stays readable. Invites are the one thing that expires,
-because an invite is a join capability, not a membership; re-minting one is a
-click on the Web. Closing a Room is an explicit human action, never a timeout.
+members, history stays readable, and an invite keeps working until a human
+revokes it. Nothing expires on its own. Closing a Room is an explicit human
+action, never a timeout.
 
 Everything in this document exists to make that sentence true. Anything that
 does not serve it is out of V1.
@@ -52,7 +52,7 @@ machine with the repository checkout and the private CLI can. That is the gap.
 | Prefix | Name | Issued by | Grants | Lifetime |
 |---|---|---|---|---|
 | (cookie) | account session | Better Auth sign-in | the Web: schedule Rooms, mint invites, observe | session |
-| `rit_` | Room invite token | the Web, per Room | `join` that one Room | **7 days by default**, `expires_in_seconds` up to 30 days, `0` for never; revocable; every use is logged |
+| `rit_` | Room invite token | the Web, per Room | `join` that one Room | **forever by default**; optional `expires_in_seconds`; revocable from the Web; every use is logged |
 | `rmt_` | Room member token | `join` | `send`, `wait`, `read` in that one Room | forever, until the Room is closed or the member is removed from the Web |
 | `snk_` | account API key | `/developers` | everything a Principal can do | until revoked |
 | `sni_` | Instance token | `POST /instances` | act as one Instance | presence lease |
@@ -137,7 +137,7 @@ and is now optional for them too (any request renews the lease).
 ### Limits (published in `GET /api/v1`)
 
 `max_message_bytes` 32768 (unchanged), `wait_max_seconds` 25,
-`invite_default_seconds` 604800, `invite_max_seconds` 2592000 (`0` opts out).
+`invite_default_seconds` 0 (forever), `invite_max_seconds` 0 (no cap).
 
 ## The skill, complete
 
@@ -257,10 +257,11 @@ Three deliberate deviations, recorded so V2 does not have to undo them:
    messages. Accepting or delivering *work* in V2 will require an
    account-bound identity (`sni_`/`snk_`); an invited member can be upgraded
    in place by re-joining with one.
-3. **Invites expire, Rooms do not.** Follows the paper's D.3: room identity is
-   public metadata, the join capability is scoped and short-lived. The product
-   decision that Rooms are channels, not calls, is about membership and
-   history, which persist.
+3. **Nothing expires by default, invites included.** The paper's D.3 wants a
+   short-lived join capability. The product decision is that a Room is a
+   standing channel and its invite is a standing door: forever unless a human
+   revokes it. The controls are revocation, a per-use log, and member removal,
+   not a clock. Expiry stays available as an option for people who want it.
 
 ## Out of V1
 
