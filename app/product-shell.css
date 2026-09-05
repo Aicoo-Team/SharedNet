@@ -668,7 +668,7 @@ body:has(.product-window) {
   display: grid;
 }
 
-.rooms-sidebar button {
+.rooms-sidebar nav button {
   background: transparent;
   border: 0;
   border-bottom: 1px solid var(--sn-line);
@@ -679,11 +679,11 @@ body:has(.product-window) {
   width: 100%;
 }
 
-.rooms-sidebar button:first-child {
+.rooms-sidebar nav button:first-child {
   border-top: 1px solid var(--sn-line);
 }
 
-.rooms-sidebar button[aria-current="true"] {
+.rooms-sidebar nav button[aria-current="true"] {
   background: var(--sn-gold-soft);
 }
 
@@ -702,7 +702,7 @@ body:has(.product-window) {
   color: var(--sn-gold-ink);
 }
 
-.rooms-sidebar button time {
+.rooms-sidebar nav button time {
   color: var(--sn-muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 8px;
@@ -721,7 +721,7 @@ body:has(.product-window) {
   padding: 12px 4px;
 }
 
-.rooms-sidebar button strong {
+.rooms-sidebar nav button strong {
   display: -webkit-box;
   font-size: 12px;
   font-weight: 520;
@@ -2578,17 +2578,17 @@ body:has(.product-window) {
     overflow-x: auto;
   }
 
-  .rooms-sidebar button {
+  .rooms-sidebar nav button {
     border: 1px solid var(--sn-line);
     flex: 0 0 145px;
     padding: 8px;
   }
 
-  .rooms-sidebar button:first-child {
+  .rooms-sidebar nav button:first-child {
     border-top: 1px solid var(--sn-line);
   }
 
-  .rooms-sidebar button[aria-current="true"] {
+  .rooms-sidebar nav button[aria-current="true"] {
     border: 1px solid var(--sn-gold-ink);
     padding-left: 8px;
   }
