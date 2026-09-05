@@ -95,21 +95,37 @@ Agent-assisted commits carry a `Co-Authored-By:` trailer.
 
 ## Database changes
 
-1. Edit `packages/db/src/schema.ts`.
-2. `pnpm run db:generate`. drizzle-kit prompts on a same-type drop+add
-   ("created or renamed?"); answer honestly.
-3. **Read the generated SQL.** The generator has emitted statements in orders
-   PostgreSQL rejects three times so far (dropping a key a foreign key still
-   references; adding a foreign key before its target constraint). Reorder by
-   hand and say so in a comment at the top of the file.
-4. If existing rows cannot satisfy the new shape (a NOT NULL column without a
-   default), write the migration data-preserving: add nullable, backfill,
-   then constrain. Rehearse it on a copy of the real rows before it touches a
-   shared database, and record the rehearsal in the PR.
-5. CI applies every migration to an empty database. That proves ordering, not
-   data safety; step 4 proves data safety.
-6. **Migrate the hosted database before merging code that needs the
-   migration.** Deploying ahead of the database breaks every write path.
+Drizzle's everyday loop is two commands: edit `packages/db/src/schema.ts`,
+then `pnpm run db:generate` to get a SQL file, which CI applies to an empty
+database and which `pnpm run db:migrate` applies to yours. Most changes are
+**additive** — a nullable column, a new table, an index — and for those that
+is the whole procedure. Read the generated SQL once; commit it with the code.
+
+**Breaking** changes are the rare path and the only expensive one: a NOT NULL
+column without a default, a primary key or foreign key reshaped, a column
+dropped. There, the tool is not the problem; existing rows are. Two rules:
+
+1. Write the migration data-preserving — add nullable, backfill, then
+   constrain — and rehearse it on a copy of real rows before it touches a
+   shared database. Say so in the PR.
+2. Read the generated statement order. drizzle-kit has emitted orders that
+   PostgreSQL rejects (dropping a key a foreign key still references; adding a
+   foreign key before its target constraint). Reorder by hand and leave a
+   comment at the top of the file explaining why.
+
+drizzle-kit prompts on a same-type drop+add ("created or renamed?"); answer
+honestly, because a rename keeps old values under a new name.
+
+**Deployment order.** Code that needs a migration must never run before it.
+Today that is a manual step: migrate the hosted database, then merge. The
+intended end state is that Vercel's build command becomes
+`pnpm run db:migrate && next build`, so a failed migration fails the build
+and nothing deploys ahead of the schema — which is safe only once the Preview
+environment points at a dev database rather than production. Until then,
+migrate first, merge second.
+
+For a personal dev database, `drizzle-kit push` (no migration file) is fine;
+never against a shared one.
 
 ## Documentation
 

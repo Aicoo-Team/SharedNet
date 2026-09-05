@@ -14,7 +14,7 @@ the change that adds this file.
 | Commit messages that explain why | Linux, Git, PostgreSQL | long-form, reasoned, conventional prefixes | **already strong** — keep it |
 | Design docs and decision records | Rust RFCs, Kubernetes KEPs, ADRs | specs + plans + a decisions file | good; directory naming is tool-specific (`superpowers/`) |
 | Strict typing | Deno, Next.js | `strict: true`, isolated modules | good; consider `noUncheckedIndexedAccess` |
-| Linter and formatter | universal | none | **gap** — adopt Biome in one format-only PR with a `.git-blame-ignore-revs` |
+| Linter and formatter | universal | none | **gap** — adopt Biome in one format-only PR with a `.git-blame-ignore-revs` (next) |
 | Contributing guide | universal | none | **this PR** |
 | Testing guide | Kubernetes, Rust | none | **this PR** |
 | Security policy | universal | none | **this PR** |
@@ -25,9 +25,9 @@ the change that adds this file.
 | Secrets hygiene | universal | `.env*` ignored, `.env.example` documented, digests at rest | good |
 | Readiness endpoint | Kubernetes | `/api/health` with a real query | good; now logs a redacted cause |
 | Privacy promises tested | Tailscale | e2e asserts no local value is uploaded | **already strong** |
-| Coverage reporting | React, Rust | none | later; report before gating |
+| Coverage reporting | React, Rust | none | **done 2026-09-05** — v8 report in CI, baseline 77.6% lines / 66.5% branches |
 | Release notes / changelog | universal | none; deploy-on-push | acceptable for a hosted service; a deploy log would help |
-| Lean tree | universal | Python tree, a git bundle, a skill's working directory and tool notes are tracked | **gap** — see below |
+| Lean tree | universal | Python tree, a git bundle, a skill's working directory and tool notes are tracked | **done 2026-09-05** — removed; see below |
 | Browser automation | Next.js (Playwright) | manual | later |
 
 ## What to remove from the tree
@@ -46,14 +46,17 @@ confusing to a newcomer:
 - `SHAREDNET_ROOM_INVITE.md` in the root — an invitation mechanism that is now
   "know the Room id"; fold anything still true into the docs.
 
-Remove them in one `chore:` PR after confirming nothing imports them; the
-history keeps them.
+Removed on 2026-09-05 along with the `/downloads/sharednet-local` route that
+only existed to serve the Python bundle; the history keeps them. The MIT
+license that lived in `LICENSES/RAC-MIT.txt` is now the root `LICENSE`.
 
 ## Order of the remaining work
 
-1. Merge this PR; make CI a required check the moment the plan allows it.
+1. ~~Merge this PR~~ done; make CI a required check the moment the plan allows it.
 2. Biome: one PR that adds the config and formats everything, plus
    `.git-blame-ignore-revs` pointing at that commit.
-3. The removal PR above.
+3. ~~The removal PR above~~ done.
 4. `noUncheckedIndexedAccess`, fixing what it surfaces.
-5. Coverage report in CI; Playwright smoke of the Dashboard.
+5. ~~Coverage report in CI~~ done; Playwright smoke of the Dashboard.
+6. Point the Vercel **Preview** environment at a dev database — today it
+   shares production's — then move migrations into the build command.
