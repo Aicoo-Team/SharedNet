@@ -20,13 +20,24 @@ const NO_STORE = {
   "vercel-cdn-cache-control": "no-store",
 } as const;
 
+/** Error code and message only — never the connection string or a stack. */
+function describeCause(error: unknown): string {
+  if (typeof error !== "object" || error === null) return String(error).slice(0, 200);
+  const code = "code" in error && typeof error.code === "string" ? `${error.code}: ` : "";
+  const message = "message" in error && typeof error.message === "string" ? error.message : "";
+  return `${code}${message}`.replace(/postgres(ql)?:\/\/\S+/gi, "<connection string>").slice(0, 200);
+}
+
 export async function GET(): Promise<Response> {
   const startedAt = Date.now();
 
   try {
     await getDatabase().execute(sql`select 1`);
-  } catch {
-    // The cause can carry the connection string or credentials; never surface it.
+  } catch (error) {
+    // The response never carries the cause: it could name a host or a user.
+    // The server log does, in redacted form, because "unreachable" alone once
+    // hid a certificate-verification failure for the better part of an hour.
+    console.error("health: database unreachable:", describeCause(error));
     return Response.json(
       { status: "unavailable", database: "unreachable" },
       { status: 503, headers: NO_STORE },
