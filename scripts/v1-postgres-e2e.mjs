@@ -37,6 +37,21 @@ process.env.BETTER_AUTH_URL = baseURL;
 process.env.BETTER_AUTH_SECRET = secret;
 delete process.env.SHAREDNET_DEV_API_KEY;
 
+// The harness owns its database. Dropping the schemas first makes a run
+// identical whether the database is fresh (CI) or reused (a developer's
+// laptop), and it is the name guard above that makes this safe to do.
+{
+  const reset = new Client({ connectionString: databaseUrl });
+  await reset.connect();
+  try {
+    await reset.query(
+      "DROP SCHEMA IF EXISTS sharednet, sharednet_auth, sharednet_migrations CASCADE",
+    );
+  } finally {
+    await reset.end();
+  }
+}
+
 const { migrateDatabase } = await import("../packages/db/src/migrate.ts");
 await migrateDatabase({ connectionString: databaseUrl });
 
@@ -368,7 +383,8 @@ try {
   `, [starts[0].instance.principal_id, roomId]);
   assert.deepEqual(counts.rows[0], {
     principals: 1,
-    agents: 1,
+    agents: 0, // there is no default Agent; a fresh Instance is untagged
+    
     instances: 4,
     rooms: 1,
     messages: 4,
