@@ -2,7 +2,47 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
-import styles from "./v1-api-console.module.css";
+
+import {
+  Eyebrow,
+  FIELD,
+  Lede,
+  PageTitle,
+  PANEL,
+  PRIMARY_BUTTON,
+  PublicPage,
+  SECONDARY_BUTTON,
+  TEXT_LINK,
+} from "./public-page";
+
+/** The console's former CSS module, expressed in the shared public-page system. */
+const styles = {
+  actions: "mt-4 flex flex-wrap items-center gap-3",
+  button: PRIMARY_BUTTON,
+  card: `${PANEL} grid content-start gap-2 p-6 sm:p-7 [&>h2]:text-[1.05rem] [&>h2]:font-semibold [&>h2]:tracking-[-0.02em] [&>p]:text-[0.92rem] [&>p]:leading-7 [&>p]:text-[#0e3560]`,
+  danger:
+    "border-[#b91c1c]! bg-[#fef2f2]! text-[#991b1b]! hover:border-[#991b1b]! hover:bg-[#fee2e2]!",
+  discovery: "mt-8 flex flex-wrap gap-2",
+  error:
+    "mt-6 rounded-[8px] border border-[#b91c1c]/35 bg-[#fef2f2]/90 px-3 py-2.5 text-[0.9rem] leading-6 text-[#991b1b] outline-none",
+  eyebrow: "",
+  field: "mt-4 grid gap-2 text-[0.8rem] font-semibold text-[#0e3560] [&>textarea]:min-h-24 [&>textarea]:py-2.5",
+  grid: "mt-8 grid gap-6 lg:grid-cols-2",
+  identity:
+    "mt-4 rounded-[8px] border border-[#002147]/15 bg-white/70 px-3 py-2.5 font-mono text-[0.78rem] leading-6 text-[#002147]",
+  lede: "",
+  message:
+    "grid gap-1 rounded-[8px] border border-[#002147]/15 bg-white/70 px-3 py-2.5 text-[0.9rem] leading-6 text-[#002147] [&>small]:font-mono [&>small]:text-[0.72rem] [&>small]:text-[#0e3560]/75",
+  messages: "mt-5 grid gap-2",
+  page: "",
+  pill: "rounded-full border border-[#002147]/25 bg-white/70 px-3 py-1 font-mono text-[0.72rem] font-semibold text-[#002147]",
+  secondary: SECONDARY_BUTTON,
+  shell: "",
+  status: "mt-3 text-[0.85rem] font-medium text-[oklch(45%_0.12_150)]",
+  textLink: `text-sm font-semibold ${TEXT_LINK}`,
+  title: "",
+  wide: "lg:col-span-2",
+} as const;
 
 type Agent = { id: string };
 type Instance = { agent_id: string; id: string; principal_id: string };
@@ -232,14 +272,16 @@ export function V1ApiConsole() {
   }
 
   return (
-    <main aria-busy={busy} className={styles.page}>
-      <div className={styles.shell}>
-        <p className={styles.eyebrow}>SharedNet / API V1 / localhost</p>
-        <h1 className={styles.title}>Call the room API.</h1>
-        <p className={styles.lede}>
-          Credentials stay only in this tab&apos;s memory. Ensure the default Agent,
-          start an Instance, then create a Room and exchange ordered messages.
-        </p>
+    <PublicPage current="/developers">
+      <div aria-busy={busy} className="grid gap-5 py-10 sm:py-14">
+        <Eyebrow>SharedNet / API V1 / developers</Eyebrow>
+        <PageTitle>Call the Room API.</PageTitle>
+        <Lede>
+          The power path: act as <em>your</em> account. Credentials stay only in this
+          tab&apos;s memory. Create a key, start an Instance, then open a Room and
+          exchange ordered messages. Guests do not need any of this; an invite from a
+          Room is enough.
+        </Lede>
         {error ? (
           <p className={styles.error} ref={errorRef} role="alert" tabIndex={-1}>
             {error}
@@ -260,7 +302,7 @@ export function V1ApiConsole() {
               The raw key stays only in this tab&apos;s memory.
             </p>
             <div className={styles.actions}>
-              <button className={`${styles.button} ${styles.secondary}`} disabled={busy || Boolean(createdKey)} onClick={() => void perform("create-key", createAccountApiKey)} type="button">
+              <button className={styles.secondary} disabled={busy || Boolean(createdKey)} onClick={() => void perform("create-key", createAccountApiKey)} type="button">
                 {pendingAction === "create-key" ? "Creating key…" : "Create account API key"}
               </button>
               <Link className={styles.textLink} href="/login?next=%2Fdevelopers">Sign in</Link>
@@ -269,6 +311,7 @@ export function V1ApiConsole() {
               <span>API key</span>
               <input
                 autoComplete="off"
+                className={FIELD}
                 disabled={busy}
                 onChange={(event) => updateApiKey(event.target.value)}
                 placeholder="snk_…"
@@ -277,11 +320,11 @@ export function V1ApiConsole() {
               />
             </label>
             <div className={styles.actions}>
-              <button className={`${styles.button} ${styles.secondary}`} disabled={busy || !apiKey} onClick={() => void perform("copy-key", copyApiKey)} type="button">
+              <button className={styles.secondary} disabled={busy || !apiKey} onClick={() => void perform("copy-key", copyApiKey)} type="button">
                 {pendingAction === "copy-key" ? "Copying…" : "Copy key"}
               </button>
               {createdKey ? (
-                <button className={`${styles.button} ${styles.danger}`} disabled={busy} onClick={() => void perform("revoke-key", revokeCreatedApiKey)} type="button">
+                <button className={`${styles.secondary} ${styles.danger}`} disabled={busy} onClick={() => void perform("revoke-key", revokeCreatedApiKey)} type="button">
                   {pendingAction === "revoke-key" ? "Revoking…" : "Revoke created key"}
                 </button>
               ) : null}
@@ -313,20 +356,20 @@ export function V1ApiConsole() {
             <p>These calls are the same endpoints used by the local CLI.</p>
             <label className={styles.field}>
               <span>Room name</span>
-              <input disabled={busy} onChange={(event) => setRoomName(event.target.value)} value={roomName} />
+              <input className={FIELD} disabled={busy} onChange={(event) => setRoomName(event.target.value)} value={roomName} />
             </label>
             <div className={styles.actions}>
               <button className={styles.button} disabled={busy || !instanceToken} onClick={() => void perform("create-room", createRoom)} type="button">
                 {pendingAction === "create-room" ? "Creating Room…" : "Create Room"}
               </button>
-              <button className={`${styles.button} ${styles.secondary}`} disabled={busy || !room} onClick={() => void perform("load-messages", loadMessages)} type="button">
+              <button className={styles.secondary} disabled={busy || !room} onClick={() => void perform("load-messages", loadMessages)} type="button">
                 {pendingAction === "load-messages" ? "Refreshing…" : "Refresh messages"}
               </button>
             </div>
             {room ? <div className={styles.identity}>room_id: {room.id}</div> : null}
             <label className={styles.field}>
               <span>Message</span>
-              <textarea disabled={busy} onChange={(event) => setContent(event.target.value)} placeholder="Post as this Instance…" value={content} />
+              <textarea className={FIELD} disabled={busy} onChange={(event) => setContent(event.target.value)} placeholder="Post as this Instance…" value={content} />
             </label>
             <button className={styles.button} disabled={busy || !room || !content.trim()} onClick={() => void perform("post-message", postMessage)} type="button">
               {pendingAction === "post-message" ? "Posting…" : "Post message"}
@@ -342,6 +385,6 @@ export function V1ApiConsole() {
           </section>
         </div>
       </div>
-    </main>
+    </PublicPage>
   );
 }
