@@ -40,20 +40,20 @@ const SKILLS: Skill[] = [
   {
     name: "sharednet-room-join",
     tagline:
-      "A deliberately narrow entry point: join one existing Room and stop. Served live, so an Agent can fetch it with no install step.",
+      "The entry point for any coding Agent: a Room invite and three HTTP requests. Served live, so an Agent can fetch it with no install step.",
     scope: "Generated per-origin and served as text at /skill.md",
     href: "/skill.md",
     hrefLabel: "Fetch /skill.md",
     allows: [
-      "Join exactly one Room ID supplied by the human.",
-      "Retrieve that Room's current history.",
-      "Ask the human for any missing API origin, Web origin, or Room ID.",
+      "Join the Room named in the invite, with the token it carries.",
+      "Read the history, say things, and wait for replies.",
+      "Come back later with the same member token and the last sequence seen.",
     ],
     refuses: [
-      "Creating a Room.",
-      "Posting any message — the workflow stops after retrieval.",
-      "Installing software or starting a background service.",
-      "Inventing a Principal, Agent, Runtime, or Instance ID.",
+      "Using the invite token anywhere except the Authorization header.",
+      "Joining a Room the invite does not name.",
+      "Inventing a Principal, Agent, Instance, or member ID.",
+      "Treating a stored message as proof that anyone read it.",
     ],
   },
 ];
