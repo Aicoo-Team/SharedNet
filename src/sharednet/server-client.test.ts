@@ -7,6 +7,7 @@ vi.mock("server-only", () => ({}));
 
 import { SharedNetServerClient } from "./server-client";
 import {
+  isCreateRoomInviteResponse,
   isDecisionProjection,
   isNetworkProjection,
   isRoomDetail,
@@ -111,12 +112,25 @@ function clientWith(tables: Record<string, unknown[]>) {
   return new SharedNetServerClient();
 }
 
+const guestRow = {
+  id: "mem_guest00001", roomId: ROOM, inviteId: "inv_invite0001", principalId: PRINCIPAL,
+  name: "claude-code", tokenDigest: "e".repeat(64), state: "active", joinedAt: NOW, leftAt: null,
+  lastSeenAt: new Date(Date.now() - 5_000),
+};
+const guestMessageRow = {
+  id: "msg_guest000001", roomId: ROOM, sequence: 2, senderPrincipalId: PRINCIPAL,
+  senderInstanceId: null, senderGuestId: "mem_guest00001", content: "hello from curl",
+  replyToMessageId: null, createdAt: NOW,
+};
+
 const BASE_TABLES = {
   principal: [principalRow],
   agent: [agentRow],
   instance: [instanceRow],
   room: [roomRow],
   room_member: [memberRow],
+  room_guest: [],
+  room_invite: [],
   message: [messageRow],
   decision: [decisionRow],
 };
@@ -223,6 +237,66 @@ describe("SharedNetServerClient reads the V1 Postgres tables", () => {
       principal_id: PRINCIPAL,
     });
     expect(detail.room.creator.agent_id).toBe(AGENT);
+  });
+
+  it("mints a Room invite for the owner, returns the raw token once, and stores only its digest", async () => {
+    const client = clientWith({ ...BASE_TABLES, room_invite: [] });
+
+    const minted = await client.createRoomInvite("auth-user-1", ROOM as never);
+
+    expect(isCreateRoomInviteResponse(minted)).toBe(true);
+    expect(minted.token).toMatch(/^rit_[A-Za-z0-9_-]{43}$/);
+    expect(minted.invite).toMatchObject({ room_id: ROOM, expires_at: null, revoked_at: null, uses: 0 });
+    expect(minted.invite.invite_id).toMatch(/^inv_[0-9A-Za-z]{10}$/);
+    const stored = rowsByTable.current.room_invite?.[0] as Record<string, unknown>;
+    expect(stored.tokenDigest).toMatch(/^[a-f0-9]{64}$/);
+    expect(JSON.stringify(stored)).not.toContain(minted.token);
+    expect(stored.expiresAt).toBeNull();
+  });
+
+  it("puts an expiry on an invite only when asked, and refuses a Room the account does not own", async () => {
+    const client = clientWith({ ...BASE_TABLES, room_invite: [] });
+    const timed = await client.createRoomInvite("auth-user-1", ROOM as never, {
+      expires_in_seconds: 3600,
+    });
+    expect(timed.invite.expires_at).not.toBeNull();
+
+    const foreign = clientWith({
+      ...BASE_TABLES,
+      room: [{ ...roomRow, principalId: "p_someoneElse" }],
+      room_invite: [],
+    });
+    await expect(foreign.createRoomInvite("auth-user-1", ROOM as never)).rejects.toMatchObject({
+      code: "room_not_found",
+      status: 404,
+    });
+    expect(rowsByTable.current.room_invite).toEqual([]);
+  });
+
+  it("shows guests among the members and names them as senders", async () => {
+    const client = clientWith({
+      ...BASE_TABLES,
+      room_guest: [guestRow],
+      message: [messageRow, guestMessageRow],
+    });
+    const detail = await client.getRoom("auth-user-1", ROOM as never);
+
+    expect(isRoomDetail(detail)).toBe(true);
+    expect(detail.memberships.map((member) => member.kind)).toEqual(["instance", "guest"]);
+    const guest = detail.memberships[1]!;
+    expect(guest).toMatchObject({
+      instance_id: null,
+      member_id: "mem_guest00001",
+      name: "claude-code",
+      presence: "online",
+      principal_id: PRINCIPAL,
+    });
+    expect(detail.memberships[0]).toMatchObject({ kind: "instance", name: null, presence: "online" });
+    expect(detail.messages[1]!.sender).toEqual({
+      agent_id: null,
+      name: "claude-code",
+      principal_id: PRINCIPAL,
+    });
   });
 
   it("projects Instances with lease-derived presence and no Runtime tier", async () => {

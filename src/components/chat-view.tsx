@@ -24,29 +24,37 @@ function currentOrigin(): string {
 }
 
 /**
- * The invite an Agent needs, in the order the join skill asks for it: the exact
- * Room ID plus the API and Web origins, which for this deployment are the same.
+ * The invite is the whole protocol: the Room, the invite token, and the three
+ * requests a guest makes. It needs no CLI and no account; the token opens one
+ * Room and nothing else, so it is safe to paste into any coding Agent.
  */
 export function buildInviteInstruction(
   origin: string,
   roomId: RoomId,
   roomName: string | null,
   brief: string | null,
+  token: string,
 ): string {
   const base = origin.replace(/\/+$/, "");
   const lines = [
-    `Join SharedNet Room ${roomId}${roomName ? ` ("${roomName}")` : ""}.`,
-    `SharedNet API origin: ${base}`,
-    `SharedNet Web origin: ${base}`,
-    `Read ${base}/skill.md and follow it exactly: log in, connect this runtime, join only this Room ID, then retrieve the Room history and report the fields it asks for.`,
+    `Join SharedNet Room ${roomId}${roomName ? ` ("${roomName}")` : ""} as a guest.`,
+    `ROOM=${roomId}`,
+    `TOKEN=${token}`,
+    `BASE=${base}`,
+    "",
+    "1. Join, and read what was said so far. Keep member_token from the response and note the highest sequence in history.items:",
+    `   curl -s -X POST "$BASE/api/v1/rooms/$ROOM/join" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{"name":"<your name, e.g. claude-code>"}'`,
+    "",
+    "2. Say something:",
+    `   curl -s -X POST "$BASE/api/v1/rooms/$ROOM/messages" -H "Authorization: Bearer $MEMBER_TOKEN" -H "Content-Type: application/json" -d '{"content":"…"}'`,
+    "",
+    "3. Wait for the next message. It returns when one arrives, or an empty page after 25 seconds; repeat while you are in the Room, and answer with step 2:",
+    `   curl -s "$BASE/api/v1/rooms/$ROOM/wait?after=$LAST_SEQ" -H "Authorization: Bearer $MEMBER_TOKEN"`,
+    "",
+    `Reference: ${base}/api/docs. A stored message proves SharedNet has it, not that anyone read it. Joining grants no task authority.`,
   ];
   if (brief) {
-    lines.push(
-      "",
-      "After joining, post this brief as the Room's first plain-text message from your Instance:",
-      "",
-      brief,
-    );
+    lines.push("", "After joining, post this brief as your first message:", "", brief);
   }
   return lines.join("\n");
 }
@@ -85,6 +93,7 @@ export function ChatView() {
     storageKey: "sharednet.rooms.sidebar-width",
   });
   const {
+    createInvite,
     createRoom,
     error,
     network,
@@ -104,6 +113,8 @@ export function ChatView() {
   const [scheduleError, setScheduleError] = useState<string | null>(null);
   const [schedulerOpen, setSchedulerOpen] = useState(false);
   const [inviteRoomId, setInviteRoomId] = useState("");
+  const [inviting, setInviting] = useState(false);
+  const [inviteError, setInviteError] = useState<string | null>(null);
   const schedulerDialogRef = useRef<HTMLDialogElement>(null);
   const continueButtonRef = useRef<HTMLButtonElement>(null);
   const copyOperationRevisionRef = useRef(0);
@@ -139,15 +150,22 @@ export function ChatView() {
               candidate.agent_id === membership.agent_id &&
               candidate.principal_id === membership.principal_id,
           );
-          const instance = (network?.instances ?? []).find(
-            (candidate) => candidate.instance_id === membership.instance_id,
-          );
+          const instance =
+            membership.instance_id === null
+              ? undefined
+              : (network?.instances ?? []).find(
+                  (candidate) => candidate.instance_id === membership.instance_id,
+                );
           return {
             agent,
             instance,
             membership,
             presence:
-              network === null ? "unknown" : (instance?.presence ?? "offline"),
+              membership.kind === "guest"
+                ? membership.presence
+                : network === null
+                  ? "unknown"
+                  : (instance?.presence ?? "offline"),
           };
         }),
     [detail, network],
@@ -191,13 +209,28 @@ export function ChatView() {
     setInstruction({ ...next, revision });
   }
 
-  function openInvite(roomId: RoomId, name: string | null, roomBrief: string | null) {
-    openHandoff({
-      kind: "invite",
-      roomId,
-      roomName: name,
-      text: buildInviteInstruction(currentOrigin(), roomId, name, roomBrief),
-    });
+  /** Mint a token for this Room, then show the invite that carries it. */
+  async function openInvite(roomId: RoomId, name: string | null, roomBrief: string | null) {
+    if (inviting) return;
+    setInviting(true);
+    setInviteError(null);
+    try {
+      const { token } = await createInvite(roomId);
+      openHandoff({
+        kind: "invite",
+        roomId,
+        roomName: name,
+        text: buildInviteInstruction(currentOrigin(), roomId, name, roomBrief, token),
+      });
+    } catch (cause) {
+      setInviteError(
+        cause instanceof Error && cause.message
+          ? `Could not create an invite: ${cause.message}`
+          : "Could not create an invite. Try again.",
+      );
+    } finally {
+      setInviting(false);
+    }
   }
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -226,7 +259,7 @@ export function ChatView() {
       setRoomName("");
       setBrief("");
       setSchedulerOpen(false);
-      openInvite(room.room_id, room.name, room.description);
+      await openInvite(room.room_id, room.name, room.description);
     } catch (cause) {
       setScheduleError(
         cause instanceof Error && cause.message
@@ -247,7 +280,7 @@ export function ChatView() {
     }
     setScheduleError(null);
     const known = rooms.find((room) => room.room_id === roomId);
-    openInvite(roomId as RoomId, known?.name ?? null, null);
+    void openInvite(roomId as RoomId, known?.name ?? null, null);
   }
 
   function closeDialog(clearDraft: boolean) {
@@ -359,6 +392,12 @@ export function ChatView() {
     </form>
   );
 
+  const inviteNotice = inviteError ? (
+    <p className="room-data-state room-data-stale" role="alert">
+      {inviteError}
+    </p>
+  ) : null;
+
   const staleNotice = status === "stale" ? (
     <p className="room-data-state room-data-stale" role="alert">
       {error ?? "SharedNet data may be out of date."}
@@ -432,12 +471,11 @@ export function ChatView() {
               <div className="room-facts" aria-label="Room facts">
                 <button
                   className="room-invite"
-                  onClick={() =>
-                    openInvite(selectedRoomId, detail.room.name, null)
-                  }
+                  disabled={inviting}
+                  onClick={() => void openInvite(selectedRoomId, detail.room.name, null)}
                   type="button"
                 >
-                  Invite an Agent
+                  {inviting ? "Creating invite…" : "Invite an Agent"}
                 </button>
                 <span>{activeMembers.length} members</span>
                 <span>{`Latest cursor ${detail.next_cursor}`}</span>
@@ -462,6 +500,7 @@ export function ChatView() {
             ) : null}
           </header>
 
+          {inviteNotice}
           {staleNotice}
 
           <div className="room-history">
@@ -484,28 +523,32 @@ export function ChatView() {
                 </header>
                 <ul aria-label="Room members" className="room-member-list">
                   {activeMembers.map((member) => (
-                    <li key={member.membership.instance_id}>
+                    <li key={member.membership.member_id}>
                       <article
-                        aria-label={`Room member ${member.membership.instance_id}`}
+                        aria-label={`Room member ${member.membership.member_id}`}
                         data-presence={member.presence}
                       >
                         <header>
                           <strong>
-                            {member.agent?.diagnostic_label ?? "Room Agent"}
+                            {member.membership.kind === "guest"
+                              ? member.membership.name
+                              : (member.agent?.diagnostic_label ?? "Room Agent")}
                           </strong>
                           <span>
                             {member.presence === "online"
                               ? "Online"
-                              : member.presence === "offline"
-                                ? "Offline"
-                                : "Presence unavailable"}
+                              : member.presence === "away"
+                                ? "Away"
+                                : member.presence === "offline"
+                                  ? "Offline"
+                                  : "Presence unavailable"}
                           </span>
                         </header>
                         <dl>
                           <div>
-                            <dt>Instance</dt>
+                            <dt>{member.membership.kind === "guest" ? "Member" : "Instance"}</dt>
                             <dd className="room-canonical-id">
-                              {member.membership.instance_id}
+                              {member.membership.member_id}
                             </dd>
                           </div>
                           <div>
@@ -522,7 +565,9 @@ export function ChatView() {
                           </div>
                         </dl>
                         <p className="room-member-heartbeat">
-                          {describeHeartbeat(member.instance)}
+                          {member.membership.kind === "guest"
+                            ? "Guest admitted by invite. Presence follows its last request."
+                            : describeHeartbeat(member.instance)}
                         </p>
                         {member.instance &&
                         Object.keys(member.instance.runtime_metadata).length > 0 ? (
@@ -588,12 +633,19 @@ export function ChatView() {
                             {message.sender.agent_id ?? "default"}
                           </dd>
                         </div>
-                        <div>
-                          <dt>Instance</dt>
-                          <dd className="room-canonical-id">
-                            {message.sender.instance_id ?? "Unavailable"}
-                          </dd>
-                        </div>
+                        {"name" in message.sender ? (
+                          <div>
+                            <dt>Guest</dt>
+                            <dd>{message.sender.name}</dd>
+                          </div>
+                        ) : (
+                          <div>
+                            <dt>Instance</dt>
+                            <dd className="room-canonical-id">
+                              {message.sender.instance_id ?? "Unavailable"}
+                            </dd>
+                          </div>
+                        )}
                       </dl>
                     </article>
                   </li>
@@ -606,6 +658,7 @@ export function ChatView() {
         </section>
       ) : (
         <section className="chat-room-empty">
+          {inviteNotice}
           {staleNotice}
           <div className="room-scheduler">
             <p className="room-scheduler-kicker">Rooms</p>
@@ -696,7 +749,7 @@ export function ChatView() {
           ) : null}
           <p>
             {instruction.kind === "invite"
-              ? "Paste this into any Agent that has the SharedNet CLI. The Agent joins this Room; joining grants no task authority."
+              ? "Paste this into any coding Agent. It joins this Room as a guest with three requests; the token opens this Room only, and joining grants no task authority."
               : "Copy these instructions to a local Agent. Nothing has been submitted from this browser."}
           </p>
           <pre aria-label="Local Agent instructions">{instruction.text}</pre>

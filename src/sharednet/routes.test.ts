@@ -5,6 +5,8 @@ const { authGetSession, sharedNetClient } = vi.hoisted(() => ({
   sharedNetClient: {
     claimPairing: vi.fn(),
     createRoom: vi.fn(),
+    createRoomInvite: vi.fn(),
+    revokeRoomInvite: vi.fn(),
     getNetwork: vi.fn(),
     getRoom: vi.fn(),
     listDecisions: vi.fn(),
@@ -29,6 +31,8 @@ vi.mock("./server-client", async (importOriginal) => {
 import { POST as bootstrapAccount } from "../../app/api/sharednet/bootstrap/route";
 import { GET as listRooms, POST as scheduleRoom } from "../../app/api/sharednet/rooms/route";
 import { GET as getRoom } from "../../app/api/sharednet/rooms/[roomId]/route";
+import { POST as mintInvite } from "../../app/api/sharednet/rooms/[roomId]/invites/route";
+import { DELETE as revokeInvite } from "../../app/api/sharednet/rooms/[roomId]/invites/[inviteId]/route";
 import { GET as getNetwork } from "../../app/api/sharednet/network/route";
 import { GET as listDecisions } from "../../app/api/sharednet/decisions/route";
 import { PATCH as resolveDecision } from "../../app/api/sharednet/decisions/[decisionId]/route";
@@ -336,6 +340,77 @@ describe("authenticated SharedNet Dashboard routes", () => {
       error: { code: "invalid_request", message: "Invalid request" },
     });
     expectNoBackendCall();
+  });
+
+  it("mints a Room invite for the signed-in account and returns the token once", async () => {
+    const minted = { invite: { invite_id: "inv_0000000001", room_id: "rom_lxw0rfaLIb" }, token: "rit_x" };
+    sharedNetClient.createRoomInvite.mockResolvedValue(minted);
+
+    const response = await mintInvite(
+      rawRequest("", "POST", "/api/sharednet/rooms/rom_lxw0rfaLIb/invites"),
+      { params: Promise.resolve({ roomId: "rom_lxw0rfaLIb" }) },
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toContain("no-store");
+    expect(await response.json()).toEqual(minted);
+    expect(sharedNetClient.createRoomInvite).toHaveBeenCalledWith(AUTH_USER_ID, "rom_lxw0rfaLIb", {});
+  });
+
+  it("passes an explicit invite expiry through and rejects a malformed one", async () => {
+    sharedNetClient.createRoomInvite.mockResolvedValue({ invite: {}, token: "rit_x" });
+    await mintInvite(
+      request({ expires_in_seconds: 3600 }, "POST", "/api/sharednet/rooms/rom_lxw0rfaLIb/invites"),
+      { params: Promise.resolve({ roomId: "rom_lxw0rfaLIb" }) },
+    );
+    expect(sharedNetClient.createRoomInvite).toHaveBeenLastCalledWith(AUTH_USER_ID, "rom_lxw0rfaLIb", {
+      expires_in_seconds: 3600,
+    });
+
+    const bad = await mintInvite(
+      request({ expires_in_seconds: "soon" }, "POST", "/api/sharednet/rooms/rom_lxw0rfaLIb/invites"),
+      { params: Promise.resolve({ roomId: "rom_lxw0rfaLIb" }) },
+    );
+    expect(bad.status).toBe(400);
+  });
+
+  it("refuses to mint an invite without a session or for a malformed Room id", async () => {
+    const malformed = await mintInvite(
+      rawRequest("", "POST", "/api/sharednet/rooms/room%2Fforged/invites"),
+      { params: Promise.resolve({ roomId: "room/forged" }) },
+    );
+    expect(await malformed.json()).toEqual({
+      error: { code: "invalid_route_id", message: "Invalid route identifier" },
+    });
+    expect(malformed.status).toBe(400);
+
+    authGetSession.mockResolvedValue(null);
+    const anonymous = await mintInvite(
+      rawRequest("", "POST", "/api/sharednet/rooms/rom_lxw0rfaLIb/invites"),
+      { params: Promise.resolve({ roomId: "rom_lxw0rfaLIb" }) },
+    );
+    expect(anonymous.status).toBe(401);
+    expect(sharedNetClient.createRoomInvite).not.toHaveBeenCalled();
+  });
+
+  it("revokes an invite by id and rejects a malformed invite id", async () => {
+    sharedNetClient.revokeRoomInvite.mockResolvedValue({ invite: { invite_id: "inv_0000000001" } });
+    const response = await revokeInvite(
+      rawRequest("", "DELETE", "/api/sharednet/rooms/rom_lxw0rfaLIb/invites/inv_0000000001"),
+      { params: Promise.resolve({ inviteId: "inv_0000000001", roomId: "rom_lxw0rfaLIb" }) },
+    );
+    expect(response.status).toBe(200);
+    expect(sharedNetClient.revokeRoomInvite).toHaveBeenCalledWith(
+      AUTH_USER_ID,
+      "rom_lxw0rfaLIb",
+      "inv_0000000001",
+    );
+
+    const malformed = await revokeInvite(
+      rawRequest("", "DELETE", "/api/sharednet/rooms/rom_lxw0rfaLIb/invites/nope"),
+      { params: Promise.resolve({ inviteId: "nope", roomId: "rom_lxw0rfaLIb" }) },
+    );
+    expect(malformed.status).toBe(400);
   });
 
   it("refuses to schedule a Room without a session", async () => {

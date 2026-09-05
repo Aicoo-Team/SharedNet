@@ -89,8 +89,12 @@ const roomDetail: RoomDetail = {
       agent_id: AGENT_ID,
       instance_id: INSTANCE_ID,
       joined_at: EARLIER,
+      kind: "instance",
       last_read_sequence: 12,
       left_at: null,
+      member_id: INSTANCE_ID,
+      name: null,
+      presence: "online",
       principal_id: PRINCIPAL_ID,
       room_id: ROOM_ID,
       status: "active",
@@ -99,8 +103,12 @@ const roomDetail: RoomDetail = {
       agent_id: SECOND_AGENT_ID,
       instance_id: SECOND_INSTANCE_ID,
       joined_at: EARLIER,
+      kind: "instance",
       last_read_sequence: 10,
       left_at: null,
+      member_id: SECOND_INSTANCE_ID,
+      name: null,
+      presence: "online",
       principal_id: SECOND_PRINCIPAL_ID,
       room_id: ROOM_ID,
       status: "active",
@@ -251,9 +259,26 @@ function selectedInstruction(draft: string): string {
   return `Use SharedNet Room ${ROOM_ID}. Join it if needed, retrieve its current history first, then post this draft locally as a plain-text message from your current local Agent Instance. Return the resulting message ID/cursor:\n\n${draft}`;
 }
 
+const INVITE_TOKEN = `rit_${"t".repeat(43)}`;
+
+function mintedInvite(roomId: string) {
+  return {
+    invite: {
+      created_at: NOW,
+      expires_at: null,
+      invite_id: "inv_0000000001",
+      revoked_at: null,
+      room_id: roomId as RoomId,
+      uses: 0,
+    },
+    token: INVITE_TOKEN,
+  };
+}
+
 function makeState(overrides: Partial<SharedNetState> = {}): SharedNetState {
   return {
     claimPairing: vi.fn(async () => undefined),
+    createInvite: vi.fn(async (roomId: RoomId) => mintedInvite(roomId)),
     createRoom: vi.fn(async () => { throw new Error("createRoom not stubbed"); }),
     decisions: [],
     error: null,
@@ -577,7 +602,7 @@ describe("SharedNet Rooms", () => {
       room_id: "room_Launch:Sched.1" as RoomId,
     };
     const createRoom = vi.fn(async () => created);
-    renderChat({ createRoom, rooms: [], selectedRoom: null, selectedRoomId: null });
+    const { state } = renderChat({ createRoom, rooms: [], selectedRoom: null, selectedRoomId: null });
 
     fireEvent.change(screen.getByLabelText("Room name"), {
       target: { value: "  Launch review  " },
@@ -598,11 +623,30 @@ describe("SharedNet Rooms", () => {
     });
     expect(within(dialog).getByText("room_Launch:Sched.1")).toBeVisible();
     const invite = within(dialog).getByLabelText("Local Agent instructions").textContent ?? "";
+    expect(state.createInvite).toHaveBeenCalledWith("room_Launch:Sched.1");
     expect(invite).toContain("Join SharedNet Room room_Launch:Sched.1");
-    expect(invite).toContain(`SharedNet API origin: ${window.location.origin}`);
-    expect(invite).toContain(`Read ${window.location.origin}/skill.md`);
+    expect(invite).toContain("ROOM=room_Launch:Sched.1");
+    expect(invite).toContain(`TOKEN=${INVITE_TOKEN}`);
+    expect(invite).toContain(`BASE=${window.location.origin}`);
+    expect(invite).toContain('curl -s -X POST "$BASE/api/v1/rooms/$ROOM/join"');
+    expect(invite).toContain('"$BASE/api/v1/rooms/$ROOM/wait?after=$LAST_SEQ"');
     expect(invite).toContain("Ship the launch review");
+    expect(invite).not.toContain("sharednet login");
     expect(within(dialog).getByRole("button", { name: "Copy invite" })).toBeVisible();
+  });
+
+  it("explains when an invite cannot be minted and opens no dialog", async () => {
+    const createInvite = vi.fn(async () => {
+      throw new Error("Room not found");
+    });
+    renderChat({ createInvite });
+
+    fireEvent.click(screen.getByRole("button", { name: "Invite an Agent" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Could not create an invite: Room not found",
+    );
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   it("explains a failed schedule and keeps the form filled", async () => {
@@ -621,8 +665,8 @@ describe("SharedNet Rooms", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("builds an invite for a Room ID the user already has", () => {
-    renderChat({ rooms: [], selectedRoom: null, selectedRoomId: null });
+  it("builds an invite for a Room ID the user already has", async () => {
+    const { state } = renderChat({ rooms: [], selectedRoom: null, selectedRoomId: null });
 
     fireEvent.change(screen.getByLabelText("Already have a Room ID?"), {
       target: { value: "nope" },
@@ -634,24 +678,77 @@ describe("SharedNet Rooms", () => {
       target: { value: "rom_lxw0rfaLIb" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Invite an Agent to it" }));
-    const dialog = screen.getByRole("dialog", { name: "Invite an Agent to rom_lxw0rfaLIb" });
-    expect(within(dialog).getByLabelText("Local Agent instructions").textContent).toContain(
-      "Join SharedNet Room rom_lxw0rfaLIb.",
-    );
+    const dialog = await screen.findByRole("dialog", { name: "Invite an Agent to rom_lxw0rfaLIb" });
+    expect(state.createInvite).toHaveBeenCalledWith("rom_lxw0rfaLIb");
+    const invite = within(dialog).getByLabelText("Local Agent instructions").textContent ?? "";
+    expect(invite).toContain("Join SharedNet Room rom_lxw0rfaLIb as a guest.");
+    expect(invite).toContain(`TOKEN=${INVITE_TOKEN}`);
   });
 
-  it("invites another Agent from an open Room's header", () => {
-    renderChat();
+  it("invites another Agent from an open Room's header", async () => {
+    const { state } = renderChat();
 
     fireEvent.click(screen.getByRole("button", { name: "Invite an Agent" }));
 
-    const dialog = screen.getByRole("dialog", {
+    const dialog = await screen.findByRole("dialog", {
       name: `Invite an Agent to ${roomDetail.room.name}`,
     });
+    expect(state.createInvite).toHaveBeenCalledWith(ROOM_ID);
     expect(within(dialog).getByText(ROOM_ID)).toBeVisible();
     expect(within(dialog).getByLabelText("Local Agent instructions").textContent).toContain(
       `Join SharedNet Room ${ROOM_ID}`,
     );
+  });
+
+  it("lists a guest member by the name it gave, with its own presence", () => {
+    renderChat({
+      selectedRoom: {
+        ...roomDetail,
+        memberships: [
+          ...roomDetail.memberships,
+          {
+            agent_id: null,
+            instance_id: null,
+            joined_at: NOW,
+            kind: "guest",
+            last_read_sequence: 0,
+            left_at: null,
+            member_id: "mem_guest00001",
+            name: "claude-code",
+            presence: "away",
+            principal_id: PRINCIPAL_ID,
+            room_id: ROOM_ID,
+            status: "active",
+          },
+        ],
+        messages: [
+          ...roomDetail.messages,
+          {
+            attachment_ids: [],
+            content: "hello from curl",
+            created_at: NOW,
+            message_id: "message_launch.13" as MessageId,
+            reply_to: null,
+            resolution_state: "not_required",
+            room_id: ROOM_ID,
+            sender: { agent_id: null, name: "claude-code", principal_id: PRINCIPAL_ID },
+            sequence: 13,
+            tags: [],
+          },
+        ],
+      },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Room actions" }));
+    const guest = screen.getByRole("article", { name: "Room member mem_guest00001" });
+    expect(within(guest).getByText("claude-code")).toBeVisible();
+    expect(within(guest).getByText("Away")).toBeVisible();
+    expect(guest).toHaveAttribute("data-presence", "away");
+    expect(within(guest).getByText("Member")).toBeVisible();
+
+    const message = screen.getByRole("article", { name: "Message 13" });
+    expect(within(message).getByText("Guest")).toBeVisible();
+    expect(within(message).getByText("claude-code")).toBeVisible();
   });
 
   it("opens the scheduler from the sidebar when Rooms already exist", () => {

@@ -3,13 +3,20 @@ import "server-only";
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
 
 import { getDatabase } from "@/packages/db/src/client.ts";
-import { generatePublicId } from "@/packages/protocol/src/index.ts";
+import {
+  digestSecret,
+  generatePublicId,
+  generateSecret,
+  presenceFor,
+} from "@/packages/protocol/src/index.ts";
 import {
   agents,
   decisions,
   instances,
   messages,
   principals,
+  roomGuests,
+  roomInvites,
   roomMembers,
   rooms,
 } from "@/packages/db/src/schema.ts";
@@ -17,6 +24,7 @@ import {
 import {
   type ActorProjection,
   type AgentId,
+  type CreateRoomInviteResponse,
   type AgentProjection,
   type DecisionId,
   type DecisionListResponse,
@@ -33,6 +41,7 @@ import {
   type RoomCursor,
   type RoomDetail,
   type RoomId,
+  type RoomInviteProjection,
   type RoomListResponse,
   type RoomMembership,
   type RoomMessage,
@@ -173,6 +182,17 @@ const ROOM_NAME_MAX = 120;
 const ROOM_DESCRIPTION_MAX = 2000;
 
 export type CreateRoomInput = { name: string; description?: string | null };
+
+function inviteProjection(row: typeof roomInvites.$inferSelect): RoomInviteProjection {
+  return {
+    created_at: requiredIso(row.createdAt),
+    expires_at: iso(row.expiresAt),
+    invite_id: row.id,
+    revoked_at: iso(row.revokedAt),
+    room_id: row.roomId as RoomId,
+    uses: row.uses,
+  };
+}
 
 function actor(
   agentId: AgentId | null,
@@ -331,6 +351,78 @@ export class SharedNetServerClient {
     };
   }
 
+  /**
+   * Mints a Room invite token. The raw token is returned once; only its digest
+   * is stored. No expiry unless asked for: a Room is a standing channel and its
+   * invite a standing door, closed by revocation rather than by a clock.
+   */
+  async createRoomInvite(
+    authUserId: string,
+    roomId: RoomId,
+    input: { expires_in_seconds?: number | null } = {},
+  ): Promise<CreateRoomInviteResponse> {
+    const principal = await this.requirePrincipal(authUserId);
+    const [room] = await this.database()
+      .select()
+      .from(rooms)
+      .where(eq(rooms.id, roomId as never))
+      .limit(1);
+    // Only the Principal that owns the Room may open a door into it. A Room the
+    // account does not own is reported as absent, as everywhere else.
+    if (!room || room.principalId !== principal.id) {
+      throw new SharedNetApiError("room_not_found", 404, "Room not found");
+    }
+    if (room.state === "closed") {
+      throw new SharedNetApiError("room_closed", 409, "Room is closed");
+    }
+    const seconds = input.expires_in_seconds ?? 0;
+    if (!Number.isSafeInteger(seconds) || seconds < 0) {
+      throw new SharedNetApiError("invalid_invite_expiry", 400, "Invite expiry must be a non-negative number of seconds");
+    }
+    const token = generateSecret("rit");
+    const createdAt = new Date();
+    const [invite] = await this.database()
+      .insert(roomInvites)
+      .values({
+        id: generatePublicId("inv"),
+        roomId: room.id,
+        principalId: principal.id as never,
+        tokenDigest: digestSecret(token),
+        expiresAt: seconds > 0 ? new Date(createdAt.getTime() + seconds * 1000) : null,
+        revokedAt: null,
+        uses: 0,
+        createdAt,
+      })
+      .returning();
+    if (!invite) {
+      throw new SharedNetApiError("invite_create_failed", 500, "Invite creation failed");
+    }
+    return { invite: inviteProjection(invite), token };
+  }
+
+  async revokeRoomInvite(
+    authUserId: string,
+    roomId: RoomId,
+    inviteId: string,
+  ): Promise<{ invite: RoomInviteProjection }> {
+    const principal = await this.requirePrincipal(authUserId);
+    const [invite] = await this.database()
+      .update(roomInvites)
+      .set({ revokedAt: new Date() })
+      .where(
+        and(
+          eq(roomInvites.id, inviteId as never),
+          eq(roomInvites.roomId, roomId as never),
+          eq(roomInvites.principalId, principal.id as never),
+        ),
+      )
+      .returning();
+    if (!invite) {
+      throw new SharedNetApiError("room_not_found", 404, "Room not found");
+    }
+    return { invite: inviteProjection(invite) };
+  }
+
   async getRoom(authUserId: string, roomId: RoomId): Promise<RoomDetail> {
     const principal = await this.requirePrincipal(authUserId);
     const database = this.database();
@@ -345,15 +437,23 @@ export class SharedNetServerClient {
       throw new SharedNetApiError("room_not_found", 404, "Room not found");
     }
 
-    const [memberRows, messageRows, tagOf] = await Promise.all([
+    const [memberRows, guestRows, messageRows, tagOf, instanceSeen] = await Promise.all([
       database.select().from(roomMembers).where(eq(roomMembers.roomId, room.id)),
+      database.select().from(roomGuests).where(eq(roomGuests.roomId, room.id)),
       database
         .select()
         .from(messages)
         .where(eq(messages.roomId, room.id))
         .orderBy(asc(messages.sequence)),
       this.tagsFor(principal.id),
+      this.instanceRows(),
     ]);
+    const now = new Date();
+    const instancePresence = (instanceId: string): RoomMembership["presence"] => {
+      const row = instanceSeen.get(instanceId);
+      return row ? presenceOf(row, now.getTime()).presence : "offline";
+    };
+    const guestNameOf = new Map(guestRows.map((guest) => [guest.id as string, guest.name]));
 
 
     // Membership admits the viewer, and so does having scheduled the Room from
@@ -364,16 +464,40 @@ export class SharedNetServerClient {
       throw new SharedNetApiError("room_not_found", 404, "Room not found");
     }
 
-    const memberships: RoomMembership[] = memberRows.map((member) => ({
-      agent_id: tagOf(member.instanceId),
-      instance_id: member.instanceId as InstanceId,
-      joined_at: requiredIso(member.joinedAt),
-      last_read_sequence: 0,
-      left_at: iso(member.leftAt),
-      principal_id: member.principalId as PrincipalId,
-      room_id: member.roomId as RoomId,
-      status: member.state,
-    }));
+    const memberships: RoomMembership[] = [
+      ...memberRows.map(
+        (member): RoomMembership => ({
+          agent_id: tagOf(member.instanceId),
+          instance_id: member.instanceId as InstanceId,
+          joined_at: requiredIso(member.joinedAt),
+          kind: "instance",
+          last_read_sequence: 0,
+          left_at: iso(member.leftAt),
+          member_id: member.instanceId,
+          name: null,
+          presence: instancePresence(member.instanceId),
+          principal_id: member.principalId as PrincipalId,
+          room_id: member.roomId as RoomId,
+          status: member.state,
+        }),
+      ),
+      ...guestRows.map(
+        (guest): RoomMembership => ({
+          agent_id: null,
+          instance_id: null,
+          joined_at: requiredIso(guest.joinedAt),
+          kind: "guest",
+          last_read_sequence: 0,
+          left_at: iso(guest.leftAt),
+          member_id: guest.id,
+          name: guest.name,
+          presence: presenceFor(requiredIso(guest.lastSeenAt), now),
+          principal_id: guest.principalId as PrincipalId,
+          room_id: guest.roomId as RoomId,
+          status: guest.state,
+        }),
+      ),
+    ];
 
     const projectedMessages: RoomMessage[] = messageRows.map((message) => ({
       attachment_ids: [],
@@ -384,12 +508,18 @@ export class SharedNetServerClient {
       resolution_state: "not_required",
       room_id: message.roomId as RoomId,
       // A guest sender has no Instance; it is attributed to the Principal whose
-      // invite admitted it. Guest names reach the Web in the invite follow-up.
-      sender: actor(
-        tagOf(message.senderInstanceId),
-        message.senderPrincipalId,
-        message.senderInstanceId ?? undefined,
-      ),
+      // invite admitted it and shown by the name it gave.
+      sender: message.senderGuestId
+        ? {
+            agent_id: null,
+            name: guestNameOf.get(message.senderGuestId) ?? "guest",
+            principal_id: message.senderPrincipalId as PrincipalId,
+          }
+        : actor(
+            tagOf(message.senderInstanceId),
+            message.senderPrincipalId,
+            message.senderInstanceId ?? undefined,
+          ),
       sequence: message.sequence,
       tags: [],
     }));
@@ -596,6 +726,12 @@ export class SharedNetServerClient {
       .filter((row) => row.principalId === principalId)
       .map((row) => row.id);
     return [...new Set([...memberIds, ...ownedIds])];
+  }
+
+  /** Every Instance row by id, for lease-derived member presence. */
+  private async instanceRows(): Promise<Map<string, typeof instances.$inferSelect>> {
+    const rows = await this.database().select().from(instances);
+    return new Map(rows.map((row) => [row.id as string, row]));
   }
 
   /** Current tag per Instance of one Principal, resolved once per request. */
