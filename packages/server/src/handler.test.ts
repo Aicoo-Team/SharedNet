@@ -640,3 +640,248 @@ describe("Rooms across Principals", () => {
 });
 
 });
+
+describe("Room invites, guests, and wait", () => {
+  const UUID = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
+
+  async function openRoom(store: MemorySharedNetRepository) {
+    const host = await startInstance(store);
+    const created = await request(store, "/api/v1/rooms", {
+      method: "POST",
+      headers: instanceHeaders(host.token, {
+        "content-type": "application/json",
+        "idempotency-key": UUID,
+      }),
+      body: JSON.stringify({ name: "Launch review" }),
+    });
+    expect(created.status).toBe(201);
+    const { room } = await json(created);
+    const principalId = host.instance.principal_id;
+    return { host, room, principalId };
+  }
+
+  async function say(
+    store: MemorySharedNetRepository,
+    roomId: string,
+    token: string,
+    content: string,
+    key?: string,
+  ) {
+    return request(store, `/api/v1/rooms/${roomId}/messages`, {
+      method: "POST",
+      headers: instanceHeaders(token, {
+        "content-type": "application/json",
+        ...(key ? { "idempotency-key": key } : {}),
+      }),
+      body: JSON.stringify({ content }),
+    });
+  }
+
+  it("admits a guest by invite token, hands back a member token and the history, and lets it speak", async () => {
+    const store = makeStore();
+    const { host, room, principalId } = await openRoom(store);
+    expect((await say(store, room.id, host.token, "Welcome", UUID)).status).toBe(201);
+    const { token: invite } = await store.createRoomInvite({ roomId: room.id, principalId });
+    expect(invite).toMatch(/^rit_[A-Za-z0-9_-]{43}$/);
+
+    const joined = await request(store, `/api/v1/rooms/${room.id}/join`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${invite}`, "content-type": "application/json" },
+      body: JSON.stringify({ name: "claude-code" }),
+    });
+    expect(joined.status).toBe(200);
+    expect(joined.headers.get("cache-control")).toContain("no-store");
+    const body = await json(joined);
+    expect(body.member_token).toMatch(/^rmt_[A-Za-z0-9_-]{43}$/);
+    expect(body.membership).toMatchObject({
+      kind: "guest",
+      name: "claude-code",
+      instance_id: null,
+      invited_by_principal_id: principalId,
+      presence: "online",
+      state: "active",
+    });
+    expect(body.membership.member_id).toMatch(/^mem_[A-Za-z0-9]{10}$/);
+    expect(body.history.items.map((m: any) => m.content)).toEqual(["Welcome"]);
+    expect(body.history.items[0].sender).toEqual({
+      member_id: host.instance.id,
+      kind: "instance",
+      name: null,
+    });
+
+    // The guest speaks with plain curl: no Idempotency-Key required.
+    const spoke = await say(store, room.id, body.member_token, "Hello from a guest");
+    expect(spoke.status).toBe(201);
+    const message = (await json(spoke)).message;
+    expect(message).toMatchObject({
+      sequence: 2,
+      type: "message",
+      sender_instance_id: null,
+      sender_principal_id: principalId,
+      sender: { member_id: body.membership.member_id, kind: "guest", name: "claude-code" },
+    });
+
+    // The host reads it with the sender attributed to the guest by name.
+    const page = await request(store, `/api/v1/rooms/${room.id}/messages?after=1`, {
+      headers: instanceHeaders(host.token),
+    });
+    expect((await json(page)).items[0].sender.name).toBe("claude-code");
+
+    // Both kinds of member appear in the Room, each with presence.
+    const detail = await request(store, `/api/v1/rooms/${room.id}`, {
+      headers: { authorization: `Bearer ${body.member_token}` },
+    });
+    expect(detail.status).toBe(200);
+    const members = (await json(detail)).memberships;
+    expect(members.map((m: any) => m.kind).sort()).toEqual(["guest", "instance"]);
+    expect(members.every((m: any) => m.presence === "online")).toBe(true);
+
+    // Nothing secret is stored raw.
+    const serialized = JSON.stringify([...(store as any).guests.values(), ...(store as any).invites.values()]);
+    expect(serialized).not.toContain(invite);
+    expect(serialized).not.toContain(body.member_token);
+  });
+
+  it("honours an Idempotency-Key from a guest when one is sent", async () => {
+    const store = makeStore();
+    const { room, principalId } = await openRoom(store);
+    const { token: invite } = await store.createRoomInvite({ roomId: room.id, principalId });
+    const { member_token: memberToken } = await store.joinRoomWithInvite(invite, room.id, { name: "codex" });
+
+    const first = await say(store, room.id, memberToken, "once", UUID);
+    const again = await say(store, room.id, memberToken, "once", UUID);
+    expect(first.status).toBe(201);
+    expect(again.status).toBe(201);
+    expect(again.headers.get("idempotency-replayed")).toBe("true");
+    expect((await json(again)).message.id).toBe((await json(first)).message.id);
+  });
+
+  it("gives every join its own member: a name never recovers someone else's identity", async () => {
+    const store = makeStore();
+    const { room, principalId } = await openRoom(store);
+    const { token: invite } = await store.createRoomInvite({ roomId: room.id, principalId });
+    const one = await store.joinRoomWithInvite(invite, room.id, { name: "claude-code" });
+    const two = await store.joinRoomWithInvite(invite, room.id, { name: "claude-code" });
+    expect(two.membership.member_id).not.toBe(one.membership.member_id);
+    expect(two.member_token).not.toBe(one.member_token);
+  });
+
+  it("rejects an invite that is unknown, for another Room, revoked, or expired", async () => {
+    let clock = new Date("2026-09-05T12:00:00Z");
+    const store = new MemorySharedNetRepository({ devApiKey: DEV_KEY, now: () => clock });
+    const { room, principalId } = await openRoom(store);
+    const other = await openRoom(store);
+    const join = (token: string, roomId = room.id) =>
+      request(store, `/api/v1/rooms/${roomId}/join`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ name: "guest" }),
+      });
+
+    expect((await join(`rit_${"z".repeat(43)}`)).status).toBe(401);
+
+    const { token: forOther } = await store.createRoomInvite({ roomId: other.room.id, principalId });
+    expect((await join(forOther)).status).toBe(401);
+
+    const { invite, token } = await store.createRoomInvite({ roomId: room.id, principalId });
+    await store.revokeRoomInvite({ inviteId: invite.id, principalId });
+    const revoked = await join(token);
+    expect(revoked.status).toBe(410);
+    expect((await json(revoked)).error.code).toBe("invite_revoked");
+
+    const { token: shortLived, invite: timed } = await store.createRoomInvite({
+      roomId: room.id,
+      principalId,
+      expiresInSeconds: 60,
+    });
+    expect(timed.expires_at).toBe("2026-09-05T12:01:00.000Z");
+    clock = new Date("2026-09-05T12:02:00Z");
+    const expired = await join(shortLived);
+    expect(expired.status).toBe(410);
+    expect((await json(expired)).error.code).toBe("invite_expired");
+
+    // A forever invite (the default) is unaffected by the clock.
+    const { token: forever, invite: standing } = await store.createRoomInvite({ roomId: room.id, principalId });
+    expect(standing.expires_at).toBeNull();
+    clock = new Date("2027-09-05T12:00:00Z");
+    expect((await join(forever)).status).toBe(200);
+  });
+
+  it("keeps a guest inside its own Room only", async () => {
+    const store = makeStore();
+    const { room, principalId } = await openRoom(store);
+    const other = await openRoom(store);
+    const { token: invite } = await store.createRoomInvite({ roomId: room.id, principalId });
+    const { member_token: memberToken } = await store.joinRoomWithInvite(invite, room.id, { name: "guest" });
+
+    const foreign = await request(store, `/api/v1/rooms/${other.room.id}/messages`, {
+      headers: { authorization: `Bearer ${memberToken}` },
+    });
+    expect(foreign.status).toBe(403);
+    expect((await json(foreign)).error.code).toBe("room_membership_required");
+
+    const notAnInstance = await request(store, "/api/v1/instances/current", {
+      headers: { authorization: `Bearer ${memberToken}` },
+    });
+    expect(notAnInstance.status).toBe(401);
+  });
+
+  it("returns at once from wait when something was said after the cursor", async () => {
+    const store = makeStore();
+    const { host, room, principalId } = await openRoom(store);
+    await say(store, room.id, host.token, "first", UUID);
+    const { token: invite } = await store.createRoomInvite({ roomId: room.id, principalId });
+    const { member_token: memberToken } = await store.joinRoomWithInvite(invite, room.id, { name: "guest" });
+
+    const response = await request(store, `/api/v1/rooms/${room.id}/wait?after=0&timeout=25`, {
+      headers: { authorization: `Bearer ${memberToken}` },
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toContain("no-store");
+    const page = await json(response);
+    expect(page.items.map((m: any) => m.content)).toEqual(["first"]);
+    expect(page.next_cursor).toBe("1");
+  });
+
+  it("blocks in wait until a message arrives, then answers with it", async () => {
+    const store = makeStore();
+    const { host, room, principalId } = await openRoom(store);
+    const { token: invite } = await store.createRoomInvite({ roomId: room.id, principalId });
+    const { member_token: memberToken } = await store.joinRoomWithInvite(invite, room.id, { name: "guest" });
+
+    const waiting = handleRequest(
+      new Request(`http://127.0.0.1:3001/api/v1/rooms/${room.id}/wait?after=0&timeout=5`, {
+        headers: { authorization: `Bearer ${memberToken}` },
+      }),
+      store,
+      { waitPollMs: 5 },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await say(store, room.id, host.token, "you there?", UUID);
+
+    const page = await json(await waiting);
+    expect(page.items.map((m: any) => m.content)).toEqual(["you there?"]);
+  });
+
+  it("answers wait with an empty page at the timeout and refuses a timeout past the cap", async () => {
+    const store = makeStore();
+    const { room, principalId } = await openRoom(store);
+    const { token: invite } = await store.createRoomInvite({ roomId: room.id, principalId });
+    const { member_token: memberToken } = await store.joinRoomWithInvite(invite, room.id, { name: "guest" });
+
+    const empty = await handleRequest(
+      new Request(`http://127.0.0.1:3001/api/v1/rooms/${room.id}/wait?after=0&timeout=0`, {
+        headers: { authorization: `Bearer ${memberToken}` },
+      }),
+      store,
+      { waitPollMs: 5 },
+    );
+    expect(empty.status).toBe(200);
+    expect(await json(empty)).toEqual({ items: [], next_cursor: null, has_more: false });
+
+    const tooLong = await request(store, `/api/v1/rooms/${room.id}/wait?timeout=26`, {
+      headers: { authorization: `Bearer ${memberToken}` },
+    });
+    expect(tooLong.status).toBe(400);
+  });
+});

@@ -13,6 +13,8 @@ import {
 import {
   agents,
   databaseSchema,
+  roomGuests,
+  roomInvites,
   decisions,
   idempotencyRecords,
   instances,
@@ -32,17 +34,29 @@ describe("hosted Postgres schema", () => {
     ]);
   });
 
-  it("exports exactly the eight V1 domain tables", () => {
+  it("exports exactly the ten V1 domain tables", () => {
     expect(Object.keys(databaseSchema)).toEqual([
       "principals",
       "agents",
       "instances",
       "rooms",
       "roomMembers",
+      "roomInvites",
+      "roomGuests",
       "messages",
       "decisions",
       "idempotencyRecords",
     ]);
+  });
+
+  it("stores only digests of Room invite and member tokens, and one sender per message", () => {
+    expect(getTableColumns(roomInvites)).toHaveProperty("tokenDigest");
+    expect(getTableColumns(roomInvites)).not.toHaveProperty("token");
+    expect(getTableColumns(roomGuests)).toHaveProperty("tokenDigest");
+    expect(getTableColumns(roomGuests)).not.toHaveProperty("token");
+    const messageColumns = getTableColumns(messages);
+    expect(messageColumns.senderInstanceId.notNull).toBe(false);
+    expect(messageColumns.senderGuestId.notNull).toBe(false);
   });
 
   it("stores only an Instance token digest", () => {
