@@ -1,0 +1,83 @@
+# Every pull request and every push to main runs this. A change is not done
+# until both jobs are green; docs/TESTING.md says what each step proves.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Placeholders so `next build` and the auth module can load. Nothing in the
+  # verify job connects to them; the postgres job overrides them.
+  DATABASE_URL: postgres://ci:ci@127.0.0.1:5432/sharednet_ci_test
+  DATABASE_URL_UNPOOLED: postgres://ci:ci@127.0.0.1:5432/sharednet_ci_test
+  BETTER_AUTH_URL: http://127.0.0.1:3001
+  BETTER_AUTH_SECRET: ci-only-placeholder-secret-never-used-for-a-real-deployment
+  NEXT_PUBLIC_SHAREDNET_URL: http://127.0.0.1:3001
+
+jobs:
+  verify:
+    name: typecheck · unit · in-process e2e · build
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4 # version comes from package.json "packageManager"
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Typecheck
+        run: pnpm run typecheck
+      - name: Unit and component tests
+        run: pnpm test
+      - name: Four Codex sessions through the CLI (in-process server)
+        run: pnpm run test:e2e:v1
+      - name: Production build
+        run: pnpm run build
+
+  postgres:
+    name: migrations · postgres e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: sharednet
+          POSTGRES_PASSWORD: sharednet
+          POSTGRES_DB: sharednet_e2e
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U sharednet"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # The e2e script refuses any database whose name does not contain
+      # `test` or `e2e`; keep that property when changing this.
+      DATABASE_URL: postgres://sharednet:sharednet@127.0.0.1:5432/sharednet_e2e
+      DATABASE_URL_UNPOOLED: postgres://sharednet:sharednet@127.0.0.1:5432/sharednet_e2e
+      TEST_DATABASE_URL: postgres://sharednet:sharednet@127.0.0.1:5432/sharednet_e2e
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Every migration applies to an empty database, in order
+        run: pnpm run db:migrate
+      - name: Sign-up, API key, Instance, Room against real PostgreSQL
+        run: pnpm run test:e2e:postgres
