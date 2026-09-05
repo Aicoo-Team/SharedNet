@@ -511,6 +511,20 @@ function isRoomMembership(value: unknown): value is RoomMembership {
   return value.kind === "guest" && value.instance_id === null && isNonEmptyString(value.name);
 }
 
+/** The Room after a human closed it from the Web. */
+export type CloseRoomResponse = { room: RoomProjection };
+
+/** The membership after a human removed the member from the Web. */
+export type RemoveRoomMemberResponse = { membership: RoomMembership };
+
+export function isCloseRoomResponse(value: unknown): value is CloseRoomResponse {
+  return hasExactKeys(value, ["room"]) && isRoomProjection(value.room);
+}
+
+export function isRemoveRoomMemberResponse(value: unknown): value is RemoveRoomMemberResponse {
+  return hasExactKeys(value, ["membership"]) && isRoomMembership(value.membership);
+}
+
 export function isCreateRoomInviteResponse(value: unknown): value is CreateRoomInviteResponse {
   if (!hasExactKeys(value, ["invite", "token"]) || !isNonEmptyString(value.token)) {
     return false;

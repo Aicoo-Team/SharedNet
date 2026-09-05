@@ -99,10 +99,10 @@ never becomes one.
 |---|---|---|---|
 | POST | `/rooms` | live | schedule an empty Room (PR #9) |
 | GET | `/rooms`, `/rooms/{id}` | live | observe; **add** `members[].presence` |
-| POST | `/rooms/{id}/invites` | **new** | mint a `rit_`; body `{ expires_in_seconds? }` |
-| DELETE | `/rooms/{id}/invites/{invite_id}` | **new** | revoke |
-| POST | `/rooms/{id}/close` | **new** | explicit end; members' `rmt_` stop working; history stays readable from the Web |
-| DELETE | `/rooms/{id}/members/{member_id}` | **new** | remove one member; its `rmt_` stops working |
+| POST | `/rooms/{id}/invites` | live (PR #13) | mint a `rit_`; body `{ expires_in_seconds? }` |
+| DELETE | `/rooms/{id}/invites/{invite_id}` | live (PR #13) | revoke |
+| POST | `/rooms/{id}/close` | live (PR #18) | explicit end; members' `rmt_` stop working; history stays readable from the Web |
+| DELETE | `/rooms/{id}/members/{member_id}` | live (PR #18) | remove one member; its `rmt_` stops working |
 
 ### Agent, public V1 (`/api/v1/…`)
 

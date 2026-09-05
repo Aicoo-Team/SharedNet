@@ -22,6 +22,8 @@ import {
 } from "@/packages/db/src/schema.ts";
 
 import {
+  type CloseRoomResponse,
+  type RemoveRoomMemberResponse,
   type ActorProjection,
   type AgentId,
   type CreateRoomInviteResponse,
@@ -421,6 +423,143 @@ export class SharedNetServerClient {
       throw new SharedNetApiError("room_not_found", 404, "Room not found");
     }
     return { invite: inviteProjection(invite) };
+  }
+
+  /**
+   * Close a Room this account owns. An explicit human action and the only way
+   * a Room ends: members' tokens stop working at once, history stays readable
+   * from the Web. Closing a closed Room is a no-op that returns it as it is.
+   */
+  async closeRoom(authUserId: string, roomId: RoomId): Promise<CloseRoomResponse> {
+    const principal = await this.requirePrincipal(authUserId);
+    const database = this.database();
+    const [room] = await database
+      .select()
+      .from(rooms)
+      .where(eq(rooms.id, roomId as never))
+      .limit(1);
+    if (!room || room.principalId !== principal.id) {
+      throw new SharedNetApiError("room_not_found", 404, "Room not found");
+    }
+    let closed = room;
+    if (room.state !== "closed") {
+      const [updated] = await database
+        .update(rooms)
+        .set({ state: "closed", closedAt: new Date() })
+        .where(eq(rooms.id, room.id))
+        .returning();
+      if (!updated) {
+        throw new SharedNetApiError("room_close_failed", 500, "Room close failed");
+      }
+      closed = updated;
+    }
+    const tagOf = await this.tagsFor(principal.id);
+    return {
+      room: {
+        access_policy: "anyone_with_id",
+        created_at: requiredIso(closed.createdAt),
+        creator: roomCreator(tagOf, closed.principalId, closed.creatorInstanceId),
+        description: closed.description,
+        name: closed.name,
+        room_id: closed.id as RoomId,
+        status: closed.state,
+        updated_at: requiredIso(closed.closedAt ?? closed.createdAt),
+      },
+    };
+  }
+
+  /**
+   * Remove one member from a Room this account owns: a guest (`mem_…`) or an
+   * Instance (`i_…`). Its token stops working for this Room; what it said
+   * stays. Removing a member that already left returns it as it is.
+   */
+  async removeRoomMember(
+    authUserId: string,
+    roomId: RoomId,
+    memberId: string,
+  ): Promise<RemoveRoomMemberResponse> {
+    const principal = await this.requirePrincipal(authUserId);
+    const database = this.database();
+    const [room] = await database
+      .select()
+      .from(rooms)
+      .where(eq(rooms.id, roomId as never))
+      .limit(1);
+    if (!room || room.principalId !== principal.id) {
+      throw new SharedNetApiError("room_not_found", 404, "Room not found");
+    }
+    const now = new Date();
+    const notFound = () => new SharedNetApiError("member_not_found", 404, "Member not found");
+
+    if (memberId.startsWith("mem_")) {
+      const [guest] = await database
+        .select()
+        .from(roomGuests)
+        .where(and(eq(roomGuests.roomId, room.id), eq(roomGuests.id, memberId as never)))
+        .limit(1);
+      if (!guest) throw notFound();
+      let left = guest;
+      if (guest.state === "active") {
+        const [updated] = await database
+          .update(roomGuests)
+          .set({ state: "left", leftAt: now })
+          .where(eq(roomGuests.id, guest.id))
+          .returning();
+        if (!updated) throw notFound();
+        left = updated;
+      }
+      return {
+        membership: {
+          agent_id: null,
+          instance_id: null,
+          joined_at: requiredIso(left.joinedAt),
+          kind: "guest",
+          last_read_sequence: 0,
+          left_at: iso(left.leftAt),
+          member_id: left.id,
+          name: left.name,
+          presence: presenceFor(requiredIso(left.lastSeenAt), now),
+          principal_id: left.principalId as PrincipalId,
+          room_id: left.roomId as RoomId,
+          status: left.state,
+        },
+      };
+    }
+
+    const [member] = await database
+      .select()
+      .from(roomMembers)
+      .where(and(eq(roomMembers.roomId, room.id), eq(roomMembers.instanceId, memberId as never)))
+      .limit(1);
+    if (!member) throw notFound();
+    let left = member;
+    if (member.state === "active") {
+      const [updated] = await database
+        .update(roomMembers)
+        .set({ state: "left", leftAt: now })
+        .where(and(eq(roomMembers.roomId, room.id), eq(roomMembers.instanceId, member.instanceId)))
+        .returning();
+      if (!updated) throw notFound();
+      left = updated;
+    }
+    const [tagOf, instanceSeen] = await Promise.all([this.tagsFor(principal.id), this.instanceRows()]);
+    const seen = instanceSeen.get(left.instanceId);
+    return {
+      membership: {
+        agent_id: tagOf(left.instanceId),
+        instance_id: left.instanceId as InstanceId,
+        joined_at: requiredIso(left.joinedAt),
+        kind: "instance",
+        last_read_sequence: 0,
+        left_at: iso(left.leftAt),
+        member_id: left.instanceId,
+        name: null,
+        presence: seen ? presenceOf(seen, now.getTime()).presence : "offline",
+        principal_id: left.principalId as PrincipalId,
+        room_id: left.roomId as RoomId,
+        status: left.state,
+      },
+    };
   }
 
   async getRoom(authUserId: string, roomId: RoomId): Promise<RoomDetail> {

@@ -93,10 +93,12 @@ export function ChatView() {
     storageKey: "sharednet.rooms.sidebar-width",
   });
   const {
+    closeRoom,
     createInvite,
     createRoom,
     error,
     network,
+    removeMember,
     rooms,
     selectRoom,
     selectedRoom,
@@ -115,6 +117,9 @@ export function ChatView() {
   const [inviteRoomId, setInviteRoomId] = useState("");
   const [inviting, setInviting] = useState(false);
   const [inviteError, setInviteError] = useState<string | null>(null);
+  const [closing, setClosing] = useState(false);
+  const [removingMemberId, setRemovingMemberId] = useState<string | null>(null);
+  const [roomActionError, setRoomActionError] = useState<string | null>(null);
   const schedulerDialogRef = useRef<HTMLDialogElement>(null);
   const continueButtonRef = useRef<HTMLButtonElement>(null);
   const copyOperationRevisionRef = useRef(0);
@@ -230,6 +235,46 @@ export function ChatView() {
       );
     } finally {
       setInviting(false);
+    }
+  }
+
+  function explain(prefix: string, cause: unknown): string {
+    return cause instanceof Error && cause.message
+      ? `${prefix}: ${cause.message}`
+      : `${prefix}. Try again.`;
+  }
+
+  /**
+   * Closing is the one irreversible thing a human does to a Room, so it asks
+   * first. Members' tokens stop at once; the history stays readable here.
+   */
+  async function handleCloseRoom(roomId: RoomId, name: string | null) {
+    if (closing) return;
+    const confirmed = window.confirm(
+      `Close ${name ?? roomId}? Members' tokens stop working; the history stays readable here.`,
+    );
+    if (!confirmed) return;
+    setClosing(true);
+    setRoomActionError(null);
+    try {
+      await closeRoom(roomId);
+    } catch (cause) {
+      setRoomActionError(explain("Could not close the Room", cause));
+    } finally {
+      setClosing(false);
+    }
+  }
+
+  async function handleRemoveMember(roomId: RoomId, memberId: string) {
+    if (removingMemberId !== null) return;
+    setRemovingMemberId(memberId);
+    setRoomActionError(null);
+    try {
+      await removeMember(roomId, memberId);
+    } catch (cause) {
+      setRoomActionError(explain("Could not remove the member", cause));
+    } finally {
+      setRemovingMemberId(null);
     }
   }
 
@@ -398,6 +443,12 @@ export function ChatView() {
     </p>
   ) : null;
 
+  const roomActionNotice = roomActionError ? (
+    <p className="room-data-state room-data-stale" role="alert">
+      {roomActionError}
+    </p>
+  ) : null;
+
   const staleNotice = status === "stale" ? (
     <p className="room-data-state room-data-stale" role="alert">
       {error ?? "SharedNet data may be out of date."}
@@ -469,14 +520,28 @@ export function ChatView() {
             </div>
             {detail ? (
               <div className="room-facts" aria-label="Room facts">
-                <button
-                  className="room-invite"
-                  disabled={inviting}
-                  onClick={() => void openInvite(selectedRoomId, detail.room.name, null)}
-                  type="button"
-                >
-                  {inviting ? "Creating invite…" : "Invite an Agent"}
-                </button>
+                {detail.room.status === "open" ? (
+                  <span className="room-actions">
+                    <button
+                      className="room-invite"
+                      disabled={inviting}
+                      onClick={() => void openInvite(selectedRoomId, detail.room.name, null)}
+                      type="button"
+                    >
+                      {inviting ? "Creating invite…" : "Invite an Agent"}
+                    </button>
+                    <button
+                      className="room-close"
+                      disabled={closing}
+                      onClick={() => void handleCloseRoom(selectedRoomId, detail.room.name)}
+                      type="button"
+                    >
+                      {closing ? "Closing…" : "Close Room"}
+                    </button>
+                  </span>
+                ) : (
+                  <span className="room-closed-mark">Closed · history stays readable</span>
+                )}
                 <span>{activeMembers.length} members</span>
                 <span>{`Latest cursor ${detail.next_cursor}`}</span>
                 <time
@@ -501,6 +566,7 @@ export function ChatView() {
           </header>
 
           {inviteNotice}
+          {roomActionNotice}
           {staleNotice}
 
           <div className="room-history">
@@ -543,6 +609,24 @@ export function ChatView() {
                                   ? "Offline"
                                   : "Presence unavailable"}
                           </span>
+                          {detail?.room.status === "open" ? (
+                            <button
+                              aria-label={`Remove ${member.membership.member_id}`}
+                              className="room-member-remove"
+                              disabled={removingMemberId !== null}
+                              onClick={() =>
+                                void handleRemoveMember(
+                                  selectedRoomId,
+                                  member.membership.member_id,
+                                )
+                              }
+                              type="button"
+                            >
+                              {removingMemberId === member.membership.member_id
+                                ? "Removing…"
+                                : "Remove"}
+                            </button>
+                          ) : null}
                         </header>
                         <dl>
                           <div>
@@ -659,6 +743,7 @@ export function ChatView() {
       ) : (
         <section className="chat-room-empty">
           {inviteNotice}
+          {roomActionNotice}
           {staleNotice}
           <div className="room-scheduler">
             <p className="room-scheduler-kicker">Rooms</p>
