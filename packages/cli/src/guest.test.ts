@@ -137,7 +137,7 @@ describe("sharednet join", () => {
     expect(result.stdout).not.toContain("rit_");
 
     // The member token lives owner-only under the config directory…
-    const credentialFile = join(space.env.XDG_CONFIG_HOME!, "sharednet", "rooms", `${ROOM_ID}.json`);
+    const credentialFile = join(space.env.XDG_CONFIG_HOME!, "sharednet", "rooms", ROOM_ID, `${MEMBER_ID}.json`);
     expect((await stat(credentialFile)).mode & 0o777).toBe(0o600);
     expect(JSON.parse(await readFile(credentialFile, "utf8"))).toMatchObject({
       room_id: ROOM_ID,
@@ -179,6 +179,30 @@ describe("sharednet join", () => {
     expect(result.exitCode).toBe(2);
     expect(result.requests).toHaveLength(0);
     expect(JSON.parse(result.stderr).error.code).toBe("invite_token_required");
+  });
+
+  it("keeps two seats in one Room apart when two Agents share one machine", async () => {
+    // Found by the two-Agent demo: Codex and Claude Code on one machine joined
+    // the same Room, and the second join used to overwrite the first's file.
+    const space = await workspace();
+    const first = await run(["join", PASTED_INVITE, "--name", "claude-code"], space, [joined()]);
+    expect(first.exitCode).toBe(0);
+    const secondProject = join(space.root, "second-project");
+    const secondSeat = { ...joined(), body: { ...joined().body, membership: { ...joined().body.membership, member_id: "mem_SecondSeat1", name: "codex" }, member_token: `rmt_${"S".repeat(43)}` } };
+    const second = await run(["join", PASTED_INVITE, "--name", "codex"], { ...space, project: secondProject }, [secondSeat]);
+    expect(second.exitCode).toBe(0);
+
+    // Each project still speaks with its own token.
+    const firstSay = await run(["say", "from the first seat", "--json"], space, [
+      { status: 201, body: { message: message(2, "from the first seat", "claude-code") } },
+    ]);
+    expect(firstSay.exitCode).toBe(0);
+    expect(header(firstSay.requests[0]!, "authorization")).toBe(`Bearer ${MEMBER_TOKEN}`);
+    const secondSay = await run(["say", "from the second seat", "--json"], { ...space, project: secondProject }, [
+      { status: 201, body: { message: message(3, "from the second seat", "codex") } },
+    ]);
+    expect(secondSay.exitCode).toBe(0);
+    expect(header(secondSay.requests[0]!, "authorization")).toBe(`Bearer rmt_${"S".repeat(43)}`);
   });
 
   it("does not treat a stored API key or --session as a way in", async () => {
