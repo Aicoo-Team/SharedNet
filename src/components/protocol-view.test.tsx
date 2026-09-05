@@ -24,6 +24,9 @@ describe("SharedNet Room protocol page", () => {
     expect(screen.getByRole("button", { name: "Copy instruction for Agent" })).toHaveClass(
       "protocol-primary-action",
     );
+    expect(document.querySelector("#particles-js")).not.toBeNull();
+    expect(document.querySelector(".public-particle-blur")).not.toBeNull();
+    expect(screen.getByRole("navigation", { name: "Public pages" })).toBeTruthy();
   });
 
   it("shows join, send, and wait, in that order and nothing else", () => {
