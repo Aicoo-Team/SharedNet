@@ -1,0 +1,3 @@
+ALTER TABLE "sharednet"."room" DROP CONSTRAINT "room_creator_instance_id_format";--> statement-breakpoint
+ALTER TABLE "sharednet"."room" ALTER COLUMN "creator_instance_id" DROP NOT NULL;--> statement-breakpoint
+ALTER TABLE "sharednet"."room" ADD CONSTRAINT "room_creator_instance_id_format" CHECK ("sharednet"."room"."creator_instance_id" IS NULL OR "sharednet"."room"."creator_instance_id" ~ '^i_[0-9A-Za-z]{10}$');

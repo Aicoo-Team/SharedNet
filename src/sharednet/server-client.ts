@@ -3,6 +3,7 @@ import "server-only";
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
 
 import { getDatabase } from "@/packages/db/src/client.ts";
+import { generatePublicId } from "@/packages/protocol/src/index.ts";
 import {
   agents,
   decisions,
@@ -146,12 +147,32 @@ function agentProjection(row: {
  * a message or membership, so every projection resolves it through the
  * Instance at read time and regrouping shows up everywhere at once.
  */
-type TagLookup = (instanceId: string) => AgentId | null;
+type TagLookup = (instanceId: string | null) => AgentId | null;
 
 function tagLookup(rows: Array<{ id: string; agentId: string | null }>): TagLookup {
   const byInstance = new Map(rows.map((row) => [row.id, row.agentId]));
-  return (instanceId) => (byInstance.get(instanceId) ?? null) as AgentId | null;
+  return (instanceId) =>
+    (instanceId === null ? null : (byInstance.get(instanceId) ?? null)) as AgentId | null;
 }
+
+/**
+ * Who opened the Room. A Room scheduled from the Web has no creator Instance:
+ * the Principal itself is the actor, so the projection carries no instance_id.
+ */
+function roomCreator(
+  tagOf: TagLookup,
+  principalId: string,
+  creatorInstanceId: string | null,
+): ActorProjection {
+  return creatorInstanceId === null
+    ? actor(null, principalId)
+    : actor(tagOf(creatorInstanceId), principalId, creatorInstanceId);
+}
+
+const ROOM_NAME_MAX = 120;
+const ROOM_DESCRIPTION_MAX = 2000;
+
+export type CreateRoomInput = { name: string; description?: string | null };
 
 function actor(
   agentId: AgentId | null,
@@ -217,8 +238,9 @@ export class SharedNetServerClient {
     const database = this.database();
 
     // A Room is visible to a Principal that has a membership in it, whether or
-    // not it created the Room: membership, not ownership, is the relationship.
-    const visibleRoomIds = await this.memberRoomIds(principal.id);
+    // not it created the Room, and to the Principal that scheduled it from the
+    // Web: an empty Room has no members yet, but its owner must see it to invite.
+    const visibleRoomIds = await this.visibleRoomIds(principal.id);
     if (visibleRoomIds.length === 0) return { rooms: [] };
 
     const [roomRows, memberRows, tagOf] = await Promise.all([
@@ -234,10 +256,12 @@ export class SharedNetServerClient {
       this.tagsFor(principal.id),
     ]);
 
-    const summaries: RoomSummary[] = roomRows.map((room) => {
+    // Belt and braces over the SQL filter: never project a Room outside the set.
+    const visible = new Set<string>(visibleRoomIds);
+    const summaries: RoomSummary[] = roomRows.filter((room) => visible.has(room.id)).map((room) => {
       const members = memberRows.filter((member) => member.roomId === room.id);
       const latestSequence = room.nextSequence - 1;
-      const creatorTag = tagOf(room.creatorInstanceId);
+      const creatorTag = tagOf(room.creatorInstanceId ?? null);
       return {
         description: room.description,
         latest_cursor: cursor(latestSequence),
@@ -252,6 +276,59 @@ export class SharedNetServerClient {
     });
 
     return { rooms: summaries };
+  }
+
+  /**
+   * Schedule an empty Room from the Web. Like booking a meeting: the Principal
+   * owns the container and hands its id to Agents, who join and act. No
+   * Instance is involved, so the Room has no creator Instance and no members.
+   */
+  async createRoom(authUserId: string, input: CreateRoomInput): Promise<RoomSummary> {
+    const principal = await this.requirePrincipal(authUserId);
+    const name = input.name.normalize("NFKC").trim();
+    const description = input.description?.normalize("NFKC").trim() || null;
+    if (name.length < 1 || name.length > ROOM_NAME_MAX) {
+      throw new SharedNetApiError("invalid_room_name", 400, "Room name must be 1–120 characters");
+    }
+    if (description !== null && description.length > ROOM_DESCRIPTION_MAX) {
+      throw new SharedNetApiError(
+        "invalid_room_description",
+        400,
+        "Room description must be at most 2000 characters",
+      );
+    }
+
+    const [room] = await this.database()
+      .insert(rooms)
+      .values({
+        id: generatePublicId("rom"),
+        // The dashboard's ids and the V1 schema's ids are the same strings under
+        // different brands; the file's convention is to cross that seam with `never`.
+        principalId: principal.id as never,
+        name,
+        description,
+        state: "open",
+        creatorInstanceId: null,
+        nextSequence: 1,
+        createdAt: new Date(),
+        closedAt: null,
+      })
+      .returning();
+    if (!room) {
+      throw new SharedNetApiError("room_create_failed", 500, "Room creation failed");
+    }
+
+    return {
+      description: room.description,
+      latest_cursor: cursor(0),
+      latest_sequence: 0,
+      member_count: 0,
+      name: room.name,
+      owner_agent_ids: [],
+      room_id: room.id as RoomId,
+      status: room.state,
+      updated_at: requiredIso(room.createdAt),
+    };
   }
 
   async getRoom(authUserId: string, roomId: RoomId): Promise<RoomDetail> {
@@ -279,9 +356,11 @@ export class SharedNetServerClient {
     ]);
 
 
-    // Membership, not ownership, admits the viewer. A Room the account has
-    // never joined is reported as absent rather than as forbidden.
-    if (!memberRows.some((member) => member.principalId === principal.id)) {
+    // Membership admits the viewer, and so does having scheduled the Room from
+    // the Web. A Room the account can neither see nor own is reported as absent
+    // rather than as forbidden.
+    const isOwner = room.principalId === principal.id;
+    if (!isOwner && !memberRows.some((member) => member.principalId === principal.id)) {
       throw new SharedNetApiError("room_not_found", 404, "Room not found");
     }
 
@@ -320,7 +399,7 @@ export class SharedNetServerClient {
       room: {
         access_policy: "anyone_with_id",
         created_at: requiredIso(room.createdAt),
-        creator: actor(tagOf(room.creatorInstanceId), room.principalId, room.creatorInstanceId),
+        creator: roomCreator(tagOf, room.principalId, room.creatorInstanceId),
         description: room.description,
         name: room.name,
         room_id: room.id as RoomId,
@@ -498,6 +577,23 @@ export class SharedNetServerClient {
       .from(roomMembers)
       .where(eq(roomMembers.principalId, principalId as never));
     return [...new Set(rows.map((row) => row.roomId))];
+  }
+
+  /** Rooms this Principal is a member of, plus the ones it scheduled itself. */
+  private async visibleRoomIds(
+    principalId: string,
+  ): Promise<Array<(typeof rooms.$inferSelect)["id"]>> {
+    const [memberIds, ownedRows] = await Promise.all([
+      this.memberRoomIds(principalId),
+      this.database()
+        .select({ id: rooms.id, principalId: rooms.principalId })
+        .from(rooms)
+        .where(eq(rooms.principalId, principalId as never)),
+    ]);
+    const ownedIds = ownedRows
+      .filter((row) => row.principalId === principalId)
+      .map((row) => row.id);
+    return [...new Set([...memberIds, ...ownedIds])];
   }
 
   /** Current tag per Instance of one Principal, resolved once per request. */

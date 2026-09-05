@@ -203,6 +203,12 @@ function StateProbe() {
       <button onClick={() => void state.claimPairing(parsedPairingId)} type="button">
         Claim pairing
       </button>
+      <button
+        onClick={() => void state.createRoom({ description: null, name: "Launch review" })}
+        type="button"
+      >
+        Schedule room
+      </button>
     </dl>
   );
 }
@@ -1099,6 +1105,79 @@ describe("SharedNetProvider", () => {
 
     expect(mutationInit?.signal).toBeInstanceOf(AbortSignal);
     expect(abortedByRefresh).toBe(false);
+  });
+
+  it("schedules a Room, then selects it once the refreshed list contains it", async () => {
+    const scheduled = {
+      ...roomSummary,
+      member_count: 0,
+      name: "Launch review",
+      room_id: "rom_sched00001",
+    };
+    let roomsScheduled = false;
+    const requestLog: Array<{ init?: RequestInit; path: string }> = [];
+    const fetchMock = vi.fn(
+      (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+        const path = String(input);
+        requestLog.push({ init, path });
+        if (path === "/api/sharednet/bootstrap") {
+          return Promise.resolve(Response.json({ principal_id: PRINCIPAL_ID }));
+        }
+        if (path === "/api/sharednet/rooms" && init?.method === "POST") {
+          roomsScheduled = true;
+          return Promise.resolve(Response.json(scheduled));
+        }
+        if (path === "/api/sharednet/rooms") {
+          return Promise.resolve(
+            Response.json({ rooms: roomsScheduled ? [roomSummary, scheduled] : [roomSummary] }),
+          );
+        }
+        if (path === `/api/sharednet/rooms/${ROOM_ID}`) {
+          return Promise.resolve(Response.json(roomDetail));
+        }
+        if (path === "/api/sharednet/rooms/rom_sched00001") {
+          return Promise.resolve(
+            Response.json({
+              ...roomDetail,
+              memberships: [],
+              messages: [],
+              room: { ...roomDetail.room, name: "Launch review", room_id: "rom_sched00001" },
+            }),
+          );
+        }
+        if (path === "/api/sharednet/network") {
+          return Promise.resolve(Response.json(network));
+        }
+        if (path === "/api/sharednet/decisions") {
+          return Promise.resolve(Response.json({ decisions: [] }));
+        }
+        return Promise.reject(new Error(`Unexpected Dashboard request: ${path}`));
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <SharedNetProvider>
+        <StateProbe />
+      </SharedNetProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("selected-room-id")).toHaveTextContent(ROOM_ID);
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Schedule room" }));
+    await waitFor(() => {
+      expect(screen.getByTestId("selected-room-detail")).toHaveTextContent("rom_sched00001");
+    });
+
+    const mutation = requestLog.find(
+      ({ init, path }) => path === "/api/sharednet/rooms" && init?.method === "POST",
+    );
+    expect(mutation?.init).toMatchObject({
+      body: JSON.stringify({ description: null, name: "Launch review" }),
+      method: "POST",
+    });
+    expect(screen.getByTestId("room-list")).toHaveTextContent("rom_sched00001:");
   });
 
   it("resolves a durable decision and then refreshes projections", async () => {

@@ -9,10 +9,47 @@ import { SplitHandle, useSplitWidth } from "./split-handle";
 
 type CopyState = "idle" | "copied" | "error";
 
+type HandoffKind = "invite" | "post";
+
 type LocalInstruction = {
+  kind: HandoffKind;
   revision: number;
+  roomId: RoomId | null;
+  roomName: string | null;
   text: string;
 };
+
+function currentOrigin(): string {
+  return typeof window === "undefined" ? "" : window.location.origin;
+}
+
+/**
+ * The invite an Agent needs, in the order the join skill asks for it: the exact
+ * Room ID plus the API and Web origins, which for this deployment are the same.
+ */
+export function buildInviteInstruction(
+  origin: string,
+  roomId: RoomId,
+  roomName: string | null,
+  brief: string | null,
+): string {
+  const base = origin.replace(/\/+$/, "");
+  const lines = [
+    `Join SharedNet Room ${roomId}${roomName ? ` ("${roomName}")` : ""}.`,
+    `SharedNet API origin: ${base}`,
+    `SharedNet Web origin: ${base}`,
+    `Read ${base}/skill.md and follow it exactly: log in, connect this runtime, join only this Room ID, then retrieve the Room history and report the fields it asks for.`,
+  ];
+  if (brief) {
+    lines.push(
+      "",
+      "After joining, post this brief as the Room's first plain-text message from your Instance:",
+      "",
+      brief,
+    );
+  }
+  return lines.join("\n");
+}
 
 function buildLocalInstruction(draft: string, roomId: RoomId | null): string {
   if (roomId === null) {
@@ -48,6 +85,7 @@ export function ChatView() {
     storageKey: "sharednet.rooms.sidebar-width",
   });
   const {
+    createRoom,
     error,
     network,
     rooms,
@@ -60,6 +98,13 @@ export function ChatView() {
   const [draft, setDraft] = useState("");
   const [instruction, setInstruction] = useState<LocalInstruction | null>(null);
   const [membersOpen, setMembersOpen] = useState(false);
+  const [roomName, setRoomName] = useState("");
+  const [brief, setBrief] = useState("");
+  const [scheduling, setScheduling] = useState(false);
+  const [scheduleError, setScheduleError] = useState<string | null>(null);
+  const [schedulerOpen, setSchedulerOpen] = useState(false);
+  const [inviteRoomId, setInviteRoomId] = useState("");
+  const schedulerDialogRef = useRef<HTMLDialogElement>(null);
   const continueButtonRef = useRef<HTMLButtonElement>(null);
   const copyOperationRevisionRef = useRef(0);
   const copyButtonRef = useRef<HTMLButtonElement>(null);
@@ -131,18 +176,78 @@ export function ChatView() {
     }
   }, [instruction]);
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const nextDraft = draft.trim();
-    if (!nextDraft) return;
+  useEffect(() => {
+    const dialog = schedulerDialogRef.current;
+    if (!dialog) return;
+    if (schedulerOpen && !dialog.open) dialog.showModal();
+    if (!schedulerOpen && dialog.open) dialog.close();
+  }, [schedulerOpen]);
+
+  function openHandoff(next: Omit<LocalInstruction, "revision">) {
     const revision = instructionRevisionRef.current + 1;
     instructionRevisionRef.current = revision;
     copyOperationRevisionRef.current += 1;
     setCopyState("idle");
-    setInstruction({
-      revision,
+    setInstruction({ ...next, revision });
+  }
+
+  function openInvite(roomId: RoomId, name: string | null, roomBrief: string | null) {
+    openHandoff({
+      kind: "invite",
+      roomId,
+      roomName: name,
+      text: buildInviteInstruction(currentOrigin(), roomId, name, roomBrief),
+    });
+  }
+
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const nextDraft = draft.trim();
+    if (!nextDraft) return;
+    openHandoff({
+      kind: "post",
+      roomId: selectedRoomId,
+      roomName: detail?.room.name ?? selectedSummary?.name ?? null,
       text: buildLocalInstruction(nextDraft, selectedRoomId),
     });
+  }
+
+  async function handleSchedule(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const name = roomName.trim();
+    if (!name || scheduling) return;
+    setScheduling(true);
+    setScheduleError(null);
+    try {
+      const room = await createRoom({
+        description: brief.trim() || null,
+        name,
+      });
+      setRoomName("");
+      setBrief("");
+      setSchedulerOpen(false);
+      openInvite(room.room_id, room.name, room.description);
+    } catch (cause) {
+      setScheduleError(
+        cause instanceof Error && cause.message
+          ? cause.message
+          : "Unable to schedule the Room. Try again.",
+      );
+    } finally {
+      setScheduling(false);
+    }
+  }
+
+  function handleInviteById(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const roomId = inviteRoomId.trim();
+    if (!/^rom_[0-9A-Za-z]+$/.test(roomId)) {
+      setScheduleError("A Room ID looks like rom_ followed by letters and digits.");
+      return;
+    }
+    setScheduleError(null);
+    const known = rooms.find((room) => room.room_id === roomId);
+    openInvite(roomId as RoomId, known?.name ?? null, null);
   }
 
   function closeDialog(clearDraft: boolean) {
@@ -212,6 +317,48 @@ export function ChatView() {
     </form>
   );
 
+  const schedulerForm = (
+    <form className="room-schedule-form" onSubmit={handleSchedule}>
+      <label>
+        Room name
+        <input
+          autoComplete="off"
+          disabled={scheduling}
+          maxLength={120}
+          name="room-name"
+          onChange={(event) => setRoomName(event.target.value)}
+          placeholder="e.g. Launch review"
+          required
+          value={roomName}
+        />
+      </label>
+      <label>
+        What should this Room work on? (optional)
+        <textarea
+          disabled={scheduling}
+          maxLength={2000}
+          name="room-brief"
+          onChange={(event) => setBrief(event.target.value)}
+          placeholder="Type here…"
+          rows={3}
+          value={brief}
+        />
+      </label>
+      {scheduleError ? (
+        <p className="room-schedule-error" role="alert">
+          {scheduleError}
+        </p>
+      ) : null}
+      <button
+        className="room-schedule-submit"
+        disabled={scheduling || !roomName.trim()}
+        type="submit"
+      >
+        {scheduling ? "Scheduling…" : "Schedule Room"}
+      </button>
+    </form>
+  );
+
   const staleNotice = status === "stale" ? (
     <p className="room-data-state room-data-stale" role="alert">
       {error ?? "SharedNet data may be out of date."}
@@ -226,7 +373,20 @@ export function ChatView() {
         style={sidebarSplit.style}
       >
       <aside className="rooms-sidebar">
-        <p>Rooms</p>
+        <div className="rooms-sidebar-head">
+          <p>Rooms</p>
+          <button
+            aria-label="New Room"
+            className="rooms-new"
+            onClick={() => {
+              setScheduleError(null);
+              setSchedulerOpen(true);
+            }}
+            type="button"
+          >
+            + New
+          </button>
+        </div>
         <nav aria-label="Rooms">
           {rooms.length > 0 ? (
             rooms.map((room) => (
@@ -270,6 +430,15 @@ export function ChatView() {
             </div>
             {detail ? (
               <div className="room-facts" aria-label="Room facts">
+                <button
+                  className="room-invite"
+                  onClick={() =>
+                    openInvite(selectedRoomId, detail.room.name, null)
+                  }
+                  type="button"
+                >
+                  Invite an Agent
+                </button>
                 <span>{activeMembers.length} members</span>
                 <span>{`Latest cursor ${detail.next_cursor}`}</span>
                 <time
@@ -438,10 +607,62 @@ export function ChatView() {
       ) : (
         <section className="chat-room-empty">
           {staleNotice}
-          {composer}
+          <div className="room-scheduler">
+            <p className="room-scheduler-kicker">Rooms</p>
+            <h1>A Room is a meeting for Agents.</h1>
+            <ol className="room-steps" aria-label="How SharedNet works">
+              <li>Schedule a Room</li>
+              <li>Invite your Agents by Room ID</li>
+              <li>Watch them work and decide</li>
+            </ol>
+            {schedulerForm}
+            <form className="room-invite-by-id" onSubmit={handleInviteById}>
+              <label>
+                Already have a Room ID?
+                <input
+                  autoComplete="off"
+                  name="invite-room-id"
+                  onChange={(event) => setInviteRoomId(event.target.value)}
+                  placeholder="rom_…"
+                  spellCheck={false}
+                  value={inviteRoomId}
+                />
+              </label>
+              <button disabled={!inviteRoomId.trim()} type="submit">
+                Invite an Agent to it
+              </button>
+            </form>
+          </div>
         </section>
       )}
       </div>
+
+      <dialog
+        aria-labelledby="room-scheduler-title"
+        aria-modal="true"
+        className="room-handoff-dialog"
+        onCancel={(event) => {
+          event.preventDefault();
+          setSchedulerOpen(false);
+        }}
+        onClose={() => setSchedulerOpen(false)}
+        ref={schedulerDialogRef}
+      >
+        <header>
+          <p>Schedule</p>
+          <h2 id="room-scheduler-title">Schedule a Room</h2>
+        </header>
+        <p>
+          Like booking a meeting: the Room exists first, then you invite Agents by
+          its ID.
+        </p>
+        {schedulerOpen ? schedulerForm : null}
+        <div className="room-handoff-actions">
+          <button onClick={() => setSchedulerOpen(false)} type="button">
+            Close
+          </button>
+        </div>
+      </dialog>
 
       {instruction !== null ? (
         <dialog
@@ -461,12 +682,22 @@ export function ChatView() {
           ref={dialogRef}
         >
           <header>
-            <p>Read-only handoff</p>
-            <h2 id="room-handoff-title">Continue in SharedNet Local</h2>
+            <p>{instruction.kind === "invite" ? "Invite" : "Hand off"}</p>
+            <h2 id="room-handoff-title">
+              {instruction.kind === "invite"
+                ? `Invite an Agent to ${instruction.roomName ?? instruction.roomId ?? "this Room"}`
+                : "Post this from a local Agent"}
+            </h2>
           </header>
+          {instruction.kind === "invite" && instruction.roomId ? (
+            <p className="room-invite-id">
+              Room ID <code className="room-canonical-id">{instruction.roomId}</code>
+            </p>
+          ) : null}
           <p>
-            Copy these instructions to a local Agent. Nothing has been submitted
-            from this browser.
+            {instruction.kind === "invite"
+              ? "Paste this into any Agent that has the SharedNet CLI. The Agent joins this Room; joining grants no task authority."
+              : "Copy these instructions to a local Agent. Nothing has been submitted from this browser."}
           </p>
           <pre aria-label="Local Agent instructions">{instruction.text}</pre>
           {copyState === "copied" ? (
@@ -492,7 +723,11 @@ export function ChatView() {
               ref={copyButtonRef}
               type="button"
             >
-              {copyState === "copied" ? "Copied" : "Copy instructions"}
+              {copyState === "copied"
+                ? "Copied"
+                : instruction.kind === "invite"
+                  ? "Copy invite"
+                  : "Copy instructions"}
             </button>
           </div>
         </dialog>

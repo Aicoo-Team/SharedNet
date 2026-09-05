@@ -758,7 +758,8 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
   }
 
   /** The tag an Instance is under right now; read, never copied. */
-  private async tagOf(instanceId: InstanceId): Promise<AgentId | null> {
+  private async tagOf(instanceId: InstanceId | null): Promise<AgentId | null> {
+    if (instanceId === null) return null;
     const [row] = await this.executor()
       .select({ agentId: instances.agentId })
       .from(instances)
