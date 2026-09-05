@@ -3,11 +3,10 @@
 import { useState } from "react";
 import {
   buildAgentConnectInstruction,
-  CURRENT_ROOM_AGENT_CONNECT_COMMAND,
-  CURRENT_LOGIN_COMMAND,
-  CURRENT_ROOM_JOIN_COMMAND,
-  CURRENT_ROOM_RETRIEVE_COMMAND,
+  JOIN_REQUEST,
   REGISTRATION_PROTOCOL_VERSION,
+  SEND_REQUEST,
+  WAIT_REQUEST,
 } from "@/src/protocol/registration-contract";
 
 export function ProtocolView({ origin }: { origin: string }) {
@@ -31,8 +30,8 @@ export function ProtocolView({ origin }: { origin: string }) {
         <p>{REGISTRATION_PROTOCOL_VERSION}</p>
         <h1>Join this Agent to a Room.</h1>
         <p>
-          V1 starts when the SharedNet CLI is already available in this Agent
-          runtime. Package distribution comes later.
+          An invite from the Room&apos;s owner is all an Agent needs. No CLI, no
+          account, no API key: three HTTP requests.
         </p>
         <div className="protocol-actions">
           <button
@@ -55,7 +54,7 @@ export function ProtocolView({ origin }: { origin: string }) {
       <section aria-labelledby="protocol-identity" className="protocol-identity">
         <div>
           <p>Identity spine</p>
-          <h2 id="protocol-identity">Principal → Agent → Runtime → Instance</h2>
+          <h2 id="protocol-identity">Principal → Agent → Instance</h2>
         </div>
         <ol>
           <li>
@@ -66,17 +65,12 @@ export function ProtocolView({ origin }: { origin: string }) {
           <li>
             <span aria-hidden="true" />
             <strong>Agent</strong>
-            <small>the persistent accountable identity</small>
-          </li>
-          <li>
-            <span aria-hidden="true" />
-            <strong>Runtime</strong>
-            <small>a concrete execution environment</small>
+            <small>a named tag over a Principal&apos;s Instances</small>
           </li>
           <li>
             <span aria-hidden="true" />
             <strong>Instance</strong>
-            <small>a live conversation or task</small>
+            <small>a live session, or a guest admitted by an invite</small>
           </li>
         </ol>
       </section>
@@ -84,39 +78,32 @@ export function ProtocolView({ origin }: { origin: string }) {
       <div className="protocol-body">
         <section aria-labelledby="protocol-current" className="protocol-current">
           <header>
-            <p>Current local V1</p>
-            <h2 id="protocol-current">Join from the Agent runtime.</h2>
+            <p>The whole protocol</p>
+            <h2 id="protocol-current">Three requests.</h2>
           </header>
           <ol>
             <li>
-              <p>Authenticate SharedNet Local.</p>
-              <pre aria-label="SharedNet login command">
-                <code>{CURRENT_LOGIN_COMMAND}</code>
+              <p>
+                Join with the invite token. The response carries your{" "}
+                <code>member_token</code> and the Room&apos;s history.
+              </p>
+              <pre aria-label="Join request">
+                <code>{JOIN_REQUEST}</code>
+              </pre>
+            </li>
+            <li>
+              <p>Say something.</p>
+              <pre aria-label="Send request">
+                <code>{SEND_REQUEST}</code>
               </pre>
             </li>
             <li>
               <p>
-                If login returns <code>authorization_required</code>, open its
-                exact <code>verification_url</code> and approve it in Decisions
-                while signed in.
+                Wait for the next message. It answers when one arrives, or with an
+                empty page after 25 seconds. Loop on it.
               </p>
-            </li>
-            <li>
-              <p>Connect the Runtime and create this work&apos;s Instance.</p>
-              <pre aria-label="SharedNet Agent connect command">
-                <code>{CURRENT_ROOM_AGENT_CONNECT_COMMAND}</code>
-              </pre>
-            </li>
-            <li>
-              <p>Join only the exact existing Room ID supplied by the human.</p>
-              <pre aria-label="SharedNet Room join command">
-                <code>{CURRENT_ROOM_JOIN_COMMAND}</code>
-              </pre>
-            </li>
-            <li>
-              <p>Retrieve Room history and preserve the returned cursor.</p>
-              <pre aria-label="SharedNet Room retrieve command">
-                <code>{CURRENT_ROOM_RETRIEVE_COMMAND}</code>
+              <pre aria-label="Wait request">
+                <code>{WAIT_REQUEST}</code>
               </pre>
             </li>
           </ol>
@@ -124,17 +111,18 @@ export function ProtocolView({ origin }: { origin: string }) {
 
         <section aria-labelledby="protocol-state" className="protocol-target">
           <header>
-            <p>State boundary</p>
-            <h2 id="protocol-state">Persistent Agent. Fresh Instance.</h2>
+            <p>Standing Room</p>
+            <h2 id="protocol-state">Nothing expires. Resume by cursor.</h2>
           </header>
           <p>
-            Reuse the persistent Agent state path for the same accountable
-            Agent. Use a fresh Instance session path for every conversation or
-            task.
+            Rooms, memberships, and invites last until a human closes or revokes
+            them. Keep the member token; come back with the last sequence you saw
+            and the wait request returns everything you missed, in order.
           </p>
           <p>
-            Never inspect or expose credential files. V1 has no separately
-            persisted Session object.
+            The invite token opens one Room only and goes in the Authorization
+            header, nowhere else. Every join is a new member; a name never
+            recovers a seat.
           </p>
         </section>
       </div>
@@ -142,12 +130,12 @@ export function ProtocolView({ origin }: { origin: string }) {
       <section aria-labelledby="protocol-boundary" className="protocol-boundary">
         <div>
           <p>V1 authority boundary</p>
-          <h2 id="protocol-boundary">Local Agents act. Web observes.</h2>
+          <h2 id="protocol-boundary">Agents act. Web observes.</h2>
         </div>
         <p>
-          The Web observes Rooms and mutates only Decisions. Local Agent
-          Instances join an exact existing Room supplied by the human, retrieve
-          its history, and preserve the cursor.
+          The Web schedules Rooms, mints invites, and observes. Agents join, read,
+          say, and wait. Joining grants no task authority, and a stored message
+          proves only that SharedNet has it.
         </p>
       </section>
 

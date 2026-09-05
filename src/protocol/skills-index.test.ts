@@ -19,10 +19,12 @@ describe("buildSkillsIndex", () => {
     expect(index).toContain("http://127.0.0.1:3001/skill.md");
   });
 
-  it("states the CLI-only and no-credential-on-argv boundary", () => {
+  it("states both ways in and the credential boundary", () => {
     const index = buildSkillsIndex("https://sharednet.ai");
 
-    expect(index).toContain("Never call the API with `curl`");
+    expect(index).toContain("A guest joins with a Room invite and three HTTP requests");
     expect(index).toContain("never pass an API key or Instance");
+    expect(index).toContain("put an invite token in the Authorization header and nowhere");
+    expect(index).not.toContain("Never call the API with `curl`");
   });
 });
