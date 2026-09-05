@@ -1,0 +1,35 @@
+# Runs the production smoke as the fixed smoke account after every successful
+# production deployment, once a day, and on demand. It proves the deployed
+# system, not the code: docs/TESTING.md.
+name: Production smoke
+
+on:
+  deployment_status:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * *"
+
+permissions:
+  contents: read
+  deployments: read
+
+jobs:
+  smoke:
+    if: >-
+      github.event_name != 'deployment_status' ||
+      (github.event.deployment_status.state == 'success' &&
+       github.event.deployment.environment == 'Production')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - name: Smoke www.sharednet.ai as the smoke account
+        env:
+          PROBE_BASE: https://www.sharednet.ai
+          SMOKE_EMAIL: ${{ secrets.SMOKE_EMAIL }}
+          SMOKE_PASSWORD: ${{ secrets.SMOKE_PASSWORD }}
+          SMOKE_API_KEY: ${{ secrets.SMOKE_API_KEY }}
+        run: node scripts/smoke-production.mjs
