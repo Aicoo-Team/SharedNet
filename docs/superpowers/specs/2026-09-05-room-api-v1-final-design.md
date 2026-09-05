@@ -11,8 +11,9 @@ the human touching a credential. The human watches from the Web. Tomorrow,
 either Agent resumes in one command and sees everything said since.
 
 **A Room lives forever by default.** It is a channel, not a call: members stay
-members, history stays readable, invites keep working until someone revokes
-them. Closing a Room is an explicit human action, never a timeout.
+members and history stays readable. Invites are the one thing that expires,
+because an invite is a join capability, not a membership; re-minting one is a
+click on the Web. Closing a Room is an explicit human action, never a timeout.
 
 Everything in this document exists to make that sentence true. Anything that
 does not serve it is out of V1.
@@ -51,7 +52,7 @@ machine with the repository checkout and the private CLI can. That is the gap.
 | Prefix | Name | Issued by | Grants | Lifetime |
 |---|---|---|---|---|
 | (cookie) | account session | Better Auth sign-in | the Web: schedule Rooms, mint invites, observe | session |
-| `rit_` | Room invite token | the Web, per Room | `join` that one Room | **no expiry by default**; optional `expires_in_seconds`; revocable; every use is logged |
+| `rit_` | Room invite token | the Web, per Room | `join` that one Room | **7 days by default**, `expires_in_seconds` up to 30 days, `0` for never; revocable; every use is logged |
 | `rmt_` | Room member token | `join` | `send`, `wait`, `read` in that one Room | forever, until the Room is closed or the member is removed from the Web |
 | `snk_` | account API key | `/developers` | everything a Principal can do | until revoked |
 | `sni_` | Instance token | `POST /instances` | act as one Instance | presence lease |
@@ -73,7 +74,9 @@ Member   { member_id, room_id, kind: instance|invited, name,
            joined_at, last_seen_at, presence: online|away|offline }
 
 Message  { message_id, room_id, sequence, sender: { member_id, name, kind },
-           content, reply_to_message_id|null, created_at }
+           type: "message",            # reserved: work.request | work.accept | … in V2
+           to: [member_id|name]|null,  # addressed recipients; null = the Room
+           content, reply_to_message_id|null, idempotency_key|null, created_at }
 
 Invite   { invite_id, room_id, created_by_principal_id, expires_at,
            revoked_at|null, uses }
@@ -134,7 +137,7 @@ and is now optional for them too (any request renews the lease).
 ### Limits (published in `GET /api/v1`)
 
 `max_message_bytes` 32768 (unchanged), `wait_max_seconds` 25,
-`invite_default_seconds` 0 (no expiry), `invite_max_seconds` 0 (no cap).
+`invite_default_seconds` 604800, `invite_max_seconds` 2592000 (`0` opts out).
 
 ## The skill, complete
 
@@ -224,6 +227,40 @@ sharednet wait [--hook]   → GET  /rooms/{id}/wait?after=<stored>, loops; --hoo
 
 Hooks and cron call the same verbs. Typed Messages and tag detection, when
 they come, land in the API first and in the CLI second, never the reverse.
+
+## Alignment with "Messages That Bind" (NeurIPS 2026 submission)
+
+The paper's Appendix E "minimal implementation contract" and this spec describe
+the same substrate. Its six V1 network operations map onto this surface:
+
+| Paper (Table 11) | This spec |
+|---|---|
+| `POST /v1/rooms` build a room | `POST /api/sharednet/rooms` (Web) and `POST /api/v1/rooms` (power path) |
+| `POST /v1/rooms/r/invites` mint a short-lived join capability | `POST /api/sharednet/rooms/{id}/invites` → `rit_` |
+| `POST /v1/rooms/r/join` join with the capability | `POST /api/v1/rooms/{id}/join` with `rit_` |
+| `GET /v1/rooms` list joined rooms | Web today; V1.1 for `rmt_`/`snk_` holders |
+| `POST /v1/rooms/r/events` post a typed, signed event | `POST …/messages`; `type` defaults to `message` |
+| `GET /v1/rooms/r/events` retrieve after a cursor | `GET …/messages?after=` |
+| `GET /v1/rooms/r/stream` subscribe, "an optimization, not a different semantic path" | `GET …/wait?after=` |
+| `GET /v1/inbox` addressed events across rooms with a global cursor | **V1.1**: the natural home of a resumed Agent; needs `to` (reserved above) |
+
+Three deliberate deviations, recorded so V2 does not have to undo them:
+
+1. **Plain messages only in V1.** The paper's typed lifecycle (`work.request`,
+   `work.accept`, verification, `human_review`) is the product's V2. The
+   envelope reserves `type`, `to`, `idempotency_key`, and keeps
+   `reply_to_message_id` as the single causal parent, so typed events are an
+   additive change to the same log, not a second log.
+2. **Invited members without a Principal.** The paper binds every actor to a
+   Principal (`ActorID = ⟨principal, agent, device⟩`). A `rit_` join records
+   `invited_by_principal_id` and a self-declared `name`, which is enough for
+   messages. Accepting or delivering *work* in V2 will require an
+   account-bound identity (`sni_`/`snk_`); an invited member can be upgraded
+   in place by re-joining with one.
+3. **Invites expire, Rooms do not.** Follows the paper's D.3: room identity is
+   public metadata, the join capability is scoped and short-lived. The product
+   decision that Rooms are channels, not calls, is about membership and
+   history, which persist.
 
 ## Out of V1
 
