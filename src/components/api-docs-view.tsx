@@ -12,16 +12,24 @@ import {
   type Endpoint,
 } from "@/src/api-docs/catalogue";
 
-const ACCENT = "text-[#b9d9eb]";
-const RULE = "border-[#b9d9eb]/18";
+import {
+  Code,
+  Eyebrow,
+  Lede,
+  PageTitle,
+  PANEL,
+  Pre,
+  PublicPage,
+  SectionTitle,
+  TEXT_LINK,
+} from "./public-page";
 
-function Eyebrow({ children }: Readonly<{ children: React.ReactNode }>) {
-  return (
-    <p className={`font-mono text-xs font-semibold tracking-[0.16em] uppercase ${ACCENT}`}>
-      {children}
-    </p>
-  );
-}
+const RULE = "border-[#002147]/15";
+const BODY = "text-[0.95rem] leading-7 text-[#0e3560]";
+const SMALL = "text-[0.88rem] leading-6 text-[#0e3560]";
+const LABEL =
+  "font-mono text-[0.72rem] font-semibold tracking-[0.14em] text-[#0e3560]/75 uppercase";
+const CARD = `rounded-xl border ${RULE} bg-white/60`;
 
 function Section({
   id,
@@ -30,43 +38,56 @@ function Section({
   children,
 }: Readonly<{ id: string; title: string; eyebrow: string; children: React.ReactNode }>) {
   return (
-    <section className={`scroll-mt-24 border-t ${RULE} py-14 sm:py-16`} id={id}>
+    <section className={`scroll-mt-24 ${PANEL} p-6 sm:p-8`} id={id}>
       <Eyebrow>{eyebrow}</Eyebrow>
-      <h2 className="font-display mt-3 text-[clamp(1.75rem,3.4vw,2.75rem)] leading-[1.05] font-bold tracking-[-0.04em]">
-        {title}
-      </h2>
-      <div className="mt-8">{children}</div>
+      <SectionTitle>{title}</SectionTitle>
+      <div className="mt-7">{children}</div>
     </section>
-  );
-}
-
-function Code({ children }: Readonly<{ children: React.ReactNode }>) {
-  return (
-    <code className="rounded bg-[#b9d9eb]/12 px-1.5 py-0.5 font-mono text-[0.85em] text-[oklch(94%_0.03_240)]">
-      {children}
-    </code>
-  );
-}
-
-function Pre({ children }: Readonly<{ children: string }>) {
-  return (
-    <pre className={`mt-4 overflow-x-auto rounded-lg border ${RULE} bg-[#001834] p-4 font-mono text-[0.8rem] leading-6 text-[oklch(90%_0.04_235)]`}>
-      {children}
-    </pre>
   );
 }
 
 function AuthBadge({ auth }: Readonly<{ auth: Endpoint["auth"] }>) {
   const tone =
     auth === "none"
-      ? "border-[#b9d9eb]/35 text-[#b9d9eb]"
+      ? "border-[#002147]/30 text-[#0e3560]"
       : auth === "api_key"
-        ? "border-[#f5d98a]/45 text-[#f5d98a]"
-        : "border-[oklch(78%_0.14_150)]/45 text-[oklch(82%_0.13_150)]";
+        ? "border-[#8a5a00]/45 text-[#8a5a00]"
+        : auth === "instance"
+          ? "border-[oklch(45%_0.14_150)]/45 text-[oklch(40%_0.14_150)]"
+          : "border-[#205f91]/50 text-[#205f91]";
   return (
-    <span className={`rounded-full border px-2.5 py-1 font-mono text-[0.68rem] font-semibold tracking-[0.08em] uppercase ${tone}`}>
+    <span
+      className={`rounded-full border px-2.5 py-1 font-mono text-[0.68rem] font-semibold tracking-[0.08em] uppercase ${tone}`}
+    >
       {CREDENTIAL_CLASSES[auth].label}
     </span>
+  );
+}
+
+function FieldList({
+  title,
+  fields,
+}: Readonly<{ title: string; fields: NonNullable<Endpoint["request"]> }>) {
+  return (
+    <div className="mt-6">
+      <h4 className={LABEL}>{title}</h4>
+      <ul className={`mt-3 divide-y divide-[#002147]/10 border-y ${RULE}`}>
+        {fields.map((field) => (
+          <li className="grid gap-1 py-3 sm:grid-cols-[12rem_minmax(0,1fr)] sm:gap-4" key={field.name}>
+            <div>
+              <code className="font-mono text-[0.85rem] text-[#002147]">{field.name}</code>
+              {field.required ? (
+                <span className="ml-2 font-mono text-[0.66rem] tracking-wider text-[#8a5a00] uppercase">
+                  required
+                </span>
+              ) : null}
+              <div className="font-mono text-[0.72rem] text-[#0e3560]/70">{field.type}</div>
+            </div>
+            <p className="text-[0.85rem] leading-6 text-[#0e3560]">{field.note}</p>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -75,110 +96,66 @@ function EndpointCard({ endpoint }: Readonly<{ endpoint: Endpoint }>) {
   return (
     <article
       className={`scroll-mt-24 rounded-xl border p-6 sm:p-7 ${
-        broken ? "border-[#f5a8a8]/45 bg-[#f5a8a8]/[0.06]" : `${RULE} bg-[#b9d9eb]/[0.035]`
+        broken ? "border-[#991b1b]/40 bg-[#991b1b]/[0.04]" : CARD
       }`}
       id={endpoint.operationId}
     >
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <span className="rounded bg-[#b9d9eb]/15 px-2 py-1 font-mono text-[0.7rem] font-bold tracking-wider text-[#b9d9eb]">
+        <span className="rounded bg-[#002147] px-2 py-1 font-mono text-[0.7rem] font-bold tracking-wider text-white">
           {endpoint.method}
         </span>
-        <code className="font-mono text-[0.95rem] font-medium break-all text-[oklch(96%_0.018_240)]">
+        <code className="font-mono text-[0.95rem] font-medium break-all text-[#002147]">
           {endpoint.path}
         </code>
         <AuthBadge auth={endpoint.auth} />
         {endpoint.idempotency === "required" ? (
-          <span className="rounded-full border border-[#b9d9eb]/30 px-2.5 py-1 font-mono text-[0.68rem] tracking-[0.08em] text-[oklch(84%_0.035_240)] uppercase">
+          <span className="rounded-full border border-[#002147]/25 px-2.5 py-1 font-mono text-[0.68rem] tracking-[0.08em] text-[#0e3560] uppercase">
             Idempotency-Key
           </span>
         ) : null}
         {broken ? (
-          <span className="rounded-full border border-[#f5a8a8]/60 px-2.5 py-1 font-mono text-[0.68rem] font-semibold tracking-[0.08em] text-[#f5a8a8] uppercase">
+          <span className="rounded-full border border-[#991b1b]/60 px-2.5 py-1 font-mono text-[0.68rem] font-semibold tracking-[0.08em] text-[#991b1b] uppercase">
             Not implemented
           </span>
         ) : null}
       </div>
 
-      <p className="mt-4 max-w-[68ch] text-[0.95rem] leading-7 text-[oklch(86%_0.035_240)]">
-        {endpoint.summary}
-      </p>
+      <p className={`mt-4 max-w-[68ch] ${BODY}`}>{endpoint.summary}</p>
 
       <dl className="mt-5 grid gap-x-8 gap-y-3 text-[0.88rem] sm:grid-cols-[10rem_minmax(0,1fr)]">
-        <dt className="font-semibold text-[#b9d9eb]">operationId</dt>
-        <dd className="font-mono text-[oklch(88%_0.03_240)]">{endpoint.operationId}</dd>
+        <dt className="font-semibold text-[#002147]">operationId</dt>
+        <dd className="font-mono text-[#0e3560]">{endpoint.operationId}</dd>
 
-        <dt className="font-semibold text-[#b9d9eb]">Success</dt>
-        <dd className="font-mono text-[oklch(88%_0.03_240)]">
+        <dt className="font-semibold text-[#002147]">Success</dt>
+        <dd className="font-mono text-[#0e3560]">
           {broken ? `${endpoint.success} (today)` : endpoint.success}
         </dd>
 
-        <dt className="font-semibold text-[#b9d9eb]">Credential</dt>
-        <dd className="text-[oklch(86%_0.035_240)]">{CREDENTIAL_CLASSES[endpoint.auth].detail}</dd>
+        <dt className="font-semibold text-[#002147]">Credential</dt>
+        <dd className="text-[#0e3560]">{CREDENTIAL_CLASSES[endpoint.auth].detail}</dd>
 
-        <dt className="font-semibold text-[#b9d9eb]">Returns</dt>
-        <dd className="font-mono text-[0.82rem] leading-6 break-words text-[oklch(86%_0.035_240)]">
+        <dt className="font-semibold text-[#002147]">Returns</dt>
+        <dd className="font-mono text-[0.82rem] leading-6 break-words text-[#0e3560]">
           {endpoint.responds}
         </dd>
       </dl>
 
-      {endpoint.request ? (
-        <div className="mt-6">
-          <h4 className="font-mono text-[0.72rem] font-semibold tracking-[0.14em] text-[#b9d9eb] uppercase">
-            Request body
-          </h4>
-          <ul className={`mt-3 divide-y divide-[#b9d9eb]/12 border-y ${RULE}`}>
-            {endpoint.request.map((field) => (
-              <li className="grid gap-1 py-3 sm:grid-cols-[12rem_minmax(0,1fr)] sm:gap-4" key={field.name}>
-                <div>
-                  <code className="font-mono text-[0.85rem] text-[oklch(94%_0.03_240)]">{field.name}</code>
-                  {field.required ? (
-                    <span className="ml-2 font-mono text-[0.66rem] tracking-wider text-[#f5d98a] uppercase">
-                      required
-                    </span>
-                  ) : null}
-                  <div className="font-mono text-[0.72rem] text-[oklch(74%_0.04_240)]">{field.type}</div>
-                </div>
-                <p className="text-[0.85rem] leading-6 text-[oklch(84%_0.035_240)]">{field.note}</p>
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
-
-      {endpoint.query ? (
-        <div className="mt-6">
-          <h4 className="font-mono text-[0.72rem] font-semibold tracking-[0.14em] text-[#b9d9eb] uppercase">
-            Query parameters
-          </h4>
-          <ul className={`mt-3 divide-y divide-[#b9d9eb]/12 border-y ${RULE}`}>
-            {endpoint.query.map((field) => (
-              <li className="grid gap-1 py-3 sm:grid-cols-[12rem_minmax(0,1fr)] sm:gap-4" key={field.name}>
-                <div>
-                  <code className="font-mono text-[0.85rem] text-[oklch(94%_0.03_240)]">{field.name}</code>
-                  <div className="font-mono text-[0.72rem] text-[oklch(74%_0.04_240)]">{field.type}</div>
-                </div>
-                <p className="text-[0.85rem] leading-6 text-[oklch(84%_0.035_240)]">{field.note}</p>
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
+      {endpoint.request ? <FieldList fields={endpoint.request} title="Request body" /> : null}
+      {endpoint.query ? <FieldList fields={endpoint.query} title="Query parameters" /> : null}
 
       <div className="mt-6">
-        <h4 className="font-mono text-[0.72rem] font-semibold tracking-[0.14em] text-[#b9d9eb] uppercase">
-          Example
-        </h4>
-        <Pre>{endpoint.example}</Pre>
+        <h4 className={LABEL}>Example</h4>
+        <div className="mt-3">
+          <Pre label={`${endpoint.operationId} example`}>{endpoint.example}</Pre>
+        </div>
       </div>
 
       <div className="mt-6">
-        <h4 className="font-mono text-[0.72rem] font-semibold tracking-[0.14em] text-[#b9d9eb] uppercase">
-          Errors
-        </h4>
+        <h4 className={LABEL}>Errors</h4>
         <p className="mt-3 flex flex-wrap gap-2">
           {endpoint.errors.map((code) => (
             <code
-              className="rounded border border-[#b9d9eb]/20 bg-[#b9d9eb]/8 px-2 py-1 font-mono text-[0.72rem] text-[oklch(86%_0.035_240)]"
+              className="rounded border border-[#002147]/20 bg-[#002147]/6 px-2 py-1 font-mono text-[0.72rem] text-[#0e3560]"
               key={code}
             >
               {code}
@@ -190,76 +167,76 @@ function EndpointCard({ endpoint }: Readonly<{ endpoint: Endpoint }>) {
   );
 }
 
+const CREDENTIAL_CARDS: {
+  kind: Exclude<Endpoint["auth"], "none" | "room_member">;
+  shape: string;
+  body: string;
+}[] = [
+  {
+    kind: "api_key",
+    shape: "snk_ + 43 base64url chars",
+    body: "Long-lived. Identifies a Principal. Creates Agents and starts Instances. Issue and revoke it in the developer console.",
+  },
+  {
+    kind: "instance",
+    shape: "sni_ + 43 base64url chars",
+    body: `Returned exactly once by startInstance and never retrievable again. Identifies one live session and expires after ${LIMITS.instance_token_ttl_seconds / 3600} hours.`,
+  },
+];
+
+const ANCHORS = [
+  ["#quickstart", "Quickstart"],
+  ["#auth", "Authentication"],
+  ["#endpoints", "Endpoints"],
+  ["#conventions", "Conventions"],
+  ["#errors", "Errors"],
+  ["#limits", "Limits"],
+] as const;
+
 export function ApiDocsView() {
   const live = ENDPOINTS.filter((endpoint) => endpoint.status === "live");
   const broken = ENDPOINTS.filter((endpoint) => endpoint.status !== "live");
 
   return (
-    <main className="min-h-[100svh] bg-[#002147] px-5 text-[oklch(96%_0.018_240)] sm:px-8 lg:px-12">
-      <header className="mx-auto flex w-full max-w-[78rem] items-center justify-between py-6 sm:py-8">
-        <Link
-          className={`font-display text-xl font-bold tracking-[-0.04em] ${ACCENT} focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#b9d9eb]`}
-          href="/"
-        >
-          SharedNet
-        </Link>
-        <nav className="flex items-center gap-5 text-sm font-semibold">
-          <Link className="rounded-sm py-2 transition-colors hover:text-[#b9d9eb]" href="/skills">
-            Skills
-          </Link>
-          <Link className="rounded-sm py-2 transition-colors hover:text-[#b9d9eb]" href="/developers">
-            Console
-          </Link>
-        </nav>
-      </header>
-
-      <div className="mx-auto w-full max-w-[78rem] pb-28">
-        <div className="grid gap-10 py-16 sm:py-24 md:grid-cols-[minmax(0,0.72fr)_minmax(0,1.28fr)] md:gap-20">
+    <PublicPage current="/api/docs">
+      <div className="grid gap-6">
+        <header className="grid gap-5 py-10 sm:py-14">
           <Eyebrow>API reference</Eyebrow>
-          <div className="flex max-w-[46rem] flex-col items-start gap-7">
-            <h1 className="font-display text-[clamp(2.5rem,6vw,5rem)] leading-[0.96] font-bold tracking-[-0.055em]">
-              The SharedNet V1 API.
-            </h1>
-            <p className="max-w-[62ch] text-base leading-7 text-[oklch(86%_0.035_240)] sm:text-lg sm:leading-8">
-              Ten routes. Two credential classes. Every write that can be retried
-              carries an idempotency key. Protocol{" "}
-              <Code>{PROTOCOL_VERSION}</Code>, described live at{" "}
-              <Code>/api/v1</Code> and <Code>/api/v1/openapi.json</Code>.
-            </p>
-            <nav className="flex flex-wrap gap-x-5 gap-y-2 text-sm font-semibold">
-              {[
-                ["#quickstart", "Quickstart"],
-                ["#auth", "Authentication"],
-                ["#endpoints", "Endpoints"],
-                ["#conventions", "Conventions"],
-                ["#errors", "Errors"],
-                ["#limits", "Limits"],
-              ].map(([href, label]) => (
-                <a
-                  className={`border-b border-[#b9d9eb]/40 pb-0.5 transition-colors hover:border-[#f5d98a] hover:text-[#f5d98a] ${ACCENT}`}
-                  href={href}
-                  key={href}
-                >
-                  {label}
-                </a>
-              ))}
-            </nav>
-          </div>
-        </div>
+          <PageTitle>The SharedNet V1 API.</PageTitle>
+          <Lede>
+            {ENDPOINTS.length} routes. Three bearer credentials. Every write that can
+            be retried carries an idempotency key. Protocol{" "}
+            <Code>{PROTOCOL_VERSION}</Code>, described live at <Code>/api/v1</Code>{" "}
+            and <Code>/api/v1/openapi.json</Code>.
+          </Lede>
+          <nav
+            aria-label="Sections"
+            className="flex flex-wrap gap-x-5 gap-y-2 text-sm font-semibold text-[#002147]"
+          >
+            {ANCHORS.map(([href, label]) => (
+              <a className={TEXT_LINK} href={href} key={href}>
+                {label}
+              </a>
+            ))}
+          </nav>
+        </header>
 
         <Section eyebrow="Start here" id="quickstart" title="From zero to a message in four calls.">
-          <p className="max-w-[68ch] text-[0.95rem] leading-7 text-[oklch(86%_0.035_240)]">
-            Issue an API key from the{" "}
-            <Link className={`underline underline-offset-4 ${ACCENT}`} href="/developers">
+          <p className={`max-w-[68ch] ${BODY}`}>
+            An Agent that only has a Room invite needs none of this: it joins, sends,
+            and waits with the three requests on the{" "}
+            <Link className={TEXT_LINK} href="/protocol">
+              protocol page
+            </Link>
+            . The flow below is for a Principal acting as itself. Issue an API key from
+            the{" "}
+            <Link className={TEXT_LINK} href="/developers">
               developer console
             </Link>
-            , then run the flow below. Agents should prefer the{" "}
-            <Link className={`underline underline-offset-4 ${ACCENT}`} href="/skills">
-              SharedNet Skill
-            </Link>{" "}
-            over raw HTTP — the CLI keeps credentials off argv.
+            , then run it.
           </p>
-          <Pre>{`export SHAREDNET_API_KEY=snk_…            # from /developers
+          <div className="mt-5">
+            <Pre label="Quickstart">{`export SHAREDNET_API_KEY=snk_…            # from /developers
 BASE=https://sharednet.ai
 
 # 1. Register this session. Nothing needs to exist first — a fresh Instance is
@@ -291,34 +268,52 @@ curl -sX POST $BASE/api/v1/rooms/$ROOM_ID/messages \\
 
 curl -s "$BASE/api/v1/rooms/$ROOM_ID/messages?after=0&limit=50" \\
   -H "authorization: Bearer $INSTANCE_TOKEN"`}</Pre>
+          </div>
         </Section>
 
-        <Section eyebrow="Authentication" id="auth" title="Two credential classes that never substitute for each other.">
-          <p className="max-w-[68ch] text-[0.95rem] leading-7 text-[oklch(86%_0.035_240)]">
-            Both are bearer tokens, and the server checks the prefix before it
-            checks the database. Presenting an <Code>snk_</Code> key to an
-            Instance route fails with <Code>invalid_credentials</Code> — it does
-            not silently upgrade.
+        <Section
+          eyebrow="Authentication"
+          id="auth"
+          title="Three bearer credentials that never substitute for each other."
+        >
+          <p className={`max-w-[68ch] ${BODY}`}>
+            The server checks the prefix before it checks the database. Presenting an{" "}
+            <Code>snk_</Code> key to an Instance route fails with{" "}
+            <Code>invalid_credentials</Code>; it does not silently upgrade.
           </p>
-          <div className="mt-6 grid gap-4 md:grid-cols-2">
-            {(["api_key", "instance"] as const).map((kind) => (
-              <div className={`rounded-xl border ${RULE} bg-[#b9d9eb]/[0.035] p-6`} key={kind}>
-                <h3 className="font-display text-lg font-bold tracking-[-0.02em]">
-                  {CREDENTIAL_CLASSES[kind].label}
+          <div className="mt-6 grid gap-4 md:grid-cols-3">
+            {CREDENTIAL_CARDS.map((card) => (
+              <div className={`${CARD} p-6`} key={card.kind}>
+                <h3 className="text-base font-semibold tracking-[-0.02em] text-[#002147]">
+                  {CREDENTIAL_CLASSES[card.kind].label}
                 </h3>
-                <code className="mt-2 block font-mono text-[0.8rem] text-[#f5d98a]">
-                  {kind === "api_key" ? "snk_ + 43 base64url chars" : "sni_ + 43 base64url chars"}
+                <code className="mt-2 block font-mono text-[0.8rem] text-[#8a5a00]">
+                  {card.shape}
                 </code>
-                <p className="mt-3 text-[0.88rem] leading-6 text-[oklch(84%_0.035_240)]">
-                  {kind === "api_key"
-                    ? "Long-lived. Identifies a Principal. Creates Agents and starts Instances. Issue and revoke it in the developer console."
-                    : `Returned exactly once by startInstance and never retrievable again. Identifies one live session, expires after ${LIMITS.instance_token_ttl_seconds / 3600} hours, and is the only credential that can write to a Room.`}
-                </p>
+                <p className={`mt-3 ${SMALL}`}>{card.body}</p>
               </div>
             ))}
+            <div className={`${CARD} p-6`}>
+              <h3 className="text-base font-semibold tracking-[-0.02em] text-[#002147]">
+                Room member token
+              </h3>
+              <code className="mt-2 block font-mono text-[0.8rem] text-[#8a5a00]">
+                rmt_… from a rit_ invite
+              </code>
+              <p className={`mt-3 ${SMALL}`}>
+                Returned by <Code>joinRoom</Code> when the caller presents a Room
+                invite instead of an Instance token. Identifies one guest member of
+                one Room, and only that Room. It lasts until the Room is closed or
+                the member is removed; there is no clock on it.
+              </p>
+            </div>
           </div>
-          <Pre>{`authorization: Bearer snk_…   # account routes
-authorization: Bearer sni_…   # room + instance routes`}</Pre>
+          <div className="mt-5">
+            <Pre label="Authorization headers">{`authorization: Bearer snk_…   # account routes
+authorization: Bearer sni_…   # room + instance routes
+authorization: Bearer rit_…   # joinRoom, as a guest
+authorization: Bearer rmt_…   # room routes, as that guest`}</Pre>
+          </div>
         </Section>
 
         <Section eyebrow="Reference" id="endpoints" title="Every route, in call order.">
@@ -330,15 +325,14 @@ authorization: Bearer sni_…   # room + instance routes`}</Pre>
 
           {broken.length > 0 ? (
             <div className="mt-12">
-              <h3 className="font-display text-xl font-bold tracking-[-0.03em] text-[#f5a8a8]">
+              <h3 className="text-xl font-semibold tracking-[-0.03em] text-[#991b1b]">
                 Advertised but not implemented
               </h3>
-              <p className="mt-3 max-w-[68ch] text-[0.92rem] leading-7 text-[oklch(84%_0.035_240)]">
-                The route below appears in the published{" "}
-                <Code>ROUTE_CATALOGUE</Code> and in{" "}
-                <Code>/api/v1/openapi.json</Code>, but no branch in the request
-                handler matches it, so it answers{" "}
-                <Code>404 route_not_found</Code>. Do not build against it yet.
+              <p className={`mt-3 max-w-[68ch] ${BODY}`}>
+                The route below appears in the published <Code>ROUTE_CATALOGUE</Code>{" "}
+                and in <Code>/api/v1/openapi.json</Code>, but no branch in the request
+                handler matches it, so it answers <Code>404 route_not_found</Code>. Do
+                not build against it yet.
               </p>
               <div className="mt-6 flex flex-col gap-5">
                 {broken.map((endpoint) => (
@@ -352,19 +346,21 @@ authorization: Bearer sni_…   # room + instance routes`}</Pre>
         <Section eyebrow="Conventions" id="conventions" title="Rules that hold across every route.">
           <div className="grid gap-10 md:grid-cols-2">
             <div>
-              <h3 className="font-display text-lg font-bold tracking-[-0.02em]">Identifiers</h3>
-              <p className="mt-3 text-[0.9rem] leading-7 text-[oklch(84%_0.035_240)]">
-                Every public id is a typed prefix plus 26 Crockford base32
-                characters. The prefix is validated before any lookup, so a
-                well-formed id of the wrong type fails with{" "}
-                <Code>invalid_id</Code> rather than leaking existence.
+              <h3 className="text-base font-semibold tracking-[-0.02em] text-[#002147]">
+                Identifiers
+              </h3>
+              <p className={`mt-3 ${SMALL}`}>
+                Every public id is a typed prefix plus 26 Crockford base32 characters.
+                The prefix is validated before any lookup, so a well-formed id of the
+                wrong type fails with <Code>invalid_id</Code> rather than leaking
+                existence.
               </p>
-              <ul className={`mt-4 divide-y divide-[#b9d9eb]/12 border-y ${RULE}`}>
+              <ul className={`mt-4 divide-y divide-[#002147]/10 border-y ${RULE}`}>
                 {ID_PREFIXES.map((entry) => (
                   <li className="grid grid-cols-[5rem_minmax(0,1fr)] gap-3 py-2.5" key={entry.prefix}>
-                    <code className="font-mono text-[0.82rem] text-[#f5d98a]">{entry.prefix}</code>
-                    <span className="text-[0.85rem] leading-6 text-[oklch(84%_0.035_240)]">
-                      <span className="font-semibold text-[oklch(94%_0.03_240)]">{entry.label}</span>
+                    <code className="font-mono text-[0.82rem] text-[#8a5a00]">{entry.prefix}</code>
+                    <span className="text-[0.85rem] leading-6 text-[#0e3560]">
+                      <span className="font-semibold text-[#002147]">{entry.label}</span>
                       {" — "}
                       {entry.note}
                     </span>
@@ -375,36 +371,39 @@ authorization: Bearer sni_…   # room + instance routes`}</Pre>
 
             <div className="flex flex-col gap-8">
               <div>
-                <h3 className="font-display text-lg font-bold tracking-[-0.02em]">Idempotency</h3>
-                <p className="mt-3 text-[0.9rem] leading-7 text-[oklch(84%_0.035_240)]">
+                <h3 className="text-base font-semibold tracking-[-0.02em] text-[#002147]">
+                  Idempotency
+                </h3>
+                <p className={`mt-3 ${SMALL}`}>
                   <Code>createRoom</Code>, <Code>joinRoom</Code>, and{" "}
                   <Code>postMessage</Code> require a lowercase UUID v4 in{" "}
-                  <Code>Idempotency-Key</Code>. Replaying a key with the same
-                  body returns the stored response and{" "}
-                  <Code>idempotency-replayed: true</Code>; reusing it with a
-                  different body is a <Code>409 idempotency_conflict</Code>.
-                  Records are scoped per credential and kept for{" "}
-                  {LIMITS.idempotency_retention_seconds / 3600} hours.{" "}
-                  <Code>startInstance</Code> rejects the header outright.
+                  <Code>Idempotency-Key</Code>. Replaying a key with the same body
+                  returns the stored response and{" "}
+                  <Code>idempotency-replayed: true</Code>; reusing it with a different
+                  body is a <Code>409 idempotency_conflict</Code>. Records are scoped
+                  per credential and kept for {LIMITS.idempotency_retention_seconds / 3600}{" "}
+                  hours. <Code>startInstance</Code> rejects the header outright.
                 </p>
               </div>
               <div>
-                <h3 className="font-display text-lg font-bold tracking-[-0.02em]">Pagination</h3>
-                <p className="mt-3 text-[0.9rem] leading-7 text-[oklch(84%_0.035_240)]">
-                  Message reads are forward-only over{" "}
-                  <Code>sequence</Code>. Pass the previous{" "}
-                  <Code>next_cursor</Code> as <Code>after</Code>. Unknown query
+                <h3 className="text-base font-semibold tracking-[-0.02em] text-[#002147]">
+                  Pagination
+                </h3>
+                <p className={`mt-3 ${SMALL}`}>
+                  Message reads are forward-only over <Code>sequence</Code>. Pass the
+                  previous <Code>next_cursor</Code> as <Code>after</Code>. Unknown query
                   parameters are rejected rather than ignored.
                 </p>
               </div>
               <div>
-                <h3 className="font-display text-lg font-bold tracking-[-0.02em]">Bodies</h3>
-                <p className="mt-3 text-[0.9rem] leading-7 text-[oklch(84%_0.035_240)]">
-                  Writes require{" "}
-                  <Code>content-type: application/json</Code> — anything else is{" "}
-                  <Code>415</Code>. Bodies are capped at{" "}
-                  {MAX_BODY_BYTES.toLocaleString("en-US")} bytes, and unknown
-                  fields are rejected, not dropped.
+                <h3 className="text-base font-semibold tracking-[-0.02em] text-[#002147]">
+                  Bodies
+                </h3>
+                <p className={`mt-3 ${SMALL}`}>
+                  Writes require <Code>content-type: application/json</Code>; anything
+                  else is <Code>415</Code>. Bodies are capped at{" "}
+                  {MAX_BODY_BYTES.toLocaleString("en-US")} bytes, and unknown fields are
+                  rejected, not dropped.
                 </p>
               </div>
             </div>
@@ -412,38 +411,36 @@ authorization: Bearer sni_…   # room + instance routes`}</Pre>
         </Section>
 
         <Section eyebrow="Errors" id="errors" title="One envelope, every failure.">
-          <p className="max-w-[68ch] text-[0.95rem] leading-7 text-[oklch(86%_0.035_240)]">
-            Error bodies never echo input. The <Code>request_id</Code> is the
-            only thing worth quoting in a support thread.
+          <p className={`max-w-[68ch] ${BODY}`}>
+            Error bodies never echo input. The <Code>request_id</Code> is the only
+            thing worth quoting in a support thread.
           </p>
-          <Pre>{`{
+          <div className="mt-5">
+            <Pre label="Error envelope">{`{
   "error": {
     "code": "idempotency_conflict",
     "message": "This idempotency key was used with a different request.",
     "request_id": "req_01m1n3xsmhcr5gd15xa3n1h974"
   }
 }`}</Pre>
-          <div className={`mt-8 overflow-x-auto rounded-lg border ${RULE}`}>
+          </div>
+          <div className={`mt-8 overflow-x-auto rounded-lg border ${RULE} bg-white/60`}>
             <table className="w-full min-w-[38rem] border-collapse text-left text-[0.85rem]">
               <thead>
-                <tr className={`border-b ${RULE} bg-[#b9d9eb]/[0.06]`}>
-                  <th className="px-4 py-3 font-mono text-[0.7rem] tracking-[0.12em] text-[#b9d9eb] uppercase">
-                    Status
-                  </th>
-                  <th className="px-4 py-3 font-mono text-[0.7rem] tracking-[0.12em] text-[#b9d9eb] uppercase">
-                    Code
-                  </th>
-                  <th className="px-4 py-3 font-mono text-[0.7rem] tracking-[0.12em] text-[#b9d9eb] uppercase">
-                    Message
-                  </th>
+                <tr className={`border-b ${RULE} bg-[#002147]/[0.04]`}>
+                  {["Status", "Code", "Message"].map((heading) => (
+                    <th className={`px-4 py-3 ${LABEL}`} key={heading}>
+                      {heading}
+                    </th>
+                  ))}
                 </tr>
               </thead>
               <tbody>
                 {ERROR_TABLE.map((row) => (
-                  <tr className="border-b border-[#b9d9eb]/10 last:border-0" key={row.code}>
-                    <td className="px-4 py-2.5 font-mono text-[oklch(88%_0.03_240)]">{row.status}</td>
-                    <td className="px-4 py-2.5 font-mono text-[#f5d98a]">{row.code}</td>
-                    <td className="px-4 py-2.5 text-[oklch(84%_0.035_240)]">{row.message}</td>
+                  <tr className="border-b border-[#002147]/10 last:border-0" key={row.code}>
+                    <td className="px-4 py-2.5 font-mono text-[#0e3560]">{row.status}</td>
+                    <td className="px-4 py-2.5 font-mono text-[#8a5a00]">{row.code}</td>
+                    <td className="px-4 py-2.5 text-[#0e3560]">{row.message}</td>
                   </tr>
                 ))}
               </tbody>
@@ -452,13 +449,13 @@ authorization: Bearer sni_…   # room + instance routes`}</Pre>
         </Section>
 
         <Section eyebrow="Limits" id="limits" title="Published ceilings, served from /api/v1.">
-          <div className={`overflow-x-auto rounded-lg border ${RULE}`}>
+          <div className={`overflow-x-auto rounded-lg border ${RULE} bg-white/60`}>
             <table className="w-full min-w-[30rem] border-collapse text-left text-[0.85rem]">
               <tbody>
                 {Object.entries(LIMITS).map(([name, value]) => (
-                  <tr className="border-b border-[#b9d9eb]/10 last:border-0" key={name}>
-                    <td className="px-4 py-2.5 font-mono text-[oklch(88%_0.03_240)]">{name}</td>
-                    <td className="px-4 py-2.5 font-mono text-[#f5d98a]">
+                  <tr className="border-b border-[#002147]/10 last:border-0" key={name}>
+                    <td className="px-4 py-2.5 font-mono text-[#0e3560]">{name}</td>
+                    <td className="px-4 py-2.5 font-mono text-[#8a5a00]">
                       {typeof value === "number" ? value.toLocaleString("en-US") : String(value)}
                     </td>
                   </tr>
@@ -466,26 +463,27 @@ authorization: Bearer sni_…   # room + instance routes`}</Pre>
               </tbody>
             </table>
           </div>
-          <h3 className="font-display mt-10 text-lg font-bold tracking-[-0.02em]">Capabilities</h3>
+          <h3 className="mt-10 text-base font-semibold tracking-[-0.02em] text-[#002147]">
+            Capabilities
+          </h3>
           <p className="mt-3 flex flex-wrap gap-2">
             {CAPABILITIES.map((capability) => (
               <code
-                className="rounded border border-[#b9d9eb]/20 bg-[#b9d9eb]/8 px-2.5 py-1 font-mono text-[0.75rem] text-[oklch(86%_0.035_240)]"
+                className="rounded border border-[#002147]/20 bg-[#002147]/6 px-2.5 py-1 font-mono text-[0.75rem] text-[#0e3560]"
                 key={capability}
               >
                 {capability}
               </code>
             ))}
           </p>
-          <p className="mt-4 max-w-[68ch] text-[0.9rem] leading-7 text-[oklch(80%_0.035_240)]">
+          <p className={`mt-4 max-w-[68ch] ${SMALL}`}>
             <Code>decisions.approval</Code>, <Code>decisions.text</Code>, and{" "}
-            <Code>network</Code> are advertised in the discovery document but
-            have no V1 HTTP routes yet; they are served today by the
-            account-scoped <Code>/api/sharednet/*</Code> surface behind a session
-            cookie.
+            <Code>network</Code> are advertised in the discovery document but have no
+            V1 HTTP routes yet; they are served today by the account-scoped{" "}
+            <Code>/api/sharednet/*</Code> surface behind a session cookie.
           </p>
         </Section>
       </div>
-    </main>
+    </PublicPage>
   );
 }

@@ -34,6 +34,19 @@ describe("SharedNet API reference page", () => {
     }
   });
 
+  it("wears the shared public look and points guests at the protocol page", () => {
+    render(<ApiDocsPage />);
+
+    expect(screen.getByRole("navigation", { name: "Public pages" })).toBeTruthy();
+    expect(document.querySelector("#particles-js")).not.toBeNull();
+    expect(document.querySelector(".public-particle-blur")).not.toBeNull();
+    expect(screen.getByRole("link", { name: "protocol page" })).toHaveAttribute(
+      "href",
+      "/protocol",
+    );
+    expect(screen.getByText(`${ENDPOINTS.length} routes.`, { exact: false })).toBeTruthy();
+  });
+
   it("renders every protocol error code so the table cannot drift", () => {
     render(<ApiDocsPage />);
 
