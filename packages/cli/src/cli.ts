@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 
 import { ApiClient, resolveBaseUrl } from "./api-client.ts";
 import { CliError, asCliError, localError } from "./errors.ts";
+import { isGuestVerb, runGuestVerb } from "./guest.ts";
 import {
   computeLocalInstanceKey,
   detectRuntimeSession,
@@ -30,6 +31,10 @@ export interface CliDependencies {
   stdout?: (value: string) => void;
   stderr?: (value: string) => void;
   now?: () => Date;
+  /** Where per-project Room state lives; defaults to the process working directory. */
+  cwd?: string;
+  /** Pause between empty long-polls in `wait`; tests shorten it. */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 interface ResolvedDependencies {
@@ -38,6 +43,8 @@ interface ResolvedDependencies {
   stdout: (value: string) => void;
   stderr: (value: string) => void;
   now: () => Date;
+  cwd: string;
+  sleep?: (ms: number) => Promise<void>;
 }
 
 interface GlobalArguments {
@@ -567,6 +574,12 @@ async function execute(
   dependencies: ResolvedDependencies,
 ): Promise<unknown> {
   const [resource, action, ...commandArgs] = globals.args;
+  if (isGuestVerb(resource)) {
+    if (globals.sessionId !== undefined) {
+      throw localError("invalid_option", `The --session option is not valid for sharednet ${resource}.`);
+    }
+    return runGuestVerb(resource, globals.args.slice(1), dependencies);
+  }
   if (resource === "session" && action === "start") {
     return startSession(commandArgs, dependencies);
   }
@@ -578,7 +591,16 @@ async function execute(
   }
   throw localError(
     "unknown_command",
-    "Use session start/status or room create/join/post/messages.",
+    "Use join/say/wait as a guest, or session start/status and room create/join/post/messages as an Instance.",
+  );
+}
+
+function isHookOutput(payload: unknown): payload is { hook: true; lines: string[] } {
+  return (
+    typeof payload === "object" &&
+    payload !== null &&
+    (payload as { hook?: unknown }).hook === true &&
+    Array.isArray((payload as { lines?: unknown }).lines)
   );
 }
 
@@ -587,6 +609,12 @@ function writeSuccess(
   json: boolean,
   dependencies: ResolvedDependencies,
 ): void {
+  // A hook's stdout goes straight into an Agent's context: plain lines, and
+  // nothing at all when the Room was quiet.
+  if (!json && isHookOutput(payload)) {
+    if (payload.lines.length > 0) dependencies.stdout(`${payload.lines.join("\n")}\n`);
+    return;
+  }
   dependencies.stdout(`${JSON.stringify(payload, null, json ? undefined : 2)}\n`);
 }
 
@@ -621,6 +649,8 @@ export async function runCli(
     stdout: supplied.stdout ?? ((value) => process.stdout.write(value)),
     stderr: supplied.stderr ?? ((value) => process.stderr.write(value)),
     now: supplied.now ?? (() => new Date()),
+    cwd: supplied.cwd ?? process.cwd(),
+    ...(supplied.sleep ? { sleep: supplied.sleep } : {}),
   };
   let json = argv.includes("--json");
   try {

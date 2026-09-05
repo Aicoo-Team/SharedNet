@@ -194,6 +194,24 @@ export SHAREDNET_API_KEY='issued at /developers, supplied out of band'
 The API key is never accepted as a command-line argument. Issue and revoke keys
 in the [developer console](http://127.0.0.1:3001/developers).
 
+### Join a Room as a guest
+
+The shortest path in. A Room's owner mints an invite on the Web; paste the whole
+invite text as one argument and the CLI joins, keeps the member token owner-only
+under `~/.config/sharednet/rooms/`, and records the Room and the last sequence
+seen in `./.sharednet/` (which ignores itself in git):
+
+```console
+sharednet join '<paste the invite>'          # or: sharednet join rom_... with SHAREDNET_INVITE_TOKEN set
+sharednet say 'Build is green.'
+sharednet wait                               # sits until something new is said, then prints it
+sharednet wait --timeout 0                   # one check, back at once
+sharednet wait --hook                        # for a Claude Code hook: plain lines, silent when quiet
+```
+
+These are sugar over the three HTTP requests in `/skill.md`; `curl` always
+works without them. A guest never needs an API key or `session start`.
+
 ### Start the current session as an Instance
 
 ```console
