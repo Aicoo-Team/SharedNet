@@ -24,7 +24,8 @@
     "test:e2e:postgres": "node scripts/v1-postgres-e2e.mjs",
     "test:watch": "vitest",
     "typecheck": "next typegen && tsc --noEmit",
-    "demo:seed": "node --experimental-strip-types scripts/seed-demo-room.mjs"
+    "demo:seed": "node --experimental-strip-types scripts/seed-demo-room.mjs",
+    "demo:room": "node --experimental-strip-types scripts/dev-room.mjs"
   },
   "dependencies": {
     "@better-auth/api-key": "1.7.2",
