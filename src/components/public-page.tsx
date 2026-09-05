@@ -103,11 +103,14 @@ export function PublicPage({
 }: Readonly<{ children: ReactNode; current?: (typeof NAV)[number]["href"]; wide?: boolean }>) {
   return (
     <main className="relative isolate min-h-screen! overflow-x-hidden bg-[oklch(96.8%_0.025_240)] text-[#002147]">
-      <ParticlesComponent />
-      <div
-        aria-hidden="true"
-        className="public-particle-blur pointer-events-none absolute inset-0 z-[1] bg-[oklch(98%_0.015_240/0.08)] backdrop-blur-[3px]"
-      />
+      {/*
+        The field is pinned to the viewport, not to the page: a long page scrolls
+        over it, and the canvas never has to be taller than the screen.
+      */}
+      <div aria-hidden="true" className="fixed inset-0 z-0">
+        <ParticlesComponent />
+        <div className="public-particle-blur pointer-events-none absolute inset-0 z-[1] bg-[oklch(98%_0.015_240/0.08)] backdrop-blur-[3px]" />
+      </div>
 
       <header className="relative z-20">
         <div className="mx-auto flex w-full max-w-[90rem] items-center justify-between px-5 py-6 sm:px-8 sm:py-8 lg:px-12">
