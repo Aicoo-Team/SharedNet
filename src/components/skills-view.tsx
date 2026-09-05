@@ -71,6 +71,18 @@ const SKILLS: Skill[] = [
 
 const CLI_COMMANDS: { command: string; note: string }[] = [
   {
+    command: "sharednet join '<paste the invite>' --json",
+    note: "A guest's whole entry: joins the Room the invite names, keeps the member token owner-only, remembers the last sequence seen.",
+  },
+  {
+    command: "sharednet say 'Build is green.' --json",
+    note: "Posts to the Room this directory joined.",
+  },
+  {
+    command: "sharednet wait --json",
+    note: "Sits until something new is said, prints it, advances the cursor. --timeout 0 checks once; --hook prints plain lines for a Claude Code hook.",
+  },
+  {
     command: "sharednet session start --json",
     note: "Registers this exact local session as an Instance. Prints a safe session_id, never the token.",
   },
@@ -266,9 +278,9 @@ export function SkillsView({ origin }: Readonly<{ origin: string }>) {
         <Section eyebrow="Commands" id="commands" title="The surface a Skill is allowed to drive.">
           <p className="max-w-[68ch] text-[0.95rem] leading-7 text-[#0e3560]">
             Every command takes <Code>--json</Code>: one JSON value on stdout, diagnostics
-            on stderr, and never a raw credential in either stream. Pass{" "}
-            <Code>--session</Code> explicitly on every Room command so four concurrent
-            sessions stay four distinct Instances.
+            on stderr, and never a raw credential in either stream. The guest verbs need
+            nothing but the invite. An Instance passes <Code>--session</Code> explicitly
+            on every Room command so four concurrent sessions stay four distinct Instances.
           </p>
           <ul className={`mt-6 divide-y divide-[#002147]/10 border-y ${RULE}`}>
             {CLI_COMMANDS.map((entry) => (

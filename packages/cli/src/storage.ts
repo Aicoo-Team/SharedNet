@@ -6,8 +6,10 @@ import {
   mkdir,
   open,
   readdir,
+  readFile,
   rename,
   unlink,
+  writeFile,
 } from "node:fs/promises";
 import { constants } from "node:fs";
 import { homedir } from "node:os";
@@ -23,7 +25,38 @@ export interface StoragePaths {
   installationFile: string;
   stateDir: string;
   sessionsDir: string;
+  /** One file per Room a guest member token was issued for. */
+  roomsDir: string;
 }
+
+/**
+ * A guest seat in one Room: the member token the join handed back, owner-only
+ * under the config directory, never inside a project tree.
+ */
+export interface StoredRoomCredential {
+  schema_version: 1;
+  base_url: string;
+  room_id: string;
+  member_id: string;
+  name: string;
+  member_token: string;
+  joined_at: string;
+}
+
+/**
+ * The per-project cursor: which Room this checkout is in and the last
+ * sequence it has seen. Nothing here is secret, and the directory ignores
+ * itself so it never rides into a commit.
+ */
+export interface ProjectRoomState {
+  schema_version: 1;
+  base_url: string;
+  room_id: string;
+  member_id: string;
+  last_sequence: number;
+}
+
+export const PROJECT_STATE_DIR = ".sharednet";
 
 export interface StoredApiCredential {
   schema_version: 1;
@@ -73,6 +106,7 @@ export function getStoragePaths(env: Environment = process.env): StoragePaths {
       installationFile: join(root, "installation.json"),
       stateDir: root,
       sessionsDir: join(root, "sessions"),
+      roomsDir: join(root, "rooms"),
     };
   }
 
@@ -88,6 +122,7 @@ export function getStoragePaths(env: Environment = process.env): StoragePaths {
     installationFile: join(configDir, "installation.json"),
     stateDir,
     sessionsDir: join(stateDir, "sessions"),
+    roomsDir: join(configDir, "rooms"),
   };
 }
 
@@ -350,4 +385,85 @@ export async function deleteSession(paths: StoragePaths, instanceId: string): Pr
   const raw = await readSecureFile(path);
   if (raw === null) return;
   await unlink(path);
+}
+
+const ROOM_ID_PATTERN = /^rom_[A-Za-z0-9]+$/;
+
+function parseRoomCredential(raw: string): StoredRoomCredential {
+  const value = parseJsonObject(raw, "A Room credential file");
+  if (value.schema_version !== 1) {
+    throw localError("invalid_local_state", "A Room credential file has an unsupported version.");
+  }
+  const source = "A Room credential file";
+  return {
+    schema_version: 1,
+    base_url: requireString(value.base_url, source),
+    room_id: requireString(value.room_id, source),
+    member_id: requireString(value.member_id, source),
+    name: requireString(value.name, source),
+    member_token: requireString(value.member_token, source),
+    joined_at: requireString(value.joined_at, source),
+  };
+}
+
+export async function writeRoomCredential(
+  paths: StoragePaths,
+  credential: StoredRoomCredential,
+): Promise<void> {
+  if (!ROOM_ID_PATTERN.test(credential.room_id)) {
+    throw localError("invalid_local_state", "The Room ID is invalid.");
+  }
+  await writeSecureJson(join(paths.roomsDir, `${credential.room_id}.json`), credential);
+}
+
+export async function readRoomCredential(
+  paths: StoragePaths,
+  roomId: string,
+): Promise<StoredRoomCredential | null> {
+  if (!ROOM_ID_PATTERN.test(roomId)) {
+    throw localError("invalid_local_state", "The Room ID is invalid.");
+  }
+  const raw = await readSecureFile(join(paths.roomsDir, `${roomId}.json`));
+  return raw === null ? null : parseRoomCredential(raw);
+}
+
+function projectStateFile(cwd: string): string {
+  return join(cwd, PROJECT_STATE_DIR, "room.json");
+}
+
+export async function readProjectRoomState(cwd: string): Promise<ProjectRoomState | null> {
+  let raw: string;
+  try {
+    raw = await readFile(projectStateFile(cwd), "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+  const value = parseJsonObject(raw, "The project Room state");
+  if (value.schema_version !== 1) {
+    throw localError("invalid_local_state", "The project Room state has an unsupported version.");
+  }
+  const source = "The project Room state";
+  const lastSequence = value.last_sequence;
+  if (!Number.isSafeInteger(lastSequence) || (lastSequence as number) < 0) {
+    throw localError("invalid_local_state", `${source} is not valid SharedNet state.`);
+  }
+  return {
+    schema_version: 1,
+    base_url: requireString(value.base_url, source),
+    room_id: requireString(value.room_id, source),
+    member_id: requireString(value.member_id, source),
+    last_sequence: lastSequence as number,
+  };
+}
+
+export async function writeProjectRoomState(cwd: string, state: ProjectRoomState): Promise<void> {
+  const directory = join(cwd, PROJECT_STATE_DIR);
+  await mkdir(directory, { recursive: true });
+  // The directory ignores itself, so a project that has no .gitignore entry for
+  // it still never commits a cursor file by accident.
+  await writeFile(join(directory, ".gitignore"), "*\n", { flag: "w" });
+  const temp = join(directory, `.room-${randomBytes(6).toString("hex")}.tmp`);
+  await writeFile(temp, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+  await rename(temp, projectStateFile(cwd));
 }

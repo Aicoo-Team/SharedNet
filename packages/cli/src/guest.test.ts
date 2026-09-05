@@ -1,0 +1,391 @@
+// @vitest-environment node
+
+import { mkdtemp, readFile, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import { handleRequest } from "../../server/src/handler.ts";
+import { MemorySharedNetRepository } from "../../server/src/memory-repository.ts";
+import { runCli } from "./cli.ts";
+
+const cleanup: string[] = [];
+
+afterEach(async () => {
+  const { rm } = await import("node:fs/promises");
+  await Promise.all(cleanup.splice(0).map((path) => rm(path, { recursive: true })));
+});
+
+const INVITE_TOKEN = `rit_${"I".repeat(43)}`;
+const MEMBER_TOKEN = `rmt_${"M".repeat(43)}`;
+const ROOM_ID = "rom_AbCdEfGhIj";
+const MEMBER_ID = "mem_KlMnOpQrSt";
+
+const PASTED_INVITE = [
+  `Join SharedNet Room ${ROOM_ID} ("Launch review") as a guest.`,
+  `ROOM=${ROOM_ID}`,
+  `TOKEN=${INVITE_TOKEN}`,
+  "BASE=https://sharednet.ai",
+  "",
+  '1. Join, and read what was said so far. Keep member_token from the response and note the highest sequence in history.items:',
+  `   curl -s -X POST "$BASE/api/v1/rooms/$ROOM/join" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{"name":"<your name, e.g. claude-code>"}'`,
+].join("\n");
+
+function message(sequence: number, content: string, name: string | null = "host") {
+  return {
+    id: `msg_${String(sequence).padStart(10, "0")}`,
+    room_id: ROOM_ID,
+    sequence,
+    type: "message",
+    content,
+    sender: { member_id: "i_HostHostHo", kind: "instance", name },
+    created_at: "2026-09-05T10:00:00.000Z",
+  };
+}
+
+function joined(items: ReturnType<typeof message>[] = []) {
+  return {
+    status: 200,
+    body: {
+      room: { id: ROOM_ID, name: "Launch review", state: "open" },
+      membership: { member_id: MEMBER_ID, kind: "guest", name: "claude-code", state: "active" },
+      member_token: MEMBER_TOKEN,
+      history: { items, next_cursor: items.length ? String(items.at(-1)!.sequence) : null, has_more: false },
+    },
+  };
+}
+
+async function workspace() {
+  const root = await mkdtemp(join(tmpdir(), "sharednet-guest-"));
+  cleanup.push(root);
+  return {
+    root,
+    project: join(root, "project"),
+    env: {
+      HOME: root,
+      XDG_CONFIG_HOME: join(root, "config"),
+      XDG_STATE_HOME: join(root, "state"),
+      CLAUDE_SESSION_ID: "claude-session-stays-local",
+    } as Record<string, string>,
+  };
+}
+
+async function run(
+  argv: string[],
+  space: Awaited<ReturnType<typeof workspace>>,
+  responses: Array<{ status?: number; body?: unknown }>,
+  environment: Record<string, string> = {},
+) {
+  const { mkdir } = await import("node:fs/promises");
+  await mkdir(space.project, { recursive: true });
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  const requests: Array<{ url: string; init: RequestInit }> = [];
+  const fetch = vi.fn(async (input: string | URL | Request, init: RequestInit = {}) => {
+    requests.push({ url: String(input), init });
+    const next = responses.shift();
+    if (!next) throw new Error("Unexpected fetch");
+    return new Response(next.body === undefined ? null : JSON.stringify(next.body), {
+      status: next.status ?? 200,
+      headers: next.body === undefined ? undefined : { "content-type": "application/json" },
+    });
+  });
+  const exitCode = await runCli(argv, {
+    env: { ...space.env, ...environment },
+    fetch,
+    cwd: space.project,
+    sleep: async () => undefined,
+    stdout: (value) => stdout.push(value),
+    stderr: (value) => stderr.push(value),
+  });
+  return { exitCode, stdout: stdout.join(""), stderr: stderr.join(""), requests };
+}
+
+function header(request: { init: RequestInit }, name: string): string | undefined {
+  return (request.init.headers as Record<string, string>)[name];
+}
+
+describe("sharednet join", () => {
+  it("joins from the pasted Web invite, keeps the tokens out of the project and out of stdout", async () => {
+    const space = await workspace();
+    const result = await run(["join", PASTED_INVITE], space, [
+      joined([message(1, "Welcome"), message(2, "Agenda is in the doc")]),
+    ]);
+
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(result.requests).toHaveLength(1);
+    const [request] = result.requests;
+    // The invite's BASE says where the Room lives; the invite token is the credential.
+    expect(request!.url).toBe(`https://sharednet.ai/api/v1/rooms/${ROOM_ID}/join`);
+    expect(request!.init.method).toBe("POST");
+    expect(header(request!, "authorization")).toBe(`Bearer ${INVITE_TOKEN}`);
+    // The runtime that is running names the guest, and the session id stays local.
+    expect(JSON.parse(String(request!.init.body))).toEqual({ name: "claude-code" });
+    expect(String(request!.init.body)).not.toContain("claude-session-stays-local");
+
+    const output = JSON.parse(result.stdout);
+    expect(output).toEqual({
+      room: { id: ROOM_ID, name: "Launch review", state: "open" },
+      member_id: MEMBER_ID,
+      name: "claude-code",
+      last_sequence: 2,
+      history: expect.objectContaining({ items: expect.any(Array) }),
+    });
+    expect(result.stdout).not.toContain("rmt_");
+    expect(result.stdout).not.toContain("rit_");
+
+    // The member token lives owner-only under the config directory…
+    const credentialFile = join(space.env.XDG_CONFIG_HOME!, "sharednet", "rooms", `${ROOM_ID}.json`);
+    expect((await stat(credentialFile)).mode & 0o777).toBe(0o600);
+    expect(JSON.parse(await readFile(credentialFile, "utf8"))).toMatchObject({
+      room_id: ROOM_ID,
+      member_id: MEMBER_ID,
+      member_token: MEMBER_TOKEN,
+    });
+    // …and the project holds only the cursor, in a directory that ignores itself.
+    const state = await readFile(join(space.project, ".sharednet", "room.json"), "utf8");
+    expect(JSON.parse(state)).toEqual({
+      schema_version: 1,
+      base_url: "https://sharednet.ai",
+      room_id: ROOM_ID,
+      member_id: MEMBER_ID,
+      last_sequence: 2,
+    });
+    expect(state).not.toContain("rmt_");
+    expect(await readFile(join(space.project, ".sharednet", ".gitignore"), "utf8")).toBe("*\n");
+  });
+
+  it("joins a bare Room id with the token from the environment, and takes --name", async () => {
+    const space = await workspace();
+    const result = await run(
+      ["join", ROOM_ID, "--name", "reviewer", "--json"],
+      space,
+      [joined()],
+      { SHAREDNET_INVITE_TOKEN: INVITE_TOKEN, SHAREDNET_BASE_URL: "http://127.0.0.1:3001" },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.requests[0]!.url).toBe(`http://127.0.0.1:3001/api/v1/rooms/${ROOM_ID}/join`);
+    expect(JSON.parse(String(result.requests[0]!.init.body))).toEqual({ name: "reviewer" });
+    expect(JSON.parse(result.stdout).last_sequence).toBe(0);
+  });
+
+  it("refuses to join without an invite token, before any request is sent", async () => {
+    const space = await workspace();
+    const result = await run(["join", ROOM_ID, "--json"], space, []);
+
+    expect(result.exitCode).toBe(2);
+    expect(result.requests).toHaveLength(0);
+    expect(JSON.parse(result.stderr).error.code).toBe("invite_token_required");
+  });
+
+  it("does not treat a stored API key or --session as a way in", async () => {
+    const space = await workspace();
+    const result = await run(["join", PASTED_INVITE, "--session", "i_HostHostHo"], space, []);
+
+    expect(result.exitCode).toBe(2);
+    expect(result.requests).toHaveLength(0);
+    expect(result.stderr).toContain("invalid_option");
+  });
+});
+
+describe("sharednet say and wait", () => {
+  async function joinedSpace() {
+    const space = await workspace();
+    const result = await run(["join", PASTED_INVITE], space, [joined([message(1, "Welcome")])]);
+    expect(result.exitCode).toBe(0);
+    return space;
+  }
+
+  it("says with the stored member token and never moves the cursor", async () => {
+    const space = await joinedSpace();
+    const result = await run(["say", "Build is green.", "--json"], space, [
+      { status: 201, body: { message: { ...message(2, "Build is green.", "claude-code"), sender: { member_id: MEMBER_ID, kind: "guest", name: "claude-code" } } } },
+    ]);
+
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+    const [request] = result.requests;
+    expect(request!.url).toBe(`https://sharednet.ai/api/v1/rooms/${ROOM_ID}/messages`);
+    expect(header(request!, "authorization")).toBe(`Bearer ${MEMBER_TOKEN}`);
+    expect(JSON.parse(String(request!.init.body))).toEqual({ content: "Build is green." });
+    expect(JSON.parse(result.stdout).message.sequence).toBe(2);
+    // A message of one's own is not "seen": anything said before it still arrives.
+    const state = JSON.parse(await readFile(join(space.project, ".sharednet", "room.json"), "utf8"));
+    expect(state.last_sequence).toBe(1);
+  });
+
+  it("waits from the last sequence seen, loops past an empty page, and advances the cursor", async () => {
+    const space = await joinedSpace();
+    const result = await run(["wait", "--json"], space, [
+      { status: 200, body: { items: [], next_cursor: null, has_more: false } },
+      {
+        status: 200,
+        body: {
+          items: [message(2, "Any objections?"), message(3, "None here", "codex")],
+          next_cursor: "3",
+          has_more: false,
+        },
+      },
+    ]);
+
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(result.requests.map((request) => request.url)).toEqual([
+      `https://sharednet.ai/api/v1/rooms/${ROOM_ID}/wait?after=1&timeout=25`,
+      `https://sharednet.ai/api/v1/rooms/${ROOM_ID}/wait?after=1&timeout=25`,
+    ]);
+    expect(header(result.requests[1]!, "authorization")).toBe(`Bearer ${MEMBER_TOKEN}`);
+    expect(JSON.parse(result.stdout).items.map((item: { sequence: number }) => item.sequence)).toEqual([2, 3]);
+    const state = JSON.parse(await readFile(join(space.project, ".sharednet", "room.json"), "utf8"));
+    expect(state.last_sequence).toBe(3);
+  });
+
+  it("returns after --timeout 0 with an empty page instead of sitting", async () => {
+    const space = await joinedSpace();
+    const result = await run(["wait", "--timeout", "0", "--json"], space, [
+      { status: 200, body: { items: [], next_cursor: null, has_more: false } },
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.requests).toHaveLength(1);
+    expect(result.requests[0]!.url).toContain("after=1&timeout=0");
+    expect(JSON.parse(result.stdout).items).toEqual([]);
+  });
+
+  it("prints plain lines for a hook, and nothing when the Room was quiet", async () => {
+    const space = await joinedSpace();
+    const quiet = await run(["wait", "--hook"], space, [
+      { status: 200, body: { items: [], next_cursor: null, has_more: false } },
+    ]);
+    expect(quiet.exitCode).toBe(0);
+    expect(quiet.stdout).toBe("");
+    expect(quiet.requests[0]!.url).toContain("timeout=0");
+
+    const spoken = await run(["wait", "--hook"], space, [
+      { status: 200, body: { items: [message(2, "Ship it")], next_cursor: "2", has_more: false } },
+    ]);
+    expect(spoken.exitCode).toBe(0);
+    expect(spoken.stdout).toBe("#2 host: Ship it\n");
+  });
+
+  it("tells a directory that never joined what to run", async () => {
+    const space = await workspace();
+    const result = await run(["say", "hello", "--json"], space, []);
+
+    expect(result.exitCode).toBe(2);
+    expect(result.requests).toHaveLength(0);
+    expect(JSON.parse(result.stderr).error.code).toBe("not_in_a_room");
+  });
+});
+
+describe("the guest verbs against the real request handler", () => {
+  const DEV_KEY = `snk_${"a".repeat(43)}`;
+  const UUID = "0f7f2c1e-4d6b-4b6e-8f1a-2b3c4d5e6f70";
+
+  it("joins by invite, speaks, and hears the host reply, with the server the CLI actually ships", async () => {
+    const store = new MemorySharedNetRepository({ devApiKey: DEV_KEY });
+    const fetch: typeof globalThis.fetch = (input, init) =>
+      handleRequest(new Request(input as string | URL, init), store);
+    const api = async (path: string, init: RequestInit) => {
+      const response = await fetch(`http://127.0.0.1:3001/api/v1${path}`, init);
+      return { status: response.status, body: (await response.json()) as Record<string, any> };
+    };
+
+    // A host Instance opens the Room and says one thing before anyone arrives.
+    const started = await api("/instances", {
+      method: "POST",
+      headers: { authorization: `Bearer ${DEV_KEY}`, "content-type": "application/json" },
+      body: JSON.stringify({ runtime_kind: "codex", cli_version: "0.1.0" }),
+    });
+    expect(started.status).toBe(201);
+    const hostToken = started.body.token as string;
+    const created = await api("/rooms", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${hostToken}`,
+        "content-type": "application/json",
+        "idempotency-key": UUID,
+      },
+      body: JSON.stringify({ name: "Release triage" }),
+    });
+    expect(created.status).toBe(201);
+    const roomId = created.body.room.id as string;
+    const welcome = await api(`/rooms/${roomId}/messages`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${hostToken}`,
+        "content-type": "application/json",
+        "idempotency-key": "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
+      },
+      body: JSON.stringify({ content: "Welcome" }),
+    });
+    expect(welcome.status).toBe(201);
+    const { token: invite } = await store.createRoomInvite({
+      roomId: roomId as `rom_${string}`,
+      principalId: started.body.instance.principal_id,
+    });
+
+    const space = await workspace();
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(space.project, { recursive: true });
+    const cli = async (argv: string[]) => {
+      const stdout: string[] = [];
+      const stderr: string[] = [];
+      const exitCode = await runCli(argv, {
+        env: { ...space.env, SHAREDNET_BASE_URL: "http://127.0.0.1:3001" },
+        fetch,
+        cwd: space.project,
+        sleep: async () => undefined,
+        stdout: (value) => stdout.push(value),
+        stderr: (value) => stderr.push(value),
+      });
+      return { exitCode, stdout: stdout.join(""), stderr: stderr.join("") };
+    };
+
+    const joinRun = await cli(["join", `ROOM=${roomId} TOKEN=${invite}`, "--name", "claude-code", "--json"]);
+    expect(joinRun.stderr).toBe("");
+    expect(joinRun.exitCode).toBe(0);
+    const seat = JSON.parse(joinRun.stdout);
+    expect(seat.member_id).toMatch(/^mem_[A-Za-z0-9]{10}$/);
+    expect(seat.last_sequence).toBe(1);
+    expect(seat.history.items.map((item: { content: string }) => item.content)).toEqual(["Welcome"]);
+
+    const sayRun = await cli(["say", "Hello from the CLI", "--json"]);
+    expect(sayRun.stderr).toBe("");
+    expect(sayRun.exitCode).toBe(0);
+    expect(JSON.parse(sayRun.stdout).message).toMatchObject({
+      sequence: 2,
+      content: "Hello from the CLI",
+      sender: { member_id: seat.member_id, kind: "guest", name: "claude-code" },
+    });
+
+    // The host answers; the guest's wait returns everything after its cursor, in order.
+    const reply = await api(`/rooms/${roomId}/messages`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${hostToken}`,
+        "content-type": "application/json",
+        "idempotency-key": "2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e",
+      },
+      body: JSON.stringify({ content: "Heard you" }),
+    });
+    expect(reply.status).toBe(201);
+    const waitRun = await cli(["wait", "--json"]);
+    expect(waitRun.stderr).toBe("");
+    expect(waitRun.exitCode).toBe(0);
+    expect(JSON.parse(waitRun.stdout).items.map((item: { sequence: number; content: string }) => [item.sequence, item.content])).toEqual([
+      [2, "Hello from the CLI"],
+      [3, "Heard you"],
+    ]);
+
+    // Nothing new: a bounded wait comes back empty and leaves the cursor alone.
+    const quiet = await cli(["wait", "--timeout", "0", "--json"]);
+    expect(quiet.exitCode).toBe(0);
+    expect(JSON.parse(quiet.stdout).items).toEqual([]);
+    const state = JSON.parse(await readFile(join(space.project, ".sharednet", "room.json"), "utf8"));
+    expect(state.last_sequence).toBe(3);
+  });
+});
