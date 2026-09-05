@@ -523,7 +523,8 @@ export class MemorySharedNetRepository implements SharedNetRepository {
   }
 
   /** The tag an Instance is currently under — read at projection time, never copied. */
-  private tagOf(instanceId: InstanceId): AgentId | null {
+  private tagOf(instanceId: InstanceId | null): AgentId | null {
+    if (instanceId === null) return null;
     return this.instances.get(instanceId)?.agent_id ?? null;
   }
 

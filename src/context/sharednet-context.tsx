@@ -18,6 +18,7 @@ import {
   isProvisionAccountResponse,
   isRoomDetail,
   isRoomListResponse,
+  isRoomSummary,
   type DecisionId,
   type DecisionProjection,
   type DecisionResolution,
@@ -31,8 +32,12 @@ import {
 
 type SharedNetStatus = "loading" | "ready" | "stale";
 
+export type CreateRoomInput = { description?: string | null; name: string };
+
 type SharedNetContextValue = {
   claimPairing: (pairingId: PairingId) => Promise<void>;
+  /** Schedule an empty Room owned by this account, then select it. */
+  createRoom: (input: CreateRoomInput) => Promise<RoomSummary>;
   decisions: DecisionProjection[];
   error: string | null;
   network: NetworkProjection | null;
@@ -293,6 +298,54 @@ export function SharedNetProvider({ children }: { children: ReactNode }) {
     [refresh],
   );
 
+  const createRoom = useCallback(
+    async (input: CreateRoomInput) => {
+      const mutationController = mutationAbortControllerRef.current;
+      if (
+        !mountedRef.current ||
+        mutationController === null ||
+        mutationController.signal.aborted
+      ) {
+        throw mutationUnavailableError();
+      }
+      let created: RoomSummary;
+      try {
+        created = await requestJson("/api/sharednet/rooms", isRoomSummary, {
+          body: JSON.stringify({
+            description: input.description ?? null,
+            name: input.name,
+          }),
+          headers: { "Content-Type": "application/json" },
+          method: "POST",
+          signal: mutationController.signal,
+        });
+      } catch (cause) {
+        if (
+          !mountedRef.current ||
+          mutationAbortControllerRef.current !== mutationController ||
+          mutationController.signal.aborted
+        ) {
+          throw mutationUnavailableError();
+        }
+        throw cause;
+      }
+      if (
+        !mountedRef.current ||
+        mutationAbortControllerRef.current !== mutationController ||
+        mutationController.signal.aborted
+      ) {
+        throw mutationUnavailableError();
+      }
+      // The next refresh keeps this selection because the new Room is in the list.
+      selectedRoomIdRef.current = created.room_id;
+      setSelectedRoomId(created.room_id);
+      setSelectedRoom(null);
+      await refresh();
+      return created;
+    },
+    [refresh],
+  );
+
   const claimPairing = useCallback(
     async (pairingId: PairingId) => {
       const mutationController = mutationAbortControllerRef.current;
@@ -380,6 +433,7 @@ export function SharedNetProvider({ children }: { children: ReactNode }) {
   const value = useMemo(
     () => ({
       claimPairing,
+      createRoom,
       decisions,
       error,
       network,
@@ -394,6 +448,7 @@ export function SharedNetProvider({ children }: { children: ReactNode }) {
     }),
     [
       claimPairing,
+      createRoom,
       decisions,
       error,
       network,

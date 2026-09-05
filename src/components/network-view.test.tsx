@@ -140,6 +140,7 @@ function makeState(overrides: Partial<SharedNetState> = {}): SharedNetState {
   const network = overrides.network === undefined ? makeNetwork() : overrides.network;
   return {
     claimPairing: vi.fn(async () => undefined),
+    createRoom: vi.fn(async () => { throw new Error("createRoom not stubbed"); }),
     decisions: [],
     error: null,
     network,

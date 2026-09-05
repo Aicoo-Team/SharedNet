@@ -195,8 +195,12 @@ export const rooms = sharednetSchema.table(
     name: text("name").notNull(),
     description: text("description"),
     state: text("state").$type<"open" | "closed">().default("open").notNull(),
-    /** The Instance that created the Room — the immutable fact; its tag is derived. */
-    creatorInstanceId: text("creator_instance_id").$type<InstanceId>().notNull(),
+    /**
+     * The Instance that opened the Room — the immutable fact; its tag is derived.
+     * Null when the Principal scheduled the Room from the Web before any Instance
+     * joined: the account owns the empty container, no Instance acted.
+     */
+    creatorInstanceId: text("creator_instance_id").$type<InstanceId>(),
     nextSequence: integer("next_sequence").default(1).notNull(),
     createdAt: domainTimestamp("created_at").defaultNow().notNull(),
     closedAt: domainTimestamp("closed_at"),
@@ -215,7 +219,10 @@ export const rooms = sharednetSchema.table(
     }),
     index("room_principal_created_at_idx").on(table.principalId, table.createdAt),
     check("room_id_format", sql`${table.id} ~ ${ROOM_ID_RE}`),
-    check("room_creator_instance_id_format", sql`${table.creatorInstanceId} ~ ${INSTANCE_ID_RE}`),
+    check(
+      "room_creator_instance_id_format",
+      sql`${table.creatorInstanceId} IS NULL OR ${table.creatorInstanceId} ~ ${INSTANCE_ID_RE}`,
+    ),
     check("room_name_length", sql`length(${table.name}) BETWEEN 1 AND 120`),
     check("room_description_length", sql`${table.description} IS NULL OR length(${table.description}) <= 2000`),
     check("room_next_sequence_positive", sql`${table.nextSequence} >= 1`),

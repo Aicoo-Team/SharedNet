@@ -4,6 +4,7 @@ const { authGetSession, sharedNetClient } = vi.hoisted(() => ({
   authGetSession: vi.fn(),
   sharedNetClient: {
     claimPairing: vi.fn(),
+    createRoom: vi.fn(),
     getNetwork: vi.fn(),
     getRoom: vi.fn(),
     listDecisions: vi.fn(),
@@ -26,7 +27,7 @@ vi.mock("./server-client", async (importOriginal) => {
 });
 
 import { POST as bootstrapAccount } from "../../app/api/sharednet/bootstrap/route";
-import { GET as listRooms } from "../../app/api/sharednet/rooms/route";
+import { GET as listRooms, POST as scheduleRoom } from "../../app/api/sharednet/rooms/route";
 import { GET as getRoom } from "../../app/api/sharednet/rooms/[roomId]/route";
 import { GET as getNetwork } from "../../app/api/sharednet/network/route";
 import { GET as listDecisions } from "../../app/api/sharednet/decisions/route";
@@ -302,6 +303,49 @@ describe("authenticated SharedNet Dashboard routes", () => {
     expect(await response.json()).toEqual({
       error: { code: "invalid_request", message: "Invalid request" },
     });
+    expectNoBackendCall();
+  });
+
+  it("schedules a Room for the signed-in account", async () => {
+    const summary = { room_id: "rom_sched00001", name: "Launch review" };
+    sharedNetClient.createRoom.mockResolvedValue(summary);
+
+    const response = await scheduleRoom(
+      request({ description: null, name: "Launch review" }, "POST", "/api/sharednet/rooms"),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual(summary);
+    expect(sharedNetClient.createRoom).toHaveBeenCalledWith(AUTH_USER_ID, {
+      description: null,
+      name: "Launch review",
+    });
+  });
+
+  it.each([
+    { body: "{not-json", name: "malformed JSON" },
+    { body: JSON.stringify({ description: "no name" }), name: "a missing name" },
+    { body: JSON.stringify({ name: 42 }), name: "a non-string name" },
+    { body: JSON.stringify({ description: 7, name: "x" }), name: "a non-string description" },
+    { body: JSON.stringify(["x"]), name: "a non-object body" },
+  ])("returns 400 when scheduling a Room with $name", async ({ body }) => {
+    const response = await scheduleRoom(rawRequest(body, "POST", "/api/sharednet/rooms"));
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: { code: "invalid_request", message: "Invalid request" },
+    });
+    expectNoBackendCall();
+  });
+
+  it("refuses to schedule a Room without a session", async () => {
+    authGetSession.mockResolvedValue(null);
+
+    const response = await scheduleRoom(
+      request({ name: "Launch review" }, "POST", "/api/sharednet/rooms"),
+    );
+
+    expect(response.status).toBe(401);
     expectNoBackendCall();
   });
 

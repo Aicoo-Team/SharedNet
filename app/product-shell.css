@@ -442,13 +442,226 @@ body:has(.product-window) {
   padding: 14px 10px;
 }
 
+.rooms-sidebar-head {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  margin: 0 0 11px;
+}
+
+.rooms-sidebar-head > p,
 .rooms-sidebar > p {
   color: var(--sn-muted);
   font-size: 10px;
   font-weight: 650;
   letter-spacing: 0.12em;
-  margin: 0 0 11px;
+  margin: 0;
   text-transform: uppercase;
+}
+
+.rooms-sidebar > p {
+  margin-bottom: 11px;
+}
+
+.product-window .rooms-new {
+  background: transparent;
+  border: 1px solid var(--sn-line);
+  border-radius: 999px;
+  color: var(--sn-ink);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  padding: 4px 8px;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.product-window .rooms-new:hover {
+  background: var(--sn-blue-soft);
+  border-color: var(--sn-atlantic);
+}
+
+/* Empty state: schedule a Room, like booking a meeting for Agents. */
+.room-scheduler {
+  display: grid;
+  gap: 16px;
+  max-width: 440px;
+  width: 100%;
+}
+
+.room-scheduler-kicker {
+  color: var(--sn-muted);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.14em;
+  margin: 0;
+  text-transform: uppercase;
+}
+
+.room-scheduler h1 {
+  font-family: var(--font-display, "Anybody Variable"), "Albert Sans Variable", sans-serif;
+  font-size: 26px;
+  font-weight: 760;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+  margin: -6px 0 0;
+}
+
+.room-steps {
+  counter-reset: step;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.room-steps li {
+  align-items: center;
+  color: var(--sn-muted);
+  counter-increment: step;
+  display: flex;
+  font-size: 12px;
+  gap: 7px;
+}
+
+.room-steps li::before {
+  align-items: center;
+  background: var(--sn-gold-soft);
+  border: 1px solid var(--sn-gold);
+  border-radius: 999px;
+  color: var(--sn-gold-ink);
+  content: counter(step);
+  display: inline-flex;
+  font-size: 10px;
+  font-weight: 700;
+  height: 18px;
+  justify-content: center;
+  width: 18px;
+}
+
+.room-schedule-form {
+  background: var(--sn-paper);
+  border: 1px solid var(--sn-atlantic);
+  border-radius: 14px;
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+}
+
+.room-schedule-form label,
+.room-invite-by-id label {
+  color: var(--sn-muted);
+  display: grid;
+  font-size: 11px;
+  font-weight: 600;
+  gap: 6px;
+}
+
+.room-schedule-form input,
+.room-schedule-form textarea,
+.room-invite-by-id input {
+  background: color-mix(in oklch, white 70%, var(--sn-paper));
+  border: 1px solid var(--sn-line);
+  border-radius: 8px;
+  color: var(--sn-ink);
+  font-size: 13px;
+  font-weight: 400;
+  padding: 9px 11px;
+  resize: vertical;
+  transition: border-color 120ms ease;
+}
+
+.room-schedule-form input:focus,
+.room-schedule-form textarea:focus,
+.room-invite-by-id input:focus {
+  border-color: var(--sn-atlantic);
+  outline: none;
+}
+
+.room-schedule-form input::placeholder,
+.room-schedule-form textarea::placeholder,
+.room-invite-by-id input::placeholder {
+  color: var(--sn-muted);
+  opacity: 0.7;
+}
+
+.room-schedule-error {
+  border: 1px solid color-mix(in oklch, var(--sn-red) 45%, transparent);
+  border-radius: 8px;
+  color: var(--sn-red);
+  font-size: 12px;
+  margin: 0;
+  padding: 8px 10px;
+}
+
+.product-window .room-schedule-submit,
+.product-window .room-invite {
+  background: var(--sn-ink);
+  border: 1px solid var(--sn-ink);
+  border-radius: 8px;
+  color: var(--sn-paper);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 9px 14px;
+  transition: background 120ms ease;
+}
+
+.product-window .room-schedule-submit:hover:not(:disabled),
+.product-window .room-invite:hover {
+  background: var(--sn-oxford);
+}
+
+.product-window .room-schedule-submit:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.product-window .room-invite {
+  border-radius: 999px;
+  font-family: "Albert Sans Variable", ui-sans-serif, system-ui, sans-serif;
+  font-size: 11px;
+  letter-spacing: 0.01em;
+  margin-bottom: 4px;
+  padding: 6px 12px;
+}
+
+.room-invite-by-id {
+  align-items: end;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.product-window .room-invite-by-id button {
+  background: transparent;
+  border: 1px solid var(--sn-line);
+  border-radius: 8px;
+  color: var(--sn-ink);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 9px 12px;
+  white-space: nowrap;
+}
+
+.product-window .room-invite-by-id button:hover:not(:disabled) {
+  border-color: var(--sn-atlantic);
+}
+
+.product-window .room-invite-by-id button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.room-invite-id {
+  color: var(--sn-muted);
+  font-size: 12px;
+  margin: 0;
+}
+
+.room-invite-id code {
+  margin-left: 6px;
 }
 
 .rooms-sidebar nav {

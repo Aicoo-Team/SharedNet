@@ -254,6 +254,7 @@ function selectedInstruction(draft: string): string {
 function makeState(overrides: Partial<SharedNetState> = {}): SharedNetState {
   return {
     claimPairing: vi.fn(async () => undefined),
+    createRoom: vi.fn(async () => { throw new Error("createRoom not stubbed"); }),
     decisions: [],
     error: null,
     network: null,
@@ -287,6 +288,7 @@ describe("SharedNet Rooms", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    window.localStorage.clear();
     writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(window.navigator, "clipboard", {
       configurable: true,
@@ -329,16 +331,28 @@ describe("SharedNet Rooms", () => {
     expect(PRODUCT_SHELL_CSS).toMatch(/body:has\(\.product-window\) \{[^}]*overflow: hidden;/);
   });
 
-  it("keeps the Rooms sidebar and local handoff composer visible when no Rooms exist", () => {
+  it("offers to schedule a Room, like booking a meeting, when no Rooms exist", () => {
     renderChat({ rooms: [], selectedRoom: null, selectedRoomId: null });
 
     const rooms = screen.getByRole("navigation", { name: "Rooms" });
     expect(within(rooms).getByText("No rooms yet")).toBeVisible();
     expect(within(rooms).queryByRole("button")).toBeNull();
-    expect(screen.getByLabelText("What do you want done?")).toBeVisible();
+    expect(
+      screen.getByRole("heading", { name: "A Room is a meeting for Agents." }),
+    ).toBeVisible();
+    const steps = within(screen.getByRole("list", { name: "How SharedNet works" }))
+      .getAllByRole("listitem")
+      .map((item) => item.textContent);
+    expect(steps).toEqual([
+      "Schedule a Room",
+      "Invite your Agents by Room ID",
+      "Watch them work and decide",
+    ]);
+    expect(screen.getByLabelText("Room name")).toBeVisible();
     expect(screen.getByPlaceholderText("Type here…")).toBeVisible();
-    expect(screen.getByRole("button", { name: "Continue locally" })).toBeDisabled();
-    expect(screen.getAllByRole("textbox")).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "Schedule Room" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Invite an Agent to it" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Continue locally" })).toBeNull();
   });
 
   it("shows loading without falsely reporting an empty account", () => {
@@ -554,19 +568,100 @@ describe("SharedNet Rooms", () => {
     expect(screen.queryByRole("list", { name: "Room messages" })).toBeNull();
   });
 
-  it("builds the no-selection instruction and leaves the draft unsubmitted", () => {
+  it("schedules a Room from the empty state and opens its invite", async () => {
+    const created = {
+      ...roomSummary,
+      description: "Ship the launch review",
+      member_count: 0,
+      name: "Launch review",
+      room_id: "room_Launch:Sched.1" as RoomId,
+    };
+    const createRoom = vi.fn(async () => created);
+    renderChat({ createRoom, rooms: [], selectedRoom: null, selectedRoomId: null });
+
+    fireEvent.change(screen.getByLabelText("Room name"), {
+      target: { value: "  Launch review  " },
+    });
+    fireEvent.change(screen.getByPlaceholderText("Type here…"), {
+      target: { value: "Ship the launch review" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Schedule Room" }));
+
+    await waitFor(() => {
+      expect(createRoom).toHaveBeenCalledWith({
+        description: "Ship the launch review",
+        name: "Launch review",
+      });
+    });
+    const dialog = await screen.findByRole("dialog", {
+      name: "Invite an Agent to Launch review",
+    });
+    expect(within(dialog).getByText("room_Launch:Sched.1")).toBeVisible();
+    const invite = within(dialog).getByLabelText("Local Agent instructions").textContent ?? "";
+    expect(invite).toContain("Join SharedNet Room room_Launch:Sched.1");
+    expect(invite).toContain(`SharedNet API origin: ${window.location.origin}`);
+    expect(invite).toContain(`Read ${window.location.origin}/skill.md`);
+    expect(invite).toContain("Ship the launch review");
+    expect(within(dialog).getByRole("button", { name: "Copy invite" })).toBeVisible();
+  });
+
+  it("explains a failed schedule and keeps the form filled", async () => {
+    const createRoom = vi.fn(async () => {
+      throw new Error("Room name must be 1–120 characters");
+    });
+    renderChat({ createRoom, rooms: [], selectedRoom: null, selectedRoomId: null });
+
+    fireEvent.change(screen.getByLabelText("Room name"), { target: { value: "Retro" } });
+    fireEvent.click(screen.getByRole("button", { name: "Schedule Room" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Room name must be 1–120 characters",
+    );
+    expect(screen.getByLabelText("Room name")).toHaveValue("Retro");
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("builds an invite for a Room ID the user already has", () => {
     renderChat({ rooms: [], selectedRoom: null, selectedRoomId: null });
 
-    enterDraftAndContinue();
+    fireEvent.change(screen.getByLabelText("Already have a Room ID?"), {
+      target: { value: "nope" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Invite an Agent to it" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("A Room ID looks like rom_");
+
+    fireEvent.change(screen.getByLabelText("Already have a Room ID?"), {
+      target: { value: "rom_lxw0rfaLIb" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Invite an Agent to it" }));
+    const dialog = screen.getByRole("dialog", { name: "Invite an Agent to rom_lxw0rfaLIb" });
+    expect(within(dialog).getByLabelText("Local Agent instructions").textContent).toContain(
+      "Join SharedNet Room rom_lxw0rfaLIb.",
+    );
+  });
+
+  it("invites another Agent from an open Room's header", () => {
+    renderChat();
+
+    fireEvent.click(screen.getByRole("button", { name: "Invite an Agent" }));
 
     const dialog = screen.getByRole("dialog", {
-      name: "Continue in SharedNet Local",
+      name: `Invite an Agent to ${roomDetail.room.name}`,
     });
-    const instructions = within(dialog).getByLabelText("Local Agent instructions");
-    expect(instructions.textContent).toBe(emptyInstruction(DRAFT));
-    expect(screen.getAllByRole("textbox")).toHaveLength(1);
-    expect(screen.getByLabelText("What do you want done?")).toHaveValue(DRAFT);
-    expect(screen.queryByText(DRAFT, { selector: ".room-message-content" })).toBeNull();
+    expect(within(dialog).getByText(ROOM_ID)).toBeVisible();
+    expect(within(dialog).getByLabelText("Local Agent instructions").textContent).toContain(
+      `Join SharedNet Room ${ROOM_ID}`,
+    );
+  });
+
+  it("opens the scheduler from the sidebar when Rooms already exist", () => {
+    renderChat();
+
+    fireEvent.click(screen.getByRole("button", { name: "New Room" }));
+
+    const dialog = screen.getByRole("dialog", { name: "Schedule a Room" });
+    expect(within(dialog).getByLabelText("Room name")).toBeVisible();
+    expect(within(dialog).getByRole("button", { name: "Schedule Room" })).toBeDisabled();
   });
 
   it("builds the selected instruction with the exact Room ID and local return contract", () => {
@@ -592,7 +687,7 @@ describe("SharedNet Rooms", () => {
     enterDraftAndContinue();
 
     const dialog = screen.getByRole("dialog", {
-      name: "Continue in SharedNet Local",
+      name: "Post this from a local Agent",
     });
     const primaryAction = within(dialog).getByRole("button", {
       name: "Copy instructions",
@@ -613,7 +708,7 @@ describe("SharedNet Rooms", () => {
     enterDraftAndContinue();
 
     const dialog = screen.getByRole("dialog", {
-      name: "Continue in SharedNet Local",
+      name: "Post this from a local Agent",
     });
     const primaryAction = within(dialog).getByRole("button", {
       name: "Copy instructions",
@@ -650,7 +745,7 @@ describe("SharedNet Rooms", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Copied to clipboard.");
     expect(screen.getByLabelText("What do you want done?")).toHaveValue("");
     expect(
-      screen.getByRole("dialog", { name: "Continue in SharedNet Local" }),
+      screen.getByRole("dialog", { name: "Post this from a local Agent" }),
     ).toBeVisible();
   });
 
@@ -686,7 +781,7 @@ describe("SharedNet Rooms", () => {
     );
     expect(screen.getByLabelText("What do you want done?")).toHaveValue(DRAFT);
     expect(
-      screen.getByRole("dialog", { name: "Continue in SharedNet Local" }),
+      screen.getByRole("dialog", { name: "Post this from a local Agent" }),
     ).toBeVisible();
   });
 

@@ -193,8 +193,11 @@ export interface Room {
   name: string;
   description: string | null;
   state: RoomState;
-  /** The Instance that opened the Room; its tag is derived, not stored. */
-  creator_instance_id: InstanceId;
+  /**
+   * The Instance that opened the Room; its tag is derived, not stored. Null when
+   * the Room was scheduled from the Web by its Principal before any Instance joined.
+   */
+  creator_instance_id: InstanceId | null;
   creator_agent_id: AgentId | null;
   created_at: Timestamp;
   closed_at: Timestamp | null;

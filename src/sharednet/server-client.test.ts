@@ -11,6 +11,7 @@ import {
   isNetworkProjection,
   isRoomDetail,
   isRoomListResponse,
+  isRoomSummary,
 } from "./contracts";
 
 const PRINCIPAL = "p_ESSNaHrLYm";
@@ -78,6 +79,15 @@ vi.mock("@/packages/db/src/client.ts", () => {
   };
 
   const database = {
+    insert: (table: Parameters<typeof getTableName>[0]) => ({
+      values: (row: Record<string, unknown>) => ({
+        returning: async () => {
+          const name = getTableName(table);
+          rowsByTable.current[name] = [...(rowsByTable.current[name] ?? []), row];
+          return [row];
+        },
+      }),
+    }),
     select: () => ({
       from: (table: Parameters<typeof getTableName>[0]) =>
         makeChain(rowsByTable.current[getTableName(table)] ?? []),
@@ -132,6 +142,74 @@ describe("SharedNetServerClient reads the V1 Postgres tables", () => {
       member_count: 1,
       status: "open",
     });
+  });
+
+  it("schedules an empty Room owned by the Principal, with no creator Instance", async () => {
+    const client = clientWith({ ...BASE_TABLES, room: [], room_member: [] });
+
+    const created = await client.createRoom("auth-user-1", {
+      description: "  Ship the launch review  ",
+      name: "  Launch review  ",
+    });
+
+    expect(isRoomSummary(created)).toBe(true);
+    expect(created).toMatchObject({
+      description: "Ship the launch review",
+      latest_sequence: 0,
+      member_count: 0,
+      name: "Launch review",
+      owner_agent_ids: [],
+      status: "open",
+    });
+    expect(created.room_id).toMatch(/^rom_[0-9A-Za-z]{10}$/);
+    expect(rowsByTable.current.room?.[0]).toMatchObject({
+      creatorInstanceId: null,
+      principalId: PRINCIPAL,
+      state: "open",
+    });
+  });
+
+  it("rejects a blank or over-long Room name before touching the database", async () => {
+    const client = clientWith({ ...BASE_TABLES, room: [] });
+
+    await expect(client.createRoom("auth-user-1", { name: "   " })).rejects.toMatchObject({
+      code: "invalid_room_name",
+      status: 400,
+    });
+    await expect(
+      client.createRoom("auth-user-1", { name: "x".repeat(121) }),
+    ).rejects.toMatchObject({ code: "invalid_room_name" });
+    expect(rowsByTable.current.room).toEqual([]);
+  });
+
+  it("shows a scheduled Room to its owner before any Instance has joined", async () => {
+    const scheduledRow = {
+      ...roomRow, id: "rom_sched00001", name: "Scheduled", creatorInstanceId: null,
+      nextSequence: 1,
+    };
+    const client = clientWith({ ...BASE_TABLES, room: [scheduledRow], room_member: [] });
+
+    const list = await client.listRooms("auth-user-1");
+    expect(isRoomListResponse(list)).toBe(true);
+    expect(list.rooms.map((room) => room.room_id)).toEqual(["rom_sched00001"]);
+    expect(list.rooms[0]).toMatchObject({ member_count: 0, owner_agent_ids: [] });
+
+    const detail = await client.getRoom("auth-user-1", "rom_sched00001" as never);
+    expect(isRoomDetail(detail)).toBe(true);
+    expect(detail.room.creator).toEqual({ agent_id: null, principal_id: PRINCIPAL });
+    expect(detail.memberships).toEqual([]);
+  });
+
+  it("still hides a Room the account neither owns nor joined", async () => {
+    const foreignRow = {
+      ...roomRow, id: "rom_foreign0001", principalId: "p_someoneElse", creatorInstanceId: null,
+    };
+    const client = clientWith({ ...BASE_TABLES, room: [foreignRow], room_member: [] });
+
+    await expect(client.listRooms("auth-user-1")).resolves.toEqual({ rooms: [] });
+    await expect(
+      client.getRoom("auth-user-1", "rom_foreign0001" as never),
+    ).rejects.toMatchObject({ code: "room_not_found", status: 404 });
   });
 
   it("projects room detail with senders resolved to V1 ids", async () => {
