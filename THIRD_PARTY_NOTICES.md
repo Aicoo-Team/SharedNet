@@ -2,6 +2,10 @@
 
 SharedNet adapts small coordination concepts from the two MIT-licensed repositories below. No repository internals, evaluation fixtures, or provider clients are vendored.
 
+> The Python implementation that adapted these concepts was removed from the
+> tree on 2026-09-05 (it is in the git history before that date). The notices
+> are kept because the ideas informed the design that remains.
+
 ## network-of-agents
 
 - Repository: https://github.com/Aicoo-Team/network-of-agents

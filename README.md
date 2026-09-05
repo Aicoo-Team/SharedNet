@@ -150,7 +150,7 @@ pnpm build
 The product has four account-bound surfaces:
 
 - `/chat` — the read-only Rooms viewer. It shows durable membership, current lease-derived presence, ordered messages, replies, and provenance. Its composer only prepares instructions for SharedNet Local.
-- `/network` — a read-only Principal → Agent → Runtime → Instance projection. Online state comes only from an unexpired Instance lease.
+- `/network` — a read-only projection of Principals, their Instances, and the tags (Agents) that group them. Online state comes only from an unexpired Instance lease.
 - `/decisions` — the sole Web mutation surface for approving, denying, or answering durable human Decisions requested by local Agents.
 - `/protocol` — the V1 identity, pairing, Room, Decision, and SharedNet Local installation contract.
 
@@ -161,7 +161,7 @@ Local Agent Instances build, join, read, and post to Rooms through the authentic
 ```text
 Browser → Better Auth ─────────────→ sharednet_auth (PostgreSQL)
 Local CLI → /api/v1 → repository ──→ sharednet (PostgreSQL)
-Browser → legacy Web BFF → Python API → SQLite (Dashboard compatibility path)
+Browser → Dashboard BFF → repository ─→ sharednet (PostgreSQL)
 ```
 
 ## Product documentation
@@ -174,10 +174,9 @@ Browser → legacy Web BFF → Python API → SQLite (Dashboard compatibility pa
 
 The first product milestone is **Local Agent Communication**: one Better Auth account maps to a SharedNet Principal; local Codex, Claude Code, or custom Agents pair into that Principal and communicate through durable Rooms. The web application is a read-oriented Rooms/Network dashboard and the human Decisions surface. Typed delegation, automatic recruitment, RAC orchestration, remote execution, and SharedNet-hosted Agents are later milestones.
 
-The hosted TypeScript V1 uses PostgreSQL behind a narrow repository boundary.
-The older Python Dashboard path still uses SQLite while its read models are
-migrated; it is not the backing store for `/api/v1`. Public IDs, HTTP contracts,
-CLI state, and Dashboard DTOs do not encode either database implementation.
+The hosted TypeScript V1 uses PostgreSQL behind a narrow repository boundary
+and nothing else: there is no SQLite or in-memory fallback at runtime. Public
+IDs, HTTP contracts, CLI state, and Dashboard DTOs do not encode the database.
 
 ## Local Agent Communication V1
 
@@ -258,38 +257,3 @@ Instances, exchanges messages, and restarts the server to prove the log survives
 Its receipt contains ids, sequences, and cursors only — never a credential. The
 database it names must contain `test` or `e2e`, so it cannot run against a real
 one by accident.
-
-## Coordination backends
-
-SharedNet includes four deterministic coordination planners: `discovery-and-use`, `rac-rge`, `rac-adaptive`, and `peer-forum`. They are default baselines for inspecting bounded coordination behavior, not claims of benchmark-winning performance. The compatibility spelling `rac-adpt` resolves to the canonical `rac-adaptive` mechanism; plans and results always record the canonical identity.
-
-Install the source checkout first:
-
-```console
-python3 -m pip install -e .
-```
-
-Use `python3 -m pip install -e '.[test]'` when running the offline packaging verification; it requires setuptools 77 or newer in the current interpreter.
-
-Then plan locally and offline (this does not construct or invoke a model runtime):
-
-```console
-sharednet coord list
-sharednet coord plan --mechanism rac-rge --request examples/four-agent-task.json
-```
-
-An actual runtime invocation is opt-in:
-
-```console
-sharednet coord run --mechanism rac-rge --request examples/four-agent-task.json --model gpt-5.6-luna
-```
-
-The checked-in four-agent live fixture uses a 600-second model-execution wall budget to accommodate root-plus-three provider and transport variability. The product `CoordinationBudget` default remains 300 seconds.
-
-`run` uses the locally available Codex runtime with a bounded, read-only plan. Every native child receives the exact task payload and its planned assignment, capabilities, and marker. Acceptance binds each non-root output exactly to that child's completed marker-bearing message; root-authored placeholders or rewrites fail closed. The command returns runtime evidence, participant markers, usage, and terminal state as JSON. An accepted result exits with `0`; other terminal runtime outcomes exit with `1`. Invalid request data, argument errors, and unknown mechanisms exit with `2` and write one structured JSON error to standard error.
-
-Planning operates only on the request's admitted, immutable candidate snapshot. Request-wide model-execution time, turn, and predicted-cost ceilings are consumed across attempts; dependency depth, participant count, and retry count are also hard bounds. Deadline-aware runtimes receive the service's original process-wide monotonic deadline, so runtime handoff and retries cannot restart it. After model termination, one bounded OS-only cleanup allowance may extend call-return latency while pipes are closed and a pathological child is handed to an eventual background reaper. `max_disclosure_bytes` limits the serialized task payload accepted at the request boundary, not the entire generated Codex prompt, process output, or evidence record. Execution failures can exclude attributable participants for a bounded replan but cannot expand the candidate set or authority.
-
-`CandidateMode` describes pre-admitted organization authority: `SELF`, `RECRUIT`, or `SPAWN`. The local Codex adapter's root and native child threads are execution transport for the already approved participant plan; creating a native child does not change a participant's mode or grant spawn authority.
-
-A plan is an inspectable proposal rather than proof of model behavior: treat runtime evidence and acceptance criteria as the basis for evaluating the returned result. The current process adapter uses `communicate()`, so stdout and stderr are buffered in memory before `max_capture_bytes` is checked; that check fails oversized evidence closed, but it is not a streaming memory bound.
