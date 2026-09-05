@@ -314,6 +314,21 @@ describe("SharedNet Rooms", () => {
     }
   });
 
+  it("lets the Rooms sidebar be resized from a divider that drives the workspace grid", () => {
+    renderChat({ rooms: [], selectedRoom: null, selectedRoomId: null });
+
+    const handle = screen.getByRole("separator", { name: "Resize Rooms sidebar" });
+    const workspace = handle.closest(".rooms-workspace") as HTMLElement;
+    expect(workspace.style.getPropertyValue("--split-width")).toBe("178px");
+
+    fireEvent.keyDown(handle, { key: "ArrowRight" });
+    expect(workspace.style.getPropertyValue("--split-width")).toBe("194px");
+
+    const gridRule = PRODUCT_SHELL_CSS.match(/\.rooms-workspace \{[^}]*\}/)?.[0] ?? "";
+    expect(gridRule).toContain("grid-template-columns: var(--split-width) minmax(0, 1fr)");
+    expect(PRODUCT_SHELL_CSS).toMatch(/body:has\(\.product-window\) \{[^}]*overflow: hidden;/);
+  });
+
   it("keeps the Rooms sidebar and local handoff composer visible when no Rooms exist", () => {
     renderChat({ rooms: [], selectedRoom: null, selectedRoomId: null });
 

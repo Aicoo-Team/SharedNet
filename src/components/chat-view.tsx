@@ -5,6 +5,8 @@ import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useSharedNet } from "@/src/context/sharednet-context";
 import type { RoomId } from "@/src/sharednet/contracts";
 
+import { SplitHandle, useSplitWidth } from "./split-handle";
+
 type CopyState = "idle" | "copied" | "error";
 
 type LocalInstruction = {
@@ -39,6 +41,12 @@ function describeHeartbeat(
 }
 
 export function ChatView() {
+  const sidebarSplit = useSplitWidth({
+    defaultWidth: 178,
+    maxWidth: 360,
+    minWidth: 128,
+    storageKey: "sharednet.rooms.sidebar-width",
+  });
   const {
     error,
     network,
@@ -215,6 +223,7 @@ export function ChatView() {
       <div
         className="rooms-workspace"
         inert={instruction !== null ? true : undefined}
+        style={sidebarSplit.style}
       >
       <aside className="rooms-sidebar">
         <p>Rooms</p>
@@ -249,6 +258,7 @@ export function ChatView() {
           )}
         </nav>
       </aside>
+      <SplitHandle label="Resize Rooms sidebar" split={sidebarSplit} />
 
       {selectedRoomId !== null ? (
         <section className="room-canvas" aria-live="polite">

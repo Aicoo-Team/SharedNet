@@ -1,9 +1,9 @@
 .product-window {
-  --sn-paper: oklch(98.8% 0.004 246);
-  --sn-paper-deep: oklch(95.5% 0.009 246);
-  --sn-ink: oklch(20.5% 0.025 252);
-  --sn-muted: oklch(49% 0.025 250);
-  --sn-line: oklch(84% 0.014 246);
+  --sn-paper: oklch(98.6% 0.01 240);
+  --sn-paper-deep: oklch(96.2% 0.022 240);
+  --sn-ink: #002147;
+  --sn-muted: oklch(46% 0.06 252);
+  --sn-line: oklch(85% 0.032 240);
   --sn-oxford: oklch(27% 0.085 250);
   --sn-atlantic: oklch(51% 0.12 247);
   --sn-columbia: oklch(86% 0.055 238);
@@ -16,16 +16,30 @@
   background: var(--sn-paper);
   border: 1px solid var(--sn-ink);
   border-radius: 16px;
+  box-shadow: 0 18px 50px rgba(0, 33, 71, 0.16);
   color: var(--sn-ink);
   display: grid;
   font-family: "Albert Sans Variable", ui-sans-serif, system-ui, sans-serif;
   grid-template-columns: 42px minmax(0, 1fr);
-  height: calc(100svh - 32px);
-  margin: 16px;
-  min-height: 560px;
+  inset: 16px;
   overflow: hidden;
-  position: relative;
-  width: calc(100vw - 32px);
+  position: fixed;
+}
+
+/*
+ * The product window owns the viewport: the page behind it must never scroll.
+ * `body { min-height: 100vh }` plus the window's outer spacing used to make the
+ * document 16–32px taller than the viewport, so the whole app could wobble.
+ */
+html:has(.product-window) {
+  overflow: hidden;
+}
+
+body:has(.product-window) {
+  background: linear-gradient(to top right, #e3f2fd, #90caf9, #64b5f6) fixed;
+  height: 100svh;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .product-window *,
@@ -377,10 +391,48 @@
 }
 
 .rooms-workspace {
+  --split-width: 178px;
   display: grid;
-  grid-template-columns: 178px minmax(0, 1fr);
+  grid-template-columns: var(--split-width) minmax(0, 1fr);
   height: 100%;
   min-height: 0;
+  position: relative;
+}
+
+/* Draggable divider laid over the sidebar's right border. */
+.split-handle {
+  bottom: 0;
+  cursor: col-resize;
+  left: calc(var(--split-width) - 4px);
+  position: absolute;
+  top: 0;
+  touch-action: none;
+  width: 9px;
+  z-index: 15;
+}
+
+.split-handle::after {
+  background: transparent;
+  content: "";
+  inset: 0 3px;
+  position: absolute;
+  transition: background 120ms ease;
+}
+
+.split-handle:hover::after,
+.split-handle:focus-visible::after,
+.split-handle[data-dragging="true"]::after {
+  background: var(--sn-atlantic);
+}
+
+.split-handle:focus-visible {
+  outline: none;
+}
+
+.rooms-workspace:has(.split-handle[data-dragging="true"]),
+.network-workspace:has(.split-handle[data-dragging="true"]) {
+  cursor: col-resize;
+  user-select: none;
 }
 
 .rooms-sidebar {
@@ -913,10 +965,12 @@
 }
 
 .network-workspace {
+  --split-width: 224px;
   display: grid;
-  grid-template-columns: 224px minmax(0, 1fr);
+  grid-template-columns: var(--split-width) minmax(0, 1fr);
   height: 100%;
   min-height: 0;
+  position: relative;
 }
 
 .network-workspace:has(.agent-card-open) {
@@ -2184,14 +2238,15 @@
 @media (max-width: 760px) {
   .product-window {
     border-radius: 0;
-    height: 100svh;
-    margin: 0;
-    min-height: 520px;
-    width: 100vw;
+    inset: 0;
   }
 
   .rooms-workspace {
     grid-template-columns: 128px minmax(0, 1fr);
+  }
+
+  .split-handle {
+    display: none;
   }
 
   .room-heading {

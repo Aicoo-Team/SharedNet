@@ -3,6 +3,8 @@
 import { useMemo, useState } from "react";
 
 import { useSharedNet } from "@/src/context/sharednet-context";
+
+import { SplitHandle, useSplitWidth } from "./split-handle";
 import type {
   AgentId,
   AgentProjection,
@@ -421,6 +423,12 @@ function InstanceNode({
 }
 
 export function NetworkView() {
+  const cardSplit = useSplitWidth({
+    defaultWidth: 224,
+    maxWidth: 400,
+    minWidth: 180,
+    storageKey: "sharednet.network.card-width",
+  });
   const { network, status } = useSharedNet();
   const [scope, setScope] = useState<RelationshipScope>("intra");
   const [selectedAgentId, setSelectedAgentId] = useState<AgentId | null>(null);
@@ -465,12 +473,16 @@ export function NetworkView() {
       <div
         className="network-workspace"
         data-card-state={selectedAgent ? (cardOpen ? "open" : "closed") : "empty"}
+        style={cardSplit.style}
       >
         {selectedAgent && cardOpen ? (
-          <AgentCard
-            agentTree={selectedAgent}
-            onClose={() => setCardOpen(false)}
-          />
+          <>
+            <AgentCard
+              agentTree={selectedAgent}
+              onClose={() => setCardOpen(false)}
+            />
+            <SplitHandle label="Resize Agent Card" split={cardSplit} />
+          </>
         ) : selectedAgent ? (
           <button
             aria-label="Open Agent Card"
