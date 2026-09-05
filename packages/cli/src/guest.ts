@@ -238,8 +238,8 @@ async function currentSeat(
     throw localError("not_in_a_room", "This directory is not in a Room. Run: sharednet join <invite>");
   }
   const paths = getStoragePaths(dependencies.env);
-  const credential = await readRoomCredential(paths, state.room_id);
-  if (!credential || credential.member_id !== state.member_id) {
+  const credential = await readRoomCredential(paths, state.room_id, state.member_id);
+  if (!credential) {
     throw localError(
       "room_credential_missing",
       "The member token for this Room is not on this machine. Join again with a new invite.",

@@ -25,7 +25,7 @@ export interface StoragePaths {
   installationFile: string;
   stateDir: string;
   sessionsDir: string;
-  /** One file per Room a guest member token was issued for. */
+  /** One file per seat: rooms/<room_id>/<member_id>.json, so two Agents on one machine can sit in one Room. */
   roomsDir: string;
 }
 
@@ -388,6 +388,22 @@ export async function deleteSession(paths: StoragePaths, instanceId: string): Pr
 }
 
 const ROOM_ID_PATTERN = /^rom_[A-Za-z0-9]+$/;
+const MEMBER_ID_PATTERN = /^mem_[A-Za-z0-9]+$/;
+
+/**
+ * A seat is one member in one Room. Two Agents on the same machine that join
+ * the same Room are two seats and must never share a file, or the second join
+ * would silently take over the first one's credential.
+ */
+function roomCredentialFile(paths: StoragePaths, roomId: string, memberId: string): string {
+  if (!ROOM_ID_PATTERN.test(roomId)) {
+    throw localError("invalid_local_state", "The Room ID is invalid.");
+  }
+  if (!MEMBER_ID_PATTERN.test(memberId)) {
+    throw localError("invalid_local_state", "The member ID is invalid.");
+  }
+  return join(paths.roomsDir, roomId, `${memberId}.json`);
+}
 
 function parseRoomCredential(raw: string): StoredRoomCredential {
   const value = parseJsonObject(raw, "A Room credential file");
@@ -410,20 +426,18 @@ export async function writeRoomCredential(
   paths: StoragePaths,
   credential: StoredRoomCredential,
 ): Promise<void> {
-  if (!ROOM_ID_PATTERN.test(credential.room_id)) {
-    throw localError("invalid_local_state", "The Room ID is invalid.");
-  }
-  await writeSecureJson(join(paths.roomsDir, `${credential.room_id}.json`), credential);
+  await writeSecureJson(
+    roomCredentialFile(paths, credential.room_id, credential.member_id),
+    credential,
+  );
 }
 
 export async function readRoomCredential(
   paths: StoragePaths,
   roomId: string,
+  memberId: string,
 ): Promise<StoredRoomCredential | null> {
-  if (!ROOM_ID_PATTERN.test(roomId)) {
-    throw localError("invalid_local_state", "The Room ID is invalid.");
-  }
-  const raw = await readSecureFile(join(paths.roomsDir, `${roomId}.json`));
+  const raw = await readSecureFile(roomCredentialFile(paths, roomId, memberId));
   return raw === null ? null : parseRoomCredential(raw);
 }
 
