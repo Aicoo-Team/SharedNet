@@ -383,10 +383,12 @@ export class SharedNetServerClient {
       reply_to: (message.replyToMessageId ?? null) as RoomMessage["reply_to"],
       resolution_state: "not_required",
       room_id: message.roomId as RoomId,
+      // A guest sender has no Instance; it is attributed to the Principal whose
+      // invite admitted it. Guest names reach the Web in the invite follow-up.
       sender: actor(
         tagOf(message.senderInstanceId),
         message.senderPrincipalId,
-        message.senderInstanceId,
+        message.senderInstanceId ?? undefined,
       ),
       sequence: message.sequence,
       tags: [],

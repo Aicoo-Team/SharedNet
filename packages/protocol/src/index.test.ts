@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   DISCOVERY_DOCUMENT,
   OPENAPI_DOCUMENT,
+  parseJoinRoomWithInviteRequest,
+  presenceFor,
   PUBLIC_ID_PATTERN,
   SAFE_ERROR_MESSAGES,
   SNI_SECRET_PATTERN,
@@ -124,15 +126,39 @@ describe("safe errors and public documentation", () => {
       "instances.lease",
       "rooms",
       "rooms.messages",
+      "rooms.invites",
+      "rooms.wait",
       "decisions.approval",
       "decisions.text",
       "network",
     ]);
+    expect(DISCOVERY_DOCUMENT.limits.wait_max_seconds).toBe(25);
+    expect(DISCOVERY_DOCUMENT.limits.invite_default_seconds).toBe(0);
     expect(OPENAPI_DOCUMENT.info.version).toBe(DISCOVERY_DOCUMENT.protocol_version);
     expect(OPENAPI_DOCUMENT["x-sharednet-capabilities"]).toEqual(
       DISCOVERY_DOCUMENT.capabilities,
     );
     expect(OPENAPI_DOCUMENT.paths[DISCOVERY_DOCUMENT.openapi_url]).toBeDefined();
     expect(OPENAPI_DOCUMENT.paths["/api/v1/rooms/{room_id}/messages"]).toBeDefined();
+    expect(OPENAPI_DOCUMENT.paths["/api/v1/rooms/{room_id}/wait"].get.security).toEqual([
+      { instanceToken: [] },
+      { roomMemberToken: [] },
+    ]);
+  });
+
+  it("derives presence from the last authenticated request, not a heartbeat", () => {
+    const now = new Date("2026-09-05T12:00:00Z");
+    expect(presenceFor(null, now)).toBe("offline");
+    expect(presenceFor("2026-09-05T11:59:30Z", now)).toBe("online");
+    expect(presenceFor("2026-09-05T11:55:00Z", now)).toBe("away");
+    expect(presenceFor("2026-09-05T11:00:00Z", now)).toBe("offline");
+  });
+
+  it("accepts a guest name as display text only: trimmed, bounded, no control characters", () => {
+    expect(parseJoinRoomWithInviteRequest({ name: "  claude-code  " })).toEqual({ name: "claude-code" });
+    expect(() => parseJoinRoomWithInviteRequest({ name: "" })).toThrow();
+    expect(() => parseJoinRoomWithInviteRequest({ name: "a".repeat(65) })).toThrow();
+    expect(() => parseJoinRoomWithInviteRequest({ name: "bad\u0000name" })).toThrow();
+    expect(() => parseJoinRoomWithInviteRequest({ name: "x", extra: 1 })).toThrow();
   });
 });

@@ -373,6 +373,110 @@ try {
     );
   }
 
+  // --- A guest joins by invite over plain HTTP: no CLI, no account key. ---
+  // The Web mints the invite through the repository; here the harness does.
+  const { createDatabase, createDatabasePool } = await import("../packages/db/src/index.ts");
+  const { PostgresSharedNetRepository } = await import(
+    "../packages/server/src/postgres-repository.ts"
+  );
+  const invitePool = createDatabasePool({ connectionString: databaseUrl });
+  const repository = new PostgresSharedNetRepository(createDatabase(invitePool));
+  const { invite, token: inviteToken } = await repository.createRoomInvite({
+    roomId,
+    principalId: starts[0].instance.principal_id,
+  });
+  assert.match(inviteToken, /^rit_[A-Za-z0-9_-]{43}$/);
+  assert.equal(invite.expires_at, null, "an invite never expires unless asked to");
+
+  const joinResponse = await fetch(`${apiBaseUrl}/api/v1/rooms/${roomId}/join`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${inviteToken}`, "content-type": "application/json" },
+    body: JSON.stringify({ name: "claude-code" }),
+  });
+  await assertStatus(joinResponse, 200, "guest-join");
+  const joined = await joinResponse.json();
+  assert.match(joined.member_token, /^rmt_[A-Za-z0-9_-]{43}$/);
+  assert.equal(joined.membership.kind, "guest");
+  assert.equal(joined.membership.name, "claude-code");
+  assert.equal(joined.membership.presence, "online");
+  assert.deepEqual(
+    joined.history.items.map((message) => message.sequence),
+    [1, 2, 3, 4],
+    "a guest catches up on the whole history in the join call",
+  );
+
+  const guestSaid = await fetch(`${apiBaseUrl}/api/v1/rooms/${roomId}/messages`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${joined.member_token}`, "content-type": "application/json" },
+    body: JSON.stringify({ content: "hello from a guest with curl" }),
+  });
+  await assertStatus(guestSaid, 201, "guest-post");
+  const guestMessage = (await guestSaid.json()).message;
+  assert.equal(guestMessage.sequence, 5);
+  assert.deepEqual(guestMessage.sender, {
+    member_id: joined.membership.member_id,
+    kind: "guest",
+    name: "claude-code",
+  });
+  assert.equal(guestMessage.sender_instance_id, null);
+
+  const hostView = await runCli(
+    apiBaseUrl,
+    ["room", "messages", roomId, "--session", instanceIds[0], "--json"],
+    codexSessions[0],
+  );
+  assert.equal(hostView.items.at(-1).sender.name, "claude-code", "an Instance sees the guest by name");
+
+  // The guest sits in the Room; the host speaks; wait answers with exactly that.
+  const waiting = fetch(`${apiBaseUrl}/api/v1/rooms/${roomId}/wait?after=5&timeout=10`, {
+    headers: { authorization: `Bearer ${joined.member_token}` },
+  });
+  await new Promise((resolveDelay) => setTimeout(resolveDelay, 300));
+  await runCli(
+    apiBaseUrl,
+    ["room", "post", roomId, "--content", "you there?", "--session", instanceIds[0], "--json"],
+    codexSessions[0],
+  );
+  const waitResponse = await waiting;
+  await assertStatus(waitResponse, 200, "guest-wait");
+  const waited = await waitResponse.json();
+  assert.deepEqual(
+    waited.items.map((message) => [message.sequence, message.content]),
+    [[6, "you there?"]],
+  );
+
+  const detailResponse = await fetch(`${apiBaseUrl}/api/v1/rooms/${roomId}`, {
+    headers: { authorization: `Bearer ${joined.member_token}` },
+  });
+  await assertStatus(detailResponse, 200, "guest-room-detail");
+  const detail = await detailResponse.json();
+  assert.deepEqual(
+    detail.memberships.map((member) => member.kind).sort(),
+    ["guest", "instance", "instance", "instance", "instance"],
+  );
+
+  const storedGuest = await database.query(
+    "SELECT token_digest, last_seen_at FROM sharednet.room_guest WHERE id = $1",
+    [joined.membership.member_id],
+  );
+  assert.equal(storedGuest.rowCount, 1);
+  assert.notEqual(storedGuest.rows[0].token_digest, joined.member_token, "raw member tokens are never stored");
+  const storedInvite = await database.query(
+    "SELECT uses, token_digest FROM sharednet.room_invite WHERE id = $1",
+    [invite.id],
+  );
+  assert.equal(storedInvite.rows[0].uses, 1);
+  assert.notEqual(storedInvite.rows[0].token_digest, inviteToken);
+  const storedGuestMessage = await database.query(
+    "SELECT sender_instance_id, sender_guest_id FROM sharednet.message WHERE id = $1",
+    [guestMessage.id],
+  );
+  assert.deepEqual(storedGuestMessage.rows[0], {
+    sender_instance_id: null,
+    sender_guest_id: joined.membership.member_id,
+  });
+  await invitePool.end();
+
   const counts = await database.query(`
     SELECT
       (SELECT count(*)::int FROM sharednet.principal WHERE id = $1) AS principals,
@@ -387,7 +491,7 @@ try {
     
     instances: 4,
     rooms: 1,
-    messages: 4,
+    messages: 6, // four Instances, one guest, one host reply during the guest's wait
   });
 
   const deleteKeyResponse = await authRequest(

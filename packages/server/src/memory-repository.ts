@@ -8,14 +8,22 @@ import {
   type AgentId,
   type ApiKeyId,
   type CreateAgentRequest,
+  presenceFor,
   type Instance,
   type InstanceId,
+  type InviteId,
+  type JoinRoomWithInviteRequest,
+  type MemberId,
   type Message,
   type MessageId,
+  type Page,
   type Principal,
   type PrincipalId,
+  type RitSecret,
+  type RmtSecret,
   type Room,
   type RoomId,
+  type RoomInvite,
   type RoomMember,
   type StartInstanceRequest,
 } from "../../protocol/src/index.ts";
@@ -24,10 +32,12 @@ import {
   MAX_AGENTS_PER_PRINCIPAL,
   PRESENCE_LEASE_MS,
   RepositoryError,
+  type GuestAuth,
   type IdempotencyResult,
   type IdempotencyScope,
   type InstanceAuth,
   type PrincipalAuth,
+  type RoomAuth,
   type SharedNetRepository,
   type StoredHttpResult,
 } from "./repository.ts";
@@ -50,8 +60,38 @@ type InstanceRecord = Instance & {
 type RoomRecord = Omit<Room, "creator_agent_id"> & {
   nextSequence: number;
 };
-type MembershipRecord = Omit<RoomMember, "agent_id">;
-type MessageRecord = Omit<Message, "sender_agent_id">;
+type MembershipRecord = {
+  room_id: RoomId;
+  instance_id: InstanceId;
+  state: "active" | "left";
+  joined_at: string;
+  left_at: string | null;
+};
+type GuestRecord = {
+  id: MemberId;
+  room_id: RoomId;
+  invite_id: InviteId;
+  /** The Principal whose invite admitted this guest. */
+  principal_id: PrincipalId;
+  name: string;
+  tokenDigest: string;
+  state: "active" | "left";
+  joined_at: string;
+  left_at: string | null;
+  last_seen_at: string;
+};
+type InviteRecord = RoomInvite & { tokenDigest: string };
+type MessageRecord = {
+  id: MessageId;
+  room_id: RoomId;
+  sequence: number;
+  sender_principal_id: PrincipalId;
+  sender_instance_id: InstanceId | null;
+  sender_guest_id: MemberId | null;
+  content: string;
+  reply_to_message_id: MessageId | null;
+  created_at: string;
+};
 
 type IdempotencyRecord = StoredHttpResult & {
   fingerprint: string;
@@ -59,10 +99,12 @@ type IdempotencyRecord = StoredHttpResult & {
 
 export { RepositoryError } from "./repository.ts";
 export type {
+  GuestAuth,
   IdempotencyResult,
   IdempotencyScope,
   InstanceAuth,
   PrincipalAuth,
+  RoomAuth,
   SharedNetRepository,
 } from "./repository.ts";
 
@@ -102,6 +144,9 @@ export class MemorySharedNetRepository implements SharedNetRepository {
   private readonly instanceIdsByDigest = new Map<string, InstanceId>();
   private readonly rooms = new Map<RoomId, RoomRecord>();
   private readonly memberships = new Map<string, MembershipRecord>();
+  private readonly guests = new Map<MemberId, GuestRecord>();
+  private readonly guestIdsByDigest = new Map<string, MemberId>();
+  private readonly invites = new Map<InviteId, InviteRecord>();
   private readonly messages = new Map<RoomId, MessageRecord[]>();
   private readonly idempotency = new Map<string, IdempotencyRecord>();
   private readonly idempotencyInFlight = new Map<
@@ -179,6 +224,30 @@ export class MemorySharedNetRepository implements SharedNetRepository {
       principalId: record.principal_id,
       instanceId: record.id,
       actorId: record.id,
+    };
+  }
+
+  async authenticateGuest(token: string): Promise<GuestAuth | null> {
+    const candidate = digestSecret(token);
+    let memberId: MemberId | undefined;
+    for (const [digest, id] of this.guestIdsByDigest) {
+      if (secureDigestEquals(candidate, digest)) {
+        memberId = id;
+        break;
+      }
+    }
+    if (!memberId) return null;
+    const guest = this.guests.get(memberId);
+    if (!guest || guest.state !== "active") return null;
+    const room = this.rooms.get(guest.room_id);
+    if (!room || room.state === "closed") return null;
+    guest.last_seen_at = this.timestamp();
+    return {
+      kind: "guest",
+      principalId: guest.principal_id,
+      roomId: guest.room_id,
+      memberId: guest.id,
+      actorId: guest.id,
     };
   }
 
@@ -373,24 +442,130 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     return { room: this.projectRoom(room), membership: this.projectMembership(membership) };
   }
 
+  async createRoomInvite(input: {
+    roomId: RoomId;
+    principalId: PrincipalId;
+    expiresInSeconds?: number | null;
+  }): Promise<{ invite: RoomInvite; token: RitSecret }> {
+    const room = this.rooms.get(input.roomId);
+    if (!room || room.principal_id !== input.principalId) {
+      throw new RepositoryError(404, "room_not_found", "Room was not found.");
+    }
+    if (room.state === "closed") {
+      throw new RepositoryError(409, "room_closed", "Room is closed.");
+    }
+    const token = generateSecret("rit");
+    const createdAt = this.now();
+    const seconds = input.expiresInSeconds ?? 0;
+    const invite: InviteRecord = {
+      id: generatePublicId("inv"),
+      room_id: room.id,
+      principal_id: input.principalId,
+      expires_at:
+        seconds > 0 ? new Date(createdAt.getTime() + seconds * 1000).toISOString() : null,
+      revoked_at: null,
+      uses: 0,
+      created_at: createdAt.toISOString(),
+      tokenDigest: digestSecret(token),
+    };
+    this.invites.set(invite.id, invite);
+    return { invite: this.projectInvite(invite), token };
+  }
+
+  async revokeRoomInvite(input: {
+    inviteId: InviteId;
+    principalId: PrincipalId;
+  }): Promise<{ invite: RoomInvite }> {
+    const invite = this.invites.get(input.inviteId);
+    if (!invite || invite.principal_id !== input.principalId) {
+      throw new RepositoryError(404, "room_not_found", "Room was not found.");
+    }
+    invite.revoked_at ??= this.timestamp();
+    return { invite: this.projectInvite(invite) };
+  }
+
+  async joinRoomWithInvite(
+    token: string,
+    roomId: RoomId,
+    input: JoinRoomWithInviteRequest,
+  ): Promise<{
+    room: Room;
+    membership: RoomMember;
+    member_token: RmtSecret;
+    history: Page<Message>;
+  }> {
+    const candidate = digestSecret(token);
+    let invite: InviteRecord | undefined;
+    for (const record of this.invites.values()) {
+      if (secureDigestEquals(candidate, record.tokenDigest)) {
+        invite = record;
+        break;
+      }
+    }
+    // An invite is bound to one Room; presenting it on another is a bad credential.
+    if (!invite || invite.room_id !== roomId) {
+      throw new RepositoryError(401, "invalid_credentials", "Credentials are invalid.");
+    }
+    if (invite.revoked_at !== null) {
+      throw new RepositoryError(410, "invite_revoked", "Room invite was revoked.");
+    }
+    const now = this.now();
+    if (invite.expires_at !== null && Date.parse(invite.expires_at) <= now.getTime()) {
+      throw new RepositoryError(410, "invite_expired", "Room invite has expired.");
+    }
+    const room = this.roomById(invite.room_id);
+    if (room.state === "closed") {
+      throw new RepositoryError(409, "room_closed", "Room is closed.");
+    }
+    const memberToken = generateSecret("rmt");
+    const joinedAt = now.toISOString();
+    const guest: GuestRecord = {
+      id: generatePublicId("mem"),
+      room_id: room.id,
+      invite_id: invite.id,
+      principal_id: invite.principal_id,
+      name: input.name,
+      tokenDigest: digestSecret(memberToken),
+      state: "active",
+      joined_at: joinedAt,
+      left_at: null,
+      last_seen_at: joinedAt,
+    };
+    this.guests.set(guest.id, guest);
+    this.guestIdsByDigest.set(guest.tokenDigest, guest.id);
+    invite.uses += 1;
+    const history = this.pageMessages(room.id, { after: 0, limit: 100 });
+    return {
+      room: this.projectRoom(room),
+      membership: this.projectGuest(guest),
+      member_token: memberToken,
+      history,
+    };
+  }
+
   async getRoom(
-    auth: InstanceAuth,
+    auth: RoomAuth,
     roomId: RoomId,
   ): Promise<{ room: Room; memberships: RoomMember[] }> {
     const room = this.roomById(roomId);
     this.requireMembership(auth, room.id);
-    const memberships = [...this.memberships.values()]
-      .filter((membership) => membership.room_id === room.id)
-      .map((membership) => this.projectMembership(membership));
+    const memberships = [
+      ...[...this.memberships.values()]
+        .filter((membership) => membership.room_id === room.id)
+        .map((membership) => this.projectMembership(membership)),
+      ...[...this.guests.values()]
+        .filter((guest) => guest.room_id === room.id)
+        .map((guest) => this.projectGuest(guest)),
+    ];
     return { room: this.projectRoom(room), memberships };
   }
 
   async postMessage(
-    auth: InstanceAuth,
+    auth: RoomAuth,
     roomId: RoomId,
     input: { content: string; reply_to_message_id?: MessageId | null },
   ): Promise<{ message: Message }> {
-    this.requireOnline(auth);
+    if (auth.kind === "instance") this.requireOnline(auth);
     const room = this.roomById(roomId);
     if (room.state === "closed") {
       throw new RepositoryError(409, "room_closed", "Room is closed.");
@@ -412,7 +587,8 @@ export class MemorySharedNetRepository implements SharedNetRepository {
       room_id: room.id,
       sequence: room.nextSequence,
       sender_principal_id: auth.principalId,
-      sender_instance_id: auth.instanceId,
+      sender_instance_id: auth.kind === "instance" ? auth.instanceId : null,
+      sender_guest_id: auth.kind === "guest" ? auth.memberId : null,
       content: input.content,
       reply_to_message_id: replyId,
       created_at: this.timestamp(),
@@ -423,13 +599,17 @@ export class MemorySharedNetRepository implements SharedNetRepository {
   }
 
   async listMessages(
-    auth: InstanceAuth,
+    auth: RoomAuth,
     roomId: RoomId,
     input: { after: number; limit: number },
-  ) {
+  ): Promise<Page<Message>> {
     const room = this.roomById(roomId);
     this.requireMembership(auth, room.id);
-    const matching = (this.messages.get(room.id) ?? []).filter(
+    return this.pageMessages(room.id, input);
+  }
+
+  private pageMessages(roomId: RoomId, input: { after: number; limit: number }): Page<Message> {
+    const matching = (this.messages.get(roomId) ?? []).filter(
       (message) => message.sequence > input.after,
     );
     const items = matching.slice(0, input.limit).map((message) => this.projectMessage(message));
@@ -529,11 +709,57 @@ export class MemorySharedNetRepository implements SharedNetRepository {
   }
 
   private projectMembership(record: MembershipRecord): RoomMember {
-    return { ...record, agent_id: this.tagOf(record.instance_id) };
+    const instance = this.instances.get(record.instance_id);
+    const lastSeenAt = instance?.last_seen_at ?? null;
+    return {
+      room_id: record.room_id,
+      member_id: record.instance_id,
+      kind: "instance",
+      name: null,
+      agent_id: this.tagOf(record.instance_id),
+      instance_id: record.instance_id,
+      invited_by_principal_id: null,
+      state: record.state,
+      joined_at: record.joined_at,
+      left_at: record.left_at,
+      last_seen_at: lastSeenAt,
+      presence: presenceFor(lastSeenAt, this.now()),
+    };
+  }
+
+  private projectGuest(guest: GuestRecord): RoomMember {
+    return {
+      room_id: guest.room_id,
+      member_id: guest.id,
+      kind: "guest",
+      name: guest.name,
+      agent_id: null,
+      instance_id: null,
+      invited_by_principal_id: guest.principal_id,
+      state: guest.state,
+      joined_at: guest.joined_at,
+      left_at: guest.left_at,
+      last_seen_at: guest.last_seen_at,
+      presence: presenceFor(guest.last_seen_at, this.now()),
+    };
+  }
+
+  private projectInvite(record: InviteRecord): RoomInvite {
+    const { tokenDigest: _tokenDigest, ...invite } = record;
+    return { ...invite };
   }
 
   private projectMessage(record: MessageRecord): Message {
-    return { ...record, sender_agent_id: this.tagOf(record.sender_instance_id) };
+    const { sender_guest_id: guestId, ...rest } = record;
+    const guest = guestId ? this.guests.get(guestId) : undefined;
+    return {
+      ...rest,
+      sender_agent_id: this.tagOf(record.sender_instance_id),
+      sender: guest
+        ? { member_id: guest.id, kind: "guest", name: guest.name }
+        : { member_id: record.sender_instance_id!, kind: "instance", name: null },
+      type: "message",
+    };
   }
 
   private requireOnline(auth: InstanceAuth): InstanceRecord {
@@ -553,16 +779,18 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     return room;
   }
 
-  private requireMembership(auth: InstanceAuth, roomId: RoomId): MembershipRecord {
-    const membership = this.memberships.get(membershipKey(roomId, auth.instanceId));
-    if (!membership || membership.state !== "active") {
+  private requireMembership(auth: RoomAuth, roomId: RoomId): void {
+    const active =
+      auth.kind === "guest"
+        ? auth.roomId === roomId && this.guests.get(auth.memberId)?.state === "active"
+        : this.memberships.get(membershipKey(roomId, auth.instanceId))?.state === "active";
+    if (!active) {
       throw new RepositoryError(
         403,
         "room_membership_required",
         "Active Room membership is required.",
       );
     }
-    return membership;
   }
 
   private projectRoom(room: RoomRecord): Room {

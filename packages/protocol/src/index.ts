@@ -1,6 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 
-export const PUBLIC_ID_PREFIXES = ["p", "key", "a", "i", "rom", "msg", "dec"] as const;
+export const PUBLIC_ID_PREFIXES = ["p", "key", "a", "i", "rom", "msg", "dec", "mem", "inv"] as const;
 export type PublicIdPrefix = (typeof PUBLIC_ID_PREFIXES)[number];
 
 /**
@@ -14,7 +14,7 @@ export type PublicIdPrefix = (typeof PUBLIC_ID_PREFIXES)[number];
  * in URLs and logs, so they carry no timestamp and no ordering.
  */
 export const ID_BODY = "[0-9A-Za-z]{10}";
-export const PUBLIC_ID_PATTERN = /^(?:p|key|a|i|rom|msg|dec)_[0-9A-Za-z]{10}$/;
+export const PUBLIC_ID_PATTERN = /^(?:p|key|a|i|rom|msg|dec|mem|inv)_[0-9A-Za-z]{10}$/;
 export const PRINCIPAL_ID_PATTERN = /^p_[0-9A-Za-z]{10}$/;
 export const API_KEY_ID_PATTERN = /^key_[0-9A-Za-z]{10}$/;
 export const AGENT_ID_PATTERN = /^a_[0-9A-Za-z]{10}$/;
@@ -22,9 +22,16 @@ export const INSTANCE_ID_PATTERN = /^i_[0-9A-Za-z]{10}$/;
 export const ROOM_ID_PATTERN = /^rom_[0-9A-Za-z]{10}$/;
 export const MESSAGE_ID_PATTERN = /^msg_[0-9A-Za-z]{10}$/;
 export const DECISION_ID_PATTERN = /^dec_[0-9A-Za-z]{10}$/;
+/** A guest member: someone who joined a Room with an invite token, not an Instance. */
+export const MEMBER_ID_PATTERN = /^mem_[0-9A-Za-z]{10}$/;
+export const INVITE_ID_PATTERN = /^inv_[0-9A-Za-z]{10}$/;
 export const REQUEST_ID_PATTERN = /^req_[0-9A-Za-z]{10}$/;
 export const SNK_SECRET_PATTERN = /^snk_[A-Za-z0-9_-]{43}$/;
 export const SNI_SECRET_PATTERN = /^sni_[A-Za-z0-9_-]{43}$/;
+/** Room invite token: grants `join` on one Room. Safe in a transcript. */
+export const RIT_SECRET_PATTERN = /^rit_[A-Za-z0-9_-]{43}$/;
+/** Room member token: returned by a guest join; grants read, send, and wait in that Room. */
+export const RMT_SECRET_PATTERN = /^rmt_[A-Za-z0-9_-]{43}$/;
 
 export type PrincipalId = `p_${string}`;
 export type ApiKeyId = `key_${string}`;
@@ -33,9 +40,13 @@ export type InstanceId = `i_${string}`;
 export type RoomId = `rom_${string}`;
 export type MessageId = `msg_${string}`;
 export type DecisionId = `dec_${string}`;
+export type MemberId = `mem_${string}`;
+export type InviteId = `inv_${string}`;
 export type RequestId = `req_${string}`;
 export type SnkSecret = `snk_${string}`;
 export type SniSecret = `sni_${string}`;
+export type RitSecret = `rit_${string}`;
+export type RmtSecret = `rmt_${string}`;
 export type Timestamp = string;
 
 export type PublicId =
@@ -45,7 +56,9 @@ export type PublicId =
   | InstanceId
   | RoomId
   | MessageId
-  | DecisionId;
+  | DecisionId
+  | MemberId
+  | InviteId;
 
 export type IdForPrefix<P extends PublicIdPrefix> = P extends "p"
   ? PrincipalId
@@ -59,7 +72,11 @@ export type IdForPrefix<P extends PublicIdPrefix> = P extends "p"
           ? RoomId
           : P extends "msg"
             ? MessageId
-            : DecisionId;
+            : P extends "dec"
+              ? DecisionId
+              : P extends "mem"
+                ? MemberId
+                : InviteId;
 
 const ID_PATTERNS: Record<PublicIdPrefix, RegExp> = {
   p: PRINCIPAL_ID_PATTERN,
@@ -69,6 +86,8 @@ const ID_PATTERNS: Record<PublicIdPrefix, RegExp> = {
   rom: ROOM_ID_PATTERN,
   msg: MESSAGE_ID_PATTERN,
   dec: DECISION_ID_PATTERN,
+  mem: MEMBER_ID_PATTERN,
+  inv: INVITE_ID_PATTERN,
 };
 
 const CROCKFORD_LOWER = "0123456789abcdefghjkmnpqrstvwxyz";
@@ -122,8 +141,16 @@ export function parsePublicId<P extends PublicIdPrefix>(
 
 export function generateSecret(prefix: "snk"): SnkSecret;
 export function generateSecret(prefix: "sni"): SniSecret;
-export function generateSecret(prefix: "snk" | "sni"): SnkSecret | SniSecret {
-  return `${prefix}_${randomBytes(32).toString("base64url")}` as SnkSecret | SniSecret;
+export function generateSecret(prefix: "rit"): RitSecret;
+export function generateSecret(prefix: "rmt"): RmtSecret;
+export function generateSecret(
+  prefix: "snk" | "sni" | "rit" | "rmt",
+): SnkSecret | SniSecret | RitSecret | RmtSecret {
+  return `${prefix}_${randomBytes(32).toString("base64url")}` as
+    | SnkSecret
+    | SniSecret
+    | RitSecret
+    | RmtSecret;
 }
 
 export function digestSecret(secret: string): string {
@@ -203,27 +230,82 @@ export interface Room {
   closed_at: Timestamp | null;
 }
 
+/**
+ * Two kinds of member sit in one Room. An `instance` member is a registered
+ * Instance of a Principal (the power path). A `guest` joined with a Room invite
+ * token and is known only by the name it gave and who invited it.
+ */
+export type MemberKind = "instance" | "guest";
+
+/**
+ * Presence is derived from the member's most recent authenticated request, so
+ * an Agent that is sitting inside `wait` is online without any heartbeat.
+ */
+export type Presence = "online" | "away" | "offline";
+export const PRESENCE_ONLINE_MS = 60_000;
+export const PRESENCE_AWAY_MS = 600_000;
+
+export function presenceFor(lastSeenAt: Timestamp | null, now: Date): Presence {
+  if (lastSeenAt === null) return "offline";
+  const age = now.getTime() - Date.parse(lastSeenAt);
+  if (age <= PRESENCE_ONLINE_MS) return "online";
+  if (age <= PRESENCE_AWAY_MS) return "away";
+  return "offline";
+}
+
+/** Who a Message or membership belongs to, the same shape for both member kinds. */
+export interface MemberRef {
+  member_id: InstanceId | MemberId;
+  kind: MemberKind;
+  /** A guest's self-declared name; null for an Instance, whose tag says who it is. */
+  name: string | null;
+}
+
 export interface RoomMember {
   room_id: RoomId;
-  /** Derived from the member Instance's current tag. */
+  /** `i_…` for an Instance member, `mem_…` for a guest. */
+  member_id: InstanceId | MemberId;
+  kind: MemberKind;
+  name: string | null;
+  /** Derived from the member Instance's current tag; null for a guest. */
   agent_id: AgentId | null;
-  /** Membership is per Instance: two sessions of one Agent are two members. */
-  instance_id: InstanceId;
+  /** Membership is per Instance: two sessions of one Agent are two members. Null for a guest. */
+  instance_id: InstanceId | null;
+  /** For a guest: the Principal whose invite admitted it. */
+  invited_by_principal_id: PrincipalId | null;
   state: "active" | "left";
   joined_at: Timestamp;
   left_at: Timestamp | null;
+  last_seen_at: Timestamp | null;
+  presence: Presence;
 }
 
 export interface Message {
   id: MessageId;
   room_id: RoomId;
   sequence: number;
+  /** The sending Instance's Principal, or for a guest the Principal that invited it. */
   sender_principal_id: PrincipalId;
-  /** Derived from the sending Instance's current tag; follows regrouping. */
+  /** Derived from the sending Instance's current tag; follows regrouping. Null for a guest. */
   sender_agent_id: AgentId | null;
-  sender_instance_id: InstanceId;
+  sender_instance_id: InstanceId | null;
+  sender: MemberRef;
+  /** Reserved for typed events; every V1 message is `message`. */
+  type: "message";
   content: string;
   reply_to_message_id: MessageId | null;
+  created_at: Timestamp;
+}
+
+export interface RoomInvite {
+  id: InviteId;
+  room_id: RoomId;
+  /** The Principal that minted it; guests it admits are attributed to this Principal. */
+  principal_id: PrincipalId;
+  /** Null means the invite never expires, which is the default. */
+  expires_at: Timestamp | null;
+  revoked_at: Timestamp | null;
+  uses: number;
   created_at: Timestamp;
 }
 
@@ -277,6 +359,8 @@ export type ErrorCode =
   | "resource_limit_reached"
   | "instance_offline"
   | "room_closed"
+  | "invite_expired"
+  | "invite_revoked"
   | "idempotency_conflict"
   | "decision_already_resolved"
   | "request_too_large"
@@ -315,6 +399,8 @@ export const SAFE_ERROR_MESSAGES: Readonly<Record<ErrorCode, string>> = {
   resource_limit_reached: "Resource limit was reached.",
   instance_offline: "Instance is offline.",
   room_closed: "Room is closed.",
+  invite_expired: "Room invite has expired.",
+  invite_revoked: "Room invite was revoked.",
   idempotency_conflict: "Idempotency-Key was already used for another request.",
   decision_already_resolved: "Decision was already resolved.",
   request_too_large: "Request body is too large.",
@@ -354,6 +440,8 @@ export const ERROR_STATUS: Readonly<Record<ErrorCode, number>> = {
   resource_limit_reached: 409,
   instance_offline: 409,
   room_closed: 409,
+  invite_expired: 410,
+  invite_revoked: 410,
   idempotency_conflict: 409,
   decision_already_resolved: 409,
   request_too_large: 413,
@@ -627,6 +715,30 @@ export function parsePostMessageRequest(value: unknown): PostMessageRequest {
     : { content, reply_to_message_id: replyToMessageId as MessageId | null };
 }
 
+export const MAX_MEMBER_NAME_SCALARS = 64;
+
+export interface JoinRoomWithInviteRequest {
+  /** What the guest calls itself in the Room, e.g. "claude-code". Display only. */
+  name: string;
+}
+
+export function parseJoinRoomWithInviteRequest(value: unknown): JoinRoomWithInviteRequest {
+  requireExactKeys(value, ["name"]);
+  const { name } = value;
+  if (typeof name !== "string") {
+    throw new ProtocolValidationError();
+  }
+  const normalized = name.normalize("NFKC").trim();
+  if (
+    scalarLength(normalized) < 1 ||
+    scalarLength(normalized) > MAX_MEMBER_NAME_SCALARS ||
+    CONTROL_CHARACTER_PATTERN.test(normalized)
+  ) {
+    throw new ProtocolValidationError();
+  }
+  return { name: normalized };
+}
+
 export function parseEmptyRequest(value: unknown): Record<string, never> {
   if (value === undefined) {
     return {};
@@ -658,6 +770,8 @@ export const CAPABILITIES = [
   "instances.lease",
   "rooms",
   "rooms.messages",
+  "rooms.invites",
+  "rooms.wait",
   "decisions.approval",
   "decisions.text",
   "network",
@@ -686,6 +800,12 @@ export interface DiscoveryDocument {
     max_agents_per_principal: number;
     max_active_instances_per_principal: number;
     max_open_rooms_per_principal: number;
+    /** Longest a single `wait` request blocks before answering with an empty page. */
+    wait_max_seconds: number;
+    /** 0 means an invite never expires unless revoked. */
+    invite_default_seconds: number;
+    /** 0 means no cap on `expires_in_seconds`. */
+    invite_max_seconds: number;
   };
 }
 
@@ -710,6 +830,9 @@ export const DISCOVERY_DOCUMENT = {
     max_agents_per_principal: 100,
     max_active_instances_per_principal: 100,
     max_open_rooms_per_principal: 100,
+    wait_max_seconds: 25,
+    invite_default_seconds: 0,
+    invite_max_seconds: 0,
   },
 } as const satisfies DiscoveryDocument;
 
@@ -758,26 +881,32 @@ export const ROUTE_CATALOGUE = [
   {
     method: "GET",
     path: "/api/v1/rooms/{room_id}",
-    auth: "instance",
+    auth: "any",
     operationId: "getRoom",
   },
   {
     method: "POST",
     path: "/api/v1/rooms/{room_id}/join",
-    auth: "instance",
+    auth: "any",
     operationId: "joinRoom",
   },
   {
     method: "POST",
     path: "/api/v1/rooms/{room_id}/messages",
-    auth: "instance",
+    auth: "any",
     operationId: "postMessage",
   },
   {
     method: "GET",
     path: "/api/v1/rooms/{room_id}/messages",
-    auth: "instance",
+    auth: "any",
     operationId: "listMessages",
+  },
+  {
+    method: "GET",
+    path: "/api/v1/rooms/{room_id}/wait",
+    auth: "any",
+    operationId: "waitForMessages",
   },
 ] as const satisfies readonly RouteDefinition[];
 
@@ -875,7 +1004,7 @@ export const OPENAPI_DOCUMENT = {
     "/api/v1/rooms/{room_id}": {
       get: {
         operationId: "getRoom",
-        security: [{ instanceToken: [] }],
+        security: [{ instanceToken: [] }, { roomMemberToken: [] }],
         parameters: [
           { name: "room_id", in: "path", required: true, schema: { type: "string", pattern: ROOM_ID_PATTERN.source } },
         ],
@@ -885,7 +1014,7 @@ export const OPENAPI_DOCUMENT = {
     "/api/v1/rooms/{room_id}/join": {
       post: {
         operationId: "joinRoom",
-        security: [{ instanceToken: [] }],
+        security: [{ instanceToken: [] }, { roomInviteToken: [] }],
         parameters: [
           { name: "room_id", in: "path", required: true, schema: { type: "string", pattern: ROOM_ID_PATTERN.source } },
         ],
@@ -895,7 +1024,7 @@ export const OPENAPI_DOCUMENT = {
     "/api/v1/rooms/{room_id}/messages": {
       post: {
         operationId: "postMessage",
-        security: [{ instanceToken: [] }],
+        security: [{ instanceToken: [] }, { roomMemberToken: [] }],
         parameters: [
           { name: "room_id", in: "path", required: true, schema: { type: "string", pattern: ROOM_ID_PATTERN.source } },
         ],
@@ -903,11 +1032,26 @@ export const OPENAPI_DOCUMENT = {
       },
       get: {
         operationId: "listMessages",
-        security: [{ instanceToken: [] }],
+        security: [{ instanceToken: [] }, { roomMemberToken: [] }],
         parameters: [
           { name: "room_id", in: "path", required: true, schema: { type: "string", pattern: ROOM_ID_PATTERN.source } },
         ],
         responses: { "200": { description: "Message page" }, default: { description: "Error" } },
+      },
+    },
+    "/api/v1/rooms/{room_id}/wait": {
+      get: {
+        operationId: "waitForMessages",
+        security: [{ instanceToken: [] }, { roomMemberToken: [] }],
+        parameters: [
+          { name: "room_id", in: "path", required: true, schema: { type: "string", pattern: ROOM_ID_PATTERN.source } },
+          { name: "after", in: "query", required: false, schema: { type: "integer", minimum: 0 } },
+          { name: "timeout", in: "query", required: false, schema: { type: "integer", minimum: 0, maximum: 25 } },
+        ],
+        responses: {
+          "200": { description: "Message page: the first messages after the cursor, or an empty page at the timeout" },
+          default: { description: "Error" },
+        },
       },
     },
   },
@@ -915,6 +1059,8 @@ export const OPENAPI_DOCUMENT = {
     securitySchemes: {
       accountApiKey: { type: "http", scheme: "bearer", bearerFormat: "snk_..." },
       instanceToken: { type: "http", scheme: "bearer", bearerFormat: "sni_..." },
+      roomInviteToken: { type: "http", scheme: "bearer", bearerFormat: "rit_..." },
+      roomMemberToken: { type: "http", scheme: "bearer", bearerFormat: "rmt_..." },
     },
     schemas: { Error: errorSchema },
   },

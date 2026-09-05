@@ -1,0 +1,2189 @@
+{
+  "id": "db7a5cfd-0b64-42c0-b2cb-26de51b14c16",
+  "prevId": "7bee49d0-373e-4b05-9dbc-3db708df9b88",
+  "version": "7",
+  "dialect": "postgresql",
+  "tables": {
+    "sharednet_auth.apikey": {
+      "name": "apikey",
+      "schema": "sharednet_auth",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "config_id": {
+          "name": "config_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'default'"
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "start": {
+          "name": "start",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "reference_id": {
+          "name": "reference_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "prefix": {
+          "name": "prefix",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "key": {
+          "name": "key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "refill_interval": {
+          "name": "refill_interval",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "refill_amount": {
+          "name": "refill_amount",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_refill_at": {
+          "name": "last_refill_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "enabled": {
+          "name": "enabled",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "rate_limit_enabled": {
+          "name": "rate_limit_enabled",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "rate_limit_time_window": {
+          "name": "rate_limit_time_window",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 86400000
+        },
+        "rate_limit_max": {
+          "name": "rate_limit_max",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 10
+        },
+        "request_count": {
+          "name": "request_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "remaining": {
+          "name": "remaining",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_request": {
+          "name": "last_request",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "permissions": {
+          "name": "permissions",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "metadata": {
+          "name": "metadata",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "auth_apikey_config_id_idx": {
+          "name": "auth_apikey_config_id_idx",
+          "columns": [
+            {
+              "expression": "config_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "auth_apikey_reference_id_idx": {
+          "name": "auth_apikey_reference_id_idx",
+          "columns": [
+            {
+              "expression": "reference_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "apikey_reference_id_user_id_fk": {
+          "name": "apikey_reference_id_user_id_fk",
+          "tableFrom": "apikey",
+          "tableTo": "user",
+          "schemaTo": "sharednet_auth",
+          "columnsFrom": [
+            "reference_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "auth_apikey_key_unique": {
+          "name": "auth_apikey_key_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "key"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "auth_apikey_id_format": {
+          "name": "auth_apikey_id_format",
+          "value": "\"sharednet_auth\".\"apikey\".\"id\" ~ '^key_[0-9A-Za-z]{10}$'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "sharednet_auth.account": {
+      "name": "account",
+      "schema": "sharednet_auth",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "account_id": {
+          "name": "account_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider_id": {
+          "name": "provider_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "issuer": {
+          "name": "issuer",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "access_token": {
+          "name": "access_token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "refresh_token": {
+          "name": "refresh_token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "id_token": {
+          "name": "id_token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "access_token_expires_at": {
+          "name": "access_token_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "refresh_token_expires_at": {
+          "name": "refresh_token_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "scope": {
+          "name": "scope",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "password": {
+          "name": "password",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "auth_account_user_id_idx": {
+          "name": "auth_account_user_id_idx",
+          "columns": [
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "account_user_id_user_id_fk": {
+          "name": "account_user_id_user_id_fk",
+          "tableFrom": "account",
+          "tableTo": "user",
+          "schemaTo": "sharednet_auth",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "auth_account_issuer_account_id_unique": {
+          "name": "auth_account_issuer_account_id_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "issuer",
+            "account_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "sharednet_auth.session": {
+      "name": "session",
+      "schema": "sharednet_auth",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "token": {
+          "name": "token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "ip_address": {
+          "name": "ip_address",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "user_agent": {
+          "name": "user_agent",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "auth_session_user_id_idx": {
+          "name": "auth_session_user_id_idx",
+          "columns": [
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "session_user_id_user_id_fk": {
+          "name": "session_user_id_user_id_fk",
+          "tableFrom": "session",
+          "tableTo": "user",
+          "schemaTo": "sharednet_auth",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "auth_session_token_unique": {
+          "name": "auth_session_token_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "token"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "sharednet_auth.user": {
+      "name": "user",
+      "schema": "sharednet_auth",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "email": {
+          "name": "email",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "email_verified": {
+          "name": "email_verified",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "image": {
+          "name": "image",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "auth_user_email_unique": {
+          "name": "auth_user_email_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "email"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "sharednet_auth.verification": {
+      "name": "verification",
+      "schema": "sharednet_auth",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "identifier": {
+          "name": "identifier",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "value": {
+          "name": "value",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "auth_verification_identifier_idx": {
+          "name": "auth_verification_identifier_idx",
+          "columns": [
+            {
+              "expression": "identifier",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "sharednet.agent": {
+      "name": "agent",
+      "schema": "sharednet",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "principal_id": {
+          "name": "principal_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "handle": {
+          "name": "handle",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "display_name": {
+          "name": "display_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "description": {
+          "name": "description",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "agent_principal_id_principal_id_fk": {
+          "name": "agent_principal_id_principal_id_fk",
+          "tableFrom": "agent",
+          "tableTo": "principal",
+          "schemaTo": "sharednet",
+          "columnsFrom": [
+            "principal_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "agent_principal_id_id_unique": {
+          "name": "agent_principal_id_id_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "principal_id",
+            "id"
+          ]
+        },
+        "agent_principal_handle_unique": {
+          "name": "agent_principal_handle_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "principal_id",
+            "handle"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "agent_id_format": {
+          "name": "agent_id_format",
+          "value": "\"sharednet\".\"agent\".\"id\" ~ '^a_[0-9A-Za-z]{10}$'"
+        },
+        "agent_handle_format": {
+          "name": "agent_handle_format",
+          "value": "\"sharednet\".\"agent\".\"handle\" ~ '^[a-z][a-z0-9-]{0,31}$'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "sharednet.decision": {
+      "name": "decision",
+      "schema": "sharednet",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "principal_id": {
+          "name": "principal_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "mode": {
+          "name": "mode",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "title": {
+          "name": "title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "description": {
+          "name": "description",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "requested_by_instance_id": {
+          "name": "requested_by_instance_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "room_id": {
+          "name": "room_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "answer": {
+          "name": "answer",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "resolved_at": {
+          "name": "resolved_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "decision_principal_created_at_idx": {
+          "name": "decision_principal_created_at_idx",
+          "columns": [
+            {
+              "expression": "principal_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "decision_principal_status_idx": {
+          "name": "decision_principal_status_idx",
+          "columns": [
+            {
+              "expression": "principal_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "decision_principal_fk": {
+          "name": "decision_principal_fk",
+          "tableFrom": "decision",
+          "tableTo": "principal",
+          "schemaTo": "sharednet",
+          "columnsFrom": [
+            "principal_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "decision_requester_instance_fk": {
+          "name": "decision_requester_instance_fk",
+          "tableFrom": "decision",
+          "tableTo": "instance",
+          "schemaTo": "sharednet",
+          "columnsFrom": [
+            "principal_id",
+            "requested_by_instance_id"
+          ],
+          "columnsTo": [
+            "principal_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "decision_room_fk": {
+          "name": "decision_room_fk",
+          "tableFrom": "decision",
+          "tableTo": "room",
+          "schemaTo": "sharednet",
+          "columnsFrom": [
+            "principal_id",
+            "room_id"
+          ],
+          "columnsTo": [
+            "principal_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "decision_id_format": {
+          "name": "decision_id_format",
+          "value": "\"sharednet\".\"decision\".\"id\" ~ '^dec_[0-9A-Za-z]{10}$'"
+        },
+        "decision_mode_valid": {
+          "name": "decision_mode_valid",
+          "value": "\"sharednet\".\"decision\".\"mode\" IN ('approval', 'text')"
+        },
+        "decision_state_consistent": {
+          "name": "decision_state_consistent",
+          "value": "(\n            \"sharednet\".\"decision\".\"mode\" = 'approval'\n            AND (\n              (\"sharednet\".\"decision\".\"status\" = 'pending' AND \"sharednet\".\"decision\".\"answer\" IS NULL AND \"sharednet\".\"decision\".\"resolved_at\" IS NULL)\n              OR (\"sharednet\".\"decision\".\"status\" IN ('approved', 'denied') AND \"sharednet\".\"decision\".\"answer\" IS NULL AND \"sharednet\".\"decision\".\"resolved_at\" IS NOT NULL)\n            )\n          ) OR (\n            \"sharednet\".\"decision\".\"mode\" = 'text'\n            AND (\n              (\"sharednet\".\"decision\".\"status\" = 'pending' AND \"sharednet\".\"decision\".\"answer\" IS NULL AND \"sharednet\".\"decision\".\"resolved_at\" IS NULL)\n              OR (\"sharednet\".\"decision\".\"status\" = 'answered' AND \"sharednet\".\"decision\".\"answer\" IS NOT NULL AND length(btrim(\"sharednet\".\"decision\".\"answer\")) > 0 AND \"sharednet\".\"decision\".\"resolved_at\" IS NOT NULL)\n            )\n          )"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "sharednet.idempotency_record": {
+      "name": "idempotency_record",
+      "schema": "sharednet",
+      "columns": {
+        "principal_id": {
+          "name": "principal_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "credential_class": {
+          "name": "credential_class",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "actor_id": {
+          "name": "actor_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "operation_id": {
+          "name": "operation_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "idempotency_key": {
+          "name": "idempotency_key",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "request_fingerprint": {
+          "name": "request_fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "response_status": {
+          "name": "response_status",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "response_body": {
+          "name": "response_body",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "idempotency_record_expiry_idx": {
+          "name": "idempotency_record_expiry_idx",
+          "columns": [
+            {
+              "expression": "expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "idempotency_record_principal_id_principal_id_fk": {
+          "name": "idempotency_record_principal_id_principal_id_fk",
+          "tableFrom": "idempotency_record",
+          "tableTo": "principal",
+          "schemaTo": "sharednet",
+          "columnsFrom": [
+            "principal_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "idempotency_record_pk": {
+          "name": "idempotency_record_pk",
+          "columns": [
+            "principal_id",
+            "credential_class",
+            "actor_id",
+            "operation_id",
+            "idempotency_key"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "idempotency_credential_class_valid": {
+          "name": "idempotency_credential_class_valid",
+          "value": "\"sharednet\".\"idempotency_record\".\"credential_class\" IN ('web_session', 'api_key', 'instance', 'guest')"
+        },
+        "idempotency_actor_id_valid": {
+          "name": "idempotency_actor_id_valid",
+          "value": "(\"sharednet\".\"idempotency_record\".\"credential_class\" = 'web_session' AND length(\"sharednet\".\"idempotency_record\".\"actor_id\") > 0)\n          OR (\"sharednet\".\"idempotency_record\".\"credential_class\" = 'api_key' AND \"sharednet\".\"idempotency_record\".\"actor_id\" ~ '^key_[0-9A-Za-z]{10}$')\n          OR (\"sharednet\".\"idempotency_record\".\"credential_class\" = 'instance' AND \"sharednet\".\"idempotency_record\".\"actor_id\" ~ '^i_[0-9A-Za-z]{10}$')\n          OR (\"sharednet\".\"idempotency_record\".\"credential_class\" = 'guest' AND \"sharednet\".\"idempotency_record\".\"actor_id\" ~ '^mem_[0-9A-Za-z]{10}$')"
+        },
+        "idempotency_uuid_v4": {
+          "name": "idempotency_uuid_v4",
+          "value": "\"sharednet\".\"idempotency_record\".\"idempotency_key\"::text ~ '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'"
+        },
+        "idempotency_request_fingerprint_format": {
+          "name": "idempotency_request_fingerprint_format",
+          "value": "\"sharednet\".\"idempotency_record\".\"request_fingerprint\" ~ '^[0-9a-f]{64}$'"
+        },
+        "idempotency_response_status_success": {
+          "name": "idempotency_response_status_success",
+          "value": "\"sharednet\".\"idempotency_record\".\"response_status\" BETWEEN 200 AND 299"
+        },
+        "idempotency_response_body_bounded": {
+          "name": "idempotency_response_body_bounded",
+          "value": "octet_length(\"sharednet\".\"idempotency_record\".\"response_body\") <= 65536"
+        },
+        "idempotency_retention_minimum": {
+          "name": "idempotency_retention_minimum",
+          "value": "\"sharednet\".\"idempotency_record\".\"expires_at\" >= \"sharednet\".\"idempotency_record\".\"created_at\" + interval '24 hours'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "sharednet.instance": {
+      "name": "instance",
+      "schema": "sharednet",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "principal_id": {
+          "name": "principal_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "agent_id": {
+          "name": "agent_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "issued_by_key_id": {
+          "name": "issued_by_key_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "token_digest": {
+          "name": "token_digest",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "local_instance_key": {
+          "name": "local_instance_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "runtime_kind": {
+          "name": "runtime_kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "cli_version": {
+          "name": "cli_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "runtime_metadata": {
+          "name": "runtime_metadata",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'active'"
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "last_seen_at": {
+          "name": "last_seen_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "lease_expires_at": {
+          "name": "lease_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "token_expires_at": {
+          "name": "token_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ended_at": {
+          "name": "ended_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "revoked_at": {
+          "name": "revoked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "instance_principal_active_local_key_unique": {
+          "name": "instance_principal_active_local_key_unique",
+          "columns": [
+            {
+              "expression": "principal_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "local_instance_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"sharednet\".\"instance\".\"state\" = 'active' AND \"sharednet\".\"instance\".\"local_instance_key\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "instance_principal_idx": {
+          "name": "instance_principal_idx",
+          "columns": [
+            {
+              "expression": "principal_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "instance_agent_idx": {
+          "name": "instance_agent_idx",
+          "columns": [
+            {
+              "expression": "agent_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "instance_issued_by_key_idx": {
+          "name": "instance_issued_by_key_idx",
+          "columns": [
+            {
+              "expression": "issued_by_key_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "instance_lease_expires_at_idx": {
+          "name": "instance_lease_expires_at_idx",
+          "columns": [
+            {
+              "expression": "lease_expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "instance_principal_fk": {
+          "name": "instance_principal_fk",
+          "tableFrom": "instance",
+          "tableTo": "principal",
+          "schemaTo": "sharednet",
+          "columnsFrom": [
+            "principal_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "instance_principal_agent_fk": {
+          "name": "instance_principal_agent_fk",
+          "tableFrom": "instance",
+          "tableTo": "agent",
+          "schemaTo": "sharednet",
+          "columnsFrom": [
+            "principal_id",
+            "agent_id"
+          ],
+          "columnsTo": [
+            "principal_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "instance_principal_id_unique": {
+          "name": "instance_principal_id_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "principal_id",
+            "id"
+          ]
+        },
+        "instance_token_digest_unique": {
+          "name": "instance_token_digest_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "token_digest"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "instance_id_format": {
+          "name": "instance_id_format",
+          "value": "\"sharednet\".\"instance\".\"id\" ~ '^i_[0-9A-Za-z]{10}$'"
+        },
+        "instance_issued_by_key_id_format": {
+          "name": "instance_issued_by_key_id_format",
+          "value": "\"sharednet\".\"instance\".\"issued_by_key_id\" ~ '^key_[0-9A-Za-z]{10}$'"
+        },
+        "instance_token_digest_format": {
+          "name": "instance_token_digest_format",
+          "value": "\"sharednet\".\"instance\".\"token_digest\" ~ '^[0-9a-f]{64}$'"
+        },
+        "instance_local_instance_key_format": {
+          "name": "instance_local_instance_key_format",
+          "value": "\"sharednet\".\"instance\".\"local_instance_key\" IS NULL OR \"sharednet\".\"instance\".\"local_instance_key\" ~ '^[0-9a-f]{64}$'"
+        },
+        "instance_runtime_kind_valid": {
+          "name": "instance_runtime_kind_valid",
+          "value": "\"sharednet\".\"instance\".\"runtime_kind\" IN ('codex', 'claude-code', 'custom')"
+        },
+        "instance_cli_version_length": {
+          "name": "instance_cli_version_length",
+          "value": "length(\"sharednet\".\"instance\".\"cli_version\") BETWEEN 1 AND 64"
+        },
+        "instance_state_valid": {
+          "name": "instance_state_valid",
+          "value": "\"sharednet\".\"instance\".\"state\" IN ('active', 'ended', 'revoked')"
+        },
+        "instance_terminal_state_consistent": {
+          "name": "instance_terminal_state_consistent",
+          "value": "(\"sharednet\".\"instance\".\"state\" = 'active' AND \"sharednet\".\"instance\".\"ended_at\" IS NULL AND \"sharednet\".\"instance\".\"revoked_at\" IS NULL)\n          OR (\"sharednet\".\"instance\".\"state\" = 'ended' AND \"sharednet\".\"instance\".\"ended_at\" IS NOT NULL AND \"sharednet\".\"instance\".\"revoked_at\" IS NULL)\n          OR (\"sharednet\".\"instance\".\"state\" = 'revoked' AND \"sharednet\".\"instance\".\"revoked_at\" IS NOT NULL AND \"sharednet\".\"instance\".\"ended_at\" IS NULL)"
+        },
+        "instance_time_order_valid": {
+          "name": "instance_time_order_valid",
+          "value": "\"sharednet\".\"instance\".\"last_seen_at\" >= \"sharednet\".\"instance\".\"started_at\"\n          AND \"sharednet\".\"instance\".\"lease_expires_at\" > \"sharednet\".\"instance\".\"last_seen_at\"\n          AND \"sharednet\".\"instance\".\"token_expires_at\" > \"sharednet\".\"instance\".\"started_at\""
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "sharednet.message": {
+      "name": "message",
+      "schema": "sharednet",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "room_id": {
+          "name": "room_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sequence": {
+          "name": "sequence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sender_principal_id": {
+          "name": "sender_principal_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sender_instance_id": {
+          "name": "sender_instance_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "sender_guest_id": {
+          "name": "sender_guest_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "content": {
+          "name": "content",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reply_to_message_id": {
+          "name": "reply_to_message_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "message_room_created_at_idx": {
+          "name": "message_room_created_at_idx",
+          "columns": [
+            {
+              "expression": "room_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "message_sender_instance_idx": {
+          "name": "message_sender_instance_idx",
+          "columns": [
+            {
+              "expression": "sender_instance_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "message_room_fk": {
+          "name": "message_room_fk",
+          "tableFrom": "message",
+          "tableTo": "room",
+          "schemaTo": "sharednet",
+          "columnsFrom": [
+            "room_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "message_sender_instance_fk": {
+          "name": "message_sender_instance_fk",
+          "tableFrom": "message",
+          "tableTo": "instance",
+          "schemaTo": "sharednet",
+          "columnsFrom": [
+            "sender_principal_id",
+            "sender_instance_id"
+          ],
+          "columnsTo": [
+            "principal_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "message_sender_membership_fk": {
+          "name": "message_sender_membership_fk",
+          "tableFrom": "message",
+          "tableTo": "room_member",
+          "schemaTo": "sharednet",
+          "columnsFrom": [
+            "room_id",
+            "sender_instance_id"
+          ],
+          "columnsTo": [
+            "room_id",
+            "instance_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "message_sender_guest_fk": {
+          "name": "message_sender_guest_fk",
+          "tableFrom": "message",
+          "tableTo": "room_guest",
+          "schemaTo": "sharednet",
+          "columnsFrom": [
+            "room_id",
+            "sender_guest_id"
+          ],
+          "columnsTo": [
+            "room_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "message_same_room_reply_fk": {
+          "name": "message_same_room_reply_fk",
+          "tableFrom": "message",
+          "tableTo": "message",
+          "schemaTo": "sharednet",
+          "columnsFrom": [
+            "room_id",
+            "reply_to_message_id"
+          ],
+          "columnsTo": [
+            "room_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "message_room_sequence_unique": {
+          "name": "message_room_sequence_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "room_id",
+            "sequence"
+          ]
+        },
+        "message_room_id_unique": {
+          "name": "message_room_id_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "room_id",
+            "id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "message_id_format": {
+          "name": "message_id_format",
+          "value": "\"sharednet\".\"message\".\"id\" ~ '^msg_[0-9A-Za-z]{10}$'"
+        },
+        "message_sender_exactly_one": {
+          "name": "message_sender_exactly_one",
+          "value": "(\"sharednet\".\"message\".\"sender_instance_id\" IS NULL) <> (\"sharednet\".\"message\".\"sender_guest_id\" IS NULL)"
+        },
+        "message_sequence_positive": {
+          "name": "message_sequence_positive",
+          "value": "\"sharednet\".\"message\".\"sequence\" >= 1"
+        },
+        "message_content_valid": {
+          "name": "message_content_valid",
+          "value": "length(btrim(\"sharednet\".\"message\".\"content\")) > 0 AND octet_length(\"sharednet\".\"message\".\"content\") <= 32768"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "sharednet.principal": {
+      "name": "principal",
+      "schema": "sharednet",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "auth_user_id": {
+          "name": "auth_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "display_name": {
+          "name": "display_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "principal_auth_user_id_user_id_fk": {
+          "name": "principal_auth_user_id_user_id_fk",
+          "tableFrom": "principal",
+          "tableTo": "user",
+          "schemaTo": "sharednet_auth",
+          "columnsFrom": [
+            "auth_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "principal_auth_user_id_unique": {
+          "name": "principal_auth_user_id_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "auth_user_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "principal_id_format": {
+          "name": "principal_id_format",
+          "value": "\"sharednet\".\"principal\".\"id\" ~ '^p_[0-9A-Za-z]{10}$'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "sharednet.room_guest": {
+      "name": "room_guest",
+      "schema": "sharednet",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "room_id": {
+          "name": "room_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "invite_id": {
+          "name": "invite_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "principal_id": {
+          "name": "principal_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "token_digest": {
+          "name": "token_digest",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'active'"
+        },
+        "joined_at": {
+          "name": "joined_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "left_at": {
+          "name": "left_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_seen_at": {
+          "name": "last_seen_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "room_guest_room_idx": {
+          "name": "room_guest_room_idx",
+          "columns": [
+            {
+              "expression": "room_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "room_guest_room_fk": {
+          "name": "room_guest_room_fk",
+          "tableFrom": "room_guest",
+          "tableTo": "room",
+          "schemaTo": "sharednet",
+          "columnsFrom": [
+            "room_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "room_guest_invite_fk": {
+          "name": "room_guest_invite_fk",
+          "tableFrom": "room_guest",
+          "tableTo": "room_invite",
+          "schemaTo": "sharednet",
+          "columnsFrom": [
+            "room_id",
+            "invite_id"
+          ],
+          "columnsTo": [
+            "room_id",
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "room_guest_principal_fk": {
+          "name": "room_guest_principal_fk",
+          "tableFrom": "room_guest",
+          "tableTo": "principal",
+          "schemaTo": "sharednet",
+          "columnsFrom": [
+            "principal_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "room_guest_token_digest_unique": {
+          "name": "room_guest_token_digest_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "token_digest"
+          ]
+        },
+        "room_guest_room_id_id_unique": {
+          "name": "room_guest_room_id_id_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "room_id",
+            "id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "room_guest_id_format": {
+          "name": "room_guest_id_format",
+          "value": "\"sharednet\".\"room_guest\".\"id\" ~ '^mem_[0-9A-Za-z]{10}$'"
+        },
+        "room_guest_token_digest_format": {
+          "name": "room_guest_token_digest_format",
+          "value": "\"sharednet\".\"room_guest\".\"token_digest\" ~ '^[0-9a-f]{64}$'"
+        },
+        "room_guest_name_length": {
+          "name": "room_guest_name_length",
+          "value": "length(\"sharednet\".\"room_guest\".\"name\") BETWEEN 1 AND 64"
+        },
+        "room_guest_state_consistent": {
+          "name": "room_guest_state_consistent",
+          "value": "(\"sharednet\".\"room_guest\".\"state\" = 'active' AND \"sharednet\".\"room_guest\".\"left_at\" IS NULL)\n          OR (\"sharednet\".\"room_guest\".\"state\" = 'left' AND \"sharednet\".\"room_guest\".\"left_at\" IS NOT NULL AND \"sharednet\".\"room_guest\".\"left_at\" >= \"sharednet\".\"room_guest\".\"joined_at\")"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "sharednet.room_invite": {
+      "name": "room_invite",
+      "schema": "sharednet",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "room_id": {
+          "name": "room_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "principal_id": {
+          "name": "principal_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "token_digest": {
+          "name": "token_digest",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "revoked_at": {
+          "name": "revoked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "uses": {
+          "name": "uses",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "room_invite_room_idx": {
+          "name": "room_invite_room_idx",
+          "columns": [
+            {
+              "expression": "room_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "room_invite_room_fk": {
+          "name": "room_invite_room_fk",
+          "tableFrom": "room_invite",
+          "tableTo": "room",
+          "schemaTo": "sharednet",
+          "columnsFrom": [
+            "room_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "room_invite_principal_fk": {
+          "name": "room_invite_principal_fk",
+          "tableFrom": "room_invite",
+          "tableTo": "principal",
+          "schemaTo": "sharednet",
+          "columnsFrom": [
+            "principal_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "room_invite_token_digest_unique": {
+          "name": "room_invite_token_digest_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "token_digest"
+          ]
+        },
+        "room_invite_room_id_id_unique": {
+          "name": "room_invite_room_id_id_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "room_id",
+            "id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "room_invite_id_format": {
+          "name": "room_invite_id_format",
+          "value": "\"sharednet\".\"room_invite\".\"id\" ~ '^inv_[0-9A-Za-z]{10}$'"
+        },
+        "room_invite_token_digest_format": {
+          "name": "room_invite_token_digest_format",
+          "value": "\"sharednet\".\"room_invite\".\"token_digest\" ~ '^[0-9a-f]{64}$'"
+        },
+        "room_invite_uses_nonnegative": {
+          "name": "room_invite_uses_nonnegative",
+          "value": "\"sharednet\".\"room_invite\".\"uses\" >= 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "sharednet.room_member": {
+      "name": "room_member",
+      "schema": "sharednet",
+      "columns": {
+        "principal_id": {
+          "name": "principal_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "room_id": {
+          "name": "room_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "instance_id": {
+          "name": "instance_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'active'"
+        },
+        "joined_at": {
+          "name": "joined_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "left_at": {
+          "name": "left_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "room_member_principal_idx": {
+          "name": "room_member_principal_idx",
+          "columns": [
+            {
+              "expression": "principal_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "room_member_instance_idx": {
+          "name": "room_member_instance_idx",
+          "columns": [
+            {
+              "expression": "instance_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "room_member_room_fk": {
+          "name": "room_member_room_fk",
+          "tableFrom": "room_member",
+          "tableTo": "room",
+          "schemaTo": "sharednet",
+          "columnsFrom": [
+            "room_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "room_member_instance_fk": {
+          "name": "room_member_instance_fk",
+          "tableFrom": "room_member",
+          "tableTo": "instance",
+          "schemaTo": "sharednet",
+          "columnsFrom": [
+            "principal_id",
+            "instance_id"
+          ],
+          "columnsTo": [
+            "principal_id",
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "room_member_pk": {
+          "name": "room_member_pk",
+          "columns": [
+            "room_id",
+            "instance_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "room_member_room_id_format": {
+          "name": "room_member_room_id_format",
+          "value": "\"sharednet\".\"room_member\".\"room_id\" ~ '^rom_[0-9A-Za-z]{10}$'"
+        },
+        "room_member_instance_id_format": {
+          "name": "room_member_instance_id_format",
+          "value": "\"sharednet\".\"room_member\".\"instance_id\" ~ '^i_[0-9A-Za-z]{10}$'"
+        },
+        "room_member_state_consistent": {
+          "name": "room_member_state_consistent",
+          "value": "(\"sharednet\".\"room_member\".\"state\" = 'active' AND \"sharednet\".\"room_member\".\"left_at\" IS NULL)\n          OR (\"sharednet\".\"room_member\".\"state\" = 'left' AND \"sharednet\".\"room_member\".\"left_at\" IS NOT NULL AND \"sharednet\".\"room_member\".\"left_at\" >= \"sharednet\".\"room_member\".\"joined_at\")"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "sharednet.room": {
+      "name": "room",
+      "schema": "sharednet",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "principal_id": {
+          "name": "principal_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "description": {
+          "name": "description",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'open'"
+        },
+        "creator_instance_id": {
+          "name": "creator_instance_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "next_sequence": {
+          "name": "next_sequence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "closed_at": {
+          "name": "closed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "room_principal_created_at_idx": {
+          "name": "room_principal_created_at_idx",
+          "columns": [
+            {
+              "expression": "principal_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "room_principal_fk": {
+          "name": "room_principal_fk",
+          "tableFrom": "room",
+          "tableTo": "principal",
+          "schemaTo": "sharednet",
+          "columnsFrom": [
+            "principal_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "room_creator_instance_fk": {
+          "name": "room_creator_instance_fk",
+          "tableFrom": "room",
+          "tableTo": "instance",
+          "schemaTo": "sharednet",
+          "columnsFrom": [
+            "principal_id",
+            "creator_instance_id"
+          ],
+          "columnsTo": [
+            "principal_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "room_principal_id_id_unique": {
+          "name": "room_principal_id_id_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "principal_id",
+            "id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "room_id_format": {
+          "name": "room_id_format",
+          "value": "\"sharednet\".\"room\".\"id\" ~ '^rom_[0-9A-Za-z]{10}$'"
+        },
+        "room_creator_instance_id_format": {
+          "name": "room_creator_instance_id_format",
+          "value": "\"sharednet\".\"room\".\"creator_instance_id\" IS NULL OR \"sharednet\".\"room\".\"creator_instance_id\" ~ '^i_[0-9A-Za-z]{10}$'"
+        },
+        "room_name_length": {
+          "name": "room_name_length",
+          "value": "length(\"sharednet\".\"room\".\"name\") BETWEEN 1 AND 120"
+        },
+        "room_description_length": {
+          "name": "room_description_length",
+          "value": "\"sharednet\".\"room\".\"description\" IS NULL OR length(\"sharednet\".\"room\".\"description\") <= 2000"
+        },
+        "room_next_sequence_positive": {
+          "name": "room_next_sequence_positive",
+          "value": "\"sharednet\".\"room\".\"next_sequence\" >= 1"
+        },
+        "room_state_consistent": {
+          "name": "room_state_consistent",
+          "value": "(\"sharednet\".\"room\".\"state\" = 'open' AND \"sharednet\".\"room\".\"closed_at\" IS NULL)\n          OR (\"sharednet\".\"room\".\"state\" = 'closed' AND \"sharednet\".\"room\".\"closed_at\" IS NOT NULL)"
+        }
+      },
+      "isRLSEnabled": false
+    }
+  },
+  "enums": {},
+  "schemas": {
+    "sharednet_auth": "sharednet_auth",
+    "sharednet": "sharednet"
+  },
+  "sequences": {},
+  "roles": {},
+  "policies": {},
+  "views": {},
+  "_meta": {
+    "columns": {},
+    "schemas": {},
+    "tables": {}
+  }
+}

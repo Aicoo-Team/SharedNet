@@ -10,6 +10,8 @@ import {
   instances,
   messages,
   principals,
+  roomGuests,
+  roomInvites,
   roomMembers,
   rooms,
   type SharedNetDatabase,
@@ -18,17 +20,25 @@ import {
   digestSecret,
   generatePublicId,
   generateSecret,
+  presenceFor,
   type Agent,
   type AgentId,
   type ApiKeyId,
   type CreateAgentRequest,
   type Instance,
   type InstanceId,
+  type InviteId,
+  type JoinRoomWithInviteRequest,
   type Message,
   type MessageId,
+  type Page,
   type Principal,
+  type PrincipalId,
+  type RitSecret,
+  type RmtSecret,
   type Room,
   type RoomId,
+  type RoomInvite,
   type RoomMember,
   type StartInstanceRequest,
 } from "../../protocol/src/index.ts";
@@ -38,10 +48,12 @@ import {
   MAX_AGENTS_PER_PRINCIPAL,
   PRESENCE_LEASE_MS,
   RepositoryError,
+  type GuestAuth,
   type IdempotencyResult,
   type IdempotencyScope,
   type InstanceAuth,
   type PrincipalAuth,
+  type RoomAuth,
   type SharedNetRepository,
   type StoredHttpResult,
 } from "./repository.ts";
@@ -49,6 +61,12 @@ import {
 type Transaction = Parameters<Parameters<SharedNetDatabase["transaction"]>[0]>[0];
 type InstanceRow = typeof instances.$inferSelect;
 type RoomRow = typeof rooms.$inferSelect;
+type GuestRow = typeof roomGuests.$inferSelect;
+type InviteRow = typeof roomInvites.$inferSelect;
+type GuestSender = Pick<GuestRow, "id" | "name"> | null;
+
+/** A guest counts as seen at most this often, so `wait` polls do not write on every tick. */
+const GUEST_SEEN_REFRESH_MS = 10_000;
 
 export type PostgresRepositoryOptions = {
   now?: () => Date;
@@ -122,20 +140,60 @@ function projectRoom(row: RoomRow, creatorAgentId: AgentId | null): Room {
 function projectMembership(
   row: typeof roomMembers.$inferSelect,
   agentId: AgentId | null,
+  lastSeenAt: Date | null,
+  now: Date,
 ): RoomMember {
+  const seen = lastSeenAt ? timestamp(lastSeenAt) : null;
   return {
     room_id: row.roomId,
+    member_id: row.instanceId,
+    kind: "instance",
+    name: null,
     agent_id: agentId,
     instance_id: row.instanceId,
+    invited_by_principal_id: null,
     state: row.state,
     joined_at: timestamp(row.joinedAt),
     left_at: row.leftAt ? timestamp(row.leftAt) : null,
+    last_seen_at: seen,
+    presence: presenceFor(seen, now),
+  };
+}
+
+function projectGuest(row: GuestRow, now: Date): RoomMember {
+  const seen = timestamp(row.lastSeenAt);
+  return {
+    room_id: row.roomId,
+    member_id: row.id,
+    kind: "guest",
+    name: row.name,
+    agent_id: null,
+    instance_id: null,
+    invited_by_principal_id: row.principalId,
+    state: row.state,
+    joined_at: timestamp(row.joinedAt),
+    left_at: row.leftAt ? timestamp(row.leftAt) : null,
+    last_seen_at: seen,
+    presence: presenceFor(seen, now),
+  };
+}
+
+function projectInvite(row: InviteRow): RoomInvite {
+  return {
+    id: row.id,
+    room_id: row.roomId,
+    principal_id: row.principalId,
+    expires_at: row.expiresAt ? timestamp(row.expiresAt) : null,
+    revoked_at: row.revokedAt ? timestamp(row.revokedAt) : null,
+    uses: row.uses,
+    created_at: timestamp(row.createdAt),
   };
 }
 
 function projectMessage(
   row: typeof messages.$inferSelect,
   senderAgentId: AgentId | null,
+  guest: GuestSender,
 ): Message {
   return {
     id: row.id,
@@ -144,6 +202,10 @@ function projectMessage(
     sender_principal_id: row.senderPrincipalId,
     sender_agent_id: senderAgentId,
     sender_instance_id: row.senderInstanceId,
+    sender: guest
+      ? { member_id: guest.id, kind: "guest", name: guest.name }
+      : { member_id: row.senderInstanceId!, kind: "instance", name: null },
+    type: "message",
     content: row.content,
     reply_to_message_id: row.replyToMessageId,
     created_at: timestamp(row.createdAt),
@@ -250,6 +312,30 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
       principalId: record.principalId,
       instanceId: record.id,
       actorId: record.id,
+    };
+  }
+
+  async authenticateGuest(token: string): Promise<GuestAuth | null> {
+    const [row] = await this.executor()
+      .select({ guest: roomGuests, roomState: rooms.state })
+      .from(roomGuests)
+      .innerJoin(rooms, eq(rooms.id, roomGuests.roomId))
+      .where(eq(roomGuests.tokenDigest, digestSecret(token)))
+      .limit(1);
+    if (!row || row.guest.state !== "active" || row.roomState === "closed") return null;
+    const now = this.now();
+    if (now.getTime() - row.guest.lastSeenAt.getTime() >= GUEST_SEEN_REFRESH_MS) {
+      await this.executor()
+        .update(roomGuests)
+        .set({ lastSeenAt: now })
+        .where(eq(roomGuests.id, row.guest.id));
+    }
+    return {
+      kind: "guest",
+      principalId: row.guest.principalId,
+      roomId: row.guest.roomId,
+      memberId: row.guest.id,
+      actorId: row.guest.id,
     };
   }
 
@@ -509,7 +595,7 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
       }
       return {
         room: projectRoom(room, creator.agentId),
-        membership: projectMembership(membership, creator.agentId),
+        membership: projectMembership(membership, creator.agentId, creator.lastSeenAt, createdAt),
       };
     });
   }
@@ -549,35 +635,165 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
       }
       return {
         room: await this.projectRoomRow(room),
-        membership: projectMembership(membership, joiner.agentId),
+        membership: projectMembership(membership, joiner.agentId, joiner.lastSeenAt, joinedAt),
+      };
+    });
+  }
+
+  async createRoomInvite(input: {
+    roomId: RoomId;
+    principalId: PrincipalId;
+    expiresInSeconds?: number | null;
+  }): Promise<{ invite: RoomInvite; token: RitSecret }> {
+    const [room] = await this.executor()
+      .select()
+      .from(rooms)
+      .where(and(eq(rooms.id, input.roomId), eq(rooms.principalId, input.principalId)))
+      .limit(1);
+    if (!room) {
+      throw new RepositoryError(404, "room_not_found", "Room was not found.");
+    }
+    if (room.state === "closed") {
+      throw new RepositoryError(409, "room_closed", "Room is closed.");
+    }
+    const token = generateSecret("rit");
+    const createdAt = this.now();
+    const seconds = input.expiresInSeconds ?? 0;
+    const [invite] = await this.executor()
+      .insert(roomInvites)
+      .values({
+        id: generatePublicId("inv"),
+        roomId: room.id,
+        principalId: input.principalId,
+        tokenDigest: digestSecret(token),
+        expiresAt: seconds > 0 ? new Date(createdAt.getTime() + seconds * 1000) : null,
+        revokedAt: null,
+        uses: 0,
+        createdAt,
+      })
+      .returning();
+    if (!invite) {
+      throw new RepositoryError(500, "internal_error", "Invite creation failed.");
+    }
+    return { invite: projectInvite(invite), token };
+  }
+
+  async revokeRoomInvite(input: {
+    inviteId: InviteId;
+    principalId: PrincipalId;
+  }): Promise<{ invite: RoomInvite }> {
+    const [invite] = await this.executor()
+      .update(roomInvites)
+      .set({ revokedAt: sql`COALESCE(${roomInvites.revokedAt}, ${this.now()})` })
+      .where(
+        and(eq(roomInvites.id, input.inviteId), eq(roomInvites.principalId, input.principalId)),
+      )
+      .returning();
+    if (!invite) {
+      throw new RepositoryError(404, "room_not_found", "Room was not found.");
+    }
+    return { invite: projectInvite(invite) };
+  }
+
+  async joinRoomWithInvite(
+    token: string,
+    roomId: RoomId,
+    input: JoinRoomWithInviteRequest,
+  ): Promise<{
+    room: Room;
+    membership: RoomMember;
+    member_token: RmtSecret;
+    history: Page<Message>;
+  }> {
+    return this.inTransaction(async () => {
+      const [invite] = await this.executor()
+        .select()
+        .from(roomInvites)
+        .where(eq(roomInvites.tokenDigest, digestSecret(token)))
+        .for("update")
+        .limit(1);
+      // An invite is bound to one Room; presenting it on another is a bad credential.
+      if (!invite || invite.roomId !== roomId) {
+        throw new RepositoryError(401, "invalid_credentials", "Credentials are invalid.");
+      }
+      if (invite.revokedAt !== null) {
+        throw new RepositoryError(410, "invite_revoked", "Room invite was revoked.");
+      }
+      const now = this.now();
+      if (invite.expiresAt !== null && invite.expiresAt.getTime() <= now.getTime()) {
+        throw new RepositoryError(410, "invite_expired", "Room invite has expired.");
+      }
+      const room = await this.roomById(invite.roomId);
+      if (room.state === "closed") {
+        throw new RepositoryError(409, "room_closed", "Room is closed.");
+      }
+      const memberToken = generateSecret("rmt");
+      const [guest] = await this.executor()
+        .insert(roomGuests)
+        .values({
+          id: generatePublicId("mem"),
+          roomId: room.id,
+          inviteId: invite.id,
+          principalId: invite.principalId,
+          name: input.name,
+          tokenDigest: digestSecret(memberToken),
+          state: "active",
+          joinedAt: now,
+          leftAt: null,
+          lastSeenAt: now,
+        })
+        .returning();
+      if (!guest) {
+        throw new RepositoryError(500, "internal_error", "Guest membership creation failed.");
+      }
+      await this.executor()
+        .update(roomInvites)
+        .set({ uses: invite.uses + 1 })
+        .where(eq(roomInvites.id, invite.id));
+      return {
+        room: await this.projectRoomRow(room),
+        membership: projectGuest(guest, now),
+        member_token: memberToken,
+        history: await this.pageMessages(room.id, { after: 0, limit: 100 }),
       };
     });
   }
 
   async getRoom(
-    auth: InstanceAuth,
+    auth: RoomAuth,
     roomId: RoomId,
   ): Promise<{ room: Room; memberships: RoomMember[] }> {
     const room = await this.roomById(roomId);
     await this.requireMembership(auth, room.id);
+    const now = this.now();
     const rows = await this.executor()
-      .select({ member: roomMembers, agentId: instances.agentId })
+      .select({ member: roomMembers, agentId: instances.agentId, lastSeenAt: instances.lastSeenAt })
       .from(roomMembers)
       .leftJoin(instances, eq(instances.id, roomMembers.instanceId))
       .where(eq(roomMembers.roomId, room.id));
+    const guests = await this.executor()
+      .select()
+      .from(roomGuests)
+      .where(eq(roomGuests.roomId, room.id))
+      .orderBy(asc(roomGuests.joinedAt));
     return {
       room: await this.projectRoomRow(room),
-      memberships: rows.map((row) => projectMembership(row.member, row.agentId ?? null)),
+      memberships: [
+        ...rows.map((row) =>
+          projectMembership(row.member, row.agentId ?? null, row.lastSeenAt ?? null, now),
+        ),
+        ...guests.map((guest) => projectGuest(guest, now)),
+      ],
     };
   }
 
   async postMessage(
-    auth: InstanceAuth,
+    auth: RoomAuth,
     roomId: RoomId,
     input: { content: string; reply_to_message_id?: MessageId | null },
   ): Promise<{ message: Message }> {
     return this.inTransaction(async () => {
-      const sender = await this.requireOnline(auth);
+      const sender = auth.kind === "instance" ? await this.requireOnline(auth) : null;
       const [room] = await this.executor()
         .select()
         .from(rooms)
@@ -612,7 +828,8 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
           roomId: room.id,
           sequence: room.nextSequence,
           senderPrincipalId: auth.principalId,
-          senderInstanceId: auth.instanceId,
+          senderInstanceId: auth.kind === "instance" ? auth.instanceId : null,
+          senderGuestId: auth.kind === "guest" ? auth.memberId : null,
           content: input.content,
           replyToMessageId: replyId,
           createdAt,
@@ -625,28 +842,55 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
         .update(rooms)
         .set({ nextSequence: room.nextSequence + 1 })
         .where(eq(rooms.id, room.id));
-      return { message: projectMessage(message, sender.agentId) };
+      const guest =
+        auth.kind === "guest"
+          ? (
+              await this.executor()
+                .select({ id: roomGuests.id, name: roomGuests.name })
+                .from(roomGuests)
+                .where(eq(roomGuests.id, auth.memberId))
+                .limit(1)
+            )[0] ?? null
+          : null;
+      return { message: projectMessage(message, sender?.agentId ?? null, guest) };
     });
   }
 
   async listMessages(
-    auth: InstanceAuth,
+    auth: RoomAuth,
     roomId: RoomId,
     input: { after: number; limit: number },
-  ): Promise<{ items: Message[]; next_cursor: string | null; has_more: boolean }> {
+  ): Promise<Page<Message>> {
     const room = await this.roomById(roomId);
     await this.requireMembership(auth, room.id);
+    return this.pageMessages(room.id, input);
+  }
+
+  private async pageMessages(
+    roomId: RoomId,
+    input: { after: number; limit: number },
+  ): Promise<Page<Message>> {
     const rows = await this.executor()
-      .select({ message: messages, agentId: instances.agentId })
+      .select({
+        message: messages,
+        agentId: instances.agentId,
+        guestId: roomGuests.id,
+        guestName: roomGuests.name,
+      })
       .from(messages)
       .leftJoin(instances, eq(instances.id, messages.senderInstanceId))
-      .where(and(eq(messages.roomId, room.id), gt(messages.sequence, input.after)))
+      .leftJoin(roomGuests, eq(roomGuests.id, messages.senderGuestId))
+      .where(and(eq(messages.roomId, roomId), gt(messages.sequence, input.after)))
       .orderBy(asc(messages.sequence))
       .limit(input.limit + 1);
     const hasMore = rows.length > input.limit;
-    const items = rows
-      .slice(0, input.limit)
-      .map((row) => projectMessage(row.message, row.agentId ?? null));
+    const items = rows.slice(0, input.limit).map((row) =>
+      projectMessage(
+        row.message,
+        row.agentId ?? null,
+        row.guestId ? { id: row.guestId, name: row.guestName! } : null,
+      ),
+    );
     return {
       items,
       next_cursor:
@@ -796,12 +1040,31 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
     return room;
   }
 
-  private async requireMembership(
-    auth: InstanceAuth,
-    roomId: RoomId,
-  ): Promise<typeof roomMembers.$inferSelect> {
+  private async requireMembership(auth: RoomAuth, roomId: RoomId): Promise<void> {
+    const denied = () =>
+      new RepositoryError(
+        403,
+        "room_membership_required",
+        "Active Room membership is required.",
+      );
+    if (auth.kind === "guest") {
+      if (auth.roomId !== roomId) throw denied();
+      const [guest] = await this.executor()
+        .select({ id: roomGuests.id })
+        .from(roomGuests)
+        .where(
+          and(
+            eq(roomGuests.id, auth.memberId),
+            eq(roomGuests.roomId, roomId),
+            eq(roomGuests.state, "active"),
+          ),
+        )
+        .limit(1);
+      if (!guest) throw denied();
+      return;
+    }
     const [membership] = await this.executor()
-      .select()
+      .select({ instanceId: roomMembers.instanceId })
       .from(roomMembers)
       .where(
         and(
@@ -812,14 +1075,7 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
         ),
       )
       .limit(1);
-    if (!membership) {
-      throw new RepositoryError(
-        403,
-        "room_membership_required",
-        "Active Room membership is required.",
-      );
-    }
-    return membership;
+    if (!membership) throw denied();
   }
 
   private async findIdempotencyRecord(

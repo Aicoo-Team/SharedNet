@@ -19,6 +19,8 @@ import type {
   ApiKeyId,
   DecisionId,
   InstanceId,
+  InviteId,
+  MemberId,
   MessageId,
   PrincipalId,
   RoomId,
@@ -38,6 +40,8 @@ const INSTANCE_ID_RE = sql.raw("'^i_[0-9A-Za-z]{10}$'");
 const ROOM_ID_RE = sql.raw("'^rom_[0-9A-Za-z]{10}$'");
 const MESSAGE_ID_RE = sql.raw("'^msg_[0-9A-Za-z]{10}$'");
 const DECISION_ID_RE = sql.raw("'^dec_[0-9A-Za-z]{10}$'");
+const MEMBER_ID_RE = sql.raw("'^mem_[0-9A-Za-z]{10}$'");
+const INVITE_ID_RE = sql.raw("'^inv_[0-9A-Za-z]{10}$'");
 const SHA256_HEX_RE = sql.raw("'^[0-9a-f]{64}$'");
 
 export const principals = sharednetSchema.table(
@@ -279,6 +283,95 @@ export const roomMembers = sharednetSchema.table(
   ],
 );
 
+/**
+ * A Room invite is the join capability for guests: a token scoped to one Room,
+ * minted by the Room's Principal from the Web. Only its digest is stored. It
+ * never expires unless asked to, and stays valid until revoked.
+ */
+export const roomInvites = sharednetSchema.table(
+  "room_invite",
+  {
+    id: text("id").$type<InviteId>().primaryKey(),
+    roomId: text("room_id").$type<RoomId>().notNull(),
+    /** Who minted it; guests it admits are attributed to this Principal. */
+    principalId: text("principal_id").$type<PrincipalId>().notNull(),
+    tokenDigest: text("token_digest").notNull(),
+    expiresAt: domainTimestamp("expires_at"),
+    revokedAt: domainTimestamp("revoked_at"),
+    uses: integer("uses").default(0).notNull(),
+    createdAt: domainTimestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [
+    unique("room_invite_token_digest_unique").on(table.tokenDigest),
+    unique("room_invite_room_id_id_unique").on(table.roomId, table.id),
+    foreignKey({
+      name: "room_invite_room_fk",
+      columns: [table.roomId],
+      foreignColumns: [rooms.id],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "room_invite_principal_fk",
+      columns: [table.principalId],
+      foreignColumns: [principals.id],
+    }).onDelete("cascade"),
+    index("room_invite_room_idx").on(table.roomId),
+    check("room_invite_id_format", sql`${table.id} ~ ${INVITE_ID_RE}`),
+    check("room_invite_token_digest_format", sql`${table.tokenDigest} ~ ${SHA256_HEX_RE}`),
+    check("room_invite_uses_nonnegative", sql`${table.uses} >= 0`),
+  ],
+);
+
+/**
+ * A guest is a Room member admitted by an invite rather than by an Instance.
+ * Every join creates a new guest with its own member token; the name is
+ * display text and never recovers an earlier guest's identity.
+ */
+export const roomGuests = sharednetSchema.table(
+  "room_guest",
+  {
+    id: text("id").$type<MemberId>().primaryKey(),
+    roomId: text("room_id").$type<RoomId>().notNull(),
+    inviteId: text("invite_id").$type<InviteId>().notNull(),
+    /** The Principal whose invite admitted this guest. */
+    principalId: text("principal_id").$type<PrincipalId>().notNull(),
+    name: text("name").notNull(),
+    tokenDigest: text("token_digest").notNull(),
+    state: text("state").$type<"active" | "left">().default("active").notNull(),
+    joinedAt: domainTimestamp("joined_at").defaultNow().notNull(),
+    leftAt: domainTimestamp("left_at"),
+    /** Renewed by every authenticated request; presence is derived from it. */
+    lastSeenAt: domainTimestamp("last_seen_at").defaultNow().notNull(),
+  },
+  (table) => [
+    unique("room_guest_token_digest_unique").on(table.tokenDigest),
+    unique("room_guest_room_id_id_unique").on(table.roomId, table.id),
+    foreignKey({
+      name: "room_guest_room_fk",
+      columns: [table.roomId],
+      foreignColumns: [rooms.id],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "room_guest_invite_fk",
+      columns: [table.roomId, table.inviteId],
+      foreignColumns: [roomInvites.roomId, roomInvites.id],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "room_guest_principal_fk",
+      columns: [table.principalId],
+      foreignColumns: [principals.id],
+    }).onDelete("cascade"),
+    index("room_guest_room_idx").on(table.roomId),
+    check("room_guest_id_format", sql`${table.id} ~ ${MEMBER_ID_RE}`),
+    check("room_guest_token_digest_format", sql`${table.tokenDigest} ~ ${SHA256_HEX_RE}`),
+    check("room_guest_name_length", sql`length(${table.name}) BETWEEN 1 AND 64`),
+    check(
+      "room_guest_state_consistent",
+      sql`(${table.state} = 'active' AND ${table.leftAt} IS NULL)
+          OR (${table.state} = 'left' AND ${table.leftAt} IS NOT NULL AND ${table.leftAt} >= ${table.joinedAt})`,
+    ),
+  ],
+);
+
 export const messages = sharednetSchema.table(
   "message",
   {
@@ -286,8 +379,10 @@ export const messages = sharednetSchema.table(
     roomId: text("room_id").$type<RoomId>().notNull(),
     sequence: integer("sequence").notNull(),
     senderPrincipalId: text("sender_principal_id").$type<PrincipalId>().notNull(),
-    /** Who acted. The sender's tag is derived from this at read time. */
-    senderInstanceId: text("sender_instance_id").$type<InstanceId>().notNull(),
+    /** Who acted, when an Instance did. The sender's tag is derived from this at read time. */
+    senderInstanceId: text("sender_instance_id").$type<InstanceId>(),
+    /** Who acted, when a guest did. Exactly one of the two sender columns is set. */
+    senderGuestId: text("sender_guest_id").$type<MemberId>(),
     content: text("content").notNull(),
     replyToMessageId: text("reply_to_message_id").$type<MessageId>(),
     createdAt: domainTimestamp("created_at").defaultNow().notNull(),
@@ -315,6 +410,11 @@ export const messages = sharednetSchema.table(
       foreignColumns: [roomMembers.roomId, roomMembers.instanceId],
     }),
     foreignKey({
+      name: "message_sender_guest_fk",
+      columns: [table.roomId, table.senderGuestId],
+      foreignColumns: [roomGuests.roomId, roomGuests.id],
+    }),
+    foreignKey({
       name: "message_same_room_reply_fk",
       columns: [table.roomId, table.replyToMessageId],
       foreignColumns: [table.roomId, table.id],
@@ -322,6 +422,10 @@ export const messages = sharednetSchema.table(
     index("message_room_created_at_idx").on(table.roomId, table.createdAt),
     index("message_sender_instance_idx").on(table.senderInstanceId),
     check("message_id_format", sql`${table.id} ~ ${MESSAGE_ID_RE}`),
+    check(
+      "message_sender_exactly_one",
+      sql`(${table.senderInstanceId} IS NULL) <> (${table.senderGuestId} IS NULL)`,
+    ),
     check("message_sequence_positive", sql`${table.sequence} >= 1`),
     check(
       "message_content_valid",
@@ -395,7 +499,7 @@ export const idempotencyRecords = sharednetSchema.table(
       .notNull()
       .references(() => principals.id, { onDelete: "cascade" }),
     credentialClass: text("credential_class")
-      .$type<"web_session" | "api_key" | "instance">()
+      .$type<"web_session" | "api_key" | "instance" | "guest">()
       .notNull(),
     actorId: text("actor_id").notNull(),
     operationId: text("operation_id").notNull(),
@@ -420,13 +524,14 @@ export const idempotencyRecords = sharednetSchema.table(
     index("idempotency_record_expiry_idx").on(table.expiresAt),
     check(
       "idempotency_credential_class_valid",
-      sql`${table.credentialClass} IN ('web_session', 'api_key', 'instance')`,
+      sql`${table.credentialClass} IN ('web_session', 'api_key', 'instance', 'guest')`,
     ),
     check(
       "idempotency_actor_id_valid",
       sql`(${table.credentialClass} = 'web_session' AND length(${table.actorId}) > 0)
           OR (${table.credentialClass} = 'api_key' AND ${table.actorId} ~ '^key_[0-9A-Za-z]{10}$')
-          OR (${table.credentialClass} = 'instance' AND ${table.actorId} ~ ${INSTANCE_ID_RE})`,
+          OR (${table.credentialClass} = 'instance' AND ${table.actorId} ~ ${INSTANCE_ID_RE})
+          OR (${table.credentialClass} = 'guest' AND ${table.actorId} ~ ${MEMBER_ID_RE})`,
     ),
     check(
       "idempotency_uuid_v4",
@@ -457,6 +562,8 @@ export const databaseSchema = {
   instances,
   rooms,
   roomMembers,
+  roomInvites,
+  roomGuests,
   messages,
   decisions,
   idempotencyRecords,

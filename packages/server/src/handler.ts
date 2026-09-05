@@ -9,6 +9,7 @@ import {
   parseCreateAgentRequest,
   parseCreateRoomRequest,
   parseEmptyRequest,
+  parseJoinRoomWithInviteRequest,
   parseJsonBody,
   parsePostMessageRequest,
   parsePublicId,
@@ -20,6 +21,7 @@ import {
   type IdempotencyScope,
   type InstanceAuth,
   type PrincipalAuth,
+  type RoomAuth,
   type SharedNetRepository,
 } from "./repository.ts";
 import { createRuntimeRepository } from "./runtime-repository.ts";
@@ -35,6 +37,16 @@ const UUID_V4_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SNK_PATTERN = /^snk_[A-Za-z0-9_-]{43}$/;
 const SNI_PATTERN = /^sni_[A-Za-z0-9_-]{43}$/;
+const RIT_PATTERN = /^rit_[A-Za-z0-9_-]{43}$/;
+const RMT_PATTERN = /^rmt_[A-Za-z0-9_-]{43}$/;
+/** `wait` blocks at most this long; Vercel functions are capped not far above it. */
+const WAIT_MAX_SECONDS = 25;
+const DEFAULT_WAIT_POLL_MS = 1000;
+
+export type HandlerOptions = {
+  /** How often `wait` re-checks the Room while blocking. Tests shorten it. */
+  waitPollMs?: number;
+};
 
 let runtimeRepository: SharedNetRepository | undefined;
 
@@ -89,6 +101,25 @@ async function authenticateInstance(
   return (await store.authenticateInstance(bearer)) ?? errorResponse("invalid_credentials");
 }
 
+/**
+ * Room routes accept either an Instance token (the power path) or a Room
+ * member token (a guest admitted by an invite). The prefix decides which.
+ */
+async function authenticateRoomMember(
+  request: Request,
+  store: SharedNetRepository,
+): Promise<RoomAuth | Response> {
+  const bearer = parseBearer(request);
+  if (bearer === null) return errorResponse("authentication_required");
+  if (SNI_PATTERN.test(bearer)) {
+    return (await store.authenticateInstance(bearer)) ?? errorResponse("invalid_credentials");
+  }
+  if (RMT_PATTERN.test(bearer)) {
+    return (await store.authenticateGuest(bearer)) ?? errorResponse("invalid_credentials");
+  }
+  return errorResponse("invalid_credentials");
+}
+
 function isResponse(value: unknown): value is Response {
   return value instanceof Response;
 }
@@ -141,7 +172,7 @@ function canonicalJson(value: unknown): string {
 
 async function executeIdempotent(
   store: SharedNetRepository,
-  auth: InstanceAuth,
+  auth: RoomAuth,
   operationId: string,
   key: string,
   pathParameters: Record<string, string>,
@@ -151,7 +182,7 @@ async function executeIdempotent(
 ): Promise<Response> {
   const scope: IdempotencyScope = {
     principalId: auth.principalId,
-    credentialClass: "instance",
+    credentialClass: auth.kind,
     actorId: auth.actorId,
     operationId,
     key,
@@ -176,9 +207,12 @@ function routeMethodNotAllowed(allow: string): Response {
   return errorResponse("method_not_allowed", { allow });
 }
 
-function parseMessageQuery(url: URL): { after: number; limit: number } {
+function parseMessageQuery(
+  url: URL,
+  allowed: readonly string[] = ["after", "limit"],
+): { after: number; limit: number } {
   for (const key of url.searchParams.keys()) {
-    if (key !== "after" && key !== "limit") {
+    if (!allowed.includes(key)) {
       throw new ProtocolRequestError("invalid_request");
     }
   }
@@ -195,9 +229,49 @@ function parseMessageQuery(url: URL): { after: number; limit: number } {
   return { after, limit };
 }
 
+function parseWaitQuery(url: URL): { after: number; limit: number; timeoutMs: number } {
+  const page = parseMessageQuery(url, ["after", "limit", "timeout"]);
+  const timeoutValue = url.searchParams.get("timeout");
+  const timeout = timeoutValue === null ? WAIT_MAX_SECONDS : Number(timeoutValue);
+  if (!Number.isSafeInteger(timeout) || timeout < 0 || timeout > WAIT_MAX_SECONDS) {
+    throw new ProtocolRequestError("invalid_request");
+  }
+  return { ...page, timeoutMs: timeout * 1000 };
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Sit in the Room until something is said after `after`, or until the timeout.
+ * Plain polling on purpose: it needs no connection state, works on serverless,
+ * and every poll renews the caller's presence.
+ */
+async function waitForMessages(
+  repository: SharedNetRepository,
+  auth: RoomAuth,
+  roomId: `rom_${string}`,
+  query: { after: number; limit: number; timeoutMs: number },
+  pollMs: number,
+): Promise<unknown> {
+  const deadline = Date.now() + query.timeoutMs;
+  for (;;) {
+    const page = await repository.listMessages(auth, roomId, {
+      after: query.after,
+      limit: query.limit,
+    });
+    if (page.items.length > 0) return page;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return page;
+    await sleep(Math.min(pollMs, remaining));
+  }
+}
+
 export async function handleRequest(
   request: Request,
   store?: SharedNetRepository,
+  options: HandlerOptions = {},
 ): Promise<Response> {
   try {
     const url = new URL(request.url);
@@ -297,6 +371,15 @@ export async function handleRequest(
     if (joinMatch) {
       if (request.method !== "POST") return routeMethodNotAllowed("POST");
       const repository = getRepository();
+      const bearer = parseBearer(request);
+      if (bearer !== null && RIT_PATTERN.test(bearer)) {
+        // A guest join: the invite is the credential, the name is display text.
+        // Every call admits a new member, so there is nothing to make idempotent.
+        const roomId = parsePublicId(joinMatch[1], "rom");
+        const input = await requiredJson(request, parseJoinRoomWithInviteRequest);
+        const joined = await repository.joinRoomWithInvite(bearer, roomId, input);
+        return jsonResponse(joined, { status: 200, headers: NO_STORE_HEADERS });
+      }
       const auth = await authenticateInstance(request, repository);
       if (isResponse(auth)) return auth;
       const key = getIdempotencyKey(request);
@@ -314,11 +397,31 @@ export async function handleRequest(
       );
     }
 
+    const waitMatch = /^\/api\/v1\/rooms\/([^/]+)\/wait$/.exec(path);
+    if (waitMatch) {
+      if (request.method !== "GET") return routeMethodNotAllowed("GET");
+      const repository = getRepository();
+      const auth = await authenticateRoomMember(request, repository);
+      if (isResponse(auth)) return auth;
+      const roomId = parsePublicId(waitMatch[1], "rom");
+      const query = parseWaitQuery(url);
+      return jsonResponse(
+        await waitForMessages(
+          repository,
+          auth,
+          roomId,
+          query,
+          options.waitPollMs ?? DEFAULT_WAIT_POLL_MS,
+        ),
+        { status: 200, headers: NO_STORE_HEADERS },
+      );
+    }
+
     const roomMatch = /^\/api\/v1\/rooms\/([^/]+)$/.exec(path);
     if (roomMatch) {
       if (request.method !== "GET") return routeMethodNotAllowed("GET");
       const repository = getRepository();
-      const auth = await authenticateInstance(request, repository);
+      const auth = await authenticateRoomMember(request, repository);
       if (isResponse(auth)) return auth;
       const roomId = parsePublicId(roomMatch[1], "rom");
       return jsonResponse(await repository.getRoom(auth, roomId), { status: 200 });
@@ -327,7 +430,7 @@ export async function handleRequest(
     const messagesMatch = /^\/api\/v1\/rooms\/([^/]+)\/messages$/.exec(path);
     if (messagesMatch) {
       const repository = getRepository();
-      const auth = await authenticateInstance(request, repository);
+      const auth = await authenticateRoomMember(request, repository);
       if (isResponse(auth)) return auth;
       const roomId = parsePublicId(messagesMatch[1], "rom");
       if (request.method === "GET") {
@@ -337,6 +440,14 @@ export async function handleRequest(
         );
       }
       if (request.method === "POST") {
+        // Guests speak with plain curl; an Idempotency-Key is honoured when
+        // sent but not demanded. Instances keep the strict contract.
+        if (auth.kind === "guest" && !request.headers.has("idempotency-key")) {
+          const input = await requiredJson(request, parsePostMessageRequest);
+          return jsonResponse(await repository.postMessage(auth, roomId, input), {
+            status: 201,
+          });
+        }
         const key = getIdempotencyKey(request);
         const input = await requiredJson(request, parsePostMessageRequest);
         return await executeIdempotent(

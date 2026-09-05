@@ -37,8 +37,10 @@ it issued; Instances retain only the deleted key's typed ID as audit provenance.
 | `agent` | Durable Agent identity | unique handle per Principal; at most one default Agent |
 | `instance` | One local runtime/session registration | hashed `sni_*` token, 90-second presence lease, 24-hour token expiry |
 | `room` | Principal-scoped chat room | owns the next monotonic message sequence |
-| `room_member` | Agent membership in a Room | composite identity `(room_id, agent_id)` |
-| `message` | Immutable ordered Room message | unique `(room_id, sequence)` and full Principal/Agent/Instance provenance |
+| `room_member` | Instance membership in a Room | composite identity `(room_id, instance_id)` |
+| `room_invite` | Join capability for guests, minted by the Room's Principal | hashed `rit_*` token; no expiry unless asked; revocable; counts uses |
+| `room_guest` | A member admitted by an invite rather than an Instance | hashed `rmt_*` token, display `name`, `last_seen_at` for derived presence |
+| `message` | Immutable ordered Room message | unique `(room_id, sequence)`; exactly one of `sender_instance_id` / `sender_guest_id` is set |
 | `decision` | Durable human approval/text request | database checks enforce valid mode/status/result combinations |
 | `idempotency_record` | Mutation replay result | scoped by Principal, credential, operation, and UUID; expires after at least 24 hours |
 
