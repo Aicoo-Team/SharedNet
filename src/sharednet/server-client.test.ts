@@ -7,9 +7,11 @@ vi.mock("server-only", () => ({}));
 
 import { SharedNetServerClient } from "./server-client";
 import {
+  isCloseRoomResponse,
   isCreateRoomInviteResponse,
   isDecisionProjection,
   isNetworkProjection,
+  isRemoveRoomMemberResponse,
   isRoomDetail,
   isRoomListResponse,
   isRoomSummary,
@@ -93,12 +95,19 @@ vi.mock("@/packages/db/src/client.ts", () => {
       from: (table: Parameters<typeof getTableName>[0]) =>
         makeChain(rowsByTable.current[getTableName(table)] ?? []),
     }),
-    update: () => ({
+    // Applies the patch to the table's first row: enough for a single-row
+    // update, which is every update the client makes.
+    update: (table: Parameters<typeof getTableName>[0]) => ({
       set: (patch: Record<string, unknown>) => ({
         where: () => ({
-          returning: async () => [
-            { ...(rowsByTable.current.decision?.[0] ?? {}), ...patch },
-          ],
+          returning: async () => {
+            const name = getTableName(table);
+            const rows = rowsByTable.current[name] ?? [];
+            if (rows.length === 0) return [];
+            const updated = { ...(rows[0] as Record<string, unknown>), ...patch };
+            rowsByTable.current[name] = [updated, ...rows.slice(1)];
+            return [updated];
+          },
         }),
       }),
     }),
@@ -108,7 +117,8 @@ vi.mock("@/packages/db/src/client.ts", () => {
 });
 
 function clientWith(tables: Record<string, unknown[]>) {
-  rowsByTable.current = tables;
+  // A copy, so an update in one test never leaks into the shared fixtures.
+  rowsByTable.current = { ...tables };
   return new SharedNetServerClient();
 }
 
@@ -271,6 +281,80 @@ describe("SharedNetServerClient reads the V1 Postgres tables", () => {
       status: 404,
     });
     expect(rowsByTable.current.room_invite).toEqual([]);
+  });
+
+  it("closes a Room the account owns, once, and reports it closed", async () => {
+    const client = clientWith({ ...BASE_TABLES, room: [{ ...roomRow }] });
+
+    const closed = await client.closeRoom("auth-user-1", ROOM as never);
+
+    expect(isCloseRoomResponse(closed)).toBe(true);
+    expect(closed.room).toMatchObject({ room_id: ROOM, status: "closed" });
+    const stored = rowsByTable.current.room?.[0] as Record<string, unknown>;
+    expect(stored.state).toBe("closed");
+    expect(stored.closedAt).toBeInstanceOf(Date);
+
+    // Closing again changes nothing and still answers with the closed Room.
+    const again = await client.closeRoom("auth-user-1", ROOM as never);
+    expect(again.room.status).toBe("closed");
+    expect(again.room.updated_at).toBe(closed.room.updated_at);
+  });
+
+  it("refuses to close a Room the account does not own", async () => {
+    const client = clientWith({
+      ...BASE_TABLES,
+      room: [{ ...roomRow, principalId: "p_someoneElse" }],
+    });
+
+    await expect(client.closeRoom("auth-user-1", ROOM as never)).rejects.toMatchObject({
+      code: "room_not_found",
+      status: 404,
+    });
+    expect((rowsByTable.current.room?.[0] as Record<string, unknown>).state).toBe("open");
+  });
+
+  it("removes a guest member: it leaves, keeps its name, and what it said stays", async () => {
+    const client = clientWith({
+      ...BASE_TABLES,
+      room_guest: [{ ...guestRow }],
+      message: [messageRow, guestMessageRow],
+    });
+
+    const removed = await client.removeRoomMember("auth-user-1", ROOM as never, "mem_guest00001");
+
+    expect(isRemoveRoomMemberResponse(removed)).toBe(true);
+    expect(removed.membership).toMatchObject({
+      kind: "guest",
+      member_id: "mem_guest00001",
+      name: "claude-code",
+      status: "left",
+    });
+    expect(removed.membership.left_at).not.toBeNull();
+    const detail = await client.getRoom("auth-user-1", ROOM as never);
+    expect(detail.messages[1]!.sender).toEqual({
+      agent_id: null,
+      name: "claude-code",
+      principal_id: PRINCIPAL,
+    });
+  });
+
+  it("removes an Instance member by its Instance id, and reports an unknown member", async () => {
+    const client = clientWith({ ...BASE_TABLES, room_member: [{ ...memberRow }] });
+
+    const removed = await client.removeRoomMember("auth-user-1", ROOM as never, INSTANCE);
+    expect(isRemoveRoomMemberResponse(removed)).toBe(true);
+    expect(removed.membership).toMatchObject({
+      kind: "instance",
+      instance_id: INSTANCE,
+      member_id: INSTANCE,
+      agent_id: AGENT,
+      status: "left",
+    });
+
+    const empty = clientWith({ ...BASE_TABLES, room_guest: [] });
+    await expect(
+      empty.removeRoomMember("auth-user-1", ROOM as never, "mem_nobody0001"),
+    ).rejects.toMatchObject({ code: "member_not_found", status: 404 });
   });
 
   it("shows guests among the members and names them as senders", async () => {

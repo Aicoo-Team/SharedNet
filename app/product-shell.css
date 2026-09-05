@@ -627,6 +627,60 @@ body:has(.product-window) {
   padding: 6px 12px;
 }
 
+.room-actions {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.product-window .room-close {
+  background: transparent;
+  border: 1px solid var(--sn-line);
+  border-radius: 999px;
+  color: var(--sn-oxford);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  margin-bottom: 4px;
+  padding: 6px 12px;
+  transition: border-color 120ms ease, color 120ms ease;
+}
+
+.product-window .room-close:hover:not(:disabled) {
+  border-color: var(--sn-oxford);
+}
+
+.product-window .room-close:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.room-closed-mark {
+  color: var(--sn-muted);
+  font-size: 9px;
+}
+
+.product-window .room-member-remove {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  color: var(--sn-muted);
+  font-size: 8px;
+  font-weight: 600;
+  margin-left: auto;
+  padding: 2px 8px;
+  transition: border-color 120ms ease, color 120ms ease;
+}
+
+.product-window .room-member-remove:hover:not(:disabled) {
+  border-color: var(--sn-line);
+  color: var(--sn-oxford);
+}
+
+.product-window .room-member-remove:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
 .room-invite-by-id {
   align-items: end;
   display: grid;

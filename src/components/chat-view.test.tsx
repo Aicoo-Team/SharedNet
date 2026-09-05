@@ -278,6 +278,7 @@ function mintedInvite(roomId: string) {
 function makeState(overrides: Partial<SharedNetState> = {}): SharedNetState {
   return {
     claimPairing: vi.fn(async () => undefined),
+    closeRoom: vi.fn(async () => ({ ...roomDetail.room, status: "closed" as const })),
     createInvite: vi.fn(async (roomId: RoomId) => mintedInvite(roomId)),
     createRoom: vi.fn(async () => { throw new Error("createRoom not stubbed"); }),
     decisions: [],
@@ -285,6 +286,7 @@ function makeState(overrides: Partial<SharedNetState> = {}): SharedNetState {
     network: null,
     principal: null,
     refresh: vi.fn(async () => undefined),
+    removeMember: vi.fn(async () => ({ ...roomDetail.memberships[0]!, status: "left" as const })),
     resolveDecision: vi.fn(async () => undefined),
     rooms: [roomSummary, secondRoomSummary],
     selectRoom: vi.fn(),
@@ -633,6 +635,59 @@ describe("SharedNet Rooms", () => {
     expect(invite).toContain("Ship the launch review");
     expect(invite).not.toContain("sharednet login");
     expect(within(dialog).getByRole("button", { name: "Copy invite" })).toBeVisible();
+  });
+
+  it("closes the Room only after the human confirms", async () => {
+    const confirm = vi.fn(() => false);
+    vi.stubGlobal("confirm", confirm);
+    const { state } = renderChat();
+
+    fireEvent.click(screen.getByRole("button", { name: "Close Room" }));
+    expect(confirm).toHaveBeenCalledWith(
+      "Close Launch readiness? Members' tokens stop working; the history stays readable here.",
+    );
+    expect(state.closeRoom).not.toHaveBeenCalled();
+
+    confirm.mockReturnValue(true);
+    fireEvent.click(screen.getByRole("button", { name: "Close Room" }));
+    await waitFor(() => expect(state.closeRoom).toHaveBeenCalledWith(ROOM_ID));
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("explains when the Room cannot be closed", async () => {
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    const closeRoom = vi.fn(async () => {
+      throw new Error("Room not found");
+    });
+    renderChat({ closeRoom });
+
+    fireEvent.click(screen.getByRole("button", { name: "Close Room" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Could not close the Room: Room not found",
+    );
+  });
+
+  it("removes a member from the members panel", async () => {
+    const { state } = renderChat();
+
+    fireEvent.click(screen.getByRole("button", { name: "Room actions" }));
+    const members = screen.getByRole("list", { name: "Room members" });
+    fireEvent.click(within(members).getByRole("button", { name: `Remove ${INSTANCE_ID}` }));
+
+    await waitFor(() => expect(state.removeMember).toHaveBeenCalledWith(ROOM_ID, INSTANCE_ID));
+  });
+
+  it("offers neither invite, close, nor remove on a closed Room", () => {
+    renderChat({
+      selectedRoom: { ...roomDetail, room: { ...roomDetail.room, status: "closed" } },
+    });
+
+    expect(screen.queryByRole("button", { name: "Invite an Agent" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Close Room" })).toBeNull();
+    expect(screen.getByText("Closed · history stays readable")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Room actions" }));
+    expect(screen.queryByRole("button", { name: /^Remove / })).toBeNull();
   });
 
   it("explains when an invite cannot be minted and opens no dialog", async () => {

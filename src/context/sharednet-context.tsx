@@ -25,8 +25,12 @@ import {
   type NetworkProjection,
   type PairingId,
   type PrincipalProjection,
+  isCloseRoomResponse,
   isCreateRoomInviteResponse,
+  isRemoveRoomMemberResponse,
   type CreateRoomInviteResponse,
+  type RoomMembership,
+  type RoomProjection,
   type RoomDetail,
   type RoomId,
   type RoomSummary,
@@ -38,6 +42,8 @@ export type CreateRoomInput = { description?: string | null; name: string };
 
 type SharedNetContextValue = {
   claimPairing: (pairingId: PairingId) => Promise<void>;
+  /** Close a Room this account owns; members' tokens stop working, history stays. */
+  closeRoom: (roomId: RoomId) => Promise<RoomProjection>;
   /** Mint an invite token for a Room this account owns. The token is returned once. */
   createInvite: (roomId: RoomId) => Promise<CreateRoomInviteResponse>;
   /** Schedule an empty Room owned by this account, then select it. */
@@ -52,6 +58,8 @@ type SharedNetContextValue = {
   ) => Promise<void>;
   rooms: RoomSummary[];
   refresh: () => Promise<void>;
+  /** Remove one member from a Room this account owns; its token stops working for it. */
+  removeMember: (roomId: RoomId, memberId: string) => Promise<RoomMembership>;
   selectRoom: (roomId: RoomId) => void;
   selectedRoom: RoomDetail | null;
   selectedRoomId: RoomId | null;
@@ -366,6 +374,48 @@ export function SharedNetProvider({ children }: { children: ReactNode }) {
     );
   }, []);
 
+  const closeRoom = useCallback(
+    async (roomId: RoomId) => {
+      const mutationController = mutationAbortControllerRef.current;
+      if (
+        !mountedRef.current ||
+        mutationController === null ||
+        mutationController.signal.aborted
+      ) {
+        throw mutationUnavailableError();
+      }
+      const { room } = await requestJson(
+        `/api/sharednet/rooms/${encodeURIComponent(roomId)}/close`,
+        isCloseRoomResponse,
+        { method: "POST", signal: mutationController.signal },
+      );
+      await refresh();
+      return room;
+    },
+    [refresh],
+  );
+
+  const removeMember = useCallback(
+    async (roomId: RoomId, memberId: string) => {
+      const mutationController = mutationAbortControllerRef.current;
+      if (
+        !mountedRef.current ||
+        mutationController === null ||
+        mutationController.signal.aborted
+      ) {
+        throw mutationUnavailableError();
+      }
+      const { membership } = await requestJson(
+        `/api/sharednet/rooms/${encodeURIComponent(roomId)}/members/${encodeURIComponent(memberId)}`,
+        isRemoveRoomMemberResponse,
+        { method: "DELETE", signal: mutationController.signal },
+      );
+      await refresh();
+      return membership;
+    },
+    [refresh],
+  );
+
   const claimPairing = useCallback(
     async (pairingId: PairingId) => {
       const mutationController = mutationAbortControllerRef.current;
@@ -453,6 +503,7 @@ export function SharedNetProvider({ children }: { children: ReactNode }) {
   const value = useMemo(
     () => ({
       claimPairing,
+      closeRoom,
       createInvite,
       createRoom,
       decisions,
@@ -460,6 +511,7 @@ export function SharedNetProvider({ children }: { children: ReactNode }) {
       network,
       principal,
       refresh,
+      removeMember,
       resolveDecision,
       rooms,
       selectRoom,
@@ -469,6 +521,7 @@ export function SharedNetProvider({ children }: { children: ReactNode }) {
     }),
     [
       claimPairing,
+      closeRoom,
       createInvite,
       createRoom,
       decisions,
@@ -476,6 +529,7 @@ export function SharedNetProvider({ children }: { children: ReactNode }) {
       network,
       principal,
       refresh,
+      removeMember,
       resolveDecision,
       rooms,
       selectRoom,
