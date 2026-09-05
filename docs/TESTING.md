@@ -13,6 +13,7 @@ before it is done. `pnpm test` is the fast loop; CI is the source of truth.
 | Migrations on an empty database | `pnpm run db:migrate` in CI | every PR, every push | every migration applies, in order, to PostgreSQL 16 |
 | PostgreSQL end-to-end | `pnpm run test:e2e:postgres` | every PR, every push | sign-up, sign-in, API key issuance, Instance registration and a Room against a real database; raw keys never stored |
 | Production build | `pnpm run build` | every PR, every push | the Dashboard builds with placeholder env and no database |
+| Coverage | `pnpm run test:coverage` (v8) | every PR, every push, **report-only** | lines/branches/functions in the job summary and an `lcov` artifact; baseline 2026-09-05: 77.6% lines, 66.5% branches |
 | Production smoke | `node scripts/smoke-production.mjs` | **manual**, after every deploy | the deployed system end to end: 25 checks from sign-up to a cross-Instance Room; creates one `probe-*@example.test` account |
 | Acceptance | see below | **manual**, before a milestone | the browser UI and the CLI as a user meets them, across two accounts |
 
@@ -114,9 +115,8 @@ Record the run as `docs/qa/<date>-acceptance.md`.
 
 ## Not yet
 
-- **Coverage** is not measured. Add `@vitest/coverage-v8` and report (not
-  gate) when the number would change a decision.
+- **Coverage is reported, not gated.** Raise a threshold only when a number
+  would have changed a decision; until then the summary in the CI job is
+  there to be read, not obeyed.
 - **Browser automation** of the Dashboard is manual. A Playwright smoke of
   sign-in → Room → members is the next layer worth adding.
-- **The Python tree** under `tests/` is not run by anything and is pending
-  removal.
