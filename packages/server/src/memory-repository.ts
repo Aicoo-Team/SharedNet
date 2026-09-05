@@ -1,6 +1,8 @@
 import { timingSafeEqual } from "node:crypto";
 
 import {
+  encodeInboxCursor,
+  type InboxPosition,
   digestSecret,
   generatePublicId,
   generateSecret,
@@ -119,6 +121,14 @@ function secureDigestEquals(left: string, right: string): boolean {
   const leftBytes = Buffer.from(left, "hex");
   const rightBytes = Buffer.from(right, "hex");
   return leftBytes.length === rightBytes.length && timingSafeEqual(leftBytes, rightBytes);
+}
+
+/** The inbox order: time, then Room, then sequence. Total and stable. */
+function compareInboxPosition(left: InboxPosition, right: InboxPosition): number {
+  const byTime = Date.parse(left.created_at) - Date.parse(right.created_at);
+  if (byTime !== 0) return byTime;
+  if (left.room_id !== right.room_id) return left.room_id < right.room_id ? -1 : 1;
+  return left.sequence - right.sequence;
 }
 
 function membershipKey(roomId: RoomId, instanceId: InstanceId): string {
@@ -606,6 +616,36 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     const room = this.roomById(roomId);
     this.requireMembership(auth, room.id);
     return this.pageMessages(room.id, input);
+  }
+
+  async listInbox(
+    auth: RoomAuth,
+    input: { after: InboxPosition | null; limit: number },
+  ): Promise<Page<Message>> {
+    const roomIds =
+      auth.kind === "guest"
+        ? this.guests.get(auth.memberId)?.state === "active"
+          ? [auth.roomId]
+          : []
+        : [...this.memberships.values()]
+            .filter((membership) => membership.instance_id === auth.instanceId && membership.state === "active")
+            .map((membership) => membership.room_id);
+    const after = input.after;
+    const matching = roomIds
+      .flatMap((roomId) => this.messages.get(roomId) ?? [])
+      .filter((message) => after === null || compareInboxPosition(message, after) > 0)
+      .sort(compareInboxPosition);
+    const items = matching.slice(0, input.limit).map((message) => this.projectMessage(message));
+    const last = items.at(-1);
+    return {
+      items,
+      next_cursor: last
+        ? encodeInboxCursor({ created_at: last.created_at, room_id: last.room_id, sequence: last.sequence })
+        : after
+          ? encodeInboxCursor(after)
+          : null,
+      has_more: matching.length > items.length,
+    };
   }
 
   private pageMessages(roomId: RoomId, input: { after: number; limit: number }): Page<Message> {

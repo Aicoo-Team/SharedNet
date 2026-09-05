@@ -1,4 +1,6 @@
 import {
+  parseInboxCursor,
+  type InboxPosition,
   DISCOVERY_DOCUMENT,
   ERROR_STATUS,
   OPENAPI_DOCUMENT,
@@ -229,6 +231,25 @@ function parseMessageQuery(
   return { after, limit };
 }
 
+/** The inbox cursor is opaque: absent means the beginning, malformed is an error. */
+function parseInboxQuery(url: URL): { after: InboxPosition | null; limit: number } {
+  for (const key of url.searchParams.keys()) {
+    if (key !== "after" && key !== "limit") {
+      throw new ProtocolRequestError("invalid_request");
+    }
+  }
+  const afterValue = url.searchParams.get("after");
+  const limitValue = url.searchParams.get("limit");
+  const limit = limitValue === null ? 50 : Number(limitValue);
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+    throw new ProtocolRequestError("invalid_request");
+  }
+  if (afterValue === null || afterValue === "") return { after: null, limit };
+  const after = parseInboxCursor(afterValue);
+  if (after === null) throw new ProtocolRequestError("invalid_cursor");
+  return { after, limit };
+}
+
 function parseWaitQuery(url: URL): { after: number; limit: number; timeoutMs: number } {
   const page = parseMessageQuery(url, ["after", "limit", "timeout"]);
   const timeoutValue = url.searchParams.get("timeout");
@@ -425,6 +446,17 @@ export async function handleRequest(
       if (isResponse(auth)) return auth;
       const roomId = parsePublicId(roomMatch[1], "rom");
       return jsonResponse(await repository.getRoom(auth, roomId), { status: 200 });
+    }
+
+    if (path === "/api/v1/inbox") {
+      if (request.method !== "GET") return routeMethodNotAllowed("GET");
+      const repository = getRepository();
+      const auth = await authenticateRoomMember(request, repository);
+      if (isResponse(auth)) return auth;
+      return jsonResponse(await repository.listInbox(auth, parseInboxQuery(url)), {
+        status: 200,
+        headers: NO_STORE_HEADERS,
+      });
     }
 
     const messagesMatch = /^\/api\/v1\/rooms\/([^/]+)\/messages$/.exec(path);

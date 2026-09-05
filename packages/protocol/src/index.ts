@@ -333,6 +333,50 @@ export interface Page<T> {
   has_more: boolean;
 }
 
+/**
+ * Where an Agent is in its inbox, across every Room it sits in. Messages have
+ * no global sequence; the order is (created_at, room_id, sequence), which is
+ * total, stable, and needs no new column. The cursor is the last position
+ * seen, encoded so clients pass it back without reading it.
+ */
+export interface InboxPosition {
+  created_at: Timestamp;
+  room_id: RoomId;
+  sequence: number;
+}
+
+const INBOX_CURSOR_PREFIX = "ibx_";
+
+export function encodeInboxCursor(position: InboxPosition): string {
+  const raw = `${position.created_at}\n${position.room_id}\n${position.sequence}`;
+  return `${INBOX_CURSOR_PREFIX}${Buffer.from(raw, "utf8").toString("base64url")}`;
+}
+
+/** Null for a malformed cursor; the caller answers `invalid_cursor`. */
+export function parseInboxCursor(value: string): InboxPosition | null {
+  if (!value.startsWith(INBOX_CURSOR_PREFIX)) return null;
+  let raw: string;
+  try {
+    raw = Buffer.from(value.slice(INBOX_CURSOR_PREFIX.length), "base64url").toString("utf8");
+  } catch {
+    return null;
+  }
+  const parts = raw.split("\n");
+  if (parts.length !== 3) return null;
+  const [createdAt, roomId, sequenceText] = parts as [string, string, string];
+  const sequence = Number(sequenceText);
+  if (
+    Number.isNaN(Date.parse(createdAt)) ||
+    !ROOM_ID_PATTERN.test(roomId) ||
+    !/^\d+$/.test(sequenceText) ||
+    !Number.isSafeInteger(sequence) ||
+    sequence < 1
+  ) {
+    return null;
+  }
+  return { created_at: createdAt as Timestamp, room_id: roomId as RoomId, sequence };
+}
+
 export type ErrorCode =
   | "invalid_json"
   | "invalid_request"
@@ -772,6 +816,7 @@ export const CAPABILITIES = [
   "rooms.messages",
   "rooms.invites",
   "rooms.wait",
+  "rooms.inbox",
   "decisions.approval",
   "decisions.text",
   "network",
@@ -908,6 +953,7 @@ export const ROUTE_CATALOGUE = [
     auth: "any",
     operationId: "waitForMessages",
   },
+  { method: "GET", path: "/api/v1/inbox", auth: "any", operationId: "listInbox" },
 ] as const satisfies readonly RouteDefinition[];
 
 const errorSchema = {
@@ -1050,6 +1096,20 @@ export const OPENAPI_DOCUMENT = {
         ],
         responses: {
           "200": { description: "Message page: the first messages after the cursor, or an empty page at the timeout" },
+          default: { description: "Error" },
+        },
+      },
+    },
+    "/api/v1/inbox": {
+      get: {
+        operationId: "listInbox",
+        security: [{ instanceToken: [] }, { roomMemberToken: [] }],
+        parameters: [
+          { name: "after", in: "query", required: false, schema: { type: "string", pattern: "^ibx_[A-Za-z0-9_-]+$" } },
+          { name: "limit", in: "query", required: false, schema: { type: "integer", minimum: 1, maximum: 100 } },
+        ],
+        responses: {
+          "200": { description: "Message page across every Room the caller is an active member of, oldest first, with an opaque cursor" },
           default: { description: "Error" },
         },
       },

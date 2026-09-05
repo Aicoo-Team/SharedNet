@@ -884,4 +884,122 @@ describe("Room invites, guests, and wait", () => {
     });
     expect(tooLong.status).toBe(400);
   });
+
+  describe("GET /api/v1/inbox", () => {
+    const uuid = (n: number) => `3f2504e0-4f89-41d3-9a0c-0305e82c33${String(n).padStart(2, "0")}`;
+
+    /** A clock that moves, so the inbox order is time first and not just Room id. */
+    function tickingStore() {
+      let tick = Date.parse("2026-09-05T12:00:00.000Z");
+      return new MemorySharedNetRepository({
+        devApiKey: DEV_KEY,
+        now: () => new Date((tick += 1000)),
+      });
+    }
+
+    async function openRoomAs(store: MemorySharedNetRepository, token: string, name: string, key: string) {
+      const created = await request(store, "/api/v1/rooms", {
+        method: "POST",
+        headers: instanceHeaders(token, { "content-type": "application/json", "idempotency-key": key }),
+        body: JSON.stringify({ name }),
+      });
+      expect(created.status).toBe(201);
+      return (await json(created)).room;
+    }
+
+    async function inbox(store: MemorySharedNetRepository, token: string, query = "") {
+      const response = await request(store, `/api/v1/inbox${query}`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      return { status: response.status, body: await json(response), headers: response.headers };
+    }
+
+    it("gathers an Instance's Rooms in the order things were said, and resumes from an opaque cursor", async () => {
+      const store = tickingStore();
+      const host = await startInstance(store);
+      const alpha = await openRoomAs(store, host.token, "Alpha", uuid(1));
+      const beta = await openRoomAs(store, host.token, "Beta", uuid(2));
+      await say(store, alpha.id, host.token, "alpha one", uuid(3));
+      await say(store, beta.id, host.token, "beta one", uuid(4));
+      await say(store, alpha.id, host.token, "alpha two", uuid(5));
+
+      const all = await inbox(store, host.token);
+      expect(all.status).toBe(200);
+      expect(all.headers.get("cache-control")).toContain("no-store");
+      expect(all.body.items.map((m: any) => [m.room_id, m.sequence, m.content])).toEqual([
+        [alpha.id, 1, "alpha one"],
+        [beta.id, 1, "beta one"],
+        [alpha.id, 2, "alpha two"],
+      ]);
+      expect(all.body.has_more).toBe(false);
+      expect(all.body.next_cursor).toMatch(/^ibx_[A-Za-z0-9_-]+$/);
+
+      // Nothing new after the last cursor: an empty page that keeps the cursor.
+      const caughtUp = await inbox(store, host.token, `?after=${encodeURIComponent(all.body.next_cursor)}`);
+      expect(caughtUp.body).toEqual({ items: [], next_cursor: all.body.next_cursor, has_more: false });
+
+      // Paging: one at a time, each page resuming exactly where the last stopped.
+      const first = await inbox(store, host.token, "?limit=1");
+      expect(first.body.items.map((m: any) => m.content)).toEqual(["alpha one"]);
+      expect(first.body.has_more).toBe(true);
+      const second = await inbox(store, host.token, `?limit=1&after=${encodeURIComponent(first.body.next_cursor)}`);
+      expect(second.body.items.map((m: any) => m.content)).toEqual(["beta one"]);
+      const third = await inbox(store, host.token, `?limit=1&after=${encodeURIComponent(second.body.next_cursor)}`);
+      expect(third.body.items.map((m: any) => m.content)).toEqual(["alpha two"]);
+      expect(third.body.has_more).toBe(false);
+    });
+
+    it("shows a member only the Rooms it is in: a second Instance in one Room, a guest in its one Room", async () => {
+      const store = tickingStore();
+      const host = await startInstance(store);
+      const alpha = await openRoomAs(store, host.token, "Alpha", uuid(1));
+      const beta = await openRoomAs(store, host.token, "Beta", uuid(2));
+      await say(store, alpha.id, host.token, "alpha one", uuid(3));
+      await say(store, beta.id, host.token, "beta one", uuid(4));
+
+      const other = await startInstance(store, { local_instance_key: OTHER_SESSION_KEY });
+      const joined = await request(store, `/api/v1/rooms/${beta.id}/join`, {
+        method: "POST",
+        headers: instanceHeaders(other.token, { "idempotency-key": uuid(6) }),
+      });
+      expect(joined.status).toBe(200);
+      const otherInbox = await inbox(store, other.token);
+      expect(otherInbox.body.items.map((m: any) => [m.room_id, m.content])).toEqual([[beta.id, "beta one"]]);
+
+      const { token: invite } = await store.createRoomInvite({
+        roomId: alpha.id,
+        principalId: host.instance.principal_id,
+      });
+      const { member_token: guestToken } = await store.joinRoomWithInvite(invite, alpha.id, { name: "guest" });
+      const guestInbox = await inbox(store, guestToken);
+      expect(guestInbox.body.items.map((m: any) => [m.room_id, m.content])).toEqual([[alpha.id, "alpha one"]]);
+
+      const nobody = await startInstance(store, { local_instance_key: "c".repeat(64) });
+      const empty = await inbox(store, nobody.token);
+      expect(empty.body).toEqual({ items: [], next_cursor: null, has_more: false });
+    });
+
+    it("refuses a cursor that is not an inbox cursor, an unknown parameter, a bad limit, and the wrong method", async () => {
+      const store = tickingStore();
+      const host = await startInstance(store);
+
+      const numeric = await inbox(store, host.token, "?after=5");
+      expect(numeric.status).toBe(400);
+      expect(numeric.body.error.code).toBe("invalid_cursor");
+      const unknown = await inbox(store, host.token, "?since=1");
+      expect(unknown.status).toBe(400);
+      expect(unknown.body.error.code).toBe("invalid_request");
+      const limit = await inbox(store, host.token, "?limit=0");
+      expect(limit.status).toBe(400);
+      const posted = await request(store, "/api/v1/inbox", {
+        method: "POST",
+        headers: instanceHeaders(host.token),
+      });
+      expect(posted.status).toBe(405);
+      const anonymous = await request(store, "/api/v1/inbox");
+      expect(anonymous.status).toBe(401);
+      const apiKey = await request(store, "/api/v1/inbox", { headers: apiHeaders() });
+      expect(apiKey.status).toBe(401);
+    });
+  });
 });

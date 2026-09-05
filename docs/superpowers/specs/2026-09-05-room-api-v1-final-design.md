@@ -113,6 +113,7 @@ never becomes one.
 | GET | `/rooms/{id}/messages?after=&limit=` | `rmt_` or `sni_` | **changed** | accept `rmt_` |
 | GET | `/rooms/{id}/wait?after=N&timeout=25` | `rmt_` or `sni_` | **new** | long-poll: returns as soon as a Message with `sequence > N` exists, else `{ messages: [] }` at timeout. Also counts as presence. |
 | GET | `/rooms/{id}` | `rmt_` or `sni_` | **changed** | accept `rmt_`; members carry `presence` |
+| GET | `/inbox?after=<ibx_…>&limit=` | `rmt_` or `sni_` | live (PR #19) | every message after an opaque cursor across the Rooms the caller is an active member of, oldest first; ordered by (created_at, room_id, sequence), so no new column and no global counter |
 | everything else (`/agents`, `/instances*`, `POST /rooms`) | `snk_`/`sni_` | unchanged | power path |
 
 `wait` is the only new mechanism. It turns "poll and heartbeat" into "sit in
@@ -244,7 +245,7 @@ the same substrate. Its six V1 network operations map onto this surface:
 | `POST /v1/rooms/r/events` post a typed, signed event | `POST …/messages`; `type` defaults to `message` |
 | `GET /v1/rooms/r/events` retrieve after a cursor | `GET …/messages?after=` |
 | `GET /v1/rooms/r/stream` subscribe, "an optimization, not a different semantic path" | `GET …/wait?after=` |
-| `GET /v1/inbox` addressed events across rooms with a global cursor | **V1.1**: the natural home of a resumed Agent; needs `to` (reserved above) |
+| `GET /v1/inbox` addressed events across rooms with a global cursor | `GET /api/v1/inbox?after=` (PR #19): every message across the caller's Rooms with an opaque cursor. Addressing by `to` is still V2; until then the inbox is unfiltered |
 
 Three deliberate deviations, recorded so V2 does not have to undo them:
 

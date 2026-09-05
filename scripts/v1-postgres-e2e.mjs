@@ -418,6 +418,32 @@ try {
     kind: "guest",
     name: "claude-code",
   });
+
+  // --- The inbox: every Room the caller sits in, oldest first, opaque cursor. ---
+  const inboxFirst = await fetch(`${apiBaseUrl}/api/v1/inbox?limit=3`, {
+    headers: { authorization: `Bearer ${joined.member_token}` },
+  });
+  await assertStatus(inboxFirst, 200, "inbox-first-page");
+  const firstPage = await inboxFirst.json();
+  assert.deepEqual(firstPage.items.map((message) => message.sequence), [1, 2, 3]);
+  assert.equal(firstPage.has_more, true);
+  assert.match(firstPage.next_cursor, /^ibx_[A-Za-z0-9_-]+$/);
+  const inboxRest = await fetch(
+    `${apiBaseUrl}/api/v1/inbox?after=${encodeURIComponent(firstPage.next_cursor)}`,
+    { headers: { authorization: `Bearer ${joined.member_token}` } },
+  );
+  await assertStatus(inboxRest, 200, "inbox-rest");
+  const restPage = await inboxRest.json();
+  assert.deepEqual(
+    restPage.items.map((message) => message.sequence),
+    [4, 5],
+    "the inbox resumes exactly after the cursor, across a real database",
+  );
+  assert.equal(restPage.has_more, false);
+  const inboxBadCursor = await fetch(`${apiBaseUrl}/api/v1/inbox?after=5`, {
+    headers: { authorization: `Bearer ${joined.member_token}` },
+  });
+  await assertStatus(inboxBadCursor, 400, "inbox-bad-cursor");
   assert.equal(guestMessage.sender_instance_id, null);
 
   const hostView = await runCli(
