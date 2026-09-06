@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { handleRequest } from "../../server/src/handler.ts";
 import { MemorySharedNetRepository } from "../../server/src/memory-repository.ts";
 import { runCli } from "./cli.ts";
+import type { CommandRunner } from "./guest.ts";
 
 const cleanup: string[] = [];
 
@@ -76,6 +77,7 @@ async function run(
   space: Awaited<ReturnType<typeof workspace>>,
   responses: Array<{ status?: number; body?: unknown }>,
   environment: Record<string, string> = {},
+  overrides: { exec?: CommandRunner; now?: () => Date } = {},
 ) {
   const { mkdir } = await import("node:fs/promises");
   await mkdir(space.project, { recursive: true });
@@ -98,8 +100,27 @@ async function run(
     sleep: async () => undefined,
     stdout: (value) => stdout.push(value),
     stderr: (value) => stderr.push(value),
+    ...overrides,
   });
   return { exitCode, stdout: stdout.join(""), stderr: stderr.join(""), requests };
+}
+
+function own(sequence: number, content: string) {
+  return { ...message(sequence, content, "claude-code"), sender: { member_id: MEMBER_ID, kind: "guest", name: "claude-code" } };
+}
+
+function page(items: ReturnType<typeof message>[]) {
+  return { status: 200, body: { items, next_cursor: null, has_more: false } };
+}
+
+/** A command runner that records what it was given and answers with a fixed result. */
+function recorder(result: { exitCode: number; stdout: string; stderr?: string }) {
+  const calls: Array<{ command: string; input: unknown; env: Record<string, string> }> = [];
+  const exec: CommandRunner = async (command, input, env) => {
+    calls.push({ command, input: JSON.parse(input), env });
+    return { stderr: "", ...result };
+  };
+  return { calls, exec };
 }
 
 function header(request: { init: RequestInit }, name: string): string | undefined {
@@ -395,6 +416,187 @@ describe("sharednet say and wait", () => {
     const refused = await run(["accept", "2", "--json"], space, []);
     expect(refused.exitCode).not.toBe(0);
     expect(refused.requests).toHaveLength(0);
+  });
+
+  it("waits for at least --min messages across pages before returning", async () => {
+    const space = await joinedSpace();
+    const result = await run(["wait", "--min", "2", "--json"], space, [
+      page([message(2, "one")]),
+      page([]),
+      page([message(3, "two")]),
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout).items.map((item: any) => item.sequence)).toEqual([2, 3]);
+    expect(result.requests.map((request) => new URL(request.url).searchParams.get("after"))).toEqual(["1", "2", "2"]);
+    const state = JSON.parse(await readFile(join(space.project, ".sharednet", "room.json"), "utf8"));
+    expect(state.last_sequence).toBe(3);
+  });
+
+  describe("sharednet watch", () => {
+    it("wakes the command on a message, hands it the batch, says the answer back, and never wakes on its own words", async () => {
+      const space = await joinedSpace();
+      const { calls, exec } = recorder({ exitCode: 0, stdout: "On it.\n" });
+      const result = await run(
+        ["watch", "--on", "message", "--run", "agent-turn", "--reply", "--max-runs", "1", "--json"],
+        space,
+        [
+          page([own(2, "what I said earlier")]),
+          page([]),
+          page([message(3, "please review the PR"), own(4, "typing…")]),
+          { status: 201, body: { message: { ...own(5, "On it."), id: "msg_reply00001" } } },
+        ],
+        {},
+        { exec },
+      );
+      expect(result.stderr).not.toContain("snk_");
+      expect(result.exitCode).toBe(0);
+      // The seat's own message at #2 did not wake it; #3 from the host did, with #4 (own) filtered out.
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.command).toBe("agent-turn");
+      expect(calls[0]!.input).toMatchObject({ room_id: ROOM_ID, member_id: MEMBER_ID, trigger: "message" });
+      expect((calls[0]!.input as any).messages.map((item: any) => item.sequence)).toEqual([3]);
+      expect(calls[0]!.env).toMatchObject({ SHAREDNET_ROOM_ID: ROOM_ID, SHAREDNET_MEMBER_ID: MEMBER_ID, SHAREDNET_MESSAGE_COUNT: "1", SHAREDNET_LAST_SEQUENCE: "4" });
+      const reply = result.requests.at(-1)!;
+      expect(reply.url).toBe(`https://sharednet.ai/api/v1/rooms/${ROOM_ID}/messages`);
+      expect(JSON.parse(String(reply.init.body))).toEqual({ content: "On it." });
+      const summary = JSON.parse(result.stdout);
+      expect(summary.runs).toEqual([
+        { run: 1, trigger: "message", messages: 1, exit_code: 0, reply_message_id: "msg_reply00001", last_sequence: 4 },
+      ]);
+      const state = JSON.parse(await readFile(join(space.project, ".sharednet", "room.json"), "utf8"));
+      expect(state.last_sequence).toBe(4);
+    });
+
+    it("waits for --on count N before waking, and does not reply when the command fails", async () => {
+      const space = await joinedSpace();
+      const { calls, exec } = recorder({ exitCode: 3, stdout: "half an answer", stderr: "boom" });
+      const result = await run(
+        ["watch", "--on", "count", "2", "--run", "agent-turn", "--reply", "--max-runs", "1", "--json"],
+        space,
+        [page([message(2, "first")]), page([message(3, "second")])],
+        {},
+        { exec },
+      );
+      expect(result.exitCode).toBe(0);
+      expect(calls).toHaveLength(1);
+      expect((calls[0]!.input as any).messages.map((item: any) => item.sequence)).toEqual([2, 3]);
+      expect(result.requests).toHaveLength(2);
+      expect(result.stderr).toContain("boom");
+      expect(JSON.parse(result.stdout).runs[0]).toMatchObject({ trigger: "count 2", messages: 2, exit_code: 3, reply_message_id: null });
+    });
+
+    it("wakes every interval even when the Room is quiet, and after idle once it has gone quiet", async () => {
+      const space = await joinedSpace();
+      let clock = Date.parse("2026-09-06T12:00:00Z");
+      const now = () => new Date(clock);
+      const ticking = recorder({ exitCode: 0, stdout: "" });
+      const every = await run(
+        ["watch", "--on", "every 10m", "--run", "tick", "--max-runs", "1", "--json"],
+        space,
+        [
+          { status: 200, body: { items: [], next_cursor: null, has_more: false } },
+          { status: 200, body: { items: [], next_cursor: null, has_more: false } },
+        ],
+        {},
+        { exec: async (...call) => { clock += 5 * 60_000; return ticking.exec(...call); }, now: () => { clock += 5 * 60_000; return new Date(clock); } },
+      );
+      expect(every.exitCode).toBe(0);
+      expect(ticking.calls).toHaveLength(1);
+      expect((ticking.calls[0]!.input as any).messages).toEqual([]);
+
+      clock = Date.parse("2026-09-06T13:00:00Z");
+      const idle = recorder({ exitCode: 0, stdout: "" });
+      let polls = 0;
+      const quiet = await run(
+        ["watch", "--on", "idle 30s", "--run", "digest", "--max-runs", "1", "--json"],
+        space,
+        [page([message(2, "a")]), page([message(3, "b")]), page([])],
+        {},
+        {
+          exec: idle.exec,
+          now: () => {
+            // Time passes only once the Room has gone quiet: the third poll comes back empty after 30 s.
+            polls += 1;
+            if (polls > 6) clock += 31_000;
+            return new Date(clock);
+          },
+        },
+      );
+      expect(quiet.exitCode).toBe(0);
+      expect(idle.calls).toHaveLength(1);
+      expect((idle.calls[0]!.input as any).messages.map((item: any) => item.sequence)).toEqual([2, 3]);
+      expect(JSON.parse(quiet.stdout).runs[0]).toMatchObject({ trigger: "idle 30s", messages: 2 });
+      void now;
+    });
+
+    it("runs a real shell command against the real server and says its output back", async () => {
+      // No exec override: the default runner spawns `sh -c`. `cat` echoes the
+      // batch, so the reply is the JSON the command was handed.
+      const DEV_KEY = `snk_${"a".repeat(43)}`;
+      const store = new MemorySharedNetRepository({ devApiKey: DEV_KEY });
+      const fetch: typeof globalThis.fetch = (input, init) => handleRequest(new Request(input as string | URL, init), store);
+      const api = async (path: string, init: RequestInit) => {
+        const response = await fetch(`http://127.0.0.1:3001/api/v1${path}`, init);
+        return { status: response.status, body: (await response.json()) as Record<string, any> };
+      };
+      const host = await api("/instances", {
+        method: "POST",
+        headers: { authorization: `Bearer ${DEV_KEY}`, "content-type": "application/json" },
+        body: JSON.stringify({ runtime_kind: "codex", cli_version: "0.1.0" }),
+      });
+      const created = await api("/rooms", {
+        method: "POST",
+        headers: { authorization: `Bearer ${host.body.token}`, "content-type": "application/json", "idempotency-key": "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f" },
+        body: JSON.stringify({ name: "Watched" }),
+      });
+      const roomId = created.body.room.id as string;
+      const { token: invite } = await store.createRoomInvite({ roomId: roomId as `rom_${string}`, principalId: host.body.instance.principal_id });
+
+      const space = await workspace();
+      const { mkdir } = await import("node:fs/promises");
+      await mkdir(space.project, { recursive: true });
+      const cli = async (argv: string[]) => {
+        const stdout: string[] = [];
+        const stderr: string[] = [];
+        const exitCode = await runCli(argv, {
+          env: { ...space.env, SHAREDNET_BASE_URL: "http://127.0.0.1:3001" },
+          fetch,
+          cwd: space.project,
+          sleep: async () => undefined,
+          stdout: (value) => stdout.push(value),
+          stderr: (value) => stderr.push(value),
+        });
+        return { exitCode, stdout: stdout.join(""), stderr: stderr.join("") };
+      };
+      expect((await cli(["join", `ROOM=${roomId} TOKEN=${invite}`, "--name", "watcher", "--json"])).exitCode).toBe(0);
+      await api(`/rooms/${roomId}/messages`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${host.body.token}`, "content-type": "application/json", "idempotency-key": "4d5e6f7a-8b9c-4d0e-9f1a-2b3c4d5e6f7a" },
+        body: JSON.stringify({ content: "hello watcher" }),
+      });
+
+      const watched = await cli(["watch", "--on", "message", "--run", "cat", "--reply", "--max-runs", "1", "--json"]);
+      expect(watched.exitCode).toBe(0);
+      const summary = JSON.parse(watched.stdout);
+      expect(summary.runs[0]).toMatchObject({ messages: 1, exit_code: 0 });
+      expect(summary.runs[0].reply_message_id).toMatch(/^msg_/);
+
+      const log = await api(`/rooms/${roomId}/messages?after=0&limit=10`, { headers: { authorization: `Bearer ${host.body.token}` } });
+      const reply = log.body.items.find((item: any) => item.id === summary.runs[0].reply_message_id);
+      const handed = JSON.parse(reply.content);
+      expect(handed.trigger).toBe("message");
+      expect(handed.messages.map((item: any) => item.content)).toEqual(["hello watcher"]);
+      expect(reply.sender.name).toBe("watcher");
+    });
+
+    it("refuses a trigger it does not know, before touching the network", async () => {
+      const space = await joinedSpace();
+      const result = await run(["watch", "--on", "sometimes", "--run", "x", "--json"], space, []);
+      expect(result.exitCode).not.toBe(0);
+      expect(result.requests).toHaveLength(0);
+      const noCommand = await run(["watch", "--on", "message", "--json"], space, []);
+      expect(noCommand.exitCode).not.toBe(0);
+    });
   });
 
   it("waits from the last sequence seen, loops past an empty page, and advances the cursor", async () => {
