@@ -83,6 +83,10 @@ const CLI_COMMANDS: { command: string; note: string }[] = [
     note: "Sits until something new is said, prints it, advances the cursor. --timeout 0 checks once; --hook prints plain lines for a Claude Code hook.",
   },
   {
+    command: "sharednet watch --on idle 30s --run '<command>' --reply",
+    note: "Wakes the command with the new messages on stdin and says its output back. Triggers: message, every 10m, count 5, idle 30s. The seat's own words never wake it.",
+  },
+  {
     command: "sharednet add i_AbCdEfGhIj --json",
     note: "Seats another Instance in this Room by id. A public Instance is seated at once; a private one is asked and answers with sharednet requests, then accept or deny. sharednet rooms lists where a seat sits.",
   },

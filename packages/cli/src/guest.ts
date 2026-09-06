@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 
 import { ApiClient, resolveBaseUrl } from "./api-client.ts";
@@ -29,11 +30,20 @@ export interface GuestDependencies {
   env: Environment;
   fetch: typeof globalThis.fetch;
   stdout: (value: string) => void;
+  stderr?: (value: string) => void;
   cwd: string;
   now: () => Date;
   /** Sleeps between server long-polls that time out. Tests shorten it. */
   sleep?: (ms: number) => Promise<void>;
+  /** Runs the `watch --run` command; the default shells out. Tests capture it. */
+  exec?: CommandRunner;
 }
+
+export type CommandRunner = (
+  command: string,
+  input: string,
+  env: Record<string, string>,
+) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
 
 interface ParsedGuestArguments {
   options: Map<string, string | true>;
@@ -72,8 +82,8 @@ const INVITE_TOKEN_PATTERN = /^rit_[A-Za-z0-9_-]{43}$/;
 /** The server caps one wait at this; the client loops. */
 const WAIT_MAX_SECONDS = 25;
 
-const VALUE_OPTIONS = new Set(["name", "token", "timeout", "reply-to"]);
-const FLAG_OPTIONS = new Set(["hook", "private"]);
+const VALUE_OPTIONS = new Set(["name", "token", "timeout", "reply-to", "min", "on", "run", "max-runs"]);
+const FLAG_OPTIONS = new Set(["hook", "private", "reply"]);
 
 function parseGuestArguments(args: string[]): ParsedGuestArguments {
   const options = new Map<string, string | true>();
@@ -385,6 +395,209 @@ async function say(args: string[], dependencies: GuestDependencies): Promise<unk
   );
 }
 
+/** One long-poll from the cursor; the server answers within `timeout` seconds. */
+async function waitPage(
+  client: ApiClient,
+  roomId: string,
+  token: string,
+  after: number,
+  timeout: number,
+): Promise<PageShape> {
+  const query = new URLSearchParams({ after: String(after), timeout: String(timeout) });
+  const page = await client.request<PageShape>(
+    "GET",
+    `/rooms/${encodeURIComponent(roomId)}/wait?${query.toString()}`,
+    token,
+  );
+  if (!Array.isArray(page?.items)) throw invalidServerResponse();
+  return page;
+}
+
+function parseCount(value: string | undefined, option: string): number | null {
+  if (value === undefined) return null;
+  if (!/^[1-9]\d*$/.test(value)) {
+    throw localError("invalid_count", `${option} must be a whole number of at least 1.`);
+  }
+  return Number(value);
+}
+
+/** "30s", "10m", "1h", or plain seconds, as milliseconds. */
+function parseDuration(value: string | undefined, option: string): number {
+  const match = value === undefined ? null : /^(\d+)(s|m|h)?$/.exec(value);
+  if (!match || Number(match[1]) < 1) {
+    throw localError("invalid_duration", `${option} takes a duration such as 30s, 10m, or 1h.`);
+  }
+  const unit = match[2] === "h" ? 3_600_000 : match[2] === "m" ? 60_000 : 1000;
+  return Number(match[1]) * unit;
+}
+
+type WatchTrigger =
+  | { kind: "message" }
+  | { kind: "every"; ms: number }
+  | { kind: "count"; count: number }
+  | { kind: "idle"; ms: number };
+
+/** `--on message | every 10m | count 5 | idle 30s`; the parameter may be its own argument. */
+function parseTrigger(parsed: ParsedGuestArguments): WatchTrigger {
+  const raw = stringOption(parsed, "on");
+  if (!raw) throw localError("invalid_arguments", "Usage: sharednet watch --on <trigger> --run '<command>'");
+  const [kind, inline] = raw.trim().split(/\s+/, 2);
+  const parameter = inline ?? parsed.positionals.shift();
+  if (kind === "message") {
+    if (parameter !== undefined) throw localError("invalid_trigger", "--on message takes no parameter.");
+    return { kind: "message" };
+  }
+  if (kind === "every") return { kind: "every", ms: parseDuration(parameter, "--on every") };
+  if (kind === "idle") return { kind: "idle", ms: parseDuration(parameter, "--on idle") };
+  if (kind === "count") {
+    const count = parseCount(parameter, "--on count");
+    if (count === null) throw localError("invalid_trigger", "--on count takes a number of messages.");
+    return { kind: "count", count };
+  }
+  throw localError("invalid_trigger", "--on must be message, every <duration>, count <n>, or idle <duration>.");
+}
+
+function defaultExec(command: string, input: string, env: Record<string, string>) {
+  const shell = process.platform === "win32" ? ["cmd", "/c", command] : ["sh", "-c", command];
+  return new Promise<{ exitCode: number; stdout: string; stderr: string }>((resolve) => {
+    let stdout = "";
+    let stderr = "";
+    try {
+      const child = spawn(shell[0]!, shell.slice(1), {
+        env: { ...process.env, ...env },
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      child.stdout.on("data", (chunk: Buffer) => (stdout += chunk.toString()));
+      child.stderr.on("data", (chunk: Buffer) => (stderr += chunk.toString()));
+      child.once("error", (error) => resolve({ exitCode: 127, stdout, stderr: stderr + String(error) }));
+      child.once("close", (code) => resolve({ exitCode: code ?? 1, stdout, stderr }));
+      child.stdin.end(input);
+    } catch (error) {
+      resolve({ exitCode: 127, stdout, stderr: String(error) });
+    }
+  });
+}
+
+interface WatchRun {
+  run: number;
+  trigger: string;
+  messages: number;
+  exit_code: number;
+  reply_message_id: string | null;
+  last_sequence: number;
+}
+
+/**
+ * Sit in the Room and wake a command: on every message, every so often, once
+ * N messages have piled up, or once the Room has gone quiet for a while. The
+ * batch goes to the command's stdin as JSON; with --reply, what it prints is
+ * said back into the Room. The seat's own messages never wake it, which is
+ * what keeps a replying watcher from talking to itself. The cursor moves only
+ * when a batch has been handed over, so a watcher that dies mid-way replays.
+ */
+async function watch(args: string[], dependencies: GuestDependencies): Promise<unknown> {
+  const parsed = parseGuestArguments(args);
+  assertOnlyOptions(parsed, ["on", "run", "reply", "max-runs"]);
+  const trigger = parseTrigger(parsed);
+  const command = stringOption(parsed, "run");
+  if (!command || parsed.positionals.length !== 0) {
+    throw localError(
+      "invalid_arguments",
+      "Usage: sharednet watch --on <message | every 10m | count 5 | idle 30s> --run '<command>' [--reply] [--max-runs <n>]",
+    );
+  }
+  const reply = parsed.options.get("reply") === true;
+  const maxRuns = parseCount(stringOption(parsed, "max-runs"), "--max-runs");
+  const { client, state, credential } = await currentSeat(dependencies);
+  const sleep = dependencies.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const exec = dependencies.exec ?? defaultExec;
+  const log = dependencies.stderr ?? (() => undefined);
+  const triggerLabel =
+    trigger.kind === "message"
+      ? "message"
+      : trigger.kind === "count"
+        ? `count ${trigger.count}`
+        : `${trigger.kind} ${trigger.ms / 1000}s`;
+
+  let cursor = state.last_sequence;
+  let batch: MessageShape[] = [];
+  let lastRunAt = dependencies.now().getTime();
+  let lastMessageAt: number | null = null;
+  const runs: WatchRun[] = [];
+  log(`watch: ${triggerLabel} in ${state.room_id}, from sequence ${cursor}\n`);
+
+  for (;;) {
+    const now = dependencies.now().getTime();
+    let budgetMs = WAIT_MAX_SECONDS * 1000;
+    if (trigger.kind === "every") budgetMs = trigger.ms - (now - lastRunAt);
+    if (trigger.kind === "idle" && lastMessageAt !== null) budgetMs = trigger.ms - (now - lastMessageAt);
+    const timeout = Math.min(WAIT_MAX_SECONDS, Math.max(0, Math.ceil(budgetMs / 1000)));
+    const page = await waitPage(client, state.room_id, credential.member_token, cursor, timeout);
+    cursor = highestSequence(page.items, cursor);
+    const others = page.items.filter((item) => item.sender?.member_id !== state.member_id);
+    if (others.length > 0) {
+      batch.push(...others);
+      lastMessageAt = dependencies.now().getTime();
+    }
+
+    const at = dependencies.now().getTime();
+    const fire =
+      trigger.kind === "message"
+        ? batch.length > 0
+        : trigger.kind === "count"
+          ? batch.length >= trigger.count
+          : trigger.kind === "idle"
+            ? batch.length > 0 && lastMessageAt !== null && at - lastMessageAt >= trigger.ms
+            : at - lastRunAt >= trigger.ms;
+    if (!fire) {
+      if (page.items.length === 0) await sleep(0);
+      continue;
+    }
+
+    const input = `${JSON.stringify({ room_id: state.room_id, member_id: state.member_id, trigger: triggerLabel, messages: batch })}\n`;
+    const result = await exec(command, input, {
+      SHAREDNET_ROOM_ID: state.room_id,
+      SHAREDNET_MEMBER_ID: state.member_id,
+      SHAREDNET_MESSAGE_COUNT: String(batch.length),
+      SHAREDNET_LAST_SEQUENCE: String(cursor),
+    });
+    if (result.stderr) log(result.stderr.endsWith("\n") ? result.stderr : `${result.stderr}\n`);
+    // Handed over: the batch counts as seen even if the command failed.
+    await writeProjectRoomState(dependencies.cwd, { ...state, last_sequence: cursor });
+    let replyMessageId: string | null = null;
+    const answer = result.stdout.trim();
+    if (reply && result.exitCode === 0 && answer.length > 0) {
+      const posted = await client.request<{ message?: { id?: string } }>(
+        "POST",
+        `/rooms/${encodeURIComponent(state.room_id)}/messages`,
+        credential.member_token,
+        { content: answer },
+        { "idempotency-key": randomUUID() },
+      );
+      replyMessageId = posted?.message?.id ?? null;
+    }
+    const record: WatchRun = {
+      run: runs.length + 1,
+      trigger: triggerLabel,
+      messages: batch.length,
+      exit_code: result.exitCode,
+      reply_message_id: replyMessageId,
+      last_sequence: cursor,
+    };
+    runs.push(record);
+    log(
+      `watch: run ${record.run}, ${record.messages} message(s), exit ${record.exit_code}` +
+        (replyMessageId ? `, replied ${replyMessageId}` : "") +
+        "\n",
+    );
+    batch = [];
+    lastRunAt = dependencies.now().getTime();
+    if (maxRuns !== null && runs.length >= maxRuns) {
+      return { room_id: state.room_id, trigger: triggerLabel, runs };
+    }
+  }
+}
+
 function parseTimeout(value: string | undefined): number | null {
   if (value === undefined) return null;
   if (!/^\d+$/.test(value)) {
@@ -401,45 +614,39 @@ function parseTimeout(value: string | undefined): number | null {
  */
 async function wait(args: string[], dependencies: GuestDependencies): Promise<unknown> {
   const parsed = parseGuestArguments(args);
-  assertOnlyOptions(parsed, ["timeout", "hook"]);
+  assertOnlyOptions(parsed, ["timeout", "hook", "min"]);
   if (parsed.positionals.length !== 0) {
-    throw localError("invalid_arguments", "Usage: sharednet wait [--timeout <seconds>] [--hook]");
+    throw localError("invalid_arguments", "Usage: sharednet wait [--timeout <seconds>] [--min <count>] [--hook]");
   }
   const hook = parsed.options.get("hook") === true;
   const totalSeconds = hook ? 0 : parseTimeout(stringOption(parsed, "timeout"));
+  const minimum = parseCount(stringOption(parsed, "min"), "--min") ?? 1;
   const { client, state, credential } = await currentSeat(dependencies);
   const sleep = dependencies.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
 
   const deadline =
     totalSeconds === null ? null : dependencies.now().getTime() + totalSeconds * 1000;
-  let page: PageShape;
+  // --min N: keep sitting until N messages have arrived, or the deadline.
+  const items: MessageShape[] = [];
+  let cursor = state.last_sequence;
   for (;;) {
     const remaining =
       deadline === null
         ? WAIT_MAX_SECONDS
         : Math.max(0, Math.ceil((deadline - dependencies.now().getTime()) / 1000));
     const timeout = Math.min(WAIT_MAX_SECONDS, remaining);
-    const query = new URLSearchParams({
-      after: String(state.last_sequence),
-      timeout: String(timeout),
-    });
-    page = await client.request<PageShape>(
-      "GET",
-      `/rooms/${encodeURIComponent(state.room_id)}/wait?${query.toString()}`,
-      credential.member_token,
-    );
-    if (!Array.isArray(page?.items)) throw invalidServerResponse();
-    if (page.items.length > 0) break;
+    const page = await waitPage(client, state.room_id, credential.member_token, cursor, timeout);
+    items.push(...page.items);
+    cursor = highestSequence(page.items, cursor);
+    if (items.length >= minimum) break;
     if (deadline !== null && dependencies.now().getTime() >= deadline) break;
-    // The server answered an empty page at its cap; ask again from the same cursor.
+    // The server answered at its cap; ask again from the cursor.
     await sleep(0);
   }
+  const page: PageShape = { items, next_cursor: null, has_more: false };
 
   if (page.items.length > 0) {
-    await writeProjectRoomState(dependencies.cwd, {
-      ...state,
-      last_sequence: highestSequence(page.items, state.last_sequence),
-    });
+    await writeProjectRoomState(dependencies.cwd, { ...state, last_sequence: cursor });
   }
 
   if (hook) {
@@ -513,13 +720,14 @@ async function answer(
   );
 }
 
-export type GuestVerb = "join" | "say" | "wait" | "add" | "rooms" | "requests" | "accept" | "deny";
+export type GuestVerb = "join" | "say" | "wait" | "watch" | "add" | "rooms" | "requests" | "accept" | "deny";
 
 export function isGuestVerb(value: string | undefined): value is GuestVerb {
   return (
     value === "join" ||
     value === "say" ||
     value === "wait" ||
+    value === "watch" ||
     value === "add" ||
     value === "rooms" ||
     value === "requests" ||
@@ -535,6 +743,7 @@ export async function runGuestVerb(
 ): Promise<unknown> {
   if (verb === "join") return join(args, dependencies);
   if (verb === "say") return say(args, dependencies);
+  if (verb === "watch") return watch(args, dependencies);
   if (verb === "add") return add(args, dependencies);
   if (verb === "rooms") return rooms(args, dependencies);
   if (verb === "requests") return requests(args, dependencies);

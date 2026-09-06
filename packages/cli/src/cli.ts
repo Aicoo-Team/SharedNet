@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { ApiClient, resolveBaseUrl } from "./api-client.ts";
 import { CliError, asCliError, localError } from "./errors.ts";
-import { isGuestVerb, runGuestVerb } from "./guest.ts";
+import { isGuestVerb, runGuestVerb, type CommandRunner } from "./guest.ts";
 import { login } from "./login.ts";
 import { refreshIfNeeded, registerInstance, selectSession } from "./session.ts";
 import { deleteSession, getStoragePaths, type StoragePaths, type StoredSession } from "./storage.ts";
@@ -22,6 +22,8 @@ export interface CliDependencies {
   sleep?: (ms: number) => Promise<void>;
   /** Opens the approve page during `login`; tests capture the URL instead. */
   openBrowser?: (url: string) => Promise<boolean>;
+  /** Runs the `watch --run` command; tests capture it instead of shelling out. */
+  exec?: CommandRunner;
 }
 
 interface ResolvedDependencies {
@@ -398,7 +400,7 @@ async function execute(
   }
   throw localError(
     "unknown_command",
-    "Use login, join/say/wait/add/rooms/requests/accept/deny, or session start/status, room create/list/add/join/post/messages, and decision list/approve/deny.",
+    "Use login, join/say/wait/watch/add/rooms/requests/accept/deny, or session start/status, room create/list/add/join/post/messages, and decision list/approve/deny.",
   );
 }
 
@@ -459,6 +461,7 @@ export async function runCli(
     cwd: supplied.cwd ?? process.cwd(),
     ...(supplied.sleep ? { sleep: supplied.sleep } : {}),
     ...(supplied.openBrowser ? { openBrowser: supplied.openBrowser } : {}),
+    ...(supplied.exec ? { exec: supplied.exec } : {}),
   };
   let json = argv.includes("--json");
   try {
