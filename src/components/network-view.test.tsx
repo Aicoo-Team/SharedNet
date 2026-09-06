@@ -14,7 +14,7 @@ import type {
   PrincipalProjection,
 } from "@/src/sharednet/contracts";
 
-import { NetworkView } from "./network-view";
+import { NetworkView, describeInstanceRuntime } from "./network-view";
 
 type SharedNetState = ReturnType<
   (typeof import("@/src/context/sharednet-context"))["useSharedNet"]
@@ -260,6 +260,7 @@ describe("SharedNet Network", () => {
         makeInstance(ANON_INSTANCE_ID, null as unknown as AgentId, ANON_PRINCIPAL_ID, {
           agent_id: null,
           display_name: "claude-code",
+          runtime_metadata: { cli_version: "0.1.0", driver_version: "0.3.260", entrypoint: "claude-desktop", runtime_source: "detected" },
           runtime_type: "claude-code",
           presence: "online",
           heartbeat_state: "renewing",
@@ -283,6 +284,13 @@ describe("SharedNet Network", () => {
     expect(seat).toBeVisible();
     expect(within(seat).getByText("claude-code", { selector: "strong" })).toBeVisible();
     expect(within(seat).getByText("claude-code", { selector: "[data-runtime-kind]" })).toBeVisible();
+    fireEvent.click(seat);
+    const card = screen.getByRole("region", { name: "Agent Card" });
+    expect(within(card).getByRole("heading", { level: 2 })).toHaveTextContent("claude-code");
+    expect(within(card).getByText(ANON_PRINCIPAL_ID)).toBeVisible();
+    expect(within(card).getByText("None · untagged")).toBeVisible();
+    expect(within(card).getByText(ANON_INSTANCE_ID)).toBeVisible();
+    expect(within(card).getByText("Runtime · claude-code 0.3.260 · claude-desktop · detected")).toBeVisible();
     expect(screen.getByRole("list", { name: "Visible relationships" })).toHaveTextContent(
       `room_co_membership: source ${instanceIdFor(OWN_AGENT_ID)}; target ${ANON_INSTANCE_ID}`,
     );
@@ -343,7 +351,8 @@ describe("SharedNet Network", () => {
     const card = screen.getByRole("region", { name: "Agent Card" });
     expect(within(card).getByText(OWN_PRINCIPAL_ID)).toBeVisible();
     expect(within(card).getByText(SECOND_OWN_AGENT_ID)).toBeVisible();
-    expect(within(card).getByText("@research-lead")).toBeVisible();
+    // The tag is the Agent id itself; the card names no separate handle.
+    expect(within(card).queryByText("@research-lead")).toBeNull();
 
     // exactly this Agent's Instances, and no others
     expect(within(card).getByText(FIRST_INSTANCE_ID)).toBeVisible();
@@ -672,16 +681,37 @@ describe("SharedNet Network", () => {
 
     const node = inspectButton(OWN_INSTANCE_ID);
     expect(node).toBeVisible();
-    expect(within(node).getByText("default")).toBeVisible();
+    expect(within(node).getByText("Untagged")).toBeVisible();
     expect(node.dataset.agentId).toBe(`default:${OWN_PRINCIPAL_ID}`);
     // The group is a rendering device: the projection still carries no Agent.
     expect(network.agents).toEqual([]);
 
     fireEvent.click(node);
     const card = screen.getByRole("region", { name: "Agent Card" });
-    expect(within(card).getByRole("heading", { level: 2 })).toHaveTextContent("default");
-    expect(within(card).getByText("@default")).toBeVisible();
+    expect(within(card).getByRole("heading", { level: 2 })).toHaveTextContent("Untagged");
+    // No Agent row exists, so the card says so instead of showing the sentinel id.
+    expect(within(card).getByText("None · untagged")).toBeVisible();
+    expect(within(card).queryByText(`default:${OWN_PRINCIPAL_ID}`)).toBeNull();
     expect(within(card).getByText(OWN_INSTANCE_ID)).toBeVisible();
+    expect(within(card).getByText(/^Runtime · .+ · not reported$/)).toBeVisible();
+  });
+
+  it("describes an Instance's driver from its runtime report, and never shows the invite placeholder as a version", () => {
+    const detected = makeInstance(OWN_INSTANCE_ID, OWN_AGENT_ID, OWN_PRINCIPAL_ID, {
+      runtime_type: "claude-code",
+      runtime_metadata: { cli_version: "0.1.0", driver_version: "0.3.260", entrypoint: "claude-desktop", runtime_source: "detected" },
+    });
+    expect(describeInstanceRuntime(detected)).toBe("claude-code 0.3.260 · claude-desktop · detected");
+    const declared = makeInstance(OWN_INSTANCE_ID, OWN_AGENT_ID, OWN_PRINCIPAL_ID, {
+      runtime_type: "codex",
+      runtime_metadata: { cli_version: "0.1.0", runtime_source: "declared" },
+    });
+    expect(describeInstanceRuntime(declared)).toBe("codex 0.1.0 · self-declared");
+    const converted = makeInstance(OWN_INSTANCE_ID, OWN_AGENT_ID, OWN_PRINCIPAL_ID, {
+      runtime_type: "custom",
+      runtime_metadata: { cli_version: "invite" },
+    });
+    expect(describeInstanceRuntime(converted)).toBe("custom · not reported");
   });
 
 });
