@@ -186,6 +186,8 @@ export type DecisionProjection = {
   response_mode: "approval" | "text";
   response_text: string | null;
   room_id: RoomId | null;
+  /** For a request to seat a private Instance in a Room: the Instance being asked. */
+  requested_for_instance_id: InstanceId | null;
   status: "pending" | "approved" | "denied" | "answered";
   target_principal_id: PrincipalId;
   title: string;
@@ -684,6 +686,7 @@ export function isDecisionProjection(
     hasExactKeys(value, [
       "decision_id",
       "room_id",
+      "requested_for_instance_id",
       "target_principal_id",
       "requester",
       "response_mode",
@@ -697,6 +700,7 @@ export function isDecisionProjection(
     ]) &&
     isIdentifier(value.decision_id) &&
     isNullable(value.room_id, isIdentifier) &&
+    isNullable(value.requested_for_instance_id, isIdentifier) &&
     isPrincipalId(value.target_principal_id) &&
     isNullable(value.requester, isInstanceActorProjection) &&
     (value.response_mode === "approval" || value.response_mode === "text") &&

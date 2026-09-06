@@ -2,12 +2,13 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { timingSafeEqual } from "node:crypto";
 
 import { defaultKeyHasher } from "@better-auth/api-key";
-import { and, asc, count, eq, gt, lte, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, inArray, lte, sql } from "drizzle-orm";
 
 import {
   cliLogins,
   agents,
   apiKey,
+  decisions,
   idempotencyRecords,
   instances,
   messages,
@@ -64,6 +65,16 @@ import {
   type SharedNetRepository,
   type StoredHttpResult,
 } from "./repository.ts";
+import type {
+  AddRoomMembersRequest,
+  Admission,
+  CreateRoomRequest,
+  Decision,
+  DecisionId,
+  DecisionStatus,
+  ResolveDecisionRequest,
+  UpdateInstanceRequest,
+} from "../../protocol/src/index.ts";
 
 type Transaction = Parameters<Parameters<SharedNetDatabase["transaction"]>[0]>[0];
 type InstanceRow = typeof instances.$inferSelect;
@@ -95,6 +106,7 @@ function projectPrincipal(row: typeof principals.$inferSelect): Principal {
   return {
     id: row.id,
     display_name: row.displayName,
+    default_reach: row.defaultReach,
     created_at: timestamp(row.createdAt),
     invited_by_principal_id: row.invitedByPrincipalId ?? null,
   };
@@ -127,6 +139,7 @@ function projectInstance(row: InstanceRow, now: Date): Instance {
     runtime_kind: row.runtimeKind,
     cli_version: row.cliVersion,
     runtime_metadata: { ...(row.runtimeMetadata ?? {}) },
+    reach: row.reach,
     status: instanceStatus(row, now),
     display_name: row.displayName ?? null,
     started_at: timestamp(row.startedAt),
@@ -181,6 +194,7 @@ function projectMembership(
     invited_by_principal_id: instance?.invitedByPrincipalId ?? null,
     admitted_by: row.admittedBy,
     invite_id: row.inviteId ?? null,
+    added_by_instance_id: row.addedByInstanceId ?? null,
     runtime_kind: instance?.runtimeKind ?? "custom",
     runtime_version: instance?.cliVersion ?? "",
     runtime_metadata: { ...(instance?.runtimeMetadata ?? {}) },
@@ -193,6 +207,24 @@ function projectMembership(
 }
 
 type CliLoginRow = typeof cliLogins.$inferSelect;
+
+function projectDecision(row: typeof decisions.$inferSelect, requesterAgentId: AgentId | null): Decision {
+  return {
+    id: row.id,
+    principal_id: row.principalId,
+    mode: row.mode,
+    title: row.title,
+    description: row.description,
+    status: row.status,
+    requested_by_agent_id: requesterAgentId,
+    requested_by_instance_id: row.requestedByInstanceId,
+    requested_for_instance_id: row.requestedForInstanceId ?? null,
+    room_id: row.roomId ?? null,
+    answer: row.answer ?? null,
+    created_at: timestamp(row.createdAt),
+    resolved_at: row.resolvedAt ? timestamp(row.resolvedAt) : null,
+  };
+}
 
 function secureDigestEquals(left: string, right: string): boolean {
   const leftBytes = Buffer.from(left, "hex");
@@ -475,6 +507,7 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
                 lastSeenAt: now,
                 leaseExpiresAt,
                 tokenExpiresAt: null,
+                ...(input.reach !== undefined ? { reach: input.reach } : {}),
               })
               .where(eq(instances.id, existing.id))
               .returning();
@@ -490,12 +523,18 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
           }
         }
 
+        const [owner] = await this.executor()
+          .select({ defaultReach: principals.defaultReach })
+          .from(principals)
+          .where(eq(principals.id, auth.principalId))
+          .limit(1);
         const [record] = await this.executor()
           .insert(instances)
           .values({
             id: generatePublicId("i"),
             principalId: auth.principalId,
             agentId: input.agent_id ?? null,
+            reach: input.reach ?? owner?.defaultReach ?? "public",
             issuedByKeyId: auth.actorId,
             tokenDigest,
             localInstanceKey: input.local_instance_key ?? null,
@@ -591,8 +630,8 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
 
   async createRoom(
     auth: InstanceAuth,
-    input: { name: string; description?: string | null },
-  ): Promise<{ room: Room; membership: RoomMember }> {
+    input: CreateRoomRequest,
+  ): Promise<{ room: Room; membership: RoomMember; admissions: Admission[] }> {
     return this.inTransaction(async () => {
       const creator = await this.requireOnline(auth);
       const createdAt = this.now();
@@ -629,6 +668,10 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
       if (!membership) {
         throw new RepositoryError(500, "internal_error", "Room membership creation failed.");
       }
+      const admissions: Admission[] = [];
+      for (const instanceId of input.with ?? []) {
+        admissions.push(await this.admit(creator, room, instanceId));
+      }
       return {
         room: projectRoom(room, creator.agentId),
         membership: projectMembership(
@@ -636,8 +679,213 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
           { ...creator, principalAuthUserId: await this.principalAuthUserId(auth.principalId) },
           createdAt,
         ),
+        admissions,
       };
     });
+  }
+
+  async listRooms(auth: InstanceAuth): Promise<{ items: Room[] }> {
+    await this.instanceRecord(auth);
+    const rows = await this.executor()
+      .select({ room: rooms })
+      .from(roomMembers)
+      .innerJoin(rooms, eq(rooms.id, roomMembers.roomId))
+      .where(and(eq(roomMembers.instanceId, auth.instanceId), eq(roomMembers.state, "active")))
+      .orderBy(desc(rooms.createdAt), desc(rooms.id));
+    const items: Room[] = [];
+    for (const { room } of rows) items.push(await this.projectRoomRow(room));
+    return { items };
+  }
+
+  async addRoomMembers(
+    auth: InstanceAuth,
+    roomId: RoomId,
+    input: AddRoomMembersRequest,
+  ): Promise<{ admissions: Admission[] }> {
+    return this.inTransaction(async () => {
+      const requester = await this.requireOnline(auth);
+      const room = await this.roomById(roomId);
+      await this.requireMembership(auth, room.id);
+      if (room.state === "closed") {
+        throw new RepositoryError(409, "room_closed", "Room is closed.");
+      }
+      const admissions: Admission[] = [];
+      for (const instanceId of input.with) {
+        admissions.push(await this.admit(requester, room, instanceId));
+      }
+      return { admissions };
+    });
+  }
+
+  async updateInstance(auth: InstanceAuth, input: UpdateInstanceRequest): Promise<{ instance: Instance }> {
+    const record = await this.instanceRecord(auth);
+    if (input.reach === undefined) return { instance: projectInstance(record, this.now()) };
+    const [updated] = await this.executor()
+      .update(instances)
+      .set({ reach: input.reach })
+      .where(eq(instances.id, record.id))
+      .returning();
+    if (!updated) throw new RepositoryError(500, "internal_error", "Instance update failed.");
+    return { instance: projectInstance(updated, this.now()) };
+  }
+
+  async listDecisions(
+    auth: InstanceAuth,
+    filter: { status?: DecisionStatus },
+  ): Promise<{ decisions: Decision[] }> {
+    await this.instanceRecord(auth);
+    const rows = await this.executor()
+      .select()
+      .from(decisions)
+      .where(
+        and(
+          eq(decisions.requestedForInstanceId, auth.instanceId),
+          ...(filter.status ? [eq(decisions.status, filter.status)] : []),
+        ),
+      )
+      .orderBy(desc(decisions.createdAt), desc(decisions.id));
+    const tags = await this.tagsOf(rows.map((row) => row.requestedByInstanceId));
+    return { decisions: rows.map((row) => projectDecision(row, tags.get(row.requestedByInstanceId) ?? null)) };
+  }
+
+  async resolveDecision(
+    auth: InstanceAuth,
+    decisionId: DecisionId,
+    input: ResolveDecisionRequest,
+  ): Promise<{ decision: Decision; membership: RoomMember | null }> {
+    return this.inTransaction(async () => {
+      const target = await this.instanceRecord(auth);
+      const [decision] = await this.executor()
+        .select()
+        .from(decisions)
+        .where(and(eq(decisions.id, decisionId), eq(decisions.requestedForInstanceId, auth.instanceId)))
+        .for("update")
+        .limit(1);
+      // A Decision that is not addressed to this Instance does not exist for it.
+      if (!decision) {
+        throw new RepositoryError(404, "decision_not_found", "Decision was not found.");
+      }
+      if (decision.status !== "pending") {
+        throw new RepositoryError(409, "decision_already_resolved", "Decision was already resolved.");
+      }
+      let membership: RoomMember | null = null;
+      const now = this.now();
+      if (input.resolution === "approved") {
+        const room = decision.roomId ? await this.roomById(decision.roomId) : null;
+        if (!room || room.state === "closed") {
+          throw new RepositoryError(409, "room_closed", "Room is closed.");
+        }
+        const seated = await this.seat(room.id, target, "accepted", decision.requestedByInstanceId);
+        membership = projectMembership(
+          seated,
+          { ...target, principalAuthUserId: await this.principalAuthUserId(auth.principalId) },
+          now,
+        );
+      }
+      const [updated] = await this.executor()
+        .update(decisions)
+        .set({ status: input.resolution, resolvedAt: now })
+        .where(eq(decisions.id, decision.id))
+        .returning();
+      if (!updated) throw new RepositoryError(500, "internal_error", "Decision update failed.");
+      const tags = await this.tagsOf([updated.requestedByInstanceId]);
+      return { decision: projectDecision(updated, tags.get(updated.requestedByInstanceId) ?? null), membership };
+    });
+  }
+
+  /**
+   * One Instance named in `with` (decision 2026-09-06 reach, §3): seated at
+   * once when public or the requester's own, asked through a Decision when
+   * private, refused otherwise. "refused" never says why, so ids cannot be
+   * told apart by asking.
+   */
+  private async admit(requester: InstanceRow, room: RoomRow, targetId: InstanceId): Promise<Admission> {
+    const refused: Admission = { instance_id: targetId, status: "refused", decision_id: null };
+    const [target] = await this.executor().select().from(instances).where(eq(instances.id, targetId)).limit(1);
+    if (!target || target.state !== "active") return refused;
+    const [existing] = await this.executor()
+      .select({ state: roomMembers.state })
+      .from(roomMembers)
+      .where(and(eq(roomMembers.roomId, room.id), eq(roomMembers.instanceId, target.id)))
+      .limit(1);
+    if (existing?.state === "active") return { instance_id: targetId, status: "member", decision_id: null };
+    if (target.principalId === requester.principalId || target.reach === "public") {
+      await this.seat(room.id, target, "added", requester.id);
+      return { instance_id: targetId, status: "member", decision_id: null };
+    }
+    const [pending] = await this.executor()
+      .select({ id: decisions.id })
+      .from(decisions)
+      .where(
+        and(
+          eq(decisions.roomId, room.id),
+          eq(decisions.requestedForInstanceId, target.id),
+          eq(decisions.status, "pending"),
+        ),
+      )
+      .limit(1);
+    if (pending) return { instance_id: targetId, status: "pending", decision_id: pending.id };
+    const [decision] = await this.executor()
+      .insert(decisions)
+      .values({
+        id: generatePublicId("dec"),
+        principalId: target.principalId,
+        mode: "approval",
+        title: `${requester.id} wants to add ${target.id} to Room "${room.name}"`,
+        description: `Instance ${requester.id} of Principal ${requester.principalId} asked to seat ${target.id} in Room ${room.id} ("${room.name}"). Approve to take the seat; deny to refuse.`,
+        status: "pending",
+        requestedByInstanceId: requester.id,
+        requestedForInstanceId: target.id,
+        roomId: room.id,
+        answer: null,
+        createdAt: this.now(),
+        resolvedAt: null,
+      })
+      .returning({ id: decisions.id });
+    if (!decision) throw new RepositoryError(500, "internal_error", "Decision creation failed.");
+    return { instance_id: targetId, status: "pending", decision_id: decision.id };
+  }
+
+  /** Writes an active membership, reviving a left one, and records who asked. */
+  private async seat(
+    roomId: RoomId,
+    target: InstanceRow,
+    admittedBy: "added" | "accepted",
+    addedBy: InstanceId,
+  ): Promise<typeof roomMembers.$inferSelect> {
+    const joinedAt = this.now();
+    const [membership] = await this.executor()
+      .insert(roomMembers)
+      .values({
+        principalId: target.principalId,
+        roomId,
+        instanceId: target.id,
+        state: "active",
+        joinedAt,
+        leftAt: null,
+        admittedBy,
+        inviteId: null,
+        addedByInstanceId: addedBy,
+      })
+      .onConflictDoUpdate({
+        target: [roomMembers.roomId, roomMembers.instanceId],
+        set: { state: "active", leftAt: null, joinedAt, admittedBy, inviteId: null, addedByInstanceId: addedBy },
+      })
+      .returning();
+    if (!membership) throw new RepositoryError(500, "internal_error", "Room membership update failed.");
+    return membership;
+  }
+
+  /** The current tag of each Instance named, for projecting who asked. */
+  private async tagsOf(instanceIds: InstanceId[]): Promise<Map<InstanceId, AgentId | null>> {
+    const tags = new Map<InstanceId, AgentId | null>();
+    if (instanceIds.length === 0) return tags;
+    const rows = await this.executor()
+      .select({ id: instances.id, agentId: instances.agentId })
+      .from(instances)
+      .where(inArray(instances.id, instanceIds));
+    for (const row of rows) tags.set(row.id, row.agentId ?? null);
+    return tags;
   }
 
   async joinRoom(
@@ -799,6 +1047,7 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
           createdAt: now,
           invitedByPrincipalId: invite.principalId,
           mergedIntoPrincipalId: null,
+          defaultReach: "public",
         })
         .returning();
       if (!principal) {
@@ -822,6 +1071,7 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
           issuedByKeyId: null,
           admittedByInviteId: invite.id,
           displayName: input.name,
+          reach: input.reach ?? "public",
           tokenDigest: digestSecret(memberToken),
           localInstanceKey: null,
           runtimeKind: runtime?.kind ?? "custom",

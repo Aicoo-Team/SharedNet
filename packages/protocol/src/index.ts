@@ -205,6 +205,8 @@ export function verifySecretDigest(secret: string, expectedDigest: string): bool
 export interface Principal {
   id: PrincipalId;
   display_name: string | null;
+  /** What a new Instance's reach is when its registration does not say. */
+  default_reach: Reach;
   created_at: Timestamp;
   /**
    * Set for an anonymous Principal: one provisioned by an invite join for an
@@ -273,6 +275,8 @@ export interface Instance {
   cli_version: string;
   /** Where it runs — host, workspace, OS. Diagnostic; never authorization. */
   runtime_metadata: Record<string, string>;
+  /** Public: anyone with the id may seat it in a Room. Private: they must ask. */
+  reach: Reach;
   status: InstanceStatus;
   /** What an invite-admitted Instance calls itself. Null for a key-registered one, whose tag says who it is. */
   display_name: string | null;
@@ -312,7 +316,22 @@ export interface Room {
 export type MemberKind = "instance" | "guest";
 
 /** How a seat was admitted: by knowing the Room id, or by presenting an invite. */
-export type AdmittedBy = "room_id" | "invite";
+/**
+ * How a seat was admitted: by knowing the Room id, by an invite, by being
+ * added as a public Instance, or by accepting a request as a private one
+ * (decision 2026-09-06 reach, §3).
+ */
+export type AdmittedBy = "room_id" | "invite" | "added" | "accepted";
+
+/**
+ * Whether anyone who knows this Instance's id may seat it in a Room at once
+ * (public) or has to ask first (private). Decision 2026-09-06 reach, §2.
+ */
+export type Reach = "public" | "private";
+export const REACH_VALUES = ["public", "private"] as const;
+export function isReach(value: unknown): value is Reach {
+  return value === "public" || value === "private";
+}
 
 /**
  * Presence is derived from the member's most recent authenticated request, so
@@ -355,6 +374,8 @@ export interface RoomMember {
   invited_by_principal_id: PrincipalId | null;
   admitted_by: AdmittedBy;
   invite_id: InviteId | null;
+  /** For a seat that was added or accepted: the Instance that asked. */
+  added_by_instance_id: InstanceId | null;
   /** The driver behind the Instance, its reported version, and diagnostics such as how that was learned. */
   runtime_kind: RuntimeKind;
   runtime_version: string;
@@ -407,6 +428,8 @@ export interface Decision {
   status: DecisionStatus;
   requested_by_agent_id: AgentId | null;
   requested_by_instance_id: InstanceId;
+  /** For a request to seat a private Instance: the Instance being asked. */
+  requested_for_instance_id: InstanceId | null;
   room_id: RoomId | null;
   answer: string | null;
   created_at: Timestamp;
@@ -695,6 +718,8 @@ export interface StartInstanceRequest {
   local_instance_key?: string;
   /** Host, workspace, OS and the like. Replaces what was stored before. */
   runtime_metadata?: Record<string, string>;
+  /** Omit to inherit the Principal's default; on re-registration, omit to keep. */
+  reach?: Reach;
 }
 
 function parseRuntimeMetadata(value: unknown): Record<string, string> {
@@ -720,7 +745,7 @@ export function parseStartInstanceRequest(value: unknown): StartInstanceRequest 
   requireExactKeys(
     value,
     ["runtime_kind", "cli_version"],
-    ["agent_id", "local_instance_key", "runtime_metadata"],
+    ["agent_id", "local_instance_key", "runtime_metadata", "reach"],
   );
   const {
     runtime_kind: runtimeKind,
@@ -728,7 +753,9 @@ export function parseStartInstanceRequest(value: unknown): StartInstanceRequest 
     agent_id: agentId,
     local_instance_key: localInstanceKey,
     runtime_metadata: runtimeMetadata,
+    reach,
   } = value;
+  if (reach !== undefined && !isReach(reach)) throw new ProtocolValidationError();
 
   if (
     typeof runtimeKind !== "string" ||
@@ -756,7 +783,70 @@ export function parseStartInstanceRequest(value: unknown): StartInstanceRequest 
   if (agentId !== undefined) request.agent_id = agentId as AgentId | null;
   if (localInstanceKey !== undefined) request.local_instance_key = localInstanceKey;
   if (runtimeMetadata !== undefined) request.runtime_metadata = parseRuntimeMetadata(runtimeMetadata);
+  if (reach !== undefined) request.reach = reach;
   return request;
+}
+
+export interface UpdateInstanceRequest {
+  reach?: Reach;
+}
+
+/** `PATCH /instances/current`: what an Instance may change about itself. */
+export function parseUpdateInstanceRequest(value: unknown): UpdateInstanceRequest {
+  requireExactKeys(value, [], ["reach"]);
+  const { reach } = value as { reach?: unknown };
+  if (reach !== undefined && !isReach(reach)) throw new ProtocolValidationError();
+  return reach === undefined ? {} : { reach };
+}
+
+/** How many Instances one request may name. */
+export const MAX_ADMISSIONS = 50;
+
+function parseInstanceIdList(value: unknown): InstanceId[] {
+  if (!Array.isArray(value) || value.length < 1 || value.length > MAX_ADMISSIONS) {
+    throw new ProtocolValidationError();
+  }
+  const ids: InstanceId[] = [];
+  for (const item of value) {
+    if (typeof item !== "string" || !isPublicId(item, "i") || ids.includes(item as InstanceId)) {
+      throw new ProtocolValidationError();
+    }
+    ids.push(item as InstanceId);
+  }
+  return ids;
+}
+
+/**
+ * What became of one Instance named in `with`: seated at once (member), asked
+ * through a Decision (pending), or refused, which says nothing about why.
+ */
+export type AdmissionStatus = "member" | "pending" | "refused";
+export interface Admission {
+  instance_id: InstanceId;
+  status: AdmissionStatus;
+  /** The Decision a private Instance has to answer; null otherwise. */
+  decision_id: DecisionId | null;
+}
+
+export interface AddRoomMembersRequest {
+  with: InstanceId[];
+}
+
+export function parseAddRoomMembersRequest(value: unknown): AddRoomMembersRequest {
+  requireExactKeys(value, ["with"], []);
+  return { with: parseInstanceIdList((value as { with: unknown }).with) };
+}
+
+export type DecisionResolutionOutcome = "approved" | "denied";
+export interface ResolveDecisionRequest {
+  resolution: DecisionResolutionOutcome;
+}
+
+export function parseResolveDecisionRequest(value: unknown): ResolveDecisionRequest {
+  requireExactKeys(value, ["resolution"], []);
+  const { resolution } = value as { resolution: unknown };
+  if (resolution !== "approved" && resolution !== "denied") throw new ProtocolValidationError();
+  return { resolution };
 }
 
 export interface CreateAgentRequest {
@@ -802,11 +892,13 @@ export function parseCreateAgentRequest(value: unknown): CreateAgentRequest {
 export interface CreateRoomRequest {
   name: string;
   description?: string | null;
+  /** Instances to seat as the Room opens: public ones at once, private ones by asking. */
+  with?: InstanceId[];
 }
 
 export function parseCreateRoomRequest(value: unknown): CreateRoomRequest {
-  requireExactKeys(value, ["name"], ["description"]);
-  const { name, description } = value;
+  requireExactKeys(value, ["name"], ["description", "with"]);
+  const { name, description, with: withIds } = value as { name: unknown; description?: unknown; with?: unknown };
   if (typeof name !== "string") {
     throw new ProtocolValidationError();
   }
@@ -824,9 +916,10 @@ export function parseCreateRoomRequest(value: unknown): CreateRoomRequest {
     throw new ProtocolValidationError();
   }
 
-  return description === undefined
-    ? { name: normalizedName }
-    : { name: normalizedName, description: description as string | null };
+  const request: CreateRoomRequest = { name: normalizedName };
+  if (description !== undefined) request.description = description as string | null;
+  if (withIds !== undefined) request.with = parseInstanceIdList(withIds);
+  return request;
 }
 
 export interface PostMessageRequest {
@@ -865,6 +958,8 @@ export interface JoinRoomWithInviteRequest {
   name: string;
   /** The driver behind it, if it can say. Recorded on the Instance the join provisions. */
   runtime?: RuntimeReport;
+  /** Omit for public, the default for a seat that arrived by invite. */
+  reach?: Reach;
 }
 
 export function parseRuntimeReport(value: unknown): RuntimeReport {
@@ -962,8 +1057,9 @@ export function parseJoinRoomRequest(value: unknown): JoinRoomRequest {
 }
 
 export function parseJoinRoomWithInviteRequest(value: unknown): JoinRoomWithInviteRequest {
-  requireExactKeys(value, ["name"], ["runtime"]);
-  const { name, runtime } = value as { name: unknown; runtime?: unknown };
+  requireExactKeys(value, ["name"], ["runtime", "reach"]);
+  const { name, runtime, reach } = value as { name: unknown; runtime?: unknown; reach?: unknown };
+  if (reach !== undefined && !isReach(reach)) throw new ProtocolValidationError();
   if (typeof name !== "string") {
     throw new ProtocolValidationError();
   }
@@ -977,6 +1073,7 @@ export function parseJoinRoomWithInviteRequest(value: unknown): JoinRoomWithInvi
   }
   const request: JoinRoomWithInviteRequest = { name: normalized };
   if (runtime !== undefined) request.runtime = parseRuntimeReport(runtime);
+  if (reach !== undefined) request.reach = reach;
   return request;
 }
 
@@ -1016,6 +1113,9 @@ export const CAPABILITIES = [
   "rooms.inbox",
   "decisions.approval",
   "decisions.text",
+  "decisions.resolve",
+  "instances.reach",
+  "rooms.members",
   "network",
 ] as const;
 
@@ -1077,7 +1177,7 @@ export const DISCOVERY_DOCUMENT = {
 } as const satisfies DiscoveryDocument;
 
 export interface RouteDefinition {
-  method: "GET" | "POST" | "PUT";
+  method: "GET" | "POST" | "PUT" | "PATCH";
   path: string;
   auth: "public" | "api_key" | "instance" | "any";
   operationId: string;
@@ -1117,7 +1217,20 @@ export const ROUTE_CATALOGUE = [
     auth: "instance",
     operationId: "heartbeat",
   },
+  {
+    method: "PATCH",
+    path: "/api/v1/instances/current",
+    auth: "instance",
+    operationId: "updateInstance",
+  },
+  { method: "GET", path: "/api/v1/rooms", auth: "instance", operationId: "listRooms" },
   { method: "POST", path: "/api/v1/rooms", auth: "instance", operationId: "createRoom" },
+  {
+    method: "POST",
+    path: "/api/v1/rooms/{room_id}/members",
+    auth: "any",
+    operationId: "addRoomMembers",
+  },
   {
     method: "GET",
     path: "/api/v1/rooms/{room_id}",
@@ -1149,6 +1262,13 @@ export const ROUTE_CATALOGUE = [
     operationId: "waitForMessages",
   },
   { method: "GET", path: "/api/v1/inbox", auth: "any", operationId: "listInbox" },
+  { method: "GET", path: "/api/v1/decisions", auth: "any", operationId: "listDecisions" },
+  {
+    method: "POST",
+    path: "/api/v1/decisions/{decision_id}/resolve",
+    auth: "any",
+    operationId: "resolveDecision",
+  },
   { method: "POST", path: "/api/v1/cli/logins", auth: "public", operationId: "startCliLogin" },
   {
     method: "POST",
@@ -1234,6 +1354,11 @@ export const OPENAPI_DOCUMENT = {
         security: [{ instanceToken: [] }],
         responses: { "200": { description: "Principal, Agent, and Instance" }, default: { description: "Error" } },
       },
+      patch: {
+        operationId: "updateInstance",
+        security: [{ instanceToken: [] }],
+        responses: { "200": { description: "The Instance after the change (today: reach)" }, default: { description: "Error" } },
+      },
     },
     "/api/v1/instances/current/heartbeat": {
       post: {
@@ -1243,6 +1368,11 @@ export const OPENAPI_DOCUMENT = {
       },
     },
     "/api/v1/rooms": {
+      get: {
+        operationId: "listRooms",
+        security: [{ instanceToken: [] }],
+        responses: { "200": { description: "Rooms the calling Instance is an active member of, newest first" }, default: { description: "Error" } },
+      },
       post: {
         operationId: "createRoom",
         security: [{ instanceToken: [] }],
@@ -1321,6 +1451,42 @@ export const OPENAPI_DOCUMENT = {
         ],
         responses: {
           "200": { description: "Pending, or approved with the API key minted once for this login" },
+          default: { description: "Error" },
+        },
+      },
+    },
+    "/api/v1/rooms/{room_id}/members": {
+      post: {
+        operationId: "addRoomMembers",
+        security: [{ instanceToken: [] }, { roomMemberToken: [] }],
+        parameters: [
+          { name: "room_id", in: "path", required: true, schema: { type: "string", pattern: ROOM_ID_PATTERN.source } },
+        ],
+        responses: {
+          "200": { description: "One admission per Instance named: member, pending, or refused" },
+          default: { description: "Error" },
+        },
+      },
+    },
+    "/api/v1/decisions": {
+      get: {
+        operationId: "listDecisions",
+        security: [{ instanceToken: [] }, { roomMemberToken: [] }],
+        parameters: [
+          { name: "status", in: "query", required: false, schema: { type: "string", enum: ["pending", "approved", "denied", "answered"] } },
+        ],
+        responses: { "200": { description: "Decisions addressed to the calling Instance, newest first" }, default: { description: "Error" } },
+      },
+    },
+    "/api/v1/decisions/{decision_id}/resolve": {
+      post: {
+        operationId: "resolveDecision",
+        security: [{ instanceToken: [] }, { roomMemberToken: [] }],
+        parameters: [
+          { name: "decision_id", in: "path", required: true, schema: { type: "string", pattern: DECISION_ID_PATTERN.source } },
+        ],
+        responses: {
+          "200": { description: "The resolved Decision and, when approved, the membership it created" },
           default: { description: "Error" },
         },
       },

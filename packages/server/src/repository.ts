@@ -6,10 +6,18 @@ import type {
   SniSecret,
   JoinRoomRequest,
   InboxPosition,
+  AddRoomMembersRequest,
+  Admission,
   Agent,
   AgentId,
   ApiKeyId,
   CreateAgentRequest,
+  CreateRoomRequest,
+  Decision,
+  DecisionId,
+  DecisionStatus,
+  ResolveDecisionRequest,
+  UpdateInstanceRequest,
   Instance,
   InstanceId,
   InviteId,
@@ -126,10 +134,36 @@ export interface SharedNetRepository {
   heartbeat(
     auth: InstanceAuth,
   ): Promise<{ instance: Instance; heartbeat_after_seconds: 30 }>;
+  /**
+   * Opens a Room with the caller seated. Each Instance in `with` is seated at
+   * once if public, asked through a Decision if private, or refused; the
+   * caller's own Instances count as public.
+   */
   createRoom(
     auth: InstanceAuth,
-    input: { name: string; description?: string | null },
-  ): Promise<{ room: Room; membership: RoomMember }>;
+    input: CreateRoomRequest,
+  ): Promise<{ room: Room; membership: RoomMember; admissions: Admission[] }>;
+  /** The Rooms the calling Instance is an active member of, newest first. */
+  listRooms(auth: InstanceAuth): Promise<{ items: Room[] }>;
+  /** Grows a Room the way `with` formed it; any active member may ask. */
+  addRoomMembers(
+    auth: InstanceAuth,
+    roomId: RoomId,
+    input: AddRoomMembersRequest,
+  ): Promise<{ admissions: Admission[] }>;
+  /** What an Instance may change about itself; today, its reach. */
+  updateInstance(auth: InstanceAuth, input: UpdateInstanceRequest): Promise<{ instance: Instance }>;
+  /** Decisions addressed to the calling Instance, newest first. */
+  listDecisions(auth: InstanceAuth, filter: { status?: DecisionStatus }): Promise<{ decisions: Decision[] }>;
+  /**
+   * The addressed Instance answers for itself. Approving a request to seat it
+   * writes the membership and returns it.
+   */
+  resolveDecision(
+    auth: InstanceAuth,
+    decisionId: DecisionId,
+    input: ResolveDecisionRequest,
+  ): Promise<{ decision: Decision; membership: RoomMember | null }>;
   /**
    * Joins as the caller's own Principal. With `invite`, the seat is recorded
    * as admitted by that invite (which must open this Room and be usable) and

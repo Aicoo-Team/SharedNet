@@ -550,6 +550,77 @@ try {
   );
   assert.equal(keyRegistered.rows[0].token_expires_at, null, "a key-registered Instance must not expire");
   assert.equal(starts[0].instance.token_expires_at, null);
+  // --- reach: forming a group by Instance id (decision 2026-09-06). The
+  //     host seats one of its own Instances at once, asks the anonymous seat
+  //     (now private), and is refused an unknown id without being told why. ---
+  const sessionTokenOf = async (id) =>
+    JSON.parse(await readFile(join(sandbox, "state", "sharednet", "sessions", `${id}.json`), "utf8")).instance_token;
+  const hostToken = await sessionTokenOf(instanceIds[0]);
+  const guestToken = joined.member_token;
+  const guestInstanceId = joined.membership.member_id;
+  const madePrivate = await fetch(`${apiBaseUrl}/api/v1/instances/current`, {
+    method: "PATCH",
+    headers: { authorization: `Bearer ${guestToken}`, "content-type": "application/json" },
+    body: JSON.stringify({ reach: "private" }),
+  });
+  assert.equal(madePrivate.status, 200);
+  assert.equal((await madePrivate.json()).instance.reach, "private");
+  const formed = await fetch(`${apiBaseUrl}/api/v1/rooms`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${hostToken}`, "content-type": "application/json", "idempotency-key": randomUUID() },
+    body: JSON.stringify({ name: "Formed by id", with: [instanceIds[1], guestInstanceId, "i_NoSuchInst"] }),
+  });
+  assert.equal(formed.status, 201);
+  const formedBody = await formed.json();
+  assert.deepEqual(
+    formedBody.admissions.map((admission) => admission.status),
+    ["member", "pending", "refused"],
+    "own Instance seated, private one asked, unknown one refused",
+  );
+  const seatDecisionId = formedBody.admissions[1].decision_id;
+  const pendingForGuest = await (
+    await fetch(`${apiBaseUrl}/api/v1/decisions?status=pending`, { headers: { authorization: `Bearer ${guestToken}` } })
+  ).json();
+  assert.equal(pendingForGuest.decisions.length, 1);
+  assert.equal(pendingForGuest.decisions[0].id, seatDecisionId);
+  assert.equal(pendingForGuest.decisions[0].requested_by_instance_id, instanceIds[0]);
+  assert.equal(pendingForGuest.decisions[0].requested_for_instance_id, guestInstanceId);
+  const guestAccepts = await fetch(`${apiBaseUrl}/api/v1/decisions/${seatDecisionId}/resolve`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${guestToken}`, "content-type": "application/json" },
+    body: JSON.stringify({ resolution: "approved" }),
+  });
+  assert.equal(guestAccepts.status, 200);
+  const accepted = await guestAccepts.json();
+  assert.equal(accepted.decision.status, "approved");
+  assert.equal(accepted.membership.admitted_by, "accepted");
+  assert.equal(accepted.membership.added_by_instance_id, instanceIds[0]);
+  const guestRooms = await (
+    await fetch(`${apiBaseUrl}/api/v1/rooms`, { headers: { authorization: `Bearer ${guestToken}` } })
+  ).json();
+  assert.deepEqual(
+    guestRooms.items.map((room) => room.id).sort(),
+    [formedBody.room.id, roomId].sort(),
+    "the accepted seat finds the new Room in its list",
+  );
+  const formedSeats = await database.query(
+    "SELECT instance_id, admitted_by, added_by_instance_id FROM sharednet.room_member WHERE room_id = $1 AND instance_id <> $2",
+    [formedBody.room.id, instanceIds[0]],
+  );
+  assert.deepEqual(
+    formedSeats.rows.map((row) => [row.admitted_by, row.added_by_instance_id]).sort(),
+    [["accepted", instanceIds[0]], ["added", instanceIds[0]]],
+  );
+  const seatDecisionRow = await database.query(
+    "SELECT status, requested_for_instance_id, room_id FROM sharednet.decision WHERE id = $1",
+    [seatDecisionId],
+  );
+  assert.deepEqual(seatDecisionRow.rows[0], {
+    status: "approved",
+    requested_for_instance_id: guestInstanceId,
+    room_id: formedBody.room.id,
+  });
+
   // --- sharednet login: a code approved in the Web hands the CLI a key, and
   //     binds the anonymous seat this machine holds to the approving account. ---
   const loginStart = await fetch(`${apiBaseUrl}/api/v1/cli/logins`, {

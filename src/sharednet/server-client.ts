@@ -949,7 +949,57 @@ export class SharedNetServerClient {
       .where(eq(decisions.id, decisionId as never))
       .returning();
 
+    // The human said yes to a request to seat one of this Principal's private
+    // Instances: the seat is written here, the same way the Instance's own
+    // API answer writes it (decision 2026-09-06 reach, §4).
+    if (resolution.outcome === "approved" && existing.requestedForInstanceId && existing.roomId) {
+      await this.seatAccepted(existing.roomId, existing.requestedForInstanceId, existing.requestedByInstanceId);
+    }
+
     return this.decisionProjection(updated, await this.tagsFor(principal.id));
+  }
+
+  /** Writes the accepted seat, reviving a left one; a live seat is left alone. */
+  private async seatAccepted(roomId: string, instanceId: string, addedBy: string): Promise<void> {
+    const database = this.database();
+    const memberRows = await database.select().from(roomMembers);
+    const existing = memberRows.find(
+      (row) => (row.roomId as string) === roomId && (row.instanceId as string) === instanceId,
+    );
+    if (existing?.state === "active") return;
+    const now = new Date();
+    if (existing) {
+      await database
+        .update(roomMembers)
+        .set({
+          state: "active",
+          leftAt: null,
+          joinedAt: now,
+          admittedBy: "accepted",
+          inviteId: null,
+          addedByInstanceId: addedBy as never,
+        })
+        .where(and(eq(roomMembers.roomId, roomId as never), eq(roomMembers.instanceId, instanceId as never)))
+        .returning();
+      return;
+    }
+    const instanceRows = await database.select().from(instances);
+    const target = instanceRows.find((row) => (row.id as string) === instanceId);
+    if (!target) throw new SharedNetApiError("instance_not_found", 404, "Instance not found");
+    await database
+      .insert(roomMembers)
+      .values({
+        principalId: target.principalId as never,
+        roomId: roomId as never,
+        instanceId: instanceId as never,
+        state: "active",
+        joinedAt: now,
+        leftAt: null,
+        admittedBy: "accepted",
+        inviteId: null,
+        addedByInstanceId: addedBy as never,
+      })
+      .returning();
   }
 
   /** Rooms this Principal has a membership in — the Rooms it can see. */
@@ -1013,6 +1063,7 @@ export class SharedNetServerClient {
       response_mode: row.mode,
       response_text: row.answer,
       room_id: (row.roomId ?? null) as RoomId | null,
+      requested_for_instance_id: (row.requestedForInstanceId ?? null) as InstanceId | null,
       status: row.status,
       target_principal_id: row.principalId as PrincipalId,
       title: row.title,

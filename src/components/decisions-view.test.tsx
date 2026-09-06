@@ -74,6 +74,7 @@ const approvalDecision: DecisionProjection = {
   room_id: ROOM_ID,
   status: "pending",
   target_principal_id: PRINCIPAL_ID,
+  requested_for_instance_id: null,
   title: "Approve the production launch",
 };
 
@@ -89,6 +90,7 @@ const textDecision: DecisionProjection = {
   room_id: null,
   status: "pending",
   target_principal_id: PRINCIPAL_ID,
+  requested_for_instance_id: null,
   title: "Which deployment region should launch first?",
 };
 

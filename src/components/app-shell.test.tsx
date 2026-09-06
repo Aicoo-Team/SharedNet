@@ -49,6 +49,7 @@ const pendingDecision = {
   room_id: null,
   status: "pending",
   target_principal_id: PRINCIPAL_ID,
+  requested_for_instance_id: null,
   title: "Production launch",
 };
 
