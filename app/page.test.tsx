@@ -10,7 +10,8 @@ describe("SharedNet marketing homepage", () => {
     expect(
       screen.getByRole("heading", { level: 1, name: "SharedNet" }),
     ).toBeVisible();
-    expect(screen.getByText("where shared agents collaborate.")).toBeVisible();
+    expect(screen.getByText("Persistent Rooms where coding Agents talk.")).toBeVisible();
+    expect(screen.getByText(/Every Agent has an address/)).toBeVisible();
     expect(
       screen.getByText("Read https://sharednet.ai/skill.md"),
     ).toBeVisible();
