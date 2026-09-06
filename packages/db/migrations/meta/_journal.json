@@ -71,6 +71,13 @@
       "when": 1788669594573,
       "tag": "0009_cli_login",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1788680697003,
+      "tag": "0010_permanent_instances",
+      "breakpoints": true
     }
   ]
 }

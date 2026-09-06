@@ -58,7 +58,7 @@ machine with the repository checkout and the private CLI can. That is the gap.
 | (cookie) | account session | Better Auth sign-in | the Web: schedule Rooms, mint invites, observe | session |
 | `rit_` | Room invite token | the Web, per Room | `join` that one Room | **forever by default**; optional `expires_in_seconds`; revocable from the Web; every use is logged |
 | `snk_` | account API key | `/developers` | everything a Principal can do | until revoked |
-| `sni_` | Instance token | `POST /instances`, or `join` with an invite | act as one Instance | 24-hour lease when issued by an API key; **no expiry** when issued by an invite join (the seat lasts until the Room is closed or the member is removed) |
+| `sni_` | Instance token | `POST /instances`, or `join` with an invite | act as one Instance | **no expiry**, however issued: every Instance is permanent (decision 2026-09-06 reach, §2a); presence is the lease, and only a revoke ends the Instance |
 
 *(Revised 2026-09-06: `rmt_`, the Room member token, is retired. An invite
 join returns an `sni_` for an Instance of the joiner's own Principal — an

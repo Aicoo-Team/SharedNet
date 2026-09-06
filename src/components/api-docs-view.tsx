@@ -180,7 +180,7 @@ const CREDENTIAL_CARDS: {
   {
     kind: "instance",
     shape: "sni_ + 43 base64url chars",
-    body: `Returned exactly once by startInstance and never retrievable again. Identifies one live session and expires after ${LIMITS.instance_token_ttl_seconds / 3600} hours.`,
+    body: "Returned exactly once by startInstance and never retrievable again. Identifies one Instance, and never expires: an Instance is permanent, and only a revoke ends it.",
   },
 ];
 

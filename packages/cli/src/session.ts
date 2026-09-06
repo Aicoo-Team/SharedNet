@@ -168,14 +168,6 @@ export function storedSessionFromStart(
       5,
     );
   }
-  const expiresAt = instance.token_expires_at ?? instance.expires_at;
-  if (!expiresAt) {
-    throw new CliError(
-      "invalid_server_response",
-      "The SharedNet service returned an invalid Instance response.",
-      5,
-    );
-  }
   return {
     schema_version: 1,
     base_url: baseUrl,
@@ -186,7 +178,7 @@ export function storedSessionFromStart(
     instance_token: token,
     created_at: instance.started_at,
     lease_expires_at: instance.lease_expires_at,
-    expires_at: expiresAt,
+    expires_at: null,
   };
 }
 
@@ -209,7 +201,7 @@ export async function selectSession(
   }
 
   const usable = (await listSessions(paths)).filter(
-    (session) => session.base_url === baseUrl && Date.parse(session.expires_at) > Date.now(),
+    (session) => session.base_url === baseUrl,
   );
   if (usable.length !== 1) {
     throw localError(
@@ -226,10 +218,6 @@ export async function refreshIfNeeded(
   session: StoredSession,
   now: Date,
 ): Promise<StoredSession> {
-  if (Date.parse(session.expires_at) <= now.getTime()) {
-    await deleteSession(paths, session.instance_id);
-    throw new CliError("invalid_credentials", "The local Instance session has expired.", 3);
-  }
   if (Date.parse(session.lease_expires_at) - now.getTime() > 30_000) return session;
 
   try {
@@ -240,8 +228,7 @@ export async function refreshIfNeeded(
     const refreshed: StoredSession = {
       ...session,
       lease_expires_at: payload.instance.lease_expires_at,
-      expires_at:
-        payload.instance.token_expires_at ?? payload.instance.expires_at ?? session.expires_at,
+      expires_at: null,
     };
     await writeSession(paths, refreshed);
     return refreshed;

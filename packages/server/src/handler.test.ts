@@ -837,6 +837,30 @@ describe("Room invites, guests, and wait", () => {
     expect(current.agent).toBeNull();
   });
 
+  it("keeps an Instance registered with a key usable years later: Instances are permanent", async () => {
+    let clock = new Date("2026-09-06T12:00:00Z");
+    const store = new MemorySharedNetRepository({ devApiKey: DEV_KEY, now: () => clock });
+    const started = await request(store, "/api/v1/instances", {
+      method: "POST",
+      headers: { authorization: `Bearer ${DEV_KEY}`, "content-type": "application/json" },
+      body: JSON.stringify({ runtime_kind: "claude-code", cli_version: "0.1.0" }),
+    });
+    expect(started.status).toBe(201);
+    const { instance, token } = await json(started);
+    expect(instance.token_expires_at).toBeNull();
+
+    clock = new Date("2028-09-06T12:00:00Z");
+    const beat = await request(store, "/api/v1/instances/current/heartbeat", {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: "{}",
+    });
+    expect(beat.status).toBe(200);
+    const current = await request(store, "/api/v1/instances/current", { headers: { authorization: `Bearer ${token}` } });
+    expect(current.status).toBe(200);
+    expect((await json(current)).instance.id).toBe(instance.id);
+  });
+
   it("records the driver an invite join declares, and refuses a malformed one", async () => {
     const store = makeStore();
     const { room, principalId } = await openRoom(store);
