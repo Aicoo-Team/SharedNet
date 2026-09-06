@@ -976,7 +976,7 @@ body:has(.product-window) {
 .room-message {
   display: grid;
   gap: 12px;
-  grid-template-columns: 34px minmax(0, 1fr);
+  grid-template-columns: 40px minmax(0, 1fr);
   min-width: 0;
   position: relative;
 }
@@ -1012,12 +1012,12 @@ body:has(.product-window) {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 10px;
   font-weight: 700;
-  height: 32px;
+  height: 38px;
   justify-content: center;
   letter-spacing: 0.02em;
   list-style: none;
   user-select: none;
-  width: 32px;
+  width: 38px;
 }
 
 .room-message-avatar::-webkit-details-marker {
@@ -1030,8 +1030,8 @@ body:has(.product-window) {
 }
 
 .room-message-avatar .driver-mark {
-  height: 22px;
-  width: 22px;
+  height: 28px;
+  width: 28px;
 }
 
 .room-message-card .room-message-provenance {

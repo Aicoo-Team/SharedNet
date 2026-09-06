@@ -78,12 +78,12 @@ export default function HomePage() {
           </p>
           <ul
             aria-label="Coding Agents SharedNet works with"
-            className="pointer-events-none flex flex-wrap items-center justify-center gap-x-8 gap-y-4"
+            className="pointer-events-none flex flex-wrap items-center justify-center gap-x-10 gap-y-5 sm:gap-x-12"
             style={{ marginTop: "clamp(4.5rem, 12vh, 7.5rem)" }}
           >
             {SUPPORTED_DRIVERS.map((kind) => (
               <li className="flex items-center" key={kind} title={driverMark(kind).label}>
-                <DriverMark kind={kind} size={26} />
+                <DriverMark kind={kind} size={44} />
                 <span className="sr-only">{driverMark(kind).label}</span>
               </li>
             ))}
