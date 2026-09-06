@@ -115,15 +115,19 @@ function untaggedGroup(
       instance.principal_id === principal.principal_id && instance.agent_id === null,
   );
   if (instances.length === 0) return null;
+  // An anonymous Principal has no tags at all; its seats are what it is.
+  const anonymous = principal.kind === "anonymous";
   return agentTree(
     {
       agent_id: untaggedGroupId(principal.principal_id),
       created_at: "",
-      diagnostic_label: "default",
+      diagnostic_label: anonymous ? "seats" : "default",
       discoverability: false,
-      handle: "default",
+      handle: anonymous ? "seats" : "default",
       principal_id: principal.principal_id,
-      summary: "Instances that have not been tagged.",
+      summary: anonymous
+        ? "Seats joined by invite; bind them with sharednet login."
+        : "Instances that have not been tagged.",
     },
     instances,
   );
@@ -166,9 +170,10 @@ function visibleNetwork(
     const tagged = agents
       .filter((agent) => agent.principal_id === principal.principal_id)
       .map((agent) => joinAgentDescendants(agent, network));
-    // Only the caller's own untagged sessions are shown; another Principal's
-    // untagged sessions are not discoverable by definition.
-    const untagged = own ? untaggedGroup(principal, network) : null;
+    // Own untagged sessions are always shown. Another Principal's untagged
+    // Instances appear only when the server included them, which it does for
+    // the seats that share a Room with the caller; nothing else is discoverable.
+    const untagged = untaggedGroup(principal, network);
     return {
       agents: untagged ? [...tagged, untagged] : tagged,
       own,
@@ -413,10 +418,11 @@ function InstanceNode({
       type="button"
     >
       <span aria-hidden="true" className="relationship-node-mark" />
-      <strong>{agent.diagnostic_label}</strong>
+      <strong>{instance.display_name ?? agent.diagnostic_label}</strong>
       <code>{instance.instance_id}</code>
       <small>
         <span>{instance.presence}</span>
+        <span data-runtime-kind={instance.runtime_type}>{instance.runtime_type}</span>
       </small>
     </button>
   );
@@ -566,10 +572,20 @@ export function NetworkView() {
                       width: `${position.width}px`,
                     }}
                   >
-                    <header className="principal-identity">
-                      <p>{principal.own ? "Own Principal" : "Connected Principal"}</p>
+                    <header
+                      className="principal-identity"
+                      data-principal-kind={principal.principal.kind}
+                    >
+                      <p>
+                        {principal.own
+                          ? "Own Principal"
+                          : principal.principal.kind === "anonymous"
+                            ? "Anonymous Principal"
+                            : "Connected Principal"}
+                      </p>
                       <h2>{principal.principal.diagnostic_label}</h2>
                       <code>{principalId}</code>
+                      {!principal.own ? <small>{principal.principal.summary}</small> : null}
                     </header>
 
                     {principal.agents.flatMap((agentTree) =>

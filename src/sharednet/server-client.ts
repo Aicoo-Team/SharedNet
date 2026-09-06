@@ -138,6 +138,32 @@ function principalProjection(row: {
   };
 }
 
+/**
+ * A Principal seen from another: an account, or an anonymous Principal that
+ * an invite join provisioned and nobody has bound yet. The label is the name
+ * its seat gave; the summary says who invited it.
+ */
+function connectedPrincipalProjection(
+  row: typeof principals.$inferSelect,
+  viewerPrincipalId: string,
+): PrincipalProjection {
+  const anonymous = row.authUserId === null;
+  if (!anonymous) return principalProjection(row);
+  const invitedBy =
+    (row.invitedByPrincipalId as string | null) === viewerPrincipalId
+      ? "invited by you"
+      : row.invitedByPrincipalId
+        ? `invited by ${row.invitedByPrincipalId}`
+        : "invited";
+  return {
+    created_at: requiredIso(row.createdAt),
+    diagnostic_label: row.displayName ?? "anonymous",
+    kind: "anonymous",
+    principal_id: row.id as PrincipalId,
+    summary: `Anonymous Principal · ${invitedBy} · bind it with sharednet login`,
+  };
+}
+
 /** An Agent is a named tag over Instances; the projection is its name and id. */
 function agentProjection(row: {
   id: string;
@@ -759,21 +785,42 @@ export class SharedNetServerClient {
     const database = this.database();
     const now = Date.now();
 
-    const [agentRows, instanceRows] = await Promise.all([
-      database
-        .select()
-        .from(agents)
-        .where(eq(agents.principalId, principal.id))
-        .orderBy(asc(agents.createdAt)),
-      database
-        .select()
-        .from(instances)
-        .where(eq(instances.principalId, principal.id))
-        .orderBy(desc(instances.startedAt)),
+    // The Network is what this Principal can see: its own Agents and Instances,
+    // and every Principal that shares a Room with it, drawn through the
+    // Instances that sit in those Rooms. Nothing else is discoverable.
+    const visibleRoomIds = await this.visibleRoomIds(principal.id);
+    const memberRows =
+      visibleRoomIds.length > 0
+        ? await database.select().from(roomMembers).where(inArray(roomMembers.roomId, visibleRoomIds))
+        : [];
+    const activeMembers = memberRows.filter((member) => member.state === "active");
+    const coMemberInstanceIds = new Set(activeMembers.map((member) => member.instanceId as string));
+    const connectedPrincipalIds = [
+      ...new Set(
+        activeMembers
+          .map((member) => member.principalId as string)
+          .filter((id) => id !== (principal.id as string)),
+      ),
+    ];
+    const visiblePrincipalIds = new Set([principal.id as string, ...connectedPrincipalIds]);
+
+    const [agentRows, allInstanceRows, connectedRows] = await Promise.all([
+      database.select().from(agents).orderBy(asc(agents.createdAt)),
+      database.select().from(instances).orderBy(desc(instances.startedAt)),
+      connectedPrincipalIds.length > 0
+        ? database.select().from(principals).where(inArray(principals.id, connectedPrincipalIds as never))
+        : Promise.resolve([] as (typeof principals.$inferSelect)[]),
     ]);
+    const visibleAgents = agentRows.filter((agent) => visiblePrincipalIds.has(agent.principalId as string));
+    const instanceRows = allInstanceRows.filter(
+      (instance) =>
+        (instance.principalId as string) === (principal.id as string) ||
+        coMemberInstanceIds.has(instance.id as string),
+    );
 
     const projectedInstances: InstanceProjection[] = instanceRows.map((instance) => ({
       agent_id: (instance.agentId ?? null) as AgentId | null,
+      display_name: instance.displayName ?? null,
       ended_at: iso(instance.endedAt),
       expires_at: iso(instance.tokenExpiresAt),
       instance_id: instance.id as InstanceId,
@@ -797,50 +844,42 @@ export class SharedNetServerClient {
      * Directed delegation and verification edges are not emitted: nothing in
      * the schema records either yet. See the TODO in the V1 design spec.
      */
-    const visibleRoomIds = await this.memberRoomIds(principal.id);
-
-    const edges: NetworkEdge[] = [];
-    if (visibleRoomIds.length > 0) {
-      const memberRows = await database
-        .select()
-        .from(roomMembers)
-        .where(inArray(roomMembers.roomId, visibleRoomIds));
-
-      const byRoom = new Map<string, string[]>();
-      for (const member of memberRows) {
-        if (member.state !== "active") continue;
-        byRoom.set(member.roomId, [
-          ...(byRoom.get(member.roomId) ?? []),
-          member.instanceId,
-        ]);
-      }
-      const weights = new Map<string, NetworkEdge>();
-      for (const instanceIds of byRoom.values()) {
-        const unique = [...new Set(instanceIds)].sort();
-        for (let i = 0; i < unique.length; i += 1) {
-          for (let j = i + 1; j < unique.length; j += 1) {
-            const key = `${unique[i]}|${unique[j]}`;
-            const existing = weights.get(key);
-            if (existing) {
-              existing.weight += 1;
-              continue;
-            }
-            weights.set(key, {
-              kind: "room_co_membership",
-              source_id: unique[i] as InstanceId,
-              target_id: unique[j] as InstanceId,
-              weight: 1,
-            });
+    const byRoom = new Map<string, string[]>();
+    for (const member of activeMembers) {
+      byRoom.set(member.roomId, [...(byRoom.get(member.roomId) ?? []), member.instanceId]);
+    }
+    const weights = new Map<string, NetworkEdge>();
+    for (const instanceIds of byRoom.values()) {
+      const unique = [...new Set(instanceIds)].sort();
+      for (let i = 0; i < unique.length; i += 1) {
+        for (let j = i + 1; j < unique.length; j += 1) {
+          const key = `${unique[i]}|${unique[j]}`;
+          const existing = weights.get(key);
+          if (existing) {
+            existing.weight += 1;
+            continue;
           }
+          weights.set(key, {
+            kind: "room_co_membership",
+            source_id: unique[i] as InstanceId,
+            target_id: unique[j] as InstanceId,
+            weight: 1,
+          });
         }
       }
-      edges.push(...weights.values());
     }
 
     return {
-      agents: agentRows.map((agent) => agentProjection(agent)),
-      connected_principals: [],
-      edges,
+      // Another account's tags are shown when its Instances share a Room with
+      // the caller; that is the only discoverability there is.
+      agents: visibleAgents.map((agent) => ({
+        ...agentProjection(agent),
+        discoverability: (agent.principalId as string) !== (principal.id as string),
+      })),
+      connected_principals: connectedRows
+        .filter((row) => connectedPrincipalIds.includes(row.id as string))
+        .map((row) => connectedPrincipalProjection(row, principal.id as string)),
+      edges: [...weights.values()],
       instances: projectedInstances,
       principal: principalProjection(principal),
     };
