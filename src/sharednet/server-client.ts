@@ -570,6 +570,8 @@ export class SharedNetServerClient {
         joined_at: requiredIso(left.joinedAt),
         kind: leftPrincipal && leftPrincipal.authUserId === null ? "guest" : "instance",
         last_read_sequence: 0,
+        admitted_by: left.admittedBy,
+        added_by_instance_id: (left.addedByInstanceId ?? null) as InstanceId | null,
         left_at: iso(left.leftAt),
         member_id: left.instanceId,
         name: seen?.displayName ?? null,
@@ -727,6 +729,8 @@ export class SharedNetServerClient {
         joined_at: requiredIso(member.joinedAt),
         kind: anonymous(member.instanceId) ? "guest" : "instance",
         last_read_sequence: 0,
+        admitted_by: member.admittedBy,
+        added_by_instance_id: (member.addedByInstanceId ?? null) as InstanceId | null,
         left_at: iso(member.leftAt),
         member_id: member.instanceId,
         name: nameOf(member.instanceId),
@@ -893,9 +897,9 @@ export class SharedNetServerClient {
       .where(eq(decisions.principalId, principal.id))
       .orderBy(desc(decisions.createdAt));
 
-    const tagOf = await this.tagsFor(principal.id);
+    const instanceRows = await this.instanceRows();
     return {
-      decisions: rows.map((row) => this.decisionProjection(row, tagOf)),
+      decisions: rows.map((row) => this.decisionProjection(row, instanceRows)),
     };
   }
 
@@ -956,7 +960,7 @@ export class SharedNetServerClient {
       await this.seatAccepted(existing.roomId, existing.requestedForInstanceId, existing.requestedByInstanceId);
     }
 
-    return this.decisionProjection(updated, await this.tagsFor(principal.id));
+    return this.decisionProjection(updated, await this.instanceRows());
   }
 
   /** Writes the accepted seat, reviving a left one; a live seat is left alone. */
@@ -1045,19 +1049,25 @@ export class SharedNetServerClient {
     return tagLookup(rows);
   }
 
+  /**
+   * The requester may be another Principal's Instance since the reach
+   * decision, so who asked is read off the Instance row, not the Decision's
+   * own Principal, which is the one deciding.
+   */
   private decisionProjection(
     row: typeof decisions.$inferSelect,
-    tagOf: TagLookup,
+    instanceRows: Map<string, typeof instances.$inferSelect>,
   ): DecisionProjection {
+    const asker = instanceRows.get(row.requestedByInstanceId as string);
     return {
       consequence: null,
       created_at: requiredIso(row.createdAt),
       decision_id: row.id as DecisionId,
       description: row.description,
       requester: {
-        agent_id: tagOf(row.requestedByInstanceId),
+        agent_id: (asker?.agentId ?? null) as AgentId | null,
         instance_id: row.requestedByInstanceId as InstanceId,
-        principal_id: row.principalId as PrincipalId,
+        principal_id: (asker?.principalId ?? row.principalId) as PrincipalId,
       },
       resolved_at: iso(row.resolvedAt),
       response_mode: row.mode,
