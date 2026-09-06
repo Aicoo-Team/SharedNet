@@ -954,6 +954,12 @@ body:has(.product-window) {
   margin: 0;
 }
 
+.room-member-driver {
+  color: var(--sn-oxford);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 8px;
+}
+
 .room-member-list dl {
   display: grid;
   gap: 4px;

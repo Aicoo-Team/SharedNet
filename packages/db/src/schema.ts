@@ -138,7 +138,8 @@ export const instances = sharednetSchema.table(
      * not identify its session, in which case every call is a fresh Instance.
      */
     localInstanceKey: text("local_instance_key"),
-    runtimeKind: text("runtime_kind").$type<"codex" | "claude-code" | "custom">().notNull(),
+    /** The driver behind the session: a handle such as claude-code or codex. Open; clients keep the known list. */
+    runtimeKind: text("runtime_kind").notNull(),
     cliVersion: text("cli_version").notNull(),
     /**
      * Everything a caller reports about where this Instance runs: runtime
@@ -210,7 +211,7 @@ export const instances = sharednetSchema.table(
     ),
     check(
       "instance_runtime_kind_valid",
-      sql`${table.runtimeKind} IN ('codex', 'claude-code', 'custom')`,
+      sql`${table.runtimeKind} ~ '^[a-z][a-z0-9-]{0,31}$'`,
     ),
     check("instance_cli_version_length", sql`length(${table.cliVersion}) BETWEEN 1 AND 64`),
     check("instance_state_valid", sql`${table.state} IN ('active', 'ended', 'revoked')`),

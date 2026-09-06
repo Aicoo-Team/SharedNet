@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 
 import {
+  type RuntimeReport,
   type MemberRef,
   type MemberKind,
   type SniSecret,
@@ -113,6 +114,15 @@ function secureDigestEquals(left: string, right: string): boolean {
   const leftBytes = Buffer.from(left, "hex");
   const rightBytes = Buffer.from(right, "hex");
   return leftBytes.length === rightBytes.length && timingSafeEqual(leftBytes, rightBytes);
+}
+
+/** What an invite join recorded about the driver, as Instance metadata. */
+function runtimeMetadataFromReport(runtime: RuntimeReport | undefined): Record<string, string> {
+  if (!runtime) return {};
+  const metadata: Record<string, string> = { runtime_source: runtime.source ?? "declared" };
+  if (runtime.version) metadata.driver_version = runtime.version;
+  if (runtime.entrypoint) metadata.entrypoint = runtime.entrypoint;
+  return metadata;
 }
 
 /** The inbox order: time, then Room, then sequence. Total and stable. */
@@ -535,13 +545,14 @@ export class MemorySharedNetRepository implements SharedNetRepository {
       invited_by_principal_id: invite.principal_id,
     };
     const memberToken = generateSecret("sni");
+    const runtime = input.runtime;
     const instance: InstanceRecord = {
       id: generatePublicId("i"),
       principal_id: principal.id,
       agent_id: null,
-      runtime_kind: "custom",
-      cli_version: "invite",
-      runtime_metadata: {},
+      runtime_kind: runtime?.kind ?? "custom",
+      cli_version: runtime?.version ?? "invite",
+      runtime_metadata: runtimeMetadataFromReport(runtime),
       status: "online",
       display_name: input.name,
       started_at: joinedAt,
@@ -792,6 +803,9 @@ export class MemorySharedNetRepository implements SharedNetRepository {
       invited_by_principal_id: principal?.invited_by_principal_id ?? null,
       admitted_by: record.admitted_by,
       invite_id: record.invite_id,
+      runtime_kind: instance?.runtime_kind ?? "custom",
+      runtime_version: instance?.cli_version ?? "",
+      runtime_metadata: { ...(instance?.runtime_metadata ?? {}) },
       state: record.state,
       joined_at: record.joined_at,
       left_at: record.left_at,

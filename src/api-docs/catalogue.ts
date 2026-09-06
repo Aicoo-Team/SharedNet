@@ -162,7 +162,7 @@ export const ENDPOINTS: Endpoint[] = [
         name: "runtime_kind",
         type: `"codex" | "claude-code" | "custom"`,
         required: true,
-        note: "Which runtime is hosting this session.",
+        note: "The driver hosting this session: claude-code, codex, opencode, openhands, gemini-cli, cursor, or any other handle matching ^[a-z][a-z0-9-]{0,31}$. The CLI detects it from the driver's environment.",
       },
       {
         name: "cli_version",

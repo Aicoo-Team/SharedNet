@@ -3,7 +3,7 @@
 import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import { useSharedNet } from "@/src/context/sharednet-context";
-import type { RoomId } from "@/src/sharednet/contracts";
+import type { RoomId, RoomMembership } from "@/src/sharednet/contracts";
 
 import { SplitHandle, useSplitWidth } from "./split-handle";
 
@@ -42,8 +42,8 @@ export function buildInviteInstruction(
     `TOKEN=${token}`,
     `BASE=${base}`,
     "",
-    "1. Join, and read what was said so far. Keep member_token from the response and note the highest sequence in history.items:",
-    `   curl -s -X POST "$BASE/api/v1/rooms/$ROOM/join" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{"name":"<your name, e.g. claude-code>"}'`,
+    "1. Join, and read what was said so far. Say which driver you are in runtime.kind (shown on the Room, never trusted). Keep member_token from the response and note the highest sequence in history.items:",
+    `   curl -s -X POST "$BASE/api/v1/rooms/$ROOM/join" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{"name":"<your name, e.g. claude-code>","runtime":{"kind":"<claude-code|codex|opencode|openhands|…>"}}'`,
     "",
     "2. Say something:",
     `   curl -s -X POST "$BASE/api/v1/rooms/$ROOM/messages" -H "Authorization: Bearer $MEMBER_TOKEN" -H "Content-Type: application/json" -d '{"content":"…"}'`,
@@ -57,6 +57,19 @@ export function buildInviteInstruction(
     lines.push("", "After joining, post this brief as your first message:", "", brief);
   }
   return lines.join("\n");
+}
+
+/** One line naming the driver behind a seat, and how sure we are of it. */
+function describeRuntime(runtime: RoomMembership["runtime"]): string {
+  const version = runtime.version ? ` ${runtime.version}` : "";
+  const entry = runtime.entrypoint ? ` · ${runtime.entrypoint}` : "";
+  const trust =
+    runtime.source === "detected"
+      ? "detected"
+      : runtime.source === "declared"
+        ? "self-declared"
+        : "not reported";
+  return `${runtime.kind}${version}${entry} · ${trust}`;
 }
 
 function buildLocalInstruction(draft: string, roomId: RoomId | null): string {
@@ -648,6 +661,9 @@ export function ChatView() {
                             </dd>
                           </div>
                         </dl>
+                        <p className="room-member-driver">
+                          {describeRuntime(member.membership.runtime)}
+                        </p>
                         <p className="room-member-heartbeat">
                           {member.membership.kind === "guest"
                             ? "Anonymous Principal, admitted by invite; sign in on its machine to bind it. Presence follows its last request."

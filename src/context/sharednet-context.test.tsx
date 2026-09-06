@@ -99,6 +99,7 @@ const roomDetail = {
       left_at: null,
       principal_id: PRINCIPAL_ID,
       room_id: ROOM_ID,
+      runtime: { kind: "codex", version: "0.1.0", entrypoint: null, source: "detected" },
       status: "active",
     },
   ],

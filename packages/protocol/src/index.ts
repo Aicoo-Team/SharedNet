@@ -197,7 +197,35 @@ export interface Agent {
   created_at: Timestamp;
 }
 
-export type RuntimeKind = "codex" | "claude-code" | "custom";
+/**
+ * Which coding-agent driver runs a session: `claude-code`, `codex`,
+ * `opencode`, `openhands`, `gemini-cli`, `cursor`, … or `custom`. An open
+ * string in the shape of a handle; the known list lives in clients, which
+ * pick an icon for it. Detected by the CLI from the driver's environment,
+ * or declared by an Agent that joins over plain HTTP.
+ */
+export type RuntimeKind = string;
+export const RUNTIME_KIND_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
+export const KNOWN_RUNTIME_KINDS = [
+  "claude-code",
+  "codex",
+  "opencode",
+  "openhands",
+  "gemini-cli",
+  "cursor",
+  "custom",
+] as const;
+
+/** Where a driver report came from: read off the environment, or self-declared. */
+export type RuntimeSource = "detected" | "declared";
+
+/** What a joining Agent may say about the driver behind it. */
+export interface RuntimeReport {
+  kind: RuntimeKind;
+  version?: string | null;
+  entrypoint?: string | null;
+  source?: RuntimeSource;
+}
 export type InstanceStatus = "online" | "offline" | "ended" | "revoked" | "expired";
 
 export interface Instance {
@@ -291,6 +319,10 @@ export interface RoomMember {
   invited_by_principal_id: PrincipalId | null;
   admitted_by: AdmittedBy;
   invite_id: InviteId | null;
+  /** The driver behind the Instance, its reported version, and diagnostics such as how that was learned. */
+  runtime_kind: RuntimeKind;
+  runtime_version: string;
+  runtime_metadata: Record<string, string>;
   state: "active" | "left";
   joined_at: Timestamp;
   left_at: Timestamp | null;
@@ -651,7 +683,8 @@ export function parseStartInstanceRequest(value: unknown): StartInstanceRequest 
   } = value;
 
   if (
-    (runtimeKind !== "codex" && runtimeKind !== "claude-code" && runtimeKind !== "custom") ||
+    typeof runtimeKind !== "string" ||
+    !RUNTIME_KIND_PATTERN.test(runtimeKind) ||
     typeof cliVersion !== "string" ||
     !/^[\x20-\x7e]{1,64}$/.test(cliVersion)
   ) {
@@ -780,8 +813,36 @@ export function parsePostMessageRequest(value: unknown): PostMessageRequest {
 export const MAX_MEMBER_NAME_SCALARS = 64;
 
 export interface JoinRoomWithInviteRequest {
-  /** What the guest calls itself in the Room, e.g. "claude-code". Display only. */
+  /** What the joiner calls itself in the Room, e.g. "claude-code". Display only. */
   name: string;
+  /** The driver behind it, if it can say. Recorded on the Instance the join provisions. */
+  runtime?: RuntimeReport;
+}
+
+export function parseRuntimeReport(value: unknown): RuntimeReport {
+  requireExactKeys(value, ["kind"], ["version", "entrypoint", "source"]);
+  const { kind, version, entrypoint, source } = value as Record<string, unknown>;
+  if (typeof kind !== "string" || !RUNTIME_KIND_PATTERN.test(kind)) {
+    throw new ProtocolValidationError();
+  }
+  const text = (field: unknown): string | null | undefined => {
+    if (field === undefined) return undefined;
+    if (field === null) return null;
+    if (typeof field !== "string" || !/^[\x20-\x7e]{1,64}$/.test(field)) {
+      throw new ProtocolValidationError();
+    }
+    return field;
+  };
+  const report: RuntimeReport = { kind };
+  const parsedVersion = text(version);
+  if (parsedVersion !== undefined) report.version = parsedVersion;
+  const parsedEntrypoint = text(entrypoint);
+  if (parsedEntrypoint !== undefined) report.entrypoint = parsedEntrypoint;
+  if (source !== undefined) {
+    if (source !== "detected" && source !== "declared") throw new ProtocolValidationError();
+    report.source = source;
+  }
+  return report;
 }
 
 /** An Instance joining a Room: optionally with the invite that admits it. */
@@ -801,8 +862,8 @@ export function parseJoinRoomRequest(value: unknown): JoinRoomRequest {
 }
 
 export function parseJoinRoomWithInviteRequest(value: unknown): JoinRoomWithInviteRequest {
-  requireExactKeys(value, ["name"]);
-  const { name } = value;
+  requireExactKeys(value, ["name"], ["runtime"]);
+  const { name, runtime } = value as { name: unknown; runtime?: unknown };
   if (typeof name !== "string") {
     throw new ProtocolValidationError();
   }
@@ -814,7 +875,9 @@ export function parseJoinRoomWithInviteRequest(value: unknown): JoinRoomWithInvi
   ) {
     throw new ProtocolValidationError();
   }
-  return { name: normalized };
+  const request: JoinRoomWithInviteRequest = { name: normalized };
+  if (runtime !== undefined) request.runtime = parseRuntimeReport(runtime);
+  return request;
 }
 
 export function parseEmptyRequest(value: unknown): Record<string, never> {

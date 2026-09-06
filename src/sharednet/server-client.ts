@@ -21,6 +21,7 @@ import {
 } from "@/packages/db/src/schema.ts";
 
 import {
+  type RuntimeSummary,
   type CloseRoomResponse,
   type RemoveRoomMemberResponse,
   type ActorProjection,
@@ -183,6 +184,21 @@ const ROOM_NAME_MAX = 120;
 const ROOM_DESCRIPTION_MAX = 2000;
 
 export type CreateRoomInput = { name: string; description?: string | null };
+
+/** The driver behind an Instance, for a member card or a Network node. */
+function runtimeSummary(
+  instance: Pick<typeof instances.$inferSelect, "runtimeKind" | "cliVersion" | "runtimeMetadata"> | undefined,
+): RuntimeSummary {
+  if (!instance) return { kind: "custom", version: null, entrypoint: null, source: null };
+  const metadata = instance.runtimeMetadata ?? {};
+  const source = metadata.runtime_source;
+  return {
+    kind: instance.runtimeKind,
+    version: metadata.driver_version ?? (instance.cliVersion === "invite" ? null : instance.cliVersion),
+    entrypoint: metadata.entrypoint ?? null,
+    source: source === "detected" || source === "declared" ? source : null,
+  };
+}
 
 function inviteProjection(row: typeof roomInvites.$inferSelect): RoomInviteProjection {
   return {
@@ -521,6 +537,7 @@ export class SharedNetServerClient {
         presence: seen ? presenceOf(seen, now.getTime()).presence : "offline",
         principal_id: left.principalId as PrincipalId,
         room_id: left.roomId as RoomId,
+        runtime: runtimeSummary(seen),
         status: left.state,
       },
     };
@@ -561,6 +578,8 @@ export class SharedNetServerClient {
       instanceSeen.get(instanceId)?.issuedByKeyId === null;
     const nameOf = (instanceId: string): string | null =>
       instanceSeen.get(instanceId)?.displayName ?? null;
+    const runtimeOf = (instanceId: string): RuntimeSummary =>
+      runtimeSummary(instanceSeen.get(instanceId));
 
 
     // Membership admits the viewer, and so does having scheduled the Room from
@@ -584,6 +603,7 @@ export class SharedNetServerClient {
         presence: instancePresence(member.instanceId),
         principal_id: member.principalId as PrincipalId,
         room_id: member.roomId as RoomId,
+        runtime: runtimeOf(member.instanceId),
         status: member.state,
       }),
     );
