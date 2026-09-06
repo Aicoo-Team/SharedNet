@@ -3,8 +3,9 @@
 import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import { useSharedNet } from "@/src/context/sharednet-context";
-import type { RoomId, RoomMembership } from "@/src/sharednet/contracts";
+import type { RoomId, RoomMembership, RoomMessage } from "@/src/sharednet/contracts";
 
+import { MessageContent } from "./message-content";
 import { SplitHandle, useSplitWidth } from "./split-handle";
 
 type CopyState = "idle" | "copied" | "error";
@@ -72,6 +73,45 @@ function describeAdmission(membership: RoomMembership): string {
     default:
       return "Joined by Room id";
   }
+}
+
+/** Who said it, the way a human reads it: the seat's name, else its tag, else its Instance id. */
+function senderLabel(sender: RoomMessage["sender"]): string {
+  if ("name" in sender && sender.name) return sender.name;
+  if (sender.agent_id) return sender.agent_id;
+  return senderInstanceId(sender) ?? sender.principal_id;
+}
+
+function senderInstanceId(sender: RoomMessage["sender"]): string | undefined {
+  return "instance_id" in sender ? sender.instance_id : undefined;
+}
+
+/** The driver behind the sender's Instance, from the member list, as an icon. */
+const DRIVER_GLYPHS: Record<string, { glyph: string; label: string }> = {
+  "claude-code": { glyph: "CC", label: "Claude Code" },
+  codex: { glyph: "CX", label: "Codex" },
+  opencode: { glyph: "OC", label: "OpenCode" },
+  openhands: { glyph: "OH", label: "OpenHands" },
+  "gemini-cli": { glyph: "GM", label: "Gemini CLI" },
+  cursor: { glyph: "CU", label: "Cursor" },
+};
+
+function driverOf(
+  sender: RoomMessage["sender"],
+  memberships: RoomMembership[],
+): { kind: string; glyph: string; label: string } {
+  const instanceId = senderInstanceId(sender);
+  const member = instanceId ? memberships.find((candidate) => candidate.member_id === instanceId) : undefined;
+  const kind = member?.runtime.kind ?? "custom";
+  const known = DRIVER_GLYPHS[kind];
+  if (known) return { kind, ...known };
+  return { kind, glyph: kind === "custom" ? "?" : kind.slice(0, 2).toUpperCase(), label: kind === "custom" ? "Unknown driver" : kind };
+}
+
+/** "2026-09-06 07:34:03 UTC", from the ISO stamp the API sends; the full stamp is the title. */
+function readableTime(iso: string): string {
+  const match = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})/.exec(iso);
+  return match ? `${match[1]} ${match[2]} UTC` : iso;
 }
 
 function describeRuntime(runtime: RoomMembership["runtime"]): string {
@@ -570,7 +610,7 @@ export function ChatView() {
                   <span className="room-closed-mark">Closed · history stays readable</span>
                 )}
                 <span>{activeMembers.length} members</span>
-                <span>{`Latest cursor ${detail.next_cursor}`}</span>
+                <span>{`Latest sequence ${String(detail.next_cursor).replace(/^cursor_/, "")}`}</span>
                 <time
                   dateTime={selectedSummary?.updated_at ?? detail.room.updated_at}
                 >
@@ -720,48 +760,69 @@ export function ChatView() {
               <ol aria-label="Room messages" className="room-message-list">
                 {orderedMessages.map((message) => (
                   <li key={message.message_id}>
-                    <article aria-label={`Message ${message.sequence}`}>
-                      <header>
-                        <span>Sequence {message.sequence}</span>
-                        <code>{message.message_id}</code>
-                        <time dateTime={message.created_at}>{message.created_at}</time>
-                      </header>
-                      {message.reply_to ? (
-                        <p className="room-message-reply">
-                          <span>Reply to</span> <code>{message.reply_to}</code>
-                        </p>
-                      ) : null}
-                      <p className="room-message-content">{message.content}</p>
-                      <dl
-                        aria-label="Sender provenance"
-                        className="room-message-provenance"
-                      >
-                        <div>
-                          <dt>Principal</dt>
-                          <dd className="room-canonical-id">
-                            {message.sender.principal_id}
-                          </dd>
-                        </div>
-                        <div>
-                          <dt>Agent</dt>
-                          <dd className="room-canonical-id">
-                            {message.sender.agent_id ?? "default"}
-                          </dd>
-                        </div>
-                        {"name" in message.sender ? (
+                    <article
+                      aria-label={`Message ${message.sequence}`}
+                      className="room-message"
+                      data-runtime-kind={driverOf(message.sender, detail.memberships).kind}
+                    >
+                      <details className="room-message-card">
+                        <summary
+                          aria-label={`Who sent message ${message.sequence}`}
+                          className="room-message-avatar"
+                          title={`${driverOf(message.sender, detail.memberships).label} · click for ids`}
+                        >
+                          {driverOf(message.sender, detail.memberships).glyph}
+                        </summary>
+                        <dl aria-label="Sender provenance" className="room-message-provenance">
                           <div>
-                            <dt>Anonymous</dt>
-                            <dd>{message.sender.name}</dd>
+                            <dt>Principal</dt>
+                            <dd className="room-canonical-id">{message.sender.principal_id}</dd>
                           </div>
-                        ) : (
+                          <div>
+                            <dt>Agent</dt>
+                            <dd className="room-canonical-id">{message.sender.agent_id ?? "none"}</dd>
+                          </div>
                           <div>
                             <dt>Instance</dt>
-                            <dd className="room-canonical-id">
-                              {message.sender.instance_id ?? "Unavailable"}
-                            </dd>
+                            <dd className="room-canonical-id">{senderInstanceId(message.sender) ?? "unavailable"}</dd>
                           </div>
-                        )}
-                      </dl>
+                          <div>
+                            <dt>Driver</dt>
+                            <dd>{driverOf(message.sender, detail.memberships).label}</dd>
+                          </div>
+                          <div>
+                            <dt>Kind</dt>
+                            <dd>{"name" in message.sender ? "Anonymous Principal" : "Account"}</dd>
+                          </div>
+                          <div>
+                            <dt>Message</dt>
+                            <dd className="room-canonical-id">{message.message_id}</dd>
+                          </div>
+                          <div>
+                            <dt>Sent</dt>
+                            <dd>{message.created_at}</dd>
+                          </div>
+                        </dl>
+                      </details>
+                      <div className="room-message-body">
+                        <header>
+                          <strong className="room-message-sender">{senderLabel(message.sender)}</strong>
+                          <code className="room-message-instance">{senderInstanceId(message.sender) ?? ""}</code>
+                          {"name" in message.sender ? (
+                            <em className="room-message-anonymous">Anonymous</em>
+                          ) : null}
+                          <span>#{message.sequence}</span>
+                          <time dateTime={message.created_at} title={message.created_at}>
+                            {readableTime(message.created_at)}
+                          </time>
+                        </header>
+                        {message.reply_to ? (
+                          <p className="room-message-reply">
+                            <span>Reply to</span> <code>{message.reply_to}</code>
+                          </p>
+                        ) : null}
+                        <MessageContent content={message.content} />
+                      </div>
                     </article>
                   </li>
                 ))}

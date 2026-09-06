@@ -351,6 +351,7 @@ describe("SharedNetServerClient reads the V1 Postgres tables", () => {
     const detail = await client.getRoom("auth-user-1", ROOM as never);
     expect(detail.messages[1]!.sender).toEqual({
       agent_id: null,
+      instance_id: expect.stringMatching(/^i_/),
       name: "claude-code",
       principal_id: GUEST_PRINCIPAL,
     });
@@ -426,6 +427,7 @@ describe("SharedNetServerClient reads the V1 Postgres tables", () => {
     expect(detail.memberships[0]).toMatchObject({ kind: "instance", name: null, presence: "online" });
     expect(detail.messages[1]!.sender).toEqual({
       agent_id: null,
+      instance_id: expect.stringMatching(/^i_/),
       name: "claude-code",
       principal_id: GUEST_PRINCIPAL,
     });
