@@ -585,7 +585,9 @@ export function NetworkView() {
                       </p>
                       <h2>{principal.principal.diagnostic_label}</h2>
                       <code>{principalId}</code>
-                      {!principal.own ? <small>{principal.principal.summary}</small> : null}
+                      {!principal.own ? (
+                        <small title={principal.principal.summary}>{principal.principal.summary}</small>
+                      ) : null}
                     </header>
 
                     {principal.agents.flatMap((agentTree) =>

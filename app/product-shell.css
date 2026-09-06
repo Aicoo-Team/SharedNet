@@ -1564,6 +1564,15 @@ body:has(.product-window) {
   overflow-wrap: anywhere;
 }
 
+.principal-identity small {
+  color: var(--sn-muted);
+  font-size: 8px;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .principal-empty {
   color: var(--sn-muted);
   font-size: 9px;
