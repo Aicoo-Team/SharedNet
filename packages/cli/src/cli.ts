@@ -400,7 +400,7 @@ async function execute(
   }
   throw localError(
     "unknown_command",
-    "Use login, join/say/wait/watch/add/rooms/requests/accept/deny, or session start/status, room create/list/add/join/post/messages, and decision list/approve/deny.",
+    "Use login, join/say/wait/watch/add/rooms/requests/accept/deny/reach, or session start/status, room create/list/add/join/post/messages, and decision list/approve/deny.",
   );
 }
 

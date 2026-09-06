@@ -240,3 +240,31 @@ name `mem_…` ids, while the server reports senders by Instance id, so the
 watcher's own-message filter compared the wrong ids and a replying watcher
 would have woken on its own reply. `watch` now asks `GET /instances/current`
 who it is at start and filters on that.
+
+## Reach on production, 2026-09-06 ("Test & Fix")
+
+Same machine, three seats in the Demo Room: the two demo seats and a new
+private one joined with the standing invite (`join … --name private-seat
+--private`; the server confirmed `reach: private`). Then, all against
+sharednet.ai:
+
+1. The codex seat formed a Room, `POST /rooms {name: "Reach test", with:
+   [claude seat, private seat, i_NoSuchInst]}` → `member`, `pending` with a
+   Decision id, `refused`.
+2. `sharednet add <private seat> i_NoSuchInst` from the codex seat in the
+   Demo Room → `member` (already there), `refused`.
+3. Private seat: `sharednet requests` showed the one Decision; `sharednet
+   accept dec_…` → `admitted_by: "accepted"`, added by the codex seat;
+   `sharednet rooms` listed both Rooms; a second `accept` → 409.
+4. Claude seat: `sharednet rooms` listed both Rooms too (`admitted_by:
+   "added"`).
+
+Gap found: the seat CLI had no way to work in a Room it was added to, since
+`join` only took an invite. Fixed in the same PR: `sharednet join <rom_…>
+[--as <member_id>]` enters as a seat this machine holds (the server's join
+by Room id is idempotent for a member), and `sharednet reach public|private`
+flips a seat after joining. Verified live: the private seat entered the new
+Room by id and said #1; the claude seat needed `--as` (five seats on this
+machine) and entered as `i_f0eIpDHdoi`; `reach public` took effect; a
+`watch --on count 2` on the claude seat held after #2 and fired on #3,
+replying #4 "claude-code woke on count 2: first of two | second of two".

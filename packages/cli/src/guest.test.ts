@@ -418,6 +418,60 @@ describe("sharednet say and wait", () => {
     expect(refused.requests).toHaveLength(0);
   });
 
+  it("enters another Room by id as the seat this machine holds, and needs --as when it holds several", async () => {
+    const space = await joinedSpace();
+    const OTHER_ROOM = "rom_OtHeRrOoM1";
+    const elsewhere = { ...space, project: join(space.root, "elsewhere") };
+    const entered = await run(["join", OTHER_ROOM, "--json"], elsewhere, [
+      { status: 200, body: { room: { id: OTHER_ROOM, name: "Reach test", state: "open" }, membership: { member_id: MEMBER_ID, admitted_by: "added", state: "active" } } },
+      page([{ ...message(1, "welcome to the other room"), room_id: OTHER_ROOM }, { ...message(2, "second"), room_id: OTHER_ROOM }]),
+    ]);
+    expect(entered.stderr).toBe("");
+    expect(entered.exitCode).toBe(0);
+    // No invite: the seat's own token joins by Room id, idempotently.
+    expect(entered.requests[0]!.url).toBe(`https://sharednet.ai/api/v1/rooms/${OTHER_ROOM}/join`);
+    expect(header(entered.requests[0]!, "authorization")).toBe(`Bearer ${MEMBER_TOKEN}`);
+    expect(header(entered.requests[0]!, "idempotency-key")).toMatch(/^[0-9a-f-]{36}$/);
+    expect(entered.requests[1]!.url).toBe(`https://sharednet.ai/api/v1/rooms/${OTHER_ROOM}/messages?after=0&limit=100`);
+    const output = JSON.parse(entered.stdout);
+    expect(output).toMatchObject({ member_id: MEMBER_ID, as: "seat", admitted_by: "added", last_sequence: 2 });
+    const state = JSON.parse(await readFile(join(elsewhere.project, ".sharednet", "room.json"), "utf8"));
+    expect(state).toMatchObject({ room_id: OTHER_ROOM, member_id: MEMBER_ID, last_sequence: 2 });
+    // The seat now has a credential for the new Room too, and say works from there.
+    const said = await run(["say", "hello from the other room", "--json"], elsewhere, [
+      { status: 201, body: { message: message(3, "hello from the other room") } },
+    ]);
+    expect(said.exitCode).toBe(0);
+    expect(said.requests[0]!.url).toBe(`https://sharednet.ai/api/v1/rooms/${OTHER_ROOM}/messages`);
+
+    // A second seat on the machine makes the choice explicit.
+    const secondProject = join(space.root, "second");
+    await run(["join", `ROOM=rom_SeCoNdRoOm TOKEN=${INVITE_TOKEN}`, "--name", "other-seat", "--json"], { ...space, project: secondProject }, [
+      { status: 200, body: { room: { id: "rom_SeCoNdRoOm", name: "Second" }, membership: { member_id: "i_SeCoNdSeAt", kind: "guest", name: "other-seat" }, member_token: `sni_${"z".repeat(43)}`, history: { items: [], next_cursor: null, has_more: false } } },
+    ]);
+    const ambiguous = await run(["join", OTHER_ROOM, "--json"], { ...space, project: join(space.root, "third") }, []);
+    expect(ambiguous.exitCode).not.toBe(0);
+    expect(ambiguous.requests).toHaveLength(0);
+    expect(ambiguous.stderr).toContain("--as");
+    const unknown = await run(["join", OTHER_ROOM, "--as", "i_NoSuchSeat", "--json"], { ...space, project: join(space.root, "third") }, []);
+    expect(unknown.exitCode).not.toBe(0);
+    expect(unknown.requests).toHaveLength(0);
+  });
+
+  it("flips the seat's reach after joining", async () => {
+    const space = await joinedSpace();
+    const flipped = await run(["reach", "private", "--json"], space, [
+      { status: 200, body: { instance: { id: MEMBER_ID, reach: "private" } } },
+    ]);
+    expect(flipped.exitCode).toBe(0);
+    expect(flipped.requests[0]!.url).toBe("https://sharednet.ai/api/v1/instances/current");
+    expect(flipped.requests[0]!.init.method).toBe("PATCH");
+    expect(JSON.parse(String(flipped.requests[0]!.init.body))).toEqual({ reach: "private" });
+    const bad = await run(["reach", "secret", "--json"], space, []);
+    expect(bad.exitCode).not.toBe(0);
+    expect(bad.requests).toHaveLength(0);
+  });
+
   it("waits for at least --min messages across pages before returning", async () => {
     const space = await joinedSpace();
     const result = await run(["wait", "--min", "2", "--json"], space, [
