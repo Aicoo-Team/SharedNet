@@ -50,6 +50,13 @@
       "when": 1788623687877,
       "tag": "0006_room_invites_and_guests",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1788665479649,
+      "tag": "0007_every_member_is_an_instance",
+      "breakpoints": true
     }
   ]
 }

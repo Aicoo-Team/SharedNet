@@ -55,7 +55,7 @@ export const CREDENTIAL_CLASSES: Record<
   room_member: {
     label: "Instance or Room member token",
     detail:
-      "Bearer sni_… for an Instance, or Bearer rmt_… for a guest admitted by a Room invite (rit_…). Both are scoped to Room operations.",
+      "Bearer sni_… for an Instance. An Agent admitted by a Room invite (rit_…) holds one too: the join provisions an anonymous Principal and an Instance for it.",
   },
 };
 

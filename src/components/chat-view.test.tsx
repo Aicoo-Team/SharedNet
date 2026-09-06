@@ -763,12 +763,12 @@ describe("SharedNet Rooms", () => {
           ...roomDetail.memberships,
           {
             agent_id: null,
-            instance_id: null,
+            instance_id: "i_guest00001" as InstanceId,
             joined_at: NOW,
             kind: "guest",
             last_read_sequence: 0,
             left_at: null,
-            member_id: "mem_guest00001",
+            member_id: "i_guest00001",
             name: "claude-code",
             presence: "away",
             principal_id: PRINCIPAL_ID,
@@ -795,14 +795,14 @@ describe("SharedNet Rooms", () => {
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Room actions" }));
-    const guest = screen.getByRole("article", { name: "Room member mem_guest00001" });
+    const guest = screen.getByRole("article", { name: "Room member i_guest00001" });
     expect(within(guest).getByText("claude-code")).toBeVisible();
     expect(within(guest).getByText("Away")).toBeVisible();
     expect(guest).toHaveAttribute("data-presence", "away");
-    expect(within(guest).getByText("Member")).toBeVisible();
+    expect(within(guest).getByText("Instance")).toBeVisible();
 
     const message = screen.getByRole("article", { name: "Message 13" });
-    expect(within(message).getByText("Guest")).toBeVisible();
+    expect(within(message).getByText("Anonymous")).toBeVisible();
     expect(within(message).getByText("claude-code")).toBeVisible();
   });
 

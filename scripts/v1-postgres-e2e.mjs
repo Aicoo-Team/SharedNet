@@ -395,9 +395,15 @@ try {
   });
   await assertStatus(joinResponse, 200, "guest-join");
   const joined = await joinResponse.json();
-  assert.match(joined.member_token, /^rmt_[A-Za-z0-9_-]{43}$/);
+  // Every member is an Instance of a Principal: the invite provisions an
+  // anonymous Principal and hands back an Instance token.
+  assert.match(joined.member_token, /^sni_[A-Za-z0-9_-]{43}$/);
   assert.equal(joined.membership.kind, "guest");
   assert.equal(joined.membership.name, "claude-code");
+  assert.equal(joined.membership.admitted_by, "invite");
+  assert.match(joined.membership.member_id, /^i_[A-Za-z0-9]{10}$/);
+  assert.notEqual(joined.membership.principal_id, starts[0].instance.principal_id);
+  assert.equal(joined.membership.invited_by_principal_id, starts[0].instance.principal_id);
   assert.equal(joined.membership.presence, "online");
   assert.deepEqual(
     joined.history.items.map((message) => message.sequence),
@@ -444,7 +450,6 @@ try {
     headers: { authorization: `Bearer ${joined.member_token}` },
   });
   await assertStatus(inboxBadCursor, 400, "inbox-bad-cursor");
-  assert.equal(guestMessage.sender_instance_id, null);
 
   const hostView = await runCli(
     apiBaseUrl,
@@ -481,12 +486,15 @@ try {
     ["guest", "instance", "instance", "instance", "instance"],
   );
 
+  // The seat lives in the instance table now; nothing is written to room_guest.
   const storedGuest = await database.query(
-    "SELECT token_digest, last_seen_at FROM sharednet.room_guest WHERE id = $1",
+    "SELECT token_digest, last_seen_at FROM sharednet.instance WHERE id = $1",
     [joined.membership.member_id],
   );
   assert.equal(storedGuest.rowCount, 1);
   assert.notEqual(storedGuest.rows[0].token_digest, joined.member_token, "raw member tokens are never stored");
+  const legacyGuests = await database.query("SELECT count(*)::int AS n FROM sharednet.room_guest");
+  assert.equal(legacyGuests.rows[0].n, 0, "room_guest is retired and never written");
   const storedInvite = await database.query(
     "SELECT uses, token_digest FROM sharednet.room_invite WHERE id = $1",
     [invite.id],
@@ -498,8 +506,24 @@ try {
     [guestMessage.id],
   );
   assert.deepEqual(storedGuestMessage.rows[0], {
-    sender_instance_id: null,
-    sender_guest_id: joined.membership.member_id,
+    sender_instance_id: joined.membership.member_id,
+    sender_guest_id: null,
+  });
+  // The seat is an Instance of an anonymous Principal: no account, no key, no expiry.
+  const storedSeat = await database.query(
+    `SELECT p.auth_user_id, p.invited_by_principal_id, i.issued_by_key_id, i.token_expires_at, m.admitted_by
+       FROM sharednet.instance i
+       JOIN sharednet.principal p ON p.id = i.principal_id
+       JOIN sharednet.room_member m ON m.instance_id = i.id
+      WHERE i.id = $1`,
+    [joined.membership.member_id],
+  );
+  assert.deepEqual(storedSeat.rows[0], {
+    auth_user_id: null,
+    invited_by_principal_id: starts[0].instance.principal_id,
+    issued_by_key_id: null,
+    token_expires_at: null,
+    admitted_by: "invite",
   });
   await invitePool.end();
 

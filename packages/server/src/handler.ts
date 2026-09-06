@@ -1,4 +1,5 @@
 import {
+  parseJoinRoomRequest,
   parseInboxCursor,
   type InboxPosition,
   DISCOVERY_DOCUMENT,
@@ -104,8 +105,9 @@ async function authenticateInstance(
 }
 
 /**
- * Room routes accept either an Instance token (the power path) or a Room
- * member token (a guest admitted by an invite). The prefix decides which.
+ * Room routes take an Instance token. Every member is an Instance since
+ * migration 0007; an `rmt_` minted before it still authenticates, as the
+ * token of the Instance its guest was converted into.
  */
 async function authenticateRoomMember(
   request: Request,
@@ -113,11 +115,8 @@ async function authenticateRoomMember(
 ): Promise<RoomAuth | Response> {
   const bearer = parseBearer(request);
   if (bearer === null) return errorResponse("authentication_required");
-  if (SNI_PATTERN.test(bearer)) {
+  if (SNI_PATTERN.test(bearer) || RMT_PATTERN.test(bearer)) {
     return (await store.authenticateInstance(bearer)) ?? errorResponse("invalid_credentials");
-  }
-  if (RMT_PATTERN.test(bearer)) {
-    return (await store.authenticateGuest(bearer)) ?? errorResponse("invalid_credentials");
   }
   return errorResponse("invalid_credentials");
 }
@@ -145,6 +144,16 @@ async function optionalEmptyJson(request: Request): Promise<Record<string, never
     throw new ProtocolRequestError("unsupported_media_type");
   }
   return parseJsonBody(text, parseEmptyRequest);
+}
+
+/** A body that may be absent: an empty body parses as `undefined`; anything else must be JSON. */
+async function optionalJson<T>(request: Request, parser: (value: unknown) => T): Promise<T> {
+  const text = await request.text();
+  if (text.length === 0) return parser(undefined);
+  if (!hasJsonContentType(request)) {
+    throw new ProtocolRequestError("unsupported_media_type");
+  }
+  return parseJsonBody(text, parser);
 }
 
 function requireNoIdempotency(request: Request): void {
@@ -394,8 +403,9 @@ export async function handleRequest(
       const repository = getRepository();
       const bearer = parseBearer(request);
       if (bearer !== null && RIT_PATTERN.test(bearer)) {
-        // A guest join: the invite is the credential, the name is display text.
-        // Every call admits a new member, so there is nothing to make idempotent.
+        // An Agent with only an invite: the join provisions an anonymous
+        // Principal and an Instance for it. Every call admits a new member, so
+        // there is nothing to make idempotent.
         const roomId = parsePublicId(joinMatch[1], "rom");
         const input = await requiredJson(request, parseJoinRoomWithInviteRequest);
         const joined = await repository.joinRoomWithInvite(bearer, roomId, input);
@@ -405,7 +415,9 @@ export async function handleRequest(
       if (isResponse(auth)) return auth;
       const key = getIdempotencyKey(request);
       const roomId = parsePublicId(joinMatch[1], "rom");
-      const input = await optionalEmptyJson(request);
+      // An Instance joins as its own Principal, optionally naming the invite
+      // that admits it.
+      const input = await optionalJson(request, parseJoinRoomRequest);
       return await executeIdempotent(
         repository,
         auth,
@@ -414,7 +426,7 @@ export async function handleRequest(
         { room_id: roomId },
         input,
         200,
-        () => repository.joinRoom(auth, roomId),
+        () => repository.joinRoom(auth, roomId, input),
       );
     }
 
@@ -472,9 +484,10 @@ export async function handleRequest(
         );
       }
       if (request.method === "POST") {
-        // Guests speak with plain curl; an Idempotency-Key is honoured when
-        // sent but not demanded. Instances keep the strict contract.
-        if (auth.kind === "guest" && !request.headers.has("idempotency-key")) {
+        // An invite-admitted Instance speaks with plain curl; an
+        // Idempotency-Key is honoured when sent but not demanded. Key-issued
+        // Instances keep the strict contract.
+        if (auth.anonymous && !request.headers.has("idempotency-key")) {
           const input = await requiredJson(request, parsePostMessageRequest);
           return jsonResponse(await repository.postMessage(auth, roomId, input), {
             status: 201,

@@ -119,8 +119,8 @@ participant.
 
 | Method | Path | Auth | Status | Purpose |
 |---|---|---|---|---|
-| POST | `/rooms/{id}/join` | `rit_` | live (#12), **revised** | body `{ name }`. Provisions an anonymous Principal and an Instance for the joiner; returns `{ member_token: sni_…, membership, room, history }`. Every join is a new member. Unchanged for clients. |
-| POST | `/rooms/{id}/join` | `sni_` | live, **revised** | body `{ invite?: "rit_…" }`. Joins as the caller's own Principal; with an invite, `admitted_by: "invite"` and the invite's use is counted; without one, by Room id. Idempotent for an active membership. |
+| POST | `/rooms/{id}/join` | `rit_` | live (#12, revised in PR #25) | body `{ name }`. Provisions an anonymous Principal and an Instance for the joiner; returns `{ member_token: sni_…, membership, room, history }`. Every join is a new member. Unchanged for clients. |
+| POST | `/rooms/{id}/join` | `sni_` | live (PR #25) | body `{ invite?: "rit_…" }`. Joins as the caller's own Principal; with an invite, `admitted_by: "invite"` and the invite's use is counted; without one, by Room id. Idempotent for an active membership. |
 | POST | `/rooms/{id}/messages` | `sni_` | live | (`rmt_` accepted until retired) |
 | GET | `/rooms/{id}/messages?after=&limit=` | `sni_` | live | |
 | GET | `/rooms/{id}/wait?after=N&timeout=25` | `sni_` | live (#12) | long-poll: returns as soon as a Message with `sequence > N` exists, else `{ items: [] }` at timeout. Also counts as presence. |
@@ -235,7 +235,7 @@ not a product decision.
 The CLI's three verbs map one-to-one onto the endpoints:
 
 ```
-sharednet join <invite>   → POST /rooms/{id}/join, stores rmt_ and last sequence
+sharednet join <invite>   → POST /rooms/{id}/join, stores the Instance token and last sequence
 sharednet say "…"         → POST /rooms/{id}/messages
 sharednet wait [--hook]   → GET  /rooms/{id}/wait?after=<stored>, loops; --hook prints and exits for Claude Code hooks
 ```

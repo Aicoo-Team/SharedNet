@@ -48,15 +48,36 @@ export const principals = sharednetSchema.table(
   "principal",
   {
     id: text("id").$type<PrincipalId>().primaryKey(),
-    authUserId: text("auth_user_id")
-      .notNull()
-      .references(() => authUser.id, { onDelete: "cascade" }),
+    /**
+     * The account behind this Principal. Null for an anonymous Principal: one
+     * provisioned by an invite join for an Agent that arrived with nothing,
+     * which `sharednet login` can bind to an account later.
+     */
+    authUserId: text("auth_user_id").references(() => authUser.id, { onDelete: "cascade" }),
     displayName: text("display_name"),
     createdAt: domainTimestamp("created_at").defaultNow().notNull(),
+    /** For an anonymous Principal: whose invite admitted it. */
+    invitedByPrincipalId: text("invited_by_principal_id").$type<PrincipalId>(),
+    /** Set when an anonymous Principal was bound into an existing one. */
+    mergedIntoPrincipalId: text("merged_into_principal_id").$type<PrincipalId>(),
   },
   (table) => [
     unique("principal_auth_user_id_unique").on(table.authUserId),
+    foreignKey({
+      name: "principal_invited_by_fk",
+      columns: [table.invitedByPrincipalId],
+      foreignColumns: [table.id],
+    }).onDelete("set null"),
+    foreignKey({
+      name: "principal_merged_into_fk",
+      columns: [table.mergedIntoPrincipalId],
+      foreignColumns: [table.id],
+    }).onDelete("set null"),
     check("principal_id_format", sql`${table.id} ~ ${PRINCIPAL_ID_RE}`),
+    check(
+      "principal_bound_or_invited",
+      sql`${table.authUserId} IS NOT NULL OR ${table.invitedByPrincipalId} IS NOT NULL`,
+    ),
   ],
 );
 
@@ -98,7 +119,12 @@ export const instances = sharednetSchema.table(
     principalId: text("principal_id").$type<PrincipalId>().notNull(),
     /** The tag this Instance is grouped under, or null for untagged. */
     agentId: text("agent_id").$type<AgentId>(),
-    issuedByKeyId: text("issued_by_key_id").$type<ApiKeyId>().notNull(),
+    /** The API key that registered it; null when an invite admitted it instead. */
+    issuedByKeyId: text("issued_by_key_id").$type<ApiKeyId>(),
+    /** The invite that admitted it; null when an API key registered it. */
+    admittedByInviteId: text("admitted_by_invite_id").$type<InviteId>(),
+    /** What an invite-admitted Instance calls itself in a Room. Display only. */
+    displayName: text("display_name"),
     tokenDigest: text("token_digest").notNull(),
     /**
      * HMAC-SHA256(installation secret, runtime kind ‖ provider session anchor),
@@ -127,7 +153,8 @@ export const instances = sharednetSchema.table(
     startedAt: domainTimestamp("started_at").defaultNow().notNull(),
     lastSeenAt: domainTimestamp("last_seen_at").notNull(),
     leaseExpiresAt: domainTimestamp("lease_expires_at").notNull(),
-    tokenExpiresAt: domainTimestamp("token_expires_at").notNull(),
+    /** Null for an invite-admitted Instance: its seat lasts until removed. */
+    tokenExpiresAt: domainTimestamp("token_expires_at"),
     endedAt: domainTimestamp("ended_at"),
     revokedAt: domainTimestamp("revoked_at"),
   },
@@ -160,10 +187,21 @@ export const instances = sharednetSchema.table(
     index("instance_agent_idx").on(table.agentId),
     index("instance_issued_by_key_idx").on(table.issuedByKeyId),
     index("instance_lease_expires_at_idx").on(table.leaseExpiresAt),
+    // instance_admitted_by_invite_fk (→ room_invite.id) exists in the database
+    // (migration 0007) but is not declared here: instance → room_invite → room
+    // → instance would be a type cycle for Drizzle's inference.
     check("instance_id_format", sql`${table.id} ~ ${INSTANCE_ID_RE}`),
     check(
       "instance_issued_by_key_id_format",
-      sql`${table.issuedByKeyId} ~ '^key_[0-9A-Za-z]{10}$'`,
+      sql`${table.issuedByKeyId} IS NULL OR ${table.issuedByKeyId} ~ '^key_[0-9A-Za-z]{10}$'`,
+    ),
+    check(
+      "instance_issued_or_admitted",
+      sql`${table.issuedByKeyId} IS NOT NULL OR ${table.admittedByInviteId} IS NOT NULL`,
+    ),
+    check(
+      "instance_display_name_length",
+      sql`${table.displayName} IS NULL OR length(${table.displayName}) BETWEEN 1 AND 64`,
     ),
     check("instance_token_digest_format", sql`${table.tokenDigest} ~ ${SHA256_HEX_RE}`),
     check(
@@ -186,7 +224,7 @@ export const instances = sharednetSchema.table(
       "instance_time_order_valid",
       sql`${table.lastSeenAt} >= ${table.startedAt}
           AND ${table.leaseExpiresAt} > ${table.lastSeenAt}
-          AND ${table.tokenExpiresAt} > ${table.startedAt}`,
+          AND (${table.tokenExpiresAt} IS NULL OR ${table.tokenExpiresAt} > ${table.startedAt})`,
     ),
   ],
 );
@@ -255,9 +293,22 @@ export const roomMembers = sharednetSchema.table(
     state: text("state").$type<"active" | "left">().default("active").notNull(),
     joinedAt: domainTimestamp("joined_at").defaultNow().notNull(),
     leftAt: domainTimestamp("left_at"),
+    /** How this seat was admitted: by knowing the Room id, or by an invite. */
+    admittedBy: text("admitted_by").$type<"room_id" | "invite">().default("room_id").notNull(),
+    inviteId: text("invite_id").$type<InviteId>(),
   },
   (table) => [
     primaryKey({ name: "room_member_pk", columns: [table.roomId, table.instanceId] }),
+    foreignKey({
+      name: "room_member_invite_fk",
+      columns: [table.roomId, table.inviteId],
+      foreignColumns: [roomInvites.roomId, roomInvites.id],
+    }),
+    check("room_member_admitted_by_valid", sql`${table.admittedBy} IN ('room_id', 'invite')`),
+    check(
+      "room_member_admitted_by_invite_consistent",
+      sql`(${table.admittedBy} = 'invite') = (${table.inviteId} IS NOT NULL)`,
+    ),
     // A Room id is the capability: any Instance that knows it may join, so a
     // member's Principal is not required to be the Room's. principal_id here
     // is the member's own, tied to its Instance by the foreign key below.
@@ -326,6 +377,11 @@ export const roomInvites = sharednetSchema.table(
  * Every join creates a new guest with its own member token; the name is
  * display text and never recovers an earlier guest's identity.
  */
+/**
+ * Retired by migration 0007: every former guest is now an Instance of an
+ * anonymous Principal. The table stays until a later migration drops it;
+ * nothing reads or writes it.
+ */
 export const roomGuests = sharednetSchema.table(
   "room_guest",
   {
@@ -379,9 +435,9 @@ export const messages = sharednetSchema.table(
     roomId: text("room_id").$type<RoomId>().notNull(),
     sequence: integer("sequence").notNull(),
     senderPrincipalId: text("sender_principal_id").$type<PrincipalId>().notNull(),
-    /** Who acted, when an Instance did. The sender's tag is derived from this at read time. */
+    /** Who acted. The sender's tag is derived from this at read time. Nullable in SQL only for history; always set. */
     senderInstanceId: text("sender_instance_id").$type<InstanceId>(),
-    /** Who acted, when a guest did. Exactly one of the two sender columns is set. */
+    /** Retired with the guest model (migration 0007); always null now. */
     senderGuestId: text("sender_guest_id").$type<MemberId>(),
     content: text("content").notNull(),
     replyToMessageId: text("reply_to_message_id").$type<MessageId>(),
@@ -410,11 +466,6 @@ export const messages = sharednetSchema.table(
       foreignColumns: [roomMembers.roomId, roomMembers.instanceId],
     }),
     foreignKey({
-      name: "message_sender_guest_fk",
-      columns: [table.roomId, table.senderGuestId],
-      foreignColumns: [roomGuests.roomId, roomGuests.id],
-    }),
-    foreignKey({
       name: "message_same_room_reply_fk",
       columns: [table.roomId, table.replyToMessageId],
       foreignColumns: [table.roomId, table.id],
@@ -423,8 +474,8 @@ export const messages = sharednetSchema.table(
     index("message_sender_instance_idx").on(table.senderInstanceId),
     check("message_id_format", sql`${table.id} ~ ${MESSAGE_ID_RE}`),
     check(
-      "message_sender_exactly_one",
-      sql`(${table.senderInstanceId} IS NULL) <> (${table.senderGuestId} IS NULL)`,
+      "message_sender_is_instance",
+      sql`${table.senderInstanceId} IS NOT NULL AND ${table.senderGuestId} IS NULL`,
     ),
     check("message_sequence_positive", sql`${table.sequence} >= 1`),
     check(
