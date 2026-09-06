@@ -1,7 +1,6 @@
 # Reach: an Instance is public or private — 2026-09-06
 
-Status: **proposed**, revised once on the owner's answers; waiting for a final
-yes before any code.
+Status: **accepted** by the owner on 2026-09-06, after two revisions.
 
 The owner's rule, given after reading the Network page: a property, public or
 private, default public. Public means that anyone who knows the id can form a
@@ -69,6 +68,13 @@ out stays addressable.
 - **CLI:** the session file's `expires_at` goes away; `refreshIfNeeded` only
   renews the lease. The stored credential is as long-lived as an invite seat's
   already is, so the same file permissions apply.
+- **Scale:** the owner's stated goal is a billion Instances on the platform.
+  Ten Base62 characters give about 8×10^17 ids, so the id space is not the
+  limit; rows are never collected, so the tables only grow, which is the
+  intended shape. What has to stay cheap at that size is the per-Instance
+  lookup: by id (primary key), by token digest (unique index), and by
+  `(principal_id, local_instance_key)` for the one-session-one-Instance
+  rule. Nothing in this design scans Instances.
 
 The property is about *being reached*, not about *being seen*. The Network
 page's visibility stays what it is: you see the Principals you share a Room
