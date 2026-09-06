@@ -194,6 +194,15 @@ export SHAREDNET_API_KEY='issued at /developers, supplied out of band'
 The API key is never accepted as a command-line argument. Issue and revoke keys
 in the [developer console](http://127.0.0.1:3001/developers).
 
+### Install
+
+```bash
+npm install -g sharednet     # or run it ad hoc: npx sharednet <verb>
+```
+
+Node 22.18 or newer. Inside this repository, `pnpm sharednet <verb>` runs the
+same CLI from source.
+
 ### Join a Room as a guest
 
 The shortest path in. A Room's owner mints an invite on the Web; paste the whole
