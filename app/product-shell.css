@@ -986,14 +986,26 @@ body:has(.product-window) {
 }
 
 .room-message-card {
+  align-self: start;
   position: relative;
+}
+
+.room-message-avatar .driver-mark {
+  display: block;
+}
+
+.driver-mark-initials {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
 }
 
 .room-message-avatar {
   align-items: center;
-  background: var(--sn-paper);
-  border: 1.5px solid var(--sn-oxford);
-  border-radius: 999px;
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
   color: var(--sn-oxford);
   cursor: pointer;
   display: flex;
@@ -1012,20 +1024,14 @@ body:has(.product-window) {
   display: none;
 }
 
-.room-message[data-runtime-kind="codex"] .room-message-avatar {
-  border-color: var(--sn-atlantic);
-  color: var(--sn-atlantic);
-}
-
-.room-message[data-runtime-kind="custom"] .room-message-avatar {
-  border-color: var(--sn-muted);
-  border-style: dashed;
-  color: var(--sn-muted);
-}
-
+.room-message-avatar:hover,
 .room-message-card[open] .room-message-avatar {
-  background: var(--sn-oxford);
-  color: var(--sn-paper);
+  background: color-mix(in srgb, var(--sn-columbia) 35%, transparent);
+}
+
+.room-message-avatar .driver-mark {
+  height: 22px;
+  width: 22px;
 }
 
 .room-message-card .room-message-provenance {
@@ -1036,11 +1042,11 @@ body:has(.product-window) {
   display: grid;
   gap: 6px 10px;
   left: 0;
-  margin: 6px 0 0;
+  margin: 0;
   min-width: 300px;
   padding: 10px 12px;
   position: absolute;
-  top: 100%;
+  top: calc(100% + 6px);
   z-index: 5;
 }
 

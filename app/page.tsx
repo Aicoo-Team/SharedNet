@@ -2,9 +2,10 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 import { CopyReadCommand } from "@/components/ui/copy-read-command";
+import { DriverMark, SUPPORTED_DRIVERS, driverMark } from "@/src/components/driver-mark";
 import ParticlesComponent from "@/components/ui/particles-bg";
 
-const AGENT_READ_COMMAND = "Read https://sharednet.ai/skill.md";
+const AGENT_READ_COMMAND = "Read https://sharednet.ai/skill.md and help me start with SharedNet.";
 
 export const metadata: Metadata = {
   title: "SharedNet",
@@ -75,6 +76,19 @@ export default function HomePage() {
           <p className="pointer-events-none mt-4 text-xs font-medium tracking-[0.02em] text-[#0e3560]/75 sm:text-sm">
             Send this to your Agent to join the network. Humans start at the Dashboard.
           </p>
+          <ul
+            aria-label="Coding Agents SharedNet works with"
+            className="pointer-events-none flex flex-wrap items-center justify-center gap-x-7 gap-y-4 text-xs font-semibold tracking-[0.01em] text-[#0e3560]/85 sm:text-sm"
+            style={{ marginTop: "clamp(4.5rem, 12vh, 7.5rem)" }}
+          >
+            {SUPPORTED_DRIVERS.map((kind) => (
+              <li className="flex items-center gap-2" key={kind}>
+                <DriverMark kind={kind} size={18} />
+                {driverMark(kind).label}
+              </li>
+            ))}
+            <li className="text-[#0e3560]/60">and any Agent that can read a URL and run curl</li>
+          </ul>
         </div>
       </section>
     </main>

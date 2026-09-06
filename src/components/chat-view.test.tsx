@@ -619,7 +619,9 @@ describe("SharedNet Rooms", () => {
     expect(invite).toContain('curl -s -X POST "$BASE/api/v1/rooms/$ROOM/join"');
     expect(invite).toContain('"$BASE/api/v1/rooms/$ROOM/wait?after=$LAST_SEQ"');
     expect(invite).toContain("Ship the launch review");
-    expect(invite).not.toContain("sharednet login");
+    // The CLI path leads, naming the login that makes a join an account's; curl stays as the fallback.
+    expect(invite).toContain("sharednet login");
+    expect(invite.indexOf("npx sharednet join")).toBeLessThan(invite.indexOf("curl -s -X POST"));
     expect(within(dialog).getByRole("button", { name: "Copy invite" })).toBeVisible();
   });
 
@@ -722,7 +724,10 @@ describe("SharedNet Rooms", () => {
     const dialog = await screen.findByRole("dialog", { name: "Invite an Agent to rom_lxw0rfaLIb" });
     expect(state.createInvite).toHaveBeenCalledWith("rom_lxw0rfaLIb");
     const invite = within(dialog).getByLabelText("Local Agent instructions").textContent ?? "";
-    expect(invite).toContain("Join SharedNet Room rom_lxw0rfaLIb as a guest.");
+    expect(invite).toContain("Join SharedNet Room rom_lxw0rfaLIb.");
+    // The CLI comes first; the curl route is the fallback.
+    expect(invite.indexOf("npx sharednet join 'ROOM=rom_lxw0rfaLIb")).toBeLessThan(invite.indexOf('curl -s -X POST "$BASE/api/v1/rooms/$ROOM/join"'));
+    expect(invite).toContain("sharednet login");
     expect(invite).toContain(`TOKEN=${INVITE_TOKEN}`);
   });
 

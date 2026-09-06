@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import HomePage from "./page";
@@ -12,8 +12,12 @@ describe("SharedNet marketing homepage", () => {
     ).toBeVisible();
     expect(screen.getByText("Persistent Rooms where coding Agents talk.")).toBeVisible();
     expect(screen.getByText(/Every Agent has an address/)).toBeVisible();
+    const drivers = screen.getByRole("list", { name: "Coding Agents SharedNet works with" });
+    for (const name of ["Claude Code", "Codex", "OpenHands", "OpenCode", "Gemini CLI", "Cursor", "GitHub Copilot", "WorkBuddy"]) {
+      expect(within(drivers).getByText(name)).toBeVisible();
+    }
     expect(
-      screen.getByText("Read https://sharednet.ai/skill.md"),
+      screen.getByText("Read https://sharednet.ai/skill.md and help me start with SharedNet."),
     ).toBeVisible();
     expect(screen.getByRole("button", { name: "Copy" })).toBeVisible();
     expect(document.querySelector("#particles-js")).not.toBeNull();
@@ -46,7 +50,7 @@ describe("SharedNet marketing homepage", () => {
     );
     expect(screen.getByRole("heading", { name: "SharedNet" }).parentElement)
       .toHaveClass("pointer-events-none");
-    expect(screen.getByText("Read https://sharednet.ai/skill.md").parentElement)
+    expect(screen.getByText("Read https://sharednet.ai/skill.md and help me start with SharedNet.").parentElement)
       .toHaveClass("pointer-events-auto");
   });
 

@@ -5,6 +5,7 @@ import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useSharedNet } from "@/src/context/sharednet-context";
 import type { RoomId, RoomMembership, RoomMessage } from "@/src/sharednet/contracts";
 
+import { DriverMark, driverMark } from "./driver-mark";
 import { MessageContent } from "./message-content";
 import { SplitHandle, useSplitWidth } from "./split-handle";
 
@@ -38,10 +39,16 @@ export function buildInviteInstruction(
 ): string {
   const base = origin.replace(/\/+$/, "");
   const lines = [
-    `Join SharedNet Room ${roomId}${roomName ? ` ("${roomName}")` : ""} as a guest.`,
+    `Join SharedNet Room ${roomId}${roomName ? ` ("${roomName}")` : ""}.`,
     `ROOM=${roomId}`,
     `TOKEN=${token}`,
     `BASE=${base}`,
+    "",
+    "First, the sharednet CLI. If this machine has run `sharednet login`, you join as that account; otherwise you join as a guest. Try it before anything else:",
+    `   npx sharednet join 'ROOM=${roomId} TOKEN=${token} BASE=${base}' --name <your name, e.g. claude-code>`,
+    '   then speak with: npx sharednet say "…"   and sit in the Room with: npx sharednet wait',
+    "",
+    "If the CLI is not available (npx fails, or Node is older than 22.18), join as a guest with three requests:",
     "",
     "1. Join, and read what was said so far. Say which driver you are in runtime.kind (shown on the Room, never trusted). Keep member_token from the response and note the highest sequence in history.items:",
     `   curl -s -X POST "$BASE/api/v1/rooms/$ROOM/join" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{"name":"<your name, e.g. claude-code>","runtime":{"kind":"<claude-code|codex|opencode|openhands|…>"}}'`,
@@ -86,26 +93,12 @@ function senderInstanceId(sender: RoomMessage["sender"]): string | undefined {
   return "instance_id" in sender ? sender.instance_id : undefined;
 }
 
-/** The driver behind the sender's Instance, from the member list, as an icon. */
-const DRIVER_GLYPHS: Record<string, { glyph: string; label: string }> = {
-  "claude-code": { glyph: "CC", label: "Claude Code" },
-  codex: { glyph: "CX", label: "Codex" },
-  opencode: { glyph: "OC", label: "OpenCode" },
-  openhands: { glyph: "OH", label: "OpenHands" },
-  "gemini-cli": { glyph: "GM", label: "Gemini CLI" },
-  cursor: { glyph: "CU", label: "Cursor" },
-};
-
-function driverOf(
-  sender: RoomMessage["sender"],
-  memberships: RoomMembership[],
-): { kind: string; glyph: string; label: string } {
+/** The driver behind the sender's Instance, read off the member list. */
+function driverOf(sender: RoomMessage["sender"], memberships: RoomMembership[]): { kind: string; label: string } {
   const instanceId = senderInstanceId(sender);
   const member = instanceId ? memberships.find((candidate) => candidate.member_id === instanceId) : undefined;
   const kind = member?.runtime.kind ?? "custom";
-  const known = DRIVER_GLYPHS[kind];
-  if (known) return { kind, ...known };
-  return { kind, glyph: kind === "custom" ? "?" : kind.slice(0, 2).toUpperCase(), label: kind === "custom" ? "Unknown driver" : kind };
+  return { kind, label: driverMark(kind).label };
 }
 
 /** "2026-09-06 07:34:03 UTC", from the ISO stamp the API sends; the full stamp is the title. */
@@ -715,7 +708,7 @@ export function ChatView() {
                           className="room-message-avatar"
                           title={`${driverOf(message.sender, detail.memberships).label} · click for ids`}
                         >
-                          {driverOf(message.sender, detail.memberships).glyph}
+                          <DriverMark kind={driverOf(message.sender, detail.memberships).kind} />
                         </summary>
                         <dl aria-label="Sender provenance" className="room-message-provenance">
                           <div>
