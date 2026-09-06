@@ -194,5 +194,31 @@ describe("sharednet login", () => {
     const session = await cli(["session", "start", "--json"]);
     expect(session.exitCode).toBe(0);
     expect(JSON.parse(session.stdout).instance.principal_id).toBe(host.body.instance.principal_id);
+
+    // And from now on, a join with an invite is as the account: door A, same invite.
+    const second = await api("/rooms", {
+      method: "POST",
+      headers: { authorization: `Bearer ${host.body.token}`, "content-type": "application/json", "idempotency-key": "2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e" },
+      body: JSON.stringify({ name: "Second" }),
+    });
+    const { token: invite2 } = await store.createRoomInvite({ roomId: second.body.room.id, principalId: host.body.instance.principal_id });
+    const { mkdir: mk } = await import("node:fs/promises");
+    const secondProject = join(space.root, "second");
+    await mk(secondProject, { recursive: true });
+    const stdout: string[] = [];
+    const exit = await runCli(["join", `ROOM=${second.body.room.id} TOKEN=${invite2}`, "--json"], {
+      env: space.env,
+      fetch,
+      cwd: secondProject,
+      stdout: (value) => stdout.push(value),
+      stderr: () => undefined,
+    });
+    expect(exit).toBe(0);
+    const asAccount = JSON.parse(stdout.join(""));
+    expect(asAccount.as).toBe("account");
+    expect(asAccount.principal_id).toBe(host.body.instance.principal_id);
+    const members = await api(`/rooms/${second.body.room.id}`, { headers: { authorization: `Bearer ${host.body.token}` } });
+    const mine = members.body.memberships.find((m: any) => m.member_id === asAccount.member_id);
+    expect(mine).toMatchObject({ kind: "instance", admitted_by: "invite", principal_id: host.body.instance.principal_id });
   });
 });
