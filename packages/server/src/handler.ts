@@ -100,7 +100,11 @@ async function authenticateInstance(
 ): Promise<InstanceAuth | Response> {
   const bearer = parseBearer(request);
   if (bearer === null) return errorResponse("authentication_required");
-  if (!SNI_PATTERN.test(bearer)) return errorResponse("invalid_credentials");
+  // An rmt_ minted before migration 0007 is the token of the Instance its
+  // guest was converted into, on every Instance route, not only Room routes.
+  if (!SNI_PATTERN.test(bearer) && !RMT_PATTERN.test(bearer)) {
+    return errorResponse("invalid_credentials");
+  }
   return (await store.authenticateInstance(bearer)) ?? errorResponse("invalid_credentials");
 }
 
