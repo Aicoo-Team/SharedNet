@@ -103,6 +103,10 @@ export type MemberPresence = "online" | "away" | "offline";
 
 export type RoomMembership = {
   agent_id: AgentId | null;
+  /** How the seat got in: by Room id, by invite, added as a public Instance, or accepted as a private one. */
+  admitted_by: "room_id" | "invite" | "added" | "accepted";
+  /** For an added or accepted seat: the Instance that asked. */
+  added_by_instance_id: InstanceId | null;
   /** Every member is an Instance (decision 2026-09-06). */
   instance_id: InstanceId;
   joined_at: string;
@@ -524,8 +528,15 @@ function isRoomMembership(value: unknown): value is RoomMembership {
       "left_at",
       "last_read_sequence",
       "runtime",
+      "admitted_by",
+      "added_by_instance_id",
     ]) ||
     !isRuntimeSummary(value.runtime) ||
+    (value.admitted_by !== "room_id" &&
+      value.admitted_by !== "invite" &&
+      value.admitted_by !== "added" &&
+      value.admitted_by !== "accepted") ||
+    !isNullable(value.added_by_instance_id, isInstanceId) ||
     !isIdentifier(value.room_id) ||
     !isPrincipalId(value.principal_id) ||
     !isNullable(value.agent_id, isAgentId) ||

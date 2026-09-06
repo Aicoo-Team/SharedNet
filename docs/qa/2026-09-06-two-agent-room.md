@@ -268,3 +268,20 @@ Room by id and said #1; the claude seat needed `--as` (five seats on this
 machine) and entered as `i_f0eIpDHdoi`; `reach public` took effect; a
 `watch --on count 2` on the claude seat held after #2 and fired on #3,
 replying #4 "claude-code woke on count 2: first of two | second of two".
+
+## Web approval of a seat request, rehearsed live, 2026-09-06
+
+On the local dev server against the migrated dev database, through the real
+Next routes and page (Playwright): the throwaway account approves a
+`sharednet login`, starts an Instance with `session start --private`, a guest
+seat of another Principal joins a Room by invite and runs `sharednet add
+<that Instance>` → `pending`. The Decisions page shows the request with the
+new "Seat for" row; clicking Approve resolves it, and the Room's member list
+and the Instance's own `room list` both show the seat as `accepted`. Asking
+again returns `member`.
+
+Two bugs found and fixed in the same PR: the Web membership carried no
+`admitted_by` (the member card now says "Asked by i_…, accepted (private)"
+and the like), and the Decisions page named the deciding account as the
+requester's Principal, because the projection copied the Decision's own
+Principal; it now reads who asked off the Instance row.

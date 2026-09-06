@@ -96,6 +96,8 @@ const roomDetail = {
       presence: "online",
       joined_at: NOW,
       last_read_sequence: 1,
+      admitted_by: "room_id",
+      added_by_instance_id: null,
       left_at: null,
       principal_id: PRINCIPAL_ID,
       room_id: ROOM_ID,

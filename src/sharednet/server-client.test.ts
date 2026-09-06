@@ -44,7 +44,7 @@ const roomRow = {
 };
 const memberRow = {
   principalId: PRINCIPAL, roomId: ROOM, instanceId: INSTANCE,
-  state: "active", joinedAt: NOW, leftAt: null,
+  state: "active", joinedAt: NOW, leftAt: null, admittedBy: "room_id", addedByInstanceId: null,
 };
 const messageRow = {
   id: MESSAGE, roomId: ROOM, sequence: 1, senderPrincipalId: PRINCIPAL,
@@ -140,7 +140,7 @@ const guestInstanceRow = {
 };
 const guestMemberRow = {
   principalId: GUEST_PRINCIPAL, roomId: ROOM, instanceId: GUEST_INSTANCE,
-  state: "active", joinedAt: NOW, leftAt: null, admittedBy: "invite", inviteId: "inv_invite0001",
+  state: "active", joinedAt: NOW, leftAt: null, admittedBy: "invite", inviteId: "inv_invite0001", addedByInstanceId: null,
 };
 const guestMessageRow = {
   id: "msg_guest000001", roomId: ROOM, sequence: 2, senderPrincipalId: GUEST_PRINCIPAL,
@@ -465,6 +465,19 @@ describe("SharedNetServerClient reads the V1 Postgres tables", () => {
     );
     expect(isDecisionProjection(resolved)).toBe(true);
     expect(resolved.status).toBe("approved");
+  });
+
+  it("names the asker's own Principal on a seat request from another Principal", async () => {
+    const asker = { ...instanceRow, id: "i_OtherSeat01", principalId: "p_OtherPrin01", agentId: null, localInstanceKey: null };
+    const client = clientWith({
+      ...BASE_TABLES,
+      instance: [instanceRow, asker],
+      decision: [{ ...decisionRow, requestedByInstanceId: "i_OtherSeat01", requestedForInstanceId: INSTANCE }],
+    });
+    const list = await client.listDecisions("auth-user-1");
+    expect(list.decisions[0].requester).toEqual({ agent_id: null, instance_id: "i_OtherSeat01", principal_id: "p_OtherPrin01" });
+    expect(list.decisions[0].requested_for_instance_id).toBe(INSTANCE);
+    expect(list.decisions[0].target_principal_id).toBe(PRINCIPAL);
   });
 
   it("rejects a resolution that does not match the Decision mode", async () => {

@@ -60,6 +60,20 @@ export function buildInviteInstruction(
 }
 
 /** One line naming the driver behind a seat, and how sure we are of it. */
+/** How a seat got in, in the words of decision 2026-09-06 reach §3. */
+function describeAdmission(membership: RoomMembership): string {
+  switch (membership.admitted_by) {
+    case "invite":
+      return "Admitted by invite";
+    case "added":
+      return `Added by ${membership.added_by_instance_id ?? "another Instance"} (public)`;
+    case "accepted":
+      return `Asked by ${membership.added_by_instance_id ?? "another Instance"}, accepted (private)`;
+    default:
+      return "Joined by Room id";
+  }
+}
+
 function describeRuntime(runtime: RoomMembership["runtime"]): string {
   const version = runtime.version ? ` ${runtime.version}` : "";
   const entry = runtime.entrypoint ? ` · ${runtime.entrypoint}` : "";
@@ -664,6 +678,7 @@ export function ChatView() {
                         <p className="room-member-driver">
                           {describeRuntime(member.membership.runtime)}
                         </p>
+                        <p className="room-member-admission">{describeAdmission(member.membership)}</p>
                         <p className="room-member-heartbeat">
                           {member.membership.kind === "guest"
                             ? "Anonymous Principal, admitted by invite; sign in on its machine to bind it. Presence follows its last request."
