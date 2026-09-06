@@ -1098,4 +1098,140 @@ describe("Room invites, guests, and wait", () => {
       expect(apiKey.status).toBe(401);
     });
   });
+
+  describe("sharednet login", () => {
+    async function startLogin(store: MemorySharedNetRepository, body: unknown = { label: "laptop" }) {
+      const response = await request(store, "/api/v1/cli/logins", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      expect(response.status).toBe(201);
+      expect(response.headers.get("cache-control")).toContain("no-store");
+      return json(response);
+    }
+
+    async function poll(store: MemorySharedNetRepository, loginId: string, token: string) {
+      return request(store, `/api/v1/cli/logins/${loginId}/poll`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+      });
+    }
+
+    it("starts pending, answers pending until approved, then hands over one key that works", async () => {
+      const store = makeStore();
+      const started = await startLogin(store);
+      expect(started.user_code).toMatch(/^[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/);
+      expect(started.poll_token).toMatch(/^clp_[A-Za-z0-9_-]{43}$/);
+      expect(started.verify_url).toBe(`http://127.0.0.1:3001/cli/authorize?code=${started.user_code}`);
+      expect(started.login).toMatchObject({ state: "pending", label: "laptop", bind_instance_ids: [] });
+      expect(started.login.id).toMatch(/^cli_[A-Za-z0-9]{10}$/);
+
+      const pending = await poll(store, started.login.id, started.poll_token);
+      expect(pending.status).toBe(200);
+      expect((await json(pending)).state).toBe("pending");
+
+      const host = await startInstance(store);
+      const approved = await store.approveCliLogin({
+        code: started.user_code,
+        principalId: host.instance.principal_id,
+      });
+      expect(approved.login.state).toBe("approved");
+
+      const handed = await poll(store, started.login.id, started.poll_token);
+      expect(handed.status).toBe(200);
+      const body = await json(handed);
+      expect(body.state).toBe("approved");
+      expect(body.api_key).toMatch(/^snk_[A-Za-z0-9_-]{43}$/);
+      expect(body.api_key_id).toMatch(/^key_[A-Za-z0-9]{10}$/);
+      expect(body.principal.id).toBe(host.instance.principal_id);
+
+      // The key is real: it registers an Instance for that Principal.
+      const registered = await request(store, "/api/v1/instances", {
+        method: "POST",
+        headers: { authorization: `Bearer ${body.api_key}`, "content-type": "application/json" },
+        body: JSON.stringify({ runtime_kind: "claude-code", cli_version: "0.1.0" }),
+      });
+      expect(registered.status).toBe(201);
+      expect((await json(registered)).instance.principal_id).toBe(host.instance.principal_id);
+
+      // And it is handed over exactly once.
+      const again = await poll(store, started.login.id, started.poll_token);
+      expect(again.status).toBe(410);
+      expect((await json(again)).error.code).toBe("login_consumed");
+    });
+
+    it("binds the anonymous seats the CLI proved it holds: the seat, its Room, and its history move to the account", async () => {
+      const store = makeStore();
+      const { host, room, principalId } = await openRoom(store);
+      const { token: invite } = await store.createRoomInvite({ roomId: room.id, principalId });
+      const guest = await store.joinRoomWithInvite(invite, room.id, { name: "claude-code" });
+      await say(store, room.id, guest.member_token, "said while anonymous");
+      const anonymousPrincipal = guest.membership.principal_id;
+      expect(anonymousPrincipal).not.toBe(principalId);
+
+      const other = await startInstance(store, { local_instance_key: OTHER_SESSION_KEY }, 201);
+      void other;
+      const started = await startLogin(store, { label: "laptop", seats: [guest.member_token, `sni_${"z".repeat(43)}`] });
+      expect(started.login.bind_instance_ids).toEqual([guest.membership.member_id]);
+
+      // The Room's host approves as itself: the anonymous Principal folds into it.
+      const approved = await store.approveCliLogin({ code: started.user_code, principalId });
+      expect(approved.bound_principal_ids).toEqual([anonymousPrincipal]);
+
+      const detail = await request(store, `/api/v1/rooms/${room.id}`, {
+        headers: instanceHeaders(host.token),
+      });
+      const seat = (await json(detail)).memberships.find((m: any) => m.member_id === guest.membership.member_id);
+      expect(seat.principal_id).toBe(principalId);
+      // Kind follows the Principal: bound, the seat is an Instance of the account.
+      expect(seat.kind).toBe("instance");
+      expect(seat.admitted_by).toBe("invite");
+      expect(seat.name).toBe("claude-code");
+      const page = await json(
+        await request(store, `/api/v1/rooms/${room.id}/messages?after=0`, { headers: instanceHeaders(host.token) }),
+      );
+      const message = page.items.find((m: any) => m.content === "said while anonymous");
+      expect(message.sender_principal_id).toBe(principalId);
+      expect(message.sender_instance_id).toBe(guest.membership.member_id);
+
+      // The seat's own token still works, now as the account's Instance.
+      const stillSpeaks = await say(store, room.id, guest.member_token, "and after binding");
+      expect(stillSpeaks.status).toBe(201);
+      expect((await json(stillSpeaks)).message.sender_principal_id).toBe(principalId);
+
+      // Binding is one-way: a second login naming the same seat binds nothing new.
+      const second = await startLogin(store, { seats: [guest.member_token] });
+      expect(second.login.bind_instance_ids).toEqual([]);
+    });
+
+    it("refuses a wrong poll token, an unknown code, an expired login, and a second approval", async () => {
+      let tick = Date.parse("2026-09-06T10:00:00.000Z");
+      const store = new MemorySharedNetRepository({ devApiKey: DEV_KEY, now: () => new Date(tick) });
+      const started = await startLogin(store);
+
+      const wrongToken = await poll(store, started.login.id, `clp_${"w".repeat(43)}`);
+      expect(wrongToken.status).toBe(404);
+      const notAToken = await poll(store, started.login.id, "sni_notapolltoken");
+      expect(notAToken.status).toBe(401);
+      const host = await startInstance(store);
+      await expect(
+        store.approveCliLogin({ code: "ZZZZ-ZZZZ", principalId: host.instance.principal_id }),
+      ).rejects.toMatchObject({ code: "login_not_found" });
+
+      tick += 11 * 60_000;
+      const expired = await poll(store, started.login.id, started.poll_token);
+      expect(expired.status).toBe(410);
+      expect((await json(expired)).error.code).toBe("login_expired");
+      await expect(
+        store.approveCliLogin({ code: started.user_code, principalId: host.instance.principal_id }),
+      ).rejects.toMatchObject({ code: "login_expired" });
+
+      const fresh = await startLogin(store);
+      await store.approveCliLogin({ code: fresh.user_code, principalId: host.instance.principal_id });
+      await expect(
+        store.approveCliLogin({ code: fresh.user_code, principalId: host.instance.principal_id }),
+      ).rejects.toMatchObject({ code: "login_consumed" });
+    });
+  });
 });

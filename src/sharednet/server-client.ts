@@ -3,7 +3,11 @@ import "server-only";
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
 
 import { getDatabase } from "@/packages/db/src/client.ts";
+import { PostgresSharedNetRepository } from "@/packages/server/src/postgres-repository.ts";
+import { RepositoryError } from "@/packages/server/src/repository.ts";
 import {
+  type CliLogin,
+  normalizeCliLoginCode,
   digestSecret,
   generatePublicId,
   generateSecret,
@@ -21,6 +25,7 @@ import {
 } from "@/packages/db/src/schema.ts";
 
 import {
+  type CliLoginProjection,
   type RuntimeSummary,
   type CloseRoomResponse,
   type RemoveRoomMemberResponse,
@@ -522,14 +527,22 @@ export class SharedNetServerClient {
       if (!updated) throw notFound();
       left = updated;
     }
-    const [tagOf, instanceSeen] = await Promise.all([this.tagsFor(principal.id), this.instanceRows()]);
+    const [tagOf, instanceSeen, principalRows] = await Promise.all([
+      this.tagsFor(principal.id),
+      this.instanceRows(),
+      database
+        .select({ id: principals.id, authUserId: principals.authUserId })
+        .from(principals)
+        .where(eq(principals.id, left.principalId as never)),
+    ]);
     const seen = instanceSeen.get(left.instanceId);
+    const leftPrincipal = principalRows.find((row) => (row.id as string) === (left.principalId as string));
     return {
       membership: {
         agent_id: tagOf(left.instanceId),
         instance_id: left.instanceId as InstanceId,
         joined_at: requiredIso(left.joinedAt),
-        kind: seen && seen.issuedByKeyId === null ? "guest" : "instance",
+        kind: leftPrincipal && leftPrincipal.authUserId === null ? "guest" : "instance",
         last_read_sequence: 0,
         left_at: iso(left.leftAt),
         member_id: left.instanceId,
@@ -540,6 +553,81 @@ export class SharedNetServerClient {
         runtime: runtimeSummary(seen),
         status: left.state,
       },
+    };
+  }
+
+  /**
+   * What the approve page shows for a code: the login's label, the seats it
+   * would bind (named, with their Rooms), and its state. Nothing secret.
+   */
+  async getCliLogin(authUserId: string, code: string): Promise<CliLoginProjection> {
+    await this.requirePrincipal(authUserId);
+    const normalized = normalizeCliLoginCode(code);
+    if (normalized === null) throw new SharedNetApiError("login_not_found", 404, "CLI login not found");
+    const found = await this.loginRepository().getCliLoginByCode(normalized);
+    if (!found) throw new SharedNetApiError("login_not_found", 404, "CLI login not found");
+    return this.cliLoginProjection(found.login);
+  }
+
+  /** Approve a pending CLI login as this account, binding the seats it holds. */
+  async approveCliLogin(authUserId: string, code: string): Promise<CliLoginProjection> {
+    const principal = await this.requirePrincipal(authUserId);
+    const normalized = normalizeCliLoginCode(code);
+    if (normalized === null) throw new SharedNetApiError("login_not_found", 404, "CLI login not found");
+    try {
+      const { login } = await this.loginRepository().approveCliLogin({
+        code: normalized,
+        principalId: principal.id as never,
+      });
+      return this.cliLoginProjection(login);
+    } catch (error) {
+      if (error instanceof RepositoryError) {
+        throw new SharedNetApiError(error.code, error.status, error.message);
+      }
+      throw error;
+    }
+  }
+
+  private loginRepository(): PostgresSharedNetRepository {
+    return new PostgresSharedNetRepository(this.database());
+  }
+
+  private async cliLoginProjection(login: CliLogin): Promise<CliLoginProjection> {
+    const database = this.database();
+    const seats: CliLoginProjection["seats"] = [];
+    if (login.bind_instance_ids.length > 0) {
+      const rows = await database
+        .select({
+          instanceId: instances.id,
+          name: instances.displayName,
+          runtimeKind: instances.runtimeKind,
+          roomId: roomMembers.roomId,
+          roomName: rooms.name,
+        })
+        .from(instances)
+        .leftJoin(roomMembers, eq(roomMembers.instanceId, instances.id))
+        .leftJoin(rooms, eq(rooms.id, roomMembers.roomId))
+        .where(inArray(instances.id, login.bind_instance_ids as never));
+      const byInstance = new Map<string, CliLoginProjection["seats"][number]>();
+      for (const row of rows) {
+        const seat = byInstance.get(row.instanceId) ?? {
+          instance_id: row.instanceId as InstanceId,
+          name: row.name ?? null,
+          runtime_kind: row.runtimeKind,
+          rooms: [],
+        };
+        if (row.roomId && row.roomName) seat.rooms.push({ room_id: row.roomId as RoomId, name: row.roomName });
+        byInstance.set(row.instanceId, seat);
+      }
+      seats.push(...byInstance.values());
+    }
+    return {
+      login_id: login.id,
+      state: login.state,
+      label: login.label,
+      expires_at: login.expires_at,
+      approved_at: login.approved_at,
+      seats,
     };
   }
 
@@ -572,10 +660,26 @@ export class SharedNetServerClient {
       const row = instanceSeen.get(instanceId);
       return row ? presenceOf(row, now.getTime()).presence : "offline";
     };
-    // Every member is an Instance. One of an anonymous Principal (admitted by
-    // an invite, no account yet) is shown by the name it gave.
-    const anonymous = (instanceId: string): boolean =>
-      instanceSeen.get(instanceId)?.issuedByKeyId === null;
+    // Every member is an Instance. One of an anonymous Principal (no account
+    // behind it, not yet bound) is shown by the name it gave. Kind follows the
+    // Principal, so a bound seat reads as an Instance of the account.
+    const principalIds = [...new Set(memberRows.map((member) => member.principalId as string))];
+    const anonymousPrincipals = new Set(
+      principalIds.length === 0
+        ? []
+        : (
+            await database
+              .select({ id: principals.id, authUserId: principals.authUserId })
+              .from(principals)
+              .where(inArray(principals.id, principalIds as never))
+          )
+            .filter((row) => row.authUserId === null)
+            .map((row) => row.id as string),
+    );
+    const anonymous = (instanceId: string): boolean => {
+      const principalId = instanceSeen.get(instanceId)?.principalId;
+      return principalId !== undefined && anonymousPrincipals.has(principalId as string);
+    };
     const nameOf = (instanceId: string): string | null =>
       instanceSeen.get(instanceId)?.displayName ?? null;
     const runtimeOf = (instanceId: string): RuntimeSummary =>

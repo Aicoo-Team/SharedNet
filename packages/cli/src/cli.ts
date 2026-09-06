@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { ApiClient, resolveBaseUrl } from "./api-client.ts";
 import { CliError, asCliError, localError } from "./errors.ts";
 import { isGuestVerb, runGuestVerb } from "./guest.ts";
+import { login } from "./login.ts";
 import { computeLocalInstanceKey } from "./instance-computation.ts";
 import { detectRuntime, isRuntimeKind, runtimeMetadataOf } from "./runtime-detection.ts";
 import {
@@ -32,6 +33,8 @@ export interface CliDependencies {
   cwd?: string;
   /** Pause between empty long-polls in `wait`; tests shorten it. */
   sleep?: (ms: number) => Promise<void>;
+  /** Opens the approve page during `login`; tests capture the URL instead. */
+  openBrowser?: (url: string) => Promise<boolean>;
 }
 
 interface ResolvedDependencies {
@@ -42,6 +45,7 @@ interface ResolvedDependencies {
   now: () => Date;
   cwd: string;
   sleep?: (ms: number) => Promise<void>;
+  openBrowser?: (url: string) => Promise<boolean>;
 }
 
 interface GlobalArguments {
@@ -573,6 +577,12 @@ async function execute(
   dependencies: ResolvedDependencies,
 ): Promise<unknown> {
   const [resource, action, ...commandArgs] = globals.args;
+  if (resource === "login") {
+    if (globals.sessionId !== undefined) {
+      throw localError("invalid_option", "The --session option is not valid for sharednet login.");
+    }
+    return login(globals.args.slice(1), dependencies);
+  }
   if (isGuestVerb(resource)) {
     if (globals.sessionId !== undefined) {
       throw localError("invalid_option", `The --session option is not valid for sharednet ${resource}.`);
@@ -590,7 +600,7 @@ async function execute(
   }
   throw localError(
     "unknown_command",
-    "Use join/say/wait as a guest, or session start/status and room create/join/post/messages as an Instance.",
+    "Use login, join/say/wait, or session start/status and room create/join/post/messages.",
   );
 }
 
@@ -650,6 +660,7 @@ export async function runCli(
     now: supplied.now ?? (() => new Date()),
     cwd: supplied.cwd ?? process.cwd(),
     ...(supplied.sleep ? { sleep: supplied.sleep } : {}),
+    ...(supplied.openBrowser ? { openBrowser: supplied.openBrowser } : {}),
   };
   let json = argv.includes("--json");
   try {

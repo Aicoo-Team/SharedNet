@@ -542,6 +542,72 @@ try {
     token_expires_at: null,
     admitted_by: "invite",
   });
+  // --- sharednet login: a code approved in the Web hands the CLI a key, and
+  //     binds the anonymous seat this machine holds to the approving account. ---
+  const loginStart = await fetch(`${apiBaseUrl}/api/v1/cli/logins`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ label: "e2e", seats: [joined.member_token] }),
+  });
+  await assertStatus(loginStart, 201, "login-start");
+  const loginStarted = await loginStart.json();
+  assert.match(loginStarted.user_code, /^[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/);
+  assert.deepEqual(loginStarted.login.bind_instance_ids, [joined.membership.member_id]);
+  const pendingPoll = await fetch(`${apiBaseUrl}/api/v1/cli/logins/${loginStarted.login.id}/poll`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${loginStarted.poll_token}` },
+  });
+  await assertStatus(pendingPoll, 200, "login-poll-pending");
+  assert.equal((await pendingPoll.json()).state, "pending");
+  // The Web approves as the host's account; here the harness does it through the repository.
+  const approvedLogin = await repository.approveCliLogin({
+    code: loginStarted.user_code,
+    principalId: starts[0].instance.principal_id,
+  });
+  assert.deepEqual(approvedLogin.bound_principal_ids, [joined.membership.principal_id]);
+  const approvedPoll = await fetch(`${apiBaseUrl}/api/v1/cli/logins/${loginStarted.login.id}/poll`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${loginStarted.poll_token}` },
+  });
+  await assertStatus(approvedPoll, 200, "login-poll-approved");
+  const handed = await approvedPoll.json();
+  assert.equal(handed.state, "approved");
+  assert.match(handed.api_key, /^snk_[A-Za-z0-9_-]{43}$/);
+  assert.equal(handed.principal.id, starts[0].instance.principal_id);
+  // The minted key is a real account key: it registers an Instance for that Principal.
+  const withMintedKey = await fetch(`${apiBaseUrl}/api/v1/instances`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${handed.api_key}`, "content-type": "application/json" },
+    body: JSON.stringify({ runtime_kind: "claude-code", cli_version: "e2e" }),
+  });
+  await assertStatus(withMintedKey, 201, "minted-key-registers");
+  assert.equal((await withMintedKey.json()).instance.principal_id, starts[0].instance.principal_id);
+  const storedMintedKey = await database.query(
+    "SELECT key, reference_id FROM sharednet_auth.apikey WHERE id = $1",
+    [handed.api_key_id],
+  );
+  assert.equal(storedMintedKey.rowCount, 1);
+  assert.notEqual(storedMintedKey.rows[0].key, handed.api_key, "the minted key is stored hashed");
+  // Binding moved the seat, and every row that names its Principal followed by cascade.
+  const boundSeat = await database.query(
+    `SELECT i.principal_id AS instance_principal, m.principal_id AS member_principal,
+            (SELECT sender_principal_id FROM sharednet.message WHERE sender_instance_id = i.id LIMIT 1) AS message_principal,
+            (SELECT merged_into_principal_id FROM sharednet.principal WHERE id = $2) AS merged_into
+       FROM sharednet.instance i JOIN sharednet.room_member m ON m.instance_id = i.id WHERE i.id = $1`,
+    [joined.membership.member_id, joined.membership.principal_id],
+  );
+  assert.deepEqual(boundSeat.rows[0], {
+    instance_principal: starts[0].instance.principal_id,
+    member_principal: starts[0].instance.principal_id,
+    message_principal: starts[0].instance.principal_id,
+    merged_into: starts[0].instance.principal_id,
+  });
+  const consumedPoll = await fetch(`${apiBaseUrl}/api/v1/cli/logins/${loginStarted.login.id}/poll`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${loginStarted.poll_token}` },
+  });
+  await assertStatus(consumedPoll, 410, "login-poll-consumed");
+
   await invitePool.end();
 
   const counts = await database.query(`
@@ -556,7 +622,9 @@ try {
     principals: 1,
     agents: 0, // there is no default Agent; a fresh Instance is untagged
     
-    instances: 4,
+    // Four Codex sessions, plus the guest seat bound into this account by the
+    // login above, plus the Instance the minted key registered.
+    instances: 6,
     rooms: 1,
     messages: 6, // four Instances, one guest, one host reply during the guest's wait
   });

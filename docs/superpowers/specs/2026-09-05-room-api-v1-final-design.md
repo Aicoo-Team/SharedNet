@@ -114,6 +114,8 @@ participant.
 | DELETE | `/rooms/{id}/invites/{invite_id}` | live (PR #13) | revoke |
 | POST | `/rooms/{id}/close` | live (PR #18) | explicit end; members' `rmt_` stop working; history stays readable from the Web |
 | DELETE | `/rooms/{id}/members/{member_id}` | live (PR #18) | remove one member; its `rmt_` stops working |
+| GET | `/cli/logins/{code}` | live (PR #28) | what the approve page shows: label, state, the seats approval would bind |
+| POST | `/cli/logins/{code}/approve` | live (PR #28) | approve a `sharednet login` as this account; binds the anonymous Principals of the seats the CLI holds (decision 2026-09-06 §3) |
 
 ### Agent, public V1 (`/api/v1/…`)
 
@@ -126,6 +128,8 @@ participant.
 | GET | `/rooms/{id}/wait?after=N&timeout=25` | `sni_` | live (#12) | long-poll: returns as soon as a Message with `sequence > N` exists, else `{ items: [] }` at timeout. Also counts as presence. |
 | GET | `/rooms/{id}` | `sni_` | live | members carry `principal_id`, `admitted_by`, `presence` |
 | GET | `/inbox?after=<ibx_…>&limit=` | `sni_` | live (PR #19) | every message after an opaque cursor across the Rooms the caller is an active member of, oldest first; ordered by (created_at, room_id, sequence), so no new column and no global counter |
+| POST | `/cli/logins` | none | live (PR #28) | start a `sharednet login`: `{ label?, seats? }` → `{ user_code, poll_token, verify_url }`; seats are Instance tokens the machine holds, proof of possession for binding |
+| POST | `/cli/logins/{id}/poll` | `clp_` | live (PR #28) | pending until approved; then the account API key, minted at that moment, returned once |
 | everything else (`/agents`, `/instances*`, `POST /rooms`) | `snk_`/`sni_` | unchanged | power path |
 
 `wait` is the only new mechanism. It turns "poll and heartbeat" into "sit in

@@ -1,6 +1,10 @@
 import { timingSafeEqual } from "node:crypto";
 
 import {
+  type ClpSecret,
+  type CliLoginId,
+  type CliLogin,
+  generateCliLoginCode,
   type RuntimeReport,
   type MemberRef,
   type MemberKind,
@@ -93,6 +97,14 @@ type IdempotencyRecord = StoredHttpResult & {
   fingerprint: string;
 };
 
+type CliLoginRecord = CliLogin & {
+  codeDigest: string;
+  pollTokenDigest: string;
+  apiKeyId: ApiKeyId | null;
+};
+
+const CLI_LOGIN_TTL_MS = 10 * 60_000;
+
 export { RepositoryError } from "./repository.ts";
 export type {
   IdempotencyResult,
@@ -159,6 +171,9 @@ export class MemorySharedNetRepository implements SharedNetRepository {
   private readonly invites = new Map<InviteId, InviteRecord>();
   private readonly messages = new Map<RoomId, MessageRecord[]>();
   private readonly idempotency = new Map<string, IdempotencyRecord>();
+  private readonly cliLogins = new Map<CliLoginId, CliLoginRecord>();
+  /** Anonymous Principals that were bound into an account's Principal. */
+  private readonly mergedPrincipals = new Map<PrincipalId, PrincipalId>();
   private readonly idempotencyInFlight = new Map<
     string,
     { fingerprint: string; result: Promise<IdempotencyResult> }
@@ -686,6 +701,140 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     };
   }
 
+  async startCliLogin(input: {
+    label: string | null;
+    seats: string[];
+  }): Promise<{ login: CliLogin; user_code: string; poll_token: ClpSecret }> {
+    const now = this.now();
+    const bind: InstanceId[] = [];
+    for (const seat of input.seats) {
+      // Proof of possession: only a live seat of an anonymous Principal counts.
+      const digest = digestSecret(seat);
+      const instanceId = [...this.instanceIdsByDigest.entries()].find(([candidate]) =>
+        secureDigestEquals(candidate, digest),
+      )?.[1];
+      const instance = instanceId ? this.instances.get(instanceId) : undefined;
+      if (!instance || instance.issuedByKeyId !== null || instance.status === "ended" || instance.status === "revoked") continue;
+      const principal = this.principals.get(instance.principal_id);
+      if (!principal || principal.invited_by_principal_id === null || this.mergedPrincipals.has(principal.id)) continue;
+      if (!bind.includes(instance.id)) bind.push(instance.id);
+    }
+    const code = generateCliLoginCode();
+    const pollToken = generateSecret("clp");
+    const record: CliLoginRecord = {
+      id: generatePublicId("cli"),
+      state: "pending",
+      label: input.label,
+      bind_instance_ids: bind,
+      principal_id: null,
+      created_at: now.toISOString(),
+      expires_at: new Date(now.getTime() + CLI_LOGIN_TTL_MS).toISOString(),
+      approved_at: null,
+      codeDigest: digestSecret(code),
+      pollTokenDigest: digestSecret(pollToken),
+      apiKeyId: null,
+    };
+    this.cliLogins.set(record.id, record);
+    return { login: this.projectCliLogin(record), user_code: code, poll_token: pollToken };
+  }
+
+  private cliLoginByCode(code: string): CliLoginRecord | null {
+    const digest = digestSecret(code);
+    for (const record of this.cliLogins.values()) {
+      if (secureDigestEquals(digest, record.codeDigest)) return record;
+    }
+    return null;
+  }
+
+  private expireCliLogin(record: CliLoginRecord): void {
+    if (record.state === "pending" && Date.parse(record.expires_at) <= this.now().getTime()) {
+      record.state = "expired";
+    }
+  }
+
+  async getCliLoginByCode(code: string): Promise<{ login: CliLogin } | null> {
+    const record = this.cliLoginByCode(code);
+    if (!record) return null;
+    this.expireCliLogin(record);
+    return { login: this.projectCliLogin(record) };
+  }
+
+  async approveCliLogin(input: {
+    code: string;
+    principalId: PrincipalId;
+  }): Promise<{ login: CliLogin; bound_principal_ids: PrincipalId[] }> {
+    const record = this.cliLoginByCode(input.code);
+    if (!record) throw new RepositoryError(404, "login_not_found", "CLI login was not found.");
+    this.expireCliLogin(record);
+    if (record.state === "expired") throw new RepositoryError(410, "login_expired", "CLI login has expired.");
+    if (record.state === "denied") throw new RepositoryError(410, "login_denied", "CLI login was denied.");
+    if (record.state !== "pending") throw new RepositoryError(410, "login_consumed", "CLI login was already used.");
+    const account = this.principals.get(input.principalId);
+    if (!account || account.invited_by_principal_id !== null) {
+      throw new RepositoryError(401, "invalid_credentials", "Credentials are invalid.");
+    }
+    const bound: PrincipalId[] = [];
+    for (const instanceId of record.bind_instance_ids) {
+      const instance = this.instances.get(instanceId);
+      if (!instance) continue;
+      const anonymousId = instance.principal_id;
+      if (anonymousId === account.id || this.mergedPrincipals.has(anonymousId)) continue;
+      // Binding: every Instance of the anonymous Principal moves under the
+      // account's Principal; memberships and messages follow the Instance.
+      for (const candidate of this.instances.values()) {
+        if (candidate.principal_id === anonymousId) candidate.principal_id = account.id;
+      }
+      for (const messages of this.messages.values()) {
+        for (const message of messages) {
+          if (message.sender_principal_id === anonymousId) message.sender_principal_id = account.id;
+        }
+      }
+      this.mergedPrincipals.set(anonymousId, account.id);
+      bound.push(anonymousId);
+    }
+    record.state = "approved";
+    record.principal_id = account.id;
+    record.approved_at = this.timestamp();
+    return { login: this.projectCliLogin(record), bound_principal_ids: bound };
+  }
+
+  async pollCliLogin(loginId: CliLoginId, pollToken: string) {
+    const record = this.cliLogins.get(loginId);
+    if (!record || !secureDigestEquals(digestSecret(pollToken), record.pollTokenDigest)) {
+      throw new RepositoryError(404, "login_not_found", "CLI login was not found.");
+    }
+    this.expireCliLogin(record);
+    if (record.state === "expired") throw new RepositoryError(410, "login_expired", "CLI login has expired.");
+    if (record.state === "denied") throw new RepositoryError(410, "login_denied", "CLI login was denied.");
+    if (record.state === "consumed") throw new RepositoryError(410, "login_consumed", "CLI login was already used.");
+    if (record.state === "pending") return { state: "pending" as const, login: this.projectCliLogin(record) };
+    const principal = this.principals.get(record.principal_id!);
+    if (!principal) throw new RepositoryError(404, "login_not_found", "CLI login was not found.");
+    // The key is minted now, at the one moment it is handed over, so no raw key is ever stored.
+    const apiKey = generateSecret("snk");
+    const keyRecord: ApiKeyRecord = {
+      id: generatePublicId("key"),
+      principalId: principal.id,
+      digest: digestSecret(apiKey),
+      revokedAt: null,
+    };
+    this.apiKeysByDigest.set(keyRecord.digest, keyRecord);
+    record.state = "consumed";
+    record.apiKeyId = keyRecord.id;
+    return {
+      state: "approved" as const,
+      login: this.projectCliLogin(record),
+      api_key: apiKey,
+      api_key_id: keyRecord.id,
+      principal: { ...principal },
+    };
+  }
+
+  private projectCliLogin(record: CliLoginRecord): CliLogin {
+    const { codeDigest: _c, pollTokenDigest: _p, apiKeyId: _k, ...login } = record;
+    return { ...login, bind_instance_ids: [...login.bind_instance_ids] };
+  }
+
   async executeIdempotent(
     scope: IdempotencyScope,
     fingerprint: string,
@@ -774,9 +923,16 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     return this.instances.get(instanceId)?.agent_id ?? null;
   }
 
-  /** The kind of Principal behind an Instance: with an account, or anonymous. */
+  /**
+   * The kind of Principal behind an Instance: with an account, or anonymous.
+   * It is the Principal that decides, not how the Instance was admitted: a
+   * seat joined by invite reads as `instance` once its Principal is bound.
+   */
   private memberKind(instance: InstanceRecord | undefined): MemberKind {
-    return instance?.issuedByKeyId === null ? "guest" : "instance";
+    const principal = instance ? this.principals.get(instance.principal_id) : undefined;
+    return principal && principal.invited_by_principal_id !== null && !this.mergedPrincipals.has(principal.id)
+      ? "guest"
+      : "instance";
   }
 
   private memberRef(instanceId: InstanceId): MemberRef {

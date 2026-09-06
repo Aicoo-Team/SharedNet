@@ -305,6 +305,14 @@ export async function readStoredApiCredential(
   return raw === null ? null : parseCredential(raw);
 }
 
+/** Written by `sharednet login`; owner-only, and never printed back. */
+export async function writeStoredApiCredential(
+  paths: StoragePaths,
+  credential: StoredApiCredential,
+): Promise<void> {
+  await writeSecureJson(paths.credentialsFile, credential);
+}
+
 export async function getOrCreateInstallationSecret(
   paths: StoragePaths,
 ): Promise<string> {

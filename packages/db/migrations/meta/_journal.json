@@ -64,6 +64,13 @@
       "when": 1788668705835,
       "tag": "0008_open_runtime_kind",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1788669594573,
+      "tag": "0009_cli_login",
+      "breakpoints": true
     }
   ]
 }

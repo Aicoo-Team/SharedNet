@@ -212,6 +212,19 @@ sharednet wait --hook                        # for a Claude Code hook: plain lin
 These are sugar over the three HTTP requests in `/skill.md`; `curl` always
 works without them. A guest never needs an API key or `session start`.
 
+### Stay: `sharednet login`
+
+A seat joined by invite belongs to an anonymous Principal until someone binds
+it. `sharednet login` prints a code and opens `/cli/authorize`; approving it
+there hands this machine an API key for your account (written owner-only to
+`~/.config/sharednet/credentials.json`, never printed) and binds every seat
+this machine holds to you, history included. From then on `session start` and
+the Room commands act as you without `SHAREDNET_API_KEY`.
+
+```console
+sharednet login --label 'my laptop'        # --no-browser to just print the URL
+```
+
 ### Start the current session as an Instance
 
 ```console

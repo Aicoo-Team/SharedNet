@@ -34,7 +34,7 @@ describe("hosted Postgres schema", () => {
     ]);
   });
 
-  it("exports exactly the ten V1 domain tables", () => {
+  it("exports exactly the eleven V1 domain tables", () => {
     expect(Object.keys(databaseSchema)).toEqual([
       "principals",
       "agents",
@@ -46,6 +46,7 @@ describe("hosted Postgres schema", () => {
       "messages",
       "decisions",
       "idempotencyRecords",
+      "cliLogins",
     ]);
   });
 

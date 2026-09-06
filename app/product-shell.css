@@ -2249,3 +2249,125 @@ body:has(.product-window) {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* sharednet login: the approve page */
+.cli-authorize {
+  display: grid;
+  gap: 18px;
+  margin: 0 auto;
+  max-width: 40rem;
+  padding: 32px 20px 64px;
+}
+
+.cli-authorize h1 {
+  font-size: 22px;
+  margin: 0;
+}
+
+.cli-authorize-lede,
+.cli-authorize-login p {
+  color: var(--sn-muted);
+  font-size: 12px;
+  line-height: 1.6;
+  margin: 0;
+}
+
+.cli-authorize-code {
+  align-items: end;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.cli-authorize-code label {
+  display: grid;
+  font-size: 10px;
+  gap: 6px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.cli-authorize-code input {
+  border: 1px solid var(--sn-line);
+  border-radius: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 16px;
+  letter-spacing: 0.12em;
+  padding: 10px 12px;
+  text-transform: uppercase;
+}
+
+.product-window .cli-authorize-code button,
+.product-window .cli-authorize-approve {
+  background: var(--sn-oxford);
+  border: 1px solid var(--sn-oxford);
+  border-radius: 8px;
+  color: var(--sn-paper);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 10px 14px;
+}
+
+.product-window .cli-authorize-code button:disabled,
+.product-window .cli-authorize-approve:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.cli-authorize-login {
+  border: 1px solid var(--sn-line);
+  border-radius: 10px;
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+}
+
+.cli-authorize-login h2 {
+  font-size: 12px;
+  margin: 0;
+}
+
+.cli-authorize-login dl {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+
+.cli-authorize-login dl div {
+  display: grid;
+  font-size: 12px;
+  gap: 8px;
+  grid-template-columns: 6rem minmax(0, 1fr);
+}
+
+.cli-authorize-login dt {
+  color: var(--sn-muted);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.cli-authorize-login ul {
+  display: grid;
+  gap: 8px;
+  font-size: 12px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.cli-authorize-login li code {
+  display: block;
+  font-size: 10px;
+}
+
+.cli-authorize-error {
+  color: #991b1b;
+  font-size: 12px;
+  margin: 0;
+}
+
+.cli-authorize-done {
+  color: var(--sn-oxford);
+  font-weight: 600;
+}

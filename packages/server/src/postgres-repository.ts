@@ -1,9 +1,11 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { timingSafeEqual } from "node:crypto";
 
 import { defaultKeyHasher } from "@better-auth/api-key";
 import { and, asc, count, eq, gt, lte, sql } from "drizzle-orm";
 
 import {
+  cliLogins,
   agents,
   apiKey,
   idempotencyRecords,
@@ -16,6 +18,10 @@ import {
   type SharedNetDatabase,
 } from "../../db/src/index.ts";
 import {
+  type ClpSecret,
+  type CliLoginId,
+  type CliLogin,
+  generateCliLoginCode,
   type MemberKind,
   type SniSecret,
   type JoinRoomRequest,
@@ -65,8 +71,12 @@ type InstanceRow = typeof instances.$inferSelect;
 type RoomRow = typeof rooms.$inferSelect;
 type InviteRow = typeof roomInvites.$inferSelect;
 type PrincipalRow = typeof principals.$inferSelect;
-/** What a message or membership needs to know about its Instance to name it. */
-type SenderInfo = Pick<InstanceRow, "displayName" | "issuedByKeyId"> | null;
+/**
+ * What a message or membership needs to know about its Instance to name it,
+ * and whether the Principal behind it has an account. Kind follows the
+ * Principal: a seat joined by invite reads as `instance` once it is bound.
+ */
+type SenderInfo = (Pick<InstanceRow, "displayName"> & { principalAuthUserId: string | null }) | null;
 
 /**
  * An invite-admitted Instance counts as seen at most this often, so `wait`
@@ -147,13 +157,13 @@ function projectRoom(row: RoomRow, creatorAgentId: AgentId | null): Room {
 
 /** The kind of Principal behind an Instance: with an account, or anonymous. */
 function memberKind(sender: SenderInfo): MemberKind {
-  return sender?.issuedByKeyId === null ? "guest" : "instance";
+  return sender && sender.principalAuthUserId === null ? "guest" : "instance";
 }
 
 type MemberInstance = Pick<
   InstanceRow,
-  "agentId" | "lastSeenAt" | "displayName" | "issuedByKeyId" | "runtimeKind" | "cliVersion" | "runtimeMetadata"
-> & { invitedByPrincipalId?: PrincipalId | null };
+  "agentId" | "lastSeenAt" | "displayName" | "runtimeKind" | "cliVersion" | "runtimeMetadata"
+> & { invitedByPrincipalId?: PrincipalId | null; principalAuthUserId: string | null };
 
 function projectMembership(
   row: typeof roomMembers.$inferSelect,
@@ -180,6 +190,28 @@ function projectMembership(
     left_at: row.leftAt ? timestamp(row.leftAt) : null,
     last_seen_at: seen,
     presence: presenceFor(seen, now),
+  };
+}
+
+type CliLoginRow = typeof cliLogins.$inferSelect;
+
+function secureDigestEquals(left: string, right: string): boolean {
+  const leftBytes = Buffer.from(left, "hex");
+  const rightBytes = Buffer.from(right, "hex");
+  return leftBytes.length === rightBytes.length && timingSafeEqual(leftBytes, rightBytes);
+}
+const CLI_LOGIN_TTL_MS = 10 * 60_000;
+
+function projectCliLogin(row: CliLoginRow): CliLogin {
+  return {
+    id: row.id,
+    state: row.state,
+    label: row.label,
+    bind_instance_ids: [...row.bindInstanceIds],
+    principal_id: row.principalId ?? null,
+    created_at: timestamp(row.createdAt),
+    expires_at: timestamp(row.expiresAt),
+    approved_at: row.approvedAt ? timestamp(row.approvedAt) : null,
   };
 }
 
@@ -605,7 +637,11 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
       }
       return {
         room: projectRoom(room, creator.agentId),
-        membership: projectMembership(membership, creator, createdAt),
+        membership: projectMembership(
+          membership,
+          { ...creator, principalAuthUserId: await this.principalAuthUserId(auth.principalId) },
+          createdAt,
+        ),
       };
     });
   }
@@ -655,7 +691,11 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
       }
       return {
         room: await this.projectRoomRow(room),
-        membership: projectMembership(membership, joiner, joinedAt),
+        membership: projectMembership(
+          membership,
+          { ...joiner, principalAuthUserId: await this.principalAuthUserId(auth.principalId) },
+          joinedAt,
+        ),
       };
     });
   }
@@ -829,7 +869,7 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
         room: await this.projectRoomRow(room),
         membership: projectMembership(
           membership,
-          { ...instance, invitedByPrincipalId: principal.invitedByPrincipalId },
+          { ...instance, invitedByPrincipalId: principal.invitedByPrincipalId, principalAuthUserId: null },
           now,
         ),
         member_token: memberToken,
@@ -851,7 +891,7 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
         agentId: instances.agentId,
         lastSeenAt: instances.lastSeenAt,
         displayName: instances.displayName,
-        issuedByKeyId: instances.issuedByKeyId,
+        principalAuthUserId: principals.authUserId,
         runtimeKind: instances.runtimeKind,
         cliVersion: instances.cliVersion,
         runtimeMetadata: instances.runtimeMetadata,
@@ -871,7 +911,7 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
             agentId: row.agentId,
             lastSeenAt: row.lastSeenAt,
             displayName: row.displayName,
-            issuedByKeyId: row.issuedByKeyId,
+            principalAuthUserId: row.principalAuthUserId,
             runtimeKind: row.runtimeKind,
             cliVersion: row.cliVersion,
             runtimeMetadata: row.runtimeMetadata,
@@ -938,7 +978,12 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
         .update(rooms)
         .set({ nextSequence: room.nextSequence + 1 })
         .where(eq(rooms.id, room.id));
-      return { message: projectMessage(message, sender.agentId ?? null, sender) };
+      return {
+        message: projectMessage(message, sender.agentId ?? null, {
+          displayName: sender.displayName,
+          principalAuthUserId: await this.principalAuthUserId(auth.principalId),
+        }),
+      };
     });
   }
 
@@ -970,10 +1015,11 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
         message: messages,
         agentId: instances.agentId,
         displayName: instances.displayName,
-        issuedByKeyId: instances.issuedByKeyId,
+        principalAuthUserId: principals.authUserId,
       })
       .from(messages)
       .innerJoin(instances, eq(instances.id, messages.senderInstanceId))
+      .innerJoin(principals, eq(principals.id, messages.senderPrincipalId))
       .where(position ? and(membership, position) : membership)
       .orderBy(asc(messages.createdAt), asc(messages.roomId), asc(messages.sequence))
       .limit(input.limit + 1);
@@ -981,7 +1027,7 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
     const items = rows.slice(0, input.limit).map((row) =>
       projectMessage(row.message, row.agentId ?? null, {
         displayName: row.displayName,
-        issuedByKeyId: row.issuedByKeyId,
+        principalAuthUserId: row.principalAuthUserId,
       }),
     );
     const last = items.at(-1);
@@ -1005,10 +1051,11 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
         message: messages,
         agentId: instances.agentId,
         displayName: instances.displayName,
-        issuedByKeyId: instances.issuedByKeyId,
+        principalAuthUserId: principals.authUserId,
       })
       .from(messages)
       .innerJoin(instances, eq(instances.id, messages.senderInstanceId))
+      .innerJoin(principals, eq(principals.id, messages.senderPrincipalId))
       .where(and(eq(messages.roomId, roomId), gt(messages.sequence, input.after)))
       .orderBy(asc(messages.sequence))
       .limit(input.limit + 1);
@@ -1016,7 +1063,7 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
     const items = rows.slice(0, input.limit).map((row) =>
       projectMessage(row.message, row.agentId ?? null, {
         displayName: row.displayName,
-        issuedByKeyId: row.issuedByKeyId,
+        principalAuthUserId: row.principalAuthUserId,
       }),
     );
     return {
@@ -1029,6 +1076,188 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
             : null,
       has_more: hasMore,
     };
+  }
+
+  async startCliLogin(input: {
+    label: string | null;
+    seats: string[];
+  }): Promise<{ login: CliLogin; user_code: string; poll_token: ClpSecret }> {
+    const now = this.now();
+    const bind: InstanceId[] = [];
+    for (const seat of input.seats) {
+      // Proof of possession: only a live seat of an anonymous, unbound Principal counts.
+      const [row] = await this.executor()
+        .select({ instance: instances, principal: principals })
+        .from(instances)
+        .innerJoin(principals, eq(principals.id, instances.principalId))
+        .where(eq(instances.tokenDigest, digestSecret(seat)))
+        .limit(1);
+      if (!row || row.instance.issuedByKeyId !== null || row.instance.state !== "active") continue;
+      if (row.principal.authUserId !== null || row.principal.mergedIntoPrincipalId !== null) continue;
+      if (!bind.includes(row.instance.id)) bind.push(row.instance.id);
+    }
+    const code = generateCliLoginCode();
+    const pollToken = generateSecret("clp");
+    const [record] = await this.executor()
+      .insert(cliLogins)
+      .values({
+        id: generatePublicId("cli"),
+        codeDigest: digestSecret(code),
+        pollTokenDigest: digestSecret(pollToken),
+        label: input.label,
+        state: "pending",
+        bindInstanceIds: bind,
+        principalId: null,
+        apiKeyId: null,
+        createdAt: now,
+        expiresAt: new Date(now.getTime() + CLI_LOGIN_TTL_MS),
+        approvedAt: null,
+        consumedAt: null,
+      })
+      .returning();
+    if (!record) throw new RepositoryError(500, "internal_error", "CLI login creation failed.");
+    return { login: projectCliLogin(record), user_code: code, poll_token: pollToken };
+  }
+
+  private async cliLoginByCode(code: string): Promise<CliLoginRow | null> {
+    const [record] = await this.executor()
+      .select()
+      .from(cliLogins)
+      .where(eq(cliLogins.codeDigest, digestSecret(code)))
+      .for("update")
+      .limit(1);
+    return record ?? null;
+  }
+
+  private cliLoginState(record: CliLoginRow): CliLoginRow["state"] {
+    if (record.state === "pending" && record.expiresAt.getTime() <= this.now().getTime()) return "expired";
+    return record.state;
+  }
+
+  async getCliLoginByCode(code: string): Promise<{ login: CliLogin } | null> {
+    const [record] = await this.executor()
+      .select()
+      .from(cliLogins)
+      .where(eq(cliLogins.codeDigest, digestSecret(code)))
+      .limit(1);
+    if (!record) return null;
+    return { login: projectCliLogin({ ...record, state: this.cliLoginState(record) }) };
+  }
+
+  async approveCliLogin(input: {
+    code: string;
+    principalId: PrincipalId;
+  }): Promise<{ login: CliLogin; bound_principal_ids: PrincipalId[] }> {
+    return this.inTransaction(async () => {
+      const record = await this.cliLoginByCode(input.code);
+      if (!record) throw new RepositoryError(404, "login_not_found", "CLI login was not found.");
+      const state = this.cliLoginState(record);
+      if (state === "expired") throw new RepositoryError(410, "login_expired", "CLI login has expired.");
+      if (state === "denied") throw new RepositoryError(410, "login_denied", "CLI login was denied.");
+      if (state !== "pending") throw new RepositoryError(410, "login_consumed", "CLI login was already used.");
+      const [account] = await this.executor()
+        .select()
+        .from(principals)
+        .where(eq(principals.id, input.principalId))
+        .limit(1);
+      if (!account || account.authUserId === null) {
+        throw new RepositoryError(401, "invalid_credentials", "Credentials are invalid.");
+      }
+      const bound: PrincipalId[] = [];
+      for (const instanceId of record.bindInstanceIds) {
+        const [row] = await this.executor()
+          .select({ principal: principals })
+          .from(instances)
+          .innerJoin(principals, eq(principals.id, instances.principalId))
+          .where(eq(instances.id, instanceId))
+          .limit(1);
+        const anonymous = row?.principal;
+        if (!anonymous || anonymous.id === account.id) continue;
+        if (anonymous.authUserId !== null || anonymous.mergedIntoPrincipalId !== null) continue;
+        // Binding: every Instance of the anonymous Principal moves under the
+        // account's Principal. Memberships, messages, Rooms and Decisions carry
+        // the Instance's Principal beside its id and follow by ON UPDATE CASCADE.
+        await this.executor()
+          .update(instances)
+          .set({ principalId: account.id })
+          .where(eq(instances.principalId, anonymous.id));
+        await this.executor()
+          .update(principals)
+          .set({ mergedIntoPrincipalId: account.id })
+          .where(eq(principals.id, anonymous.id));
+        bound.push(anonymous.id);
+      }
+      const now = this.now();
+      const [updated] = await this.executor()
+        .update(cliLogins)
+        .set({ state: "approved", principalId: account.id, approvedAt: now })
+        .where(eq(cliLogins.id, record.id))
+        .returning();
+      if (!updated) throw new RepositoryError(500, "internal_error", "CLI login approval failed.");
+      return { login: projectCliLogin(updated), bound_principal_ids: bound };
+    });
+  }
+
+  async pollCliLogin(loginId: CliLoginId, pollToken: string) {
+    return this.inTransaction(async () => {
+      const [record] = await this.executor()
+        .select()
+        .from(cliLogins)
+        .where(eq(cliLogins.id, loginId))
+        .for("update")
+        .limit(1);
+      if (!record || !secureDigestEquals(digestSecret(pollToken), record.pollTokenDigest)) {
+        throw new RepositoryError(404, "login_not_found", "CLI login was not found.");
+      }
+      const state = this.cliLoginState(record);
+      if (state === "expired") throw new RepositoryError(410, "login_expired", "CLI login has expired.");
+      if (state === "denied") throw new RepositoryError(410, "login_denied", "CLI login was denied.");
+      if (state === "consumed") throw new RepositoryError(410, "login_consumed", "CLI login was already used.");
+      if (state === "pending") return { state: "pending" as const, login: projectCliLogin(record) };
+      const [principal] = await this.executor()
+        .select()
+        .from(principals)
+        .where(eq(principals.id, record.principalId!))
+        .limit(1);
+      if (!principal || principal.authUserId === null) {
+        throw new RepositoryError(404, "login_not_found", "CLI login was not found.");
+      }
+      // The key is minted now, at the one moment it is handed over, hashed the
+      // way Better Auth hashes the keys the console issues, so no raw key is
+      // ever stored and the two kinds of key are indistinguishable to the API.
+      const raw = generateSecret("snk");
+      const now = this.now();
+      const [key] = await this.executor()
+        .insert(apiKey)
+        .values({
+          id: generatePublicId("key"),
+          name: record.label ? `sharednet login · ${record.label}` : "sharednet login",
+          start: raw.slice(0, 8),
+          prefix: "snk_",
+          referenceId: principal.authUserId,
+          key: await defaultKeyHasher(raw),
+          enabled: true,
+          rateLimitEnabled: false,
+          createdAt: now,
+          updatedAt: now,
+          metadata: JSON.stringify({ source: "sharednet login", cli_login_id: record.id }),
+        })
+        .returning({ id: apiKey.id });
+      if (!key) throw new RepositoryError(500, "internal_error", "API key creation failed.");
+      const [updated] = await this.executor()
+        .update(cliLogins)
+        .set({ state: "consumed", apiKeyId: key.id as ApiKeyId, consumedAt: now })
+        .where(eq(cliLogins.id, record.id))
+        .returning();
+      if (!updated) throw new RepositoryError(500, "internal_error", "CLI login update failed.");
+      return {
+        state: "approved" as const,
+        login: projectCliLogin(updated),
+        api_key: raw,
+        api_key_id: key.id as ApiKeyId,
+        principal: projectPrincipal(principal),
+      };
+    });
   }
 
   async executeIdempotent(
@@ -1142,6 +1371,16 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
 
   private async projectRoomRow(room: RoomRow): Promise<Room> {
     return projectRoom(room, await this.tagOf(room.creatorInstanceId));
+  }
+
+  /** Null for an anonymous Principal; the account's user id otherwise. */
+  private async principalAuthUserId(principalId: PrincipalId): Promise<string | null> {
+    const [row] = await this.executor()
+      .select({ authUserId: principals.authUserId })
+      .from(principals)
+      .where(eq(principals.id, principalId))
+      .limit(1);
+    return row?.authUserId ?? null;
   }
 
   private async requireOnline(auth: InstanceAuth): Promise<InstanceRow> {

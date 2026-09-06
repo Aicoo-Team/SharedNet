@@ -424,6 +424,41 @@ export const ENDPOINTS: Endpoint[] = [
     status: "live",
   },
   {
+    operationId: "startCliLogin",
+    method: "POST",
+    path: "/api/v1/cli/logins",
+    summary:
+      "Start a CLI login: a code for the human to approve in the Web, and a poll token for the CLI. Seats the machine already holds can be named for binding.",
+    auth: "none",
+    idempotency: "rejected",
+    success: 201,
+    request: [
+      { name: "label", type: "string | null", required: false, note: "Where the CLI runs, shown on the approve page. Up to 120 characters." },
+      { name: "seats", type: "string[]", required: false, note: "Instance tokens of seats this machine holds (sni_…). Each that belongs to an anonymous Principal is bound to the approving account." },
+    ],
+    responds: "{ login: CliLogin, user_code: string, poll_token: string, verify_url: string, interval_seconds: number }",
+    errors: ["idempotency_not_supported", "unsupported_media_type", "validation_failed", "method_not_allowed"],
+    example: `curl -sX POST https://sharednet.ai/api/v1/cli/logins \\
+  -H "content-type: application/json" \\
+  -d '{"label":"my-laptop"}'`,
+    status: "live",
+  },
+  {
+    operationId: "pollCliLogin",
+    method: "POST",
+    path: "/api/v1/cli/logins/{login_id}/poll",
+    summary:
+      "Poll a CLI login with its poll token. Pending until the human approves; then the API key, minted at that moment and returned once.",
+    auth: "none",
+    idempotency: "n/a",
+    success: 200,
+    responds: "{ state: \"pending\", login } | { state: \"approved\", login, api_key: string, api_key_id: string, principal }",
+    errors: ["authentication_required", "invalid_credentials", "invalid_id", "login_not_found", "login_expired", "login_denied", "login_consumed", "method_not_allowed"],
+    example: `curl -sX POST https://sharednet.ai/api/v1/cli/logins/$LOGIN_ID/poll \\
+  -H "authorization: Bearer $POLL_TOKEN"`,
+    status: "live",
+  },
+  {
     operationId: "listInbox",
     method: "GET",
     path: "/api/v1/inbox",

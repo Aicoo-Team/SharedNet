@@ -1,6 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 
-export const PUBLIC_ID_PREFIXES = ["p", "key", "a", "i", "rom", "msg", "dec", "mem", "inv"] as const;
+export const PUBLIC_ID_PREFIXES = ["p", "key", "a", "i", "rom", "msg", "dec", "mem", "inv", "cli"] as const;
 export type PublicIdPrefix = (typeof PUBLIC_ID_PREFIXES)[number];
 
 /**
@@ -42,11 +42,18 @@ export type MessageId = `msg_${string}`;
 export type DecisionId = `dec_${string}`;
 export type MemberId = `mem_${string}`;
 export type InviteId = `inv_${string}`;
+export type CliLoginId = `cli_${string}`;
 export type RequestId = `req_${string}`;
 export type SnkSecret = `snk_${string}`;
 export type SniSecret = `sni_${string}`;
 export type RitSecret = `rit_${string}`;
 export type RmtSecret = `rmt_${string}`;
+/** The poll token a CLI login holds while it waits for approval. */
+export type ClpSecret = `clp_${string}`;
+export const CLP_SECRET_PATTERN = /^clp_[A-Za-z0-9_-]{43}$/;
+export const CLI_LOGIN_ID_PATTERN = /^cli_[0-9A-Za-z]{10}$/;
+/** What the human types or reads on the authorize page: eight unambiguous characters. */
+export const CLI_LOGIN_CODE_PATTERN = /^[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/;
 export type Timestamp = string;
 
 export type PublicId =
@@ -58,7 +65,8 @@ export type PublicId =
   | MessageId
   | DecisionId
   | MemberId
-  | InviteId;
+  | InviteId
+  | CliLoginId;
 
 export type IdForPrefix<P extends PublicIdPrefix> = P extends "p"
   ? PrincipalId
@@ -76,7 +84,9 @@ export type IdForPrefix<P extends PublicIdPrefix> = P extends "p"
               ? DecisionId
               : P extends "mem"
                 ? MemberId
-                : InviteId;
+                : P extends "inv"
+                  ? InviteId
+                  : CliLoginId;
 
 const ID_PATTERNS: Record<PublicIdPrefix, RegExp> = {
   p: PRINCIPAL_ID_PATTERN,
@@ -88,6 +98,7 @@ const ID_PATTERNS: Record<PublicIdPrefix, RegExp> = {
   dec: DECISION_ID_PATTERN,
   mem: MEMBER_ID_PATTERN,
   inv: INVITE_ID_PATTERN,
+  cli: CLI_LOGIN_ID_PATTERN,
 };
 
 const CROCKFORD_LOWER = "0123456789abcdefghjkmnpqrstvwxyz";
@@ -139,17 +150,42 @@ export function parsePublicId<P extends PublicIdPrefix>(
   return value;
 }
 
+/**
+ * The user code of a CLI login: eight characters from an alphabet without
+ * 0/O/1/I, shown as ABCD-EFGH. About 1.1e12 codes; a login lives ten minutes.
+ */
+const CLI_LOGIN_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+export function generateCliLoginCode(): string {
+  const bytes = randomBytes(8);
+  let code = "";
+  for (let index = 0; index < 8; index += 1) {
+    code += CLI_LOGIN_CODE_ALPHABET[bytes[index]! % CLI_LOGIN_CODE_ALPHABET.length];
+  }
+  return `${code.slice(0, 4)}-${code.slice(4)}`;
+}
+
+/** Upper-cases, drops spaces and dashes, re-inserts the dash; null when it is not a code. */
+export function normalizeCliLoginCode(value: string): string | null {
+  const compact = value.toUpperCase().replace(/[\s-]/g, "");
+  if (compact.length !== 8) return null;
+  const code = `${compact.slice(0, 4)}-${compact.slice(4)}`;
+  return CLI_LOGIN_CODE_PATTERN.test(code) ? code : null;
+}
+
 export function generateSecret(prefix: "snk"): SnkSecret;
 export function generateSecret(prefix: "sni"): SniSecret;
 export function generateSecret(prefix: "rit"): RitSecret;
 export function generateSecret(prefix: "rmt"): RmtSecret;
+export function generateSecret(prefix: "clp"): ClpSecret;
 export function generateSecret(
-  prefix: "snk" | "sni" | "rit" | "rmt",
-): SnkSecret | SniSecret | RitSecret | RmtSecret {
+  prefix: "snk" | "sni" | "rit" | "rmt" | "clp",
+): SnkSecret | SniSecret | RitSecret | RmtSecret | ClpSecret {
   return `${prefix}_${randomBytes(32).toString("base64url")}` as
     | SnkSecret
     | SniSecret
     | RitSecret
+    | ClpSecret
     | RmtSecret;
 }
 
@@ -455,6 +491,10 @@ export type ErrorCode =
   | "room_closed"
   | "invite_expired"
   | "invite_revoked"
+  | "login_not_found"
+  | "login_expired"
+  | "login_denied"
+  | "login_consumed"
   | "idempotency_conflict"
   | "decision_already_resolved"
   | "request_too_large"
@@ -494,6 +534,10 @@ export const SAFE_ERROR_MESSAGES: Readonly<Record<ErrorCode, string>> = {
   instance_offline: "Instance is offline.",
   room_closed: "Room is closed.",
   invite_expired: "Room invite has expired.",
+  login_not_found: "CLI login was not found.",
+  login_expired: "CLI login has expired.",
+  login_denied: "CLI login was denied.",
+  login_consumed: "CLI login was already used.",
   invite_revoked: "Room invite was revoked.",
   idempotency_conflict: "Idempotency-Key was already used for another request.",
   decision_already_resolved: "Decision was already resolved.",
@@ -535,6 +579,10 @@ export const ERROR_STATUS: Readonly<Record<ErrorCode, number>> = {
   instance_offline: 409,
   room_closed: 409,
   invite_expired: 410,
+  login_not_found: 404,
+  login_expired: 410,
+  login_denied: 410,
+  login_consumed: 410,
   invite_revoked: 410,
   idempotency_conflict: 409,
   decision_already_resolved: 409,
@@ -845,6 +893,58 @@ export function parseRuntimeReport(value: unknown): RuntimeReport {
   return report;
 }
 
+/** A CLI login as the API describes it; codes and tokens are never in here. */
+export interface CliLogin {
+  id: CliLoginId;
+  state: "pending" | "approved" | "consumed" | "denied" | "expired";
+  label: string | null;
+  /** The anonymous seats the CLI proved it holds; approval binds their Principals. */
+  bind_instance_ids: InstanceId[];
+  principal_id: PrincipalId | null;
+  created_at: Timestamp;
+  expires_at: Timestamp;
+  approved_at: Timestamp | null;
+}
+
+export interface StartCliLoginRequest {
+  /** Where the CLI runs, for the approve page: a hostname or a short description. */
+  label?: string | null;
+  /** Instance tokens of seats this machine holds; proof of possession for binding. */
+  seats?: SniSecret[];
+}
+
+export function parseStartCliLoginRequest(value: unknown): StartCliLoginRequest {
+  if (value === undefined || value === null) return {};
+  requireExactKeys(value, [], ["label", "seats"]);
+  const { label, seats } = value as { label?: unknown; seats?: unknown };
+  const request: StartCliLoginRequest = {};
+  if (label !== undefined) {
+    if (label === null) request.label = null;
+    else {
+      if (typeof label !== "string") throw new ProtocolValidationError();
+      const normalized = label.normalize("NFKC").trim();
+      if (
+        scalarLength(normalized) < 1 ||
+        scalarLength(normalized) > 120 ||
+        CONTROL_CHARACTER_PATTERN.test(normalized)
+      ) {
+        throw new ProtocolValidationError();
+      }
+      request.label = normalized;
+    }
+  }
+  if (seats !== undefined) {
+    if (!Array.isArray(seats) || seats.length > 50) throw new ProtocolValidationError();
+    for (const seat of seats) {
+      if (typeof seat !== "string" || !SNI_SECRET_PATTERN.test(seat)) {
+        throw new ProtocolValidationError();
+      }
+    }
+    request.seats = seats as SniSecret[];
+  }
+  return request;
+}
+
 /** An Instance joining a Room: optionally with the invite that admits it. */
 export interface JoinRoomRequest {
   invite?: RitSecret;
@@ -1051,6 +1151,13 @@ export const ROUTE_CATALOGUE = [
     operationId: "waitForMessages",
   },
   { method: "GET", path: "/api/v1/inbox", auth: "any", operationId: "listInbox" },
+  { method: "POST", path: "/api/v1/cli/logins", auth: "public", operationId: "startCliLogin" },
+  {
+    method: "POST",
+    path: "/api/v1/cli/logins/{login_id}/poll",
+    auth: "public",
+    operationId: "pollCliLogin",
+  },
 ] as const satisfies readonly RouteDefinition[];
 
 const errorSchema = {
@@ -1197,6 +1304,29 @@ export const OPENAPI_DOCUMENT = {
         },
       },
     },
+    "/api/v1/cli/logins": {
+      post: {
+        operationId: "startCliLogin",
+        security: [],
+        responses: {
+          "201": { description: "A pending CLI login: its id, the user code to show, the poll token, and where to approve it" },
+          default: { description: "Error" },
+        },
+      },
+    },
+    "/api/v1/cli/logins/{login_id}/poll": {
+      post: {
+        operationId: "pollCliLogin",
+        security: [{ cliLoginPollToken: [] }],
+        parameters: [
+          { name: "login_id", in: "path", required: true, schema: { type: "string", pattern: "^cli_[0-9A-Za-z]{10}$" } },
+        ],
+        responses: {
+          "200": { description: "Pending, or approved with the API key minted once for this login" },
+          default: { description: "Error" },
+        },
+      },
+    },
     "/api/v1/inbox": {
       get: {
         operationId: "listInbox",
@@ -1219,6 +1349,7 @@ export const OPENAPI_DOCUMENT = {
       roomInviteToken: { type: "http", scheme: "bearer", bearerFormat: "rit_..." },
       /** Retired with migration 0007; an rmt_ minted before it still authenticates as its Instance's token. */
       roomMemberToken: { type: "http", scheme: "bearer", bearerFormat: "rmt_... (retired; use sni_...)" },
+      cliLoginPollToken: { type: "http", scheme: "bearer", bearerFormat: "clp_..." },
     },
     schemas: { Error: errorSchema },
   },

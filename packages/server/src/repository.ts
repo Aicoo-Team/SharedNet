@@ -1,4 +1,8 @@
 import type {
+  SnkSecret,
+  ClpSecret,
+  CliLoginId,
+  CliLogin,
   SniSecret,
   JoinRoomRequest,
   InboxPosition,
@@ -189,6 +193,44 @@ export interface SharedNetRepository {
     auth: RoomAuth,
     input: { after: InboxPosition | null; limit: number },
   ): Promise<Page<Message>>;
+  /**
+   * Starts a CLI login. `seats` are Instance tokens this machine holds; each
+   * that resolves to an active Instance of an anonymous Principal is recorded
+   * for binding at approval. Returns the user code and poll token once.
+   */
+  startCliLogin(input: {
+    label: string | null;
+    seats: string[];
+  }): Promise<{ login: CliLogin; user_code: string; poll_token: ClpSecret }>;
+  /**
+   * The Web approves a pending login as a Principal: binds every recorded
+   * anonymous Principal into it (re-pointing their Instances; history follows)
+   * and marks the login approved. The code is what the human saw.
+   */
+  approveCliLogin(input: {
+    code: string;
+    principalId: PrincipalId;
+  }): Promise<{ login: CliLogin; bound_principal_ids: PrincipalId[] }>;
+  /** What the approve page shows: the login behind a code, if it is still pending. */
+  getCliLoginByCode(code: string): Promise<{ login: CliLogin } | null>;
+  /**
+   * The CLI polls with its token. Pending answers pending; approved mints an
+   * API key for the approving Principal's account, marks the login consumed,
+   * and returns the key exactly once.
+   */
+  pollCliLogin(
+    loginId: CliLoginId,
+    pollToken: string,
+  ): Promise<
+    | { state: "pending"; login: CliLogin }
+    | {
+        state: "approved";
+        login: CliLogin;
+        api_key: SnkSecret;
+        api_key_id: ApiKeyId;
+        principal: Principal;
+      }
+  >;
   executeIdempotent(
     scope: IdempotencyScope,
     fingerprint: string,

@@ -536,6 +536,50 @@ function isRoomMembership(value: unknown): value is RoomMembership {
   return value.kind === "guest" && isNonEmptyString(value.name);
 }
 
+/** A CLI login as the approve page sees it: no code, no token. */
+export type CliLoginProjection = {
+  login_id: string;
+  state: "pending" | "approved" | "consumed" | "denied" | "expired";
+  label: string | null;
+  expires_at: string;
+  approved_at: string | null;
+  /** The anonymous seats approval would bind to this account. */
+  seats: {
+    instance_id: InstanceId;
+    name: string | null;
+    runtime_kind: string;
+    rooms: { room_id: RoomId; name: string }[];
+  }[];
+};
+
+export function isCliLoginProjection(value: unknown): value is CliLoginProjection {
+  return (
+    hasExactKeys(value, ["login_id", "state", "label", "expires_at", "approved_at", "seats"]) &&
+    isNonEmptyString(value.login_id) &&
+    (value.state === "pending" ||
+      value.state === "approved" ||
+      value.state === "consumed" ||
+      value.state === "denied" ||
+      value.state === "expired") &&
+    isNullable(value.label, isString) &&
+    isTimestamp(value.expires_at) &&
+    isNullable(value.approved_at, isTimestamp) &&
+    isArrayOf(
+      value.seats,
+      (seat): seat is CliLoginProjection["seats"][number] =>
+        hasExactKeys(seat, ["instance_id", "name", "runtime_kind", "rooms"]) &&
+        isInstanceId(seat.instance_id) &&
+        isNullable(seat.name, isString) &&
+        isNonEmptyString(seat.runtime_kind) &&
+        isArrayOf(
+          seat.rooms,
+          (room): room is { room_id: RoomId; name: string } =>
+            hasExactKeys(room, ["room_id", "name"]) && isIdentifier(room.room_id) && isNonEmptyString(room.name),
+        ),
+    )
+  );
+}
+
 /** The Room after a human closed it from the Web. */
 export type CloseRoomResponse = { room: RoomProjection };
 
