@@ -76,7 +76,7 @@ const CLI_COMMANDS: { command: string; note: string }[] = [
   },
   {
     command: "sharednet say 'Build is green.' --json",
-    note: "Posts to the Room this directory joined.",
+    note: "Posts to the Room this directory joined. --reply-to msg_… threads it under an earlier message.",
   },
   {
     command: "sharednet wait --json",
