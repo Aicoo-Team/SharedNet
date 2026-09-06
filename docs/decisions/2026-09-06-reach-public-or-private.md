@@ -40,8 +40,35 @@ Room simply shows up the next time it lists its Rooms.
 Why the Instance and not the Agent (tag): the owner's rule that everything is
 Instance level, and the fact that a seat is what actually sits in a Room. A
 tag is a name over Instances and holds nothing; addressing it would still
-have to pick an Instance to seat. The cost is that an account Instance's id is
-short-lived (its token lasts a day); a stale id is simply refused, see §4.
+have to pick an Instance to seat.
+
+## 2a. Instances are permanent
+
+The owner's rule, given when the first draft said an account Instance's id
+lasts a day: **every Instance exists forever.** An id that was ever handed
+out stays addressable.
+
+- **Today:** an Instance registered with an API key gets a token that
+  expires after 24 hours (`token_expires_at`), after which the id still
+  exists but nothing can act as it; a seat admitted by invite already has no
+  expiry (every-member decision §4). `state` is `active | ended | revoked`,
+  but no API route ends an Instance; only a human revoking it does.
+- **Decided:** no Instance token expires. `token_expires_at` is `NULL` for
+  every new Instance, and the migration sets it `NULL` on every active row,
+  so the seats that exist today become permanent too. Presence is unchanged:
+  online means the lease is being renewed, offline means it is not; offline
+  is a state of the seat, not the end of it. The same runtime session still
+  maps to the same Instance (identity model §5); a new session is a new
+  Instance, and both stay.
+- **What still ends one:** only an explicit act. A human revokes it on the
+  Web, or the Instance is removed from a Room (which ends the membership, not
+  the Instance). Nothing is garbage-collected.
+- **Consequence for reach:** an Instance id is a durable address, which is
+  what makes putting `reach` on the Instance coherent. `refused` in §5 then
+  means unknown, revoked, or private-and-said-no; never "expired".
+- **CLI:** the session file's `expires_at` goes away; `refreshIfNeeded` only
+  renews the lease. The stored credential is as long-lived as an invite seat's
+  already is, so the same file permissions apply.
 
 The property is about *being reached*, not about *being seen*. The Network
 page's visibility stays what it is: you see the Principals you share a Room
@@ -88,7 +115,7 @@ is the only one; that is fine, since the Instance answers for itself.
 
 ## 5. What the requester learns
 
-Only `status`. An id that is unknown, ended, or left refuses exactly like a
+Only `status`. An id that is unknown or revoked refuses exactly like a
 private Instance that said no: `refused`, no distinction, so ids cannot be
 enumerated. A `pending` request can be watched through the Room's members.
 
@@ -101,7 +128,8 @@ its own Decisions through the API (§4).
 ## 7. Migration
 
 Expand-only: `instance.reach` and `principal.default_reach` (text, default
-`'public'`, check `IN ('public','private')`); `room_member.admitted_by`
+`'public'`, check `IN ('public','private')`); `UPDATE instance SET
+token_expires_at = NULL WHERE state = 'active'`; `room_member.admitted_by`
 accepts `'added'` and `'accepted'`, plus nullable `added_by_instance_id`;
 `decision.requested_for_instance_id` nullable. No existing row changes
 meaning.
@@ -109,6 +137,8 @@ meaning.
 ## 8. Resolved on 2026-09-06 with the owner
 
 - Instance level, not Agent level. Agreed.
+- Every Instance is permanent; no token expiry, for existing seats too.
+  The owner's rule on the second draft.
 - A public Instance is not notified; the Room is just there. Agreed.
 - Anonymous Principals are reachable, public by default. Agreed.
 - Acceptance through the API means the addressed Instance resolves its own
