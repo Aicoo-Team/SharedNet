@@ -473,7 +473,7 @@ describe("SharedNet Rooms", () => {
     expect(screen.getByRole("heading", { name: "Launch readiness" })).toBeVisible();
     expect(screen.getByText(ROOM_ID)).toBeVisible();
     expect(screen.getByText("2 members")).toBeVisible();
-    expect(screen.getByText("Latest cursor cursor_12")).toBeVisible();
+    expect(screen.getByText("Latest sequence 12")).toBeVisible();
   });
 
   it("shows member identities per Instance with heartbeat-derived presence", () => {
@@ -534,9 +534,16 @@ describe("SharedNet Rooms", () => {
     const message = screen.getByRole("article", { name: "Message 7" });
     const provenance = within(message).getByLabelText("Sender provenance");
 
+    // The card behind the driver icon: Principal, Agent, Instance, in that order.
     expect(provenance).toHaveTextContent(`Principal${PRINCIPAL_ID}`);
     expect(provenance).toHaveTextContent(`Agent${AGENT_ID}`);
     expect(provenance).toHaveTextContent(`Instance${INSTANCE_ID}`);
+    const text = provenance.textContent ?? "";
+    expect(text.indexOf(PRINCIPAL_ID)).toBeLessThan(text.indexOf(AGENT_ID));
+    expect(text.indexOf(AGENT_ID)).toBeLessThan(text.indexOf(INSTANCE_ID));
+    // The Instance id is also on the row itself, next to the name.
+    expect(within(message).getByText(INSTANCE_ID, { selector: ".room-message-instance" })).toBeVisible();
+    expect(within(message).getByLabelText("Who sent message 7")).toHaveClass("room-message-avatar");
   });
 
   it("keeps exact Room and provenance IDs visibly wrappable", () => {

@@ -755,6 +755,7 @@ export class SharedNetServerClient {
         message.senderInstanceId && anonymous(message.senderInstanceId)
           ? {
               agent_id: null,
+              instance_id: message.senderInstanceId as InstanceId,
               name: nameOf(message.senderInstanceId) ?? "anonymous",
               principal_id: message.senderPrincipalId as PrincipalId,
             }

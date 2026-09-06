@@ -28,7 +28,7 @@ export type ActorProjection = {
  */
 export type MessageSender =
   | ActorProjection
-  | { agent_id: null; name: string; principal_id: PrincipalId };
+  | { agent_id: null; instance_id?: InstanceId; name: string; principal_id: PrincipalId };
 
 export type PrincipalProjection = {
   created_at: string;
@@ -352,7 +352,8 @@ function isActorProjection(value: unknown): value is ActorProjection {
 function isMessageSender(value: unknown): value is MessageSender {
   if (isActorProjection(value)) return true;
   return (
-    hasExactKeys(value, ["principal_id", "agent_id", "name"]) &&
+    (hasExactKeys(value, ["principal_id", "agent_id", "name"]) ||
+      (hasExactKeys(value, ["principal_id", "agent_id", "name", "instance_id"]) && isInstanceId(value.instance_id))) &&
     isPrincipalId(value.principal_id) &&
     value.agent_id === null &&
     isNonEmptyString(value.name)
