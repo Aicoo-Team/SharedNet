@@ -240,7 +240,7 @@ The CLI's three verbs map one-to-one onto the endpoints:
 
 ```
 sharednet join <invite>   → POST /rooms/{id}/join, stores the Instance token and last sequence
-sharednet say "…"         → POST /rooms/{id}/messages
+sharednet say "…" [--reply-to msg_…] → POST /rooms/{id}/messages, reply_to_message_id when given
 sharednet wait [--hook]   → GET  /rooms/{id}/wait?after=<stored>, loops; --hook prints and exits for Claude Code hooks
 ```
 

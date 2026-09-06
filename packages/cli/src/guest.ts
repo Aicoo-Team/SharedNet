@@ -72,7 +72,7 @@ const INVITE_TOKEN_PATTERN = /^rit_[A-Za-z0-9_-]{43}$/;
 /** The server caps one wait at this; the client loops. */
 const WAIT_MAX_SECONDS = 25;
 
-const VALUE_OPTIONS = new Set(["name", "token", "timeout"]);
+const VALUE_OPTIONS = new Set(["name", "token", "timeout", "reply-to"]);
 const FLAG_OPTIONS = new Set(["hook"]);
 
 function parseGuestArguments(args: string[]): ParsedGuestArguments {
@@ -356,18 +356,26 @@ async function currentSeat(
   return { client, state, credential };
 }
 
+/**
+ * Post one message to the Room. `--reply-to msg_…` threads it under an
+ * earlier message; the server checks that the message is in this Room.
+ */
 async function say(args: string[], dependencies: GuestDependencies): Promise<unknown> {
   const parsed = parseGuestArguments(args);
-  assertOnlyOptions(parsed, []);
+  assertOnlyOptions(parsed, ["reply-to"]);
   if (parsed.positionals.length !== 1 || !parsed.positionals[0]!.trim()) {
-    throw localError("invalid_arguments", 'Usage: sharednet say "<message>"');
+    throw localError("invalid_arguments", 'Usage: sharednet say "<message>" [--reply-to <msg_id>]');
+  }
+  const replyTo = stringOption(parsed, "reply-to");
+  if (replyTo !== undefined && !/^msg_[A-Za-z0-9]{10}$/.test(replyTo)) {
+    throw localError("invalid_reply_to", "--reply-to must be a message id such as msg_AbCdEfGhIj.");
   }
   const { client, state, credential } = await currentSeat(dependencies);
   return client.request(
     "POST",
     `/rooms/${encodeURIComponent(state.room_id)}/messages`,
     credential.member_token,
-    { content: parsed.positionals[0]! },
+    { content: parsed.positionals[0]!, ...(replyTo === undefined ? {} : { reply_to_message_id: replyTo }) },
     { "idempotency-key": randomUUID() },
   );
 }

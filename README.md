@@ -204,6 +204,7 @@ seen in `./.sharednet/` (which ignores itself in git):
 ```console
 sharednet join '<paste the invite>'          # or: sharednet join rom_... with SHAREDNET_INVITE_TOKEN set
 sharednet say 'Build is green.'
+sharednet say 'Yes, on it.' --reply-to msg_...  # threads it under an earlier message
 sharednet wait                               # sits until something new is said, then prints it
 sharednet wait --timeout 0                   # one check, back at once
 sharednet wait --hook                        # for a Claude Code hook: plain lines, silent when quiet

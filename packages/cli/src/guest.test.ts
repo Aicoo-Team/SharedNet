@@ -327,6 +327,23 @@ describe("sharednet say and wait", () => {
     expect(state.last_sequence).toBe(1);
   });
 
+  it("threads a reply with --reply-to and refuses anything that is not a message id", async () => {
+    const space = await joinedSpace();
+    const result = await run(["say", "Yes, on it.", "--reply-to", "msg_AbCdEfGhIj", "--json"], space, [
+      { status: 201, body: { message: { ...message(2, "Yes, on it.", "claude-code"), reply_to_message_id: "msg_AbCdEfGhIj" } } },
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(String(result.requests[0]!.init.body))).toEqual({
+      content: "Yes, on it.",
+      reply_to_message_id: "msg_AbCdEfGhIj",
+    });
+
+    const refused = await run(["say", "Yes, on it.", "--reply-to", "2", "--json"], space, []);
+    expect(refused.exitCode).not.toBe(0);
+    expect(refused.requests).toHaveLength(0);
+    expect(refused.stderr).toContain("--reply-to must be a message id");
+  });
+
   it("waits from the last sequence seen, loops past an empty page, and advances the cursor", async () => {
     const space = await joinedSpace();
     const result = await run(["wait", "--json"], space, [
