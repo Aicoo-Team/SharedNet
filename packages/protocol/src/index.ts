@@ -251,6 +251,8 @@ export const KNOWN_RUNTIME_KINDS = [
   "openhands",
   "gemini-cli",
   "cursor",
+  "github-copilot",
+  "workbuddy",
   "custom",
 ] as const;
 
