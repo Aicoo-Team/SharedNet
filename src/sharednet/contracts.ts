@@ -33,6 +33,7 @@ export type MessageSender =
 export type PrincipalProjection = {
   created_at: string;
   diagnostic_label: string;
+  /** `human` for an account; `anonymous` for a Principal provisioned by an invite join and not yet bound. */
   kind: string;
   principal_id: PrincipalId;
   summary: string;
@@ -52,6 +53,8 @@ export type AgentProjection = {
 export type InstanceProjection = {
   /** Tag pointer; null renders under the synthetic "default" header. */
   agent_id: AgentId | null;
+  /** What an invite-admitted Instance calls itself; null when its tag says who it is. */
+  display_name: string | null;
   ended_at: string | null;
   /** Null for an invite-admitted Instance: its seat lasts until removed. */
   expires_at: string | null;
@@ -409,6 +412,7 @@ export function isInstanceProjection(
       "instance_id",
       "principal_id",
       "agent_id",
+      "display_name",
       "runtime_type",
       "runtime_metadata",
       "workspace_label",
@@ -423,6 +427,7 @@ export function isInstanceProjection(
     isInstanceId(value.instance_id) &&
     isPrincipalId(value.principal_id) &&
     isNullable(value.agent_id, isAgentId) &&
+    isNullable(value.display_name, isString) &&
     isNonEmptyString(value.runtime_type) &&
     isStringRecord(value.runtime_metadata) &&
     isNullable(value.workspace_label, isNonEmptyString) &&

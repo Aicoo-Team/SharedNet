@@ -375,6 +375,34 @@ describe("SharedNetServerClient reads the V1 Postgres tables", () => {
     ).rejects.toMatchObject({ code: "member_not_found", status: 404 });
   });
 
+  it("puts a Room's anonymous co-member on the Network as its own Principal, invited by me, with a Room edge", async () => {
+    const client = clientWith({
+      ...BASE_TABLES,
+      principal: [principalRow, guestPrincipalRow],
+      instance: [instanceRow, guestInstanceRow],
+      room_member: [memberRow, guestMemberRow],
+    });
+    const network = await client.getNetwork("auth-user-1");
+
+    expect(isNetworkProjection(network)).toBe(true);
+    expect(network.principal.principal_id).toBe(PRINCIPAL);
+    expect(network.connected_principals).toEqual([
+      expect.objectContaining({
+        principal_id: GUEST_PRINCIPAL,
+        kind: "anonymous",
+        diagnostic_label: "claude-code",
+        summary: expect.stringContaining("invited by you"),
+      }),
+    ]);
+    const seat = network.instances.find((instance) => instance.instance_id === GUEST_INSTANCE)!;
+    expect(seat).toMatchObject({ principal_id: GUEST_PRINCIPAL, display_name: "claude-code", agent_id: null, runtime_type: "custom" });
+    expect(network.edges).toEqual([
+      { kind: "room_co_membership", source_id: GUEST_INSTANCE, target_id: INSTANCE, weight: 1 },
+    ]);
+    // Own tags are never marked discoverable; there is nothing of theirs to discover here.
+    expect(network.agents.map((agent) => [agent.agent_id, agent.discoverability])).toEqual([[AGENT, false]]);
+  });
+
   it("shows invite-admitted members of anonymous Principals by name, as their own senders", async () => {
     const client = clientWith({
       ...BASE_TABLES,

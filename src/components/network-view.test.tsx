@@ -89,6 +89,7 @@ function makeInstance(
 ): InstanceProjection {
   return {
     agent_id,
+    display_name: null,
     ended_at: null,
     expires_at: "2026-09-03T06:12:00+00:00",
     instance_id,
@@ -240,6 +241,51 @@ describe("SharedNet Network", () => {
     expect(screen.queryByRole("button", { name: `Inspect Instance ${PRIVATE_INSTANCE_ID}` })).toBeNull();
     expect(screen.queryByRole("button", { name: `Inspect Instance ${UNKNOWN_INSTANCE_ID}` })).toBeNull();
     expect(screen.queryByText("Unrelated context Principal")).toBeNull();
+  });
+
+  it("draws an anonymous Principal's seat in the cross scope, named, with its driver and who invited it", () => {
+    const ANON_PRINCIPAL_ID = "p_AnOnYmOuS1" as PrincipalId;
+    const ANON_INSTANCE_ID = "i_AnOnSeAt01" as InstanceId;
+    const anonymousPrincipal: PrincipalProjection = {
+      created_at: NOW,
+      diagnostic_label: "claude-code",
+      kind: "anonymous",
+      principal_id: ANON_PRINCIPAL_ID,
+      summary: "Anonymous Principal · invited by you · bind it with sharednet login",
+    };
+    const network = makeNetwork({
+      connected_principals: [anonymousPrincipal],
+      instances: [
+        makeInstance(instanceIdFor(OWN_AGENT_ID), OWN_AGENT_ID, OWN_PRINCIPAL_ID),
+        makeInstance(ANON_INSTANCE_ID, null as unknown as AgentId, ANON_PRINCIPAL_ID, {
+          agent_id: null,
+          display_name: "claude-code",
+          runtime_type: "claude-code",
+          presence: "online",
+          heartbeat_state: "renewing",
+        }),
+      ],
+      edges: [
+        { kind: "room_co_membership", source_id: instanceIdFor(OWN_AGENT_ID), target_id: ANON_INSTANCE_ID, weight: 1 },
+      ],
+    });
+
+    renderNetwork({ network });
+    expect(screen.queryByRole("group", { name: `Principal ${ANON_PRINCIPAL_ID}` })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cross-Principal" }));
+
+    const group = principalGroup(ANON_PRINCIPAL_ID);
+    expect(group).toHaveAttribute("data-principal", "external");
+    expect(within(group).getByText("Anonymous Principal")).toBeVisible();
+    expect(within(group).getByText(/invited by you/)).toBeVisible();
+    const seat = inspectButton(ANON_INSTANCE_ID);
+    expect(seat).toBeVisible();
+    expect(within(seat).getByText("claude-code", { selector: "strong" })).toBeVisible();
+    expect(within(seat).getByText("claude-code", { selector: "[data-runtime-kind]" })).toBeVisible();
+    expect(screen.getByRole("list", { name: "Visible relationships" })).toHaveTextContent(
+      `room_co_membership: source ${instanceIdFor(OWN_AGENT_ID)}; target ${ANON_INSTANCE_ID}`,
+    );
   });
 
   it("groups each visible Agent beneath its exact Principal identity", () => {
