@@ -132,6 +132,8 @@ describe("sharednet join", () => {
     expect(output).toEqual({
       room: { id: ROOM_ID, name: "Launch review", state: "open" },
       member_id: MEMBER_ID,
+      principal_id: null,
+      as: "anonymous",
       name: "claude-code",
       last_sequence: 2,
       history: expect.objectContaining({ items: expect.any(Array) }),
@@ -189,6 +191,71 @@ describe("sharednet join", () => {
     expect(result.exitCode).toBe(0);
     const body = JSON.parse(String(result.requests[0]!.init.body));
     expect(body).toEqual({ name: "agent" });
+  });
+
+  it("joins as the account when a credential is present: registers an Instance, joins with the invite, reads history", async () => {
+    const space = await workspace();
+    const instance = {
+      id: "i_AccountSeat1",
+      principal_id: "p_AcCoUnT0001",
+      agent_id: null,
+      runtime_kind: "claude-code",
+      cli_version: "0.1.0",
+      status: "online",
+      display_name: null,
+      started_at: "2026-09-06T00:00:00.000Z",
+      last_seen_at: "2026-09-06T00:00:00.000Z",
+      lease_expires_at: "2099-09-06T00:01:30.000Z",
+      token_expires_at: "2099-09-07T00:00:00.000Z",
+      ended_at: null,
+      revoked_at: null,
+    };
+    const result = await run(
+      ["join", PASTED_INVITE, "--json"],
+      space,
+      [
+        { status: 201, body: { instance, token: `sni_${"A".repeat(43)}`, heartbeat_after_seconds: 30 } },
+        {
+          status: 200,
+          body: {
+            room: { id: ROOM_ID, name: "Launch review", state: "open" },
+            membership: { member_id: "i_AccountSeat1", principal_id: "p_AcCoUnT0001", kind: "instance", admitted_by: "invite", name: null, state: "active" },
+          },
+        },
+        { status: 200, body: { items: [message(1, "Welcome")], next_cursor: "1", has_more: false } },
+      ],
+      { SHAREDNET_API_KEY: `snk_${"K".repeat(43)}` },
+    );
+
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(result.requests.map((request) => `${request.init.method ?? "GET"} ${request.url}`)).toEqual([
+      "POST https://sharednet.ai/api/v1/instances",
+      `POST https://sharednet.ai/api/v1/rooms/${ROOM_ID}/join`,
+      `GET https://sharednet.ai/api/v1/rooms/${ROOM_ID}/messages?after=0&limit=100`,
+    ]);
+    expect(header(result.requests[0]!, "authorization")).toBe(`Bearer snk_${"K".repeat(43)}`);
+    expect(header(result.requests[1]!, "authorization")).toBe(`Bearer sni_${"A".repeat(43)}`);
+    // The invite admits the Instance; the runtime went with the registration, not the join.
+    expect(JSON.parse(String(result.requests[1]!.init.body))).toEqual({ invite: INVITE_TOKEN });
+    expect(JSON.parse(String(result.requests[0]!.init.body)).runtime_kind).toBe("claude-code");
+    expect(header(result.requests[1]!, "idempotency-key")).toMatch(/^[0-9a-f-]{36}$/);
+
+    const output = JSON.parse(result.stdout);
+    expect(output).toMatchObject({ as: "account", member_id: "i_AccountSeat1", principal_id: "p_AcCoUnT0001", last_sequence: 1 });
+    expect(result.stdout).not.toContain("sni_");
+    expect(result.stdout).not.toContain("snk_");
+    const state = JSON.parse(await readFile(join(space.project, ".sharednet", "room.json"), "utf8"));
+    expect(state).toMatchObject({ room_id: ROOM_ID, member_id: "i_AccountSeat1", last_sequence: 1 });
+    // Both the seat file and the session file exist; say/wait use the session's token.
+    await stat(join(space.env.XDG_CONFIG_HOME!, "sharednet", "rooms", ROOM_ID, "i_AccountSeat1.json"));
+    await stat(join(space.env.XDG_STATE_HOME!, "sharednet", "sessions", "i_AccountSeat1.json"));
+
+    const said = await run(["say", "as the account", "--json"], space, [
+      { status: 201, body: { message: message(2, "as the account", null) } },
+    ], { SHAREDNET_API_KEY: `snk_${"K".repeat(43)}` });
+    expect(said.exitCode).toBe(0);
+    expect(header(said.requests[0]!, "authorization")).toBe(`Bearer sni_${"A".repeat(43)}`);
   });
 
   it("refuses to join without an invite token, before any request is sent", async () => {

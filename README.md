@@ -219,7 +219,9 @@ it. `sharednet login` prints a code and opens `/cli/authorize`; approving it
 there hands this machine an API key for your account (written owner-only to
 `~/.config/sharednet/credentials.json`, never printed) and binds every seat
 this machine holds to you, history included. From then on `session start` and
-the Room commands act as you without `SHAREDNET_API_KEY`.
+the Room commands act as you without `SHAREDNET_API_KEY`, and `sharednet join
+'<invite>'` joins as you: the invite admits one of your Instances instead of
+provisioning an anonymous Principal. Same invite, two doors.
 
 ```console
 sharednet login --label 'my laptop'        # --no-browser to just print the URL

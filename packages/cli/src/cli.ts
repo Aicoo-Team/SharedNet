@@ -1,25 +1,12 @@
-import { hostname, platform } from "node:os";
 import { randomUUID } from "node:crypto";
 
 import { ApiClient, resolveBaseUrl } from "./api-client.ts";
 import { CliError, asCliError, localError } from "./errors.ts";
 import { isGuestVerb, runGuestVerb } from "./guest.ts";
 import { login } from "./login.ts";
-import { computeLocalInstanceKey } from "./instance-computation.ts";
-import { detectRuntime, isRuntimeKind, runtimeMetadataOf } from "./runtime-detection.ts";
-import {
-  deleteSession,
-  getOrCreateInstallationSecret,
-  getStoragePaths,
-  listSessions,
-  readSessionById,
-  readStoredApiCredential,
-  writeSession,
-  type StoragePaths,
-  type StoredSession,
-} from "./storage.ts";
+import { refreshIfNeeded, registerInstance, selectSession } from "./session.ts";
+import { deleteSession, getStoragePaths, type StoragePaths, type StoredSession } from "./storage.ts";
 
-const CLI_VERSION = "0.1.0";
 
 type Environment = Record<string, string | undefined>;
 
@@ -57,35 +44,6 @@ interface GlobalArguments {
 interface ParsedArguments {
   options: Map<string, string | true>;
   positionals: string[];
-}
-
-interface AgentShape {
-  id: string;
-  principal_id?: string;
-  handle?: string;
-}
-
-interface InstanceShape {
-  id: string;
-  principal_id: string;
-  agent_id: string | null;
-  started_at: string;
-  lease_expires_at: string;
-  token_expires_at?: string;
-  expires_at?: string;
-  [key: string]: unknown;
-}
-
-interface InstanceStartPayload {
-  instance: InstanceShape;
-  token: string;
-  heartbeat_after_seconds: number;
-}
-
-interface CurrentInstancePayload {
-  principal: unknown;
-  agent: AgentShape | null;
-  instance: InstanceShape;
 }
 
 const optionValueNames = new Set([
@@ -192,204 +150,6 @@ function assertPositionals(arguments_: ParsedArguments, count: number): void {
   }
 }
 
-function apiKeyAuthenticationError(): CliError {
-  return new CliError(
-    "authentication_required",
-    "Set SHAREDNET_API_KEY or run sharednet login first.",
-    3,
-  );
-}
-
-async function resolveApiKey(
-  env: Environment,
-  paths: StoragePaths,
-  baseUrl: string,
-): Promise<string> {
-  const environmentKey = env.SHAREDNET_API_KEY?.trim();
-  if (environmentKey) return environmentKey;
-  const credential = await readStoredApiCredential(paths);
-  if (!credential) throw apiKeyAuthenticationError();
-  if (credential.base_url !== baseUrl) {
-    throw localError(
-      "credential_origin_mismatch",
-      "The stored credential belongs to a different SharedNet origin.",
-    );
-  }
-  if (credential.expires_at && Date.parse(credential.expires_at) <= Date.now()) {
-    throw new CliError("invalid_credentials", "The stored API key has expired.", 3);
-  }
-  return credential.api_key;
-}
-
-/**
- * Resolves `--agent` to a tag. An `a_` id is fetched; anything else is a
- * handle and is created on first use, the way `git tag` behaves — the server's
- * POST is idempotent by handle, so one call covers both "exists" and "new".
- * `default` names the absence of a tag and resolves to nothing.
- */
-async function resolveTag(
-  client: ApiClient,
-  apiKey: string,
-  requested: string,
-): Promise<AgentShape | null> {
-  const handle = requested.normalize("NFKC").trim().toLowerCase();
-  if (handle === "default") return null;
-  let agent: AgentShape;
-  if (/^a_[A-Za-z0-9]+$/.test(requested)) {
-    const payload = await client.request<{ agent: AgentShape }>(
-      "GET",
-      `/agents/${encodeURIComponent(requested)}`,
-      apiKey,
-    );
-    agent = payload.agent;
-  } else {
-    if (!/^[a-z][a-z0-9-]{0,31}$/.test(handle)) {
-      throw localError(
-        "invalid_agent",
-        "An Agent is an a_ id or a handle matching ^[a-z][a-z0-9-]{0,31}$.",
-      );
-    }
-    const payload = await client.request<{ agent: AgentShape }>("POST", "/agents", apiKey, {
-      handle,
-    });
-    agent = payload.agent;
-  }
-  if (!agent?.id) {
-    throw new CliError(
-      "invalid_server_response",
-      "The SharedNet service returned an invalid Agent response.",
-      5,
-    );
-  }
-  return agent;
-}
-
-/**
- * Where this session runs, for humans telling untagged sessions apart. It is
- * shown, never trusted: the server records it as diagnostics and nothing reads
- * it for authorization or grouping.
- *
- * Only the workspace's last path segment is sent. The full path is a map of
- * this machine — home directory, user name, client folders — and none of that
- * is needed to tell "the one in the sharednet folder" from the others.
- */
-function runtimeMetadata(env: Environment): Record<string, string> {
-  const clean = (value: string | undefined) =>
-    (value ?? "").replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 256);
-  const metadata: Record<string, string> = {};
-  const host = clean(hostname());
-  const workspacePath = clean(env.PWD ?? process.cwd());
-  const workspace = workspacePath.split(/[\\/]+/).filter(Boolean).at(-1) ?? "";
-  if (host) metadata.hostname = host;
-  if (workspace) metadata.workspace = workspace;
-  metadata.os = platform();
-  return metadata;
-}
-
-function validateRuntime(value: string): string {
-  const kind = value.normalize("NFKC").trim().toLowerCase();
-  if (isRuntimeKind(kind)) return kind;
-  throw localError("invalid_runtime", "Runtime must be a handle such as claude-code, codex, or opencode.");
-}
-
-function storedSessionFromStart(
-  baseUrl: string,
-  localInstanceKey: string | null,
-  payload: InstanceStartPayload,
-): StoredSession {
-  const { instance, token } = payload;
-  if (!instance?.id || !instance.principal_id || !token) {
-    throw new CliError(
-      "invalid_server_response",
-      "The SharedNet service returned an invalid Instance response.",
-      5,
-    );
-  }
-  const expiresAt = instance.token_expires_at ?? instance.expires_at;
-  if (!expiresAt) {
-    throw new CliError(
-      "invalid_server_response",
-      "The SharedNet service returned an invalid Instance response.",
-      5,
-    );
-  }
-  return {
-    schema_version: 1,
-    base_url: baseUrl,
-    principal_id: instance.principal_id,
-    agent_id: instance.agent_id ?? null,
-    instance_id: instance.id,
-    local_instance_key: localInstanceKey,
-    instance_token: token,
-    created_at: instance.started_at,
-    lease_expires_at: instance.lease_expires_at,
-    expires_at: expiresAt,
-  };
-}
-
-async function selectSession(
-  paths: StoragePaths,
-  baseUrl: string,
-  explicitId: string | undefined,
-  env: Environment,
-): Promise<StoredSession> {
-  const selectedId = explicitId || env.SHAREDNET_SESSION?.trim();
-  if (selectedId) {
-    if (!/^i_[A-Za-z0-9_-]+$/.test(selectedId)) {
-      throw localError("invalid_session_id", "SHAREDNET_SESSION must be an Instance ID.");
-    }
-    const selected = await readSessionById(paths, selectedId);
-    if (!selected || selected.base_url !== baseUrl) {
-      throw localError("session_not_found", "The selected local SharedNet session was not found.");
-    }
-    return selected;
-  }
-
-  const usable = (await listSessions(paths)).filter(
-    (session) => session.base_url === baseUrl && Date.parse(session.expires_at) > Date.now(),
-  );
-  if (usable.length !== 1) {
-    throw localError(
-      "session_selection_required",
-      "Select a local Instance with --session or SHAREDNET_SESSION.",
-    );
-  }
-  return usable[0]!;
-}
-
-async function refreshIfNeeded(
-  client: ApiClient,
-  paths: StoragePaths,
-  session: StoredSession,
-  now: Date,
-): Promise<StoredSession> {
-  if (Date.parse(session.expires_at) <= now.getTime()) {
-    await deleteSession(paths, session.instance_id);
-    throw new CliError("invalid_credentials", "The local Instance session has expired.", 3);
-  }
-  if (Date.parse(session.lease_expires_at) - now.getTime() > 30_000) return session;
-
-  try {
-    const payload = await client.request<{
-      instance: InstanceShape;
-      heartbeat_after_seconds: number;
-    }>("POST", "/instances/current/heartbeat", session.instance_token, {});
-    const refreshed: StoredSession = {
-      ...session,
-      lease_expires_at: payload.instance.lease_expires_at,
-      expires_at:
-        payload.instance.token_expires_at ?? payload.instance.expires_at ?? session.expires_at,
-    };
-    await writeSession(paths, refreshed);
-    return refreshed;
-  } catch (error) {
-    if (error instanceof CliError && error.exitCode === 3) {
-      await deleteSession(paths, session.instance_id);
-    }
-    throw error;
-  }
-}
-
 async function withSelectedSession<T>(
   globals: GlobalArguments,
   dependencies: ResolvedDependencies,
@@ -429,47 +189,12 @@ async function startSession(
 
   const baseUrl = resolveBaseUrl(dependencies.env.SHAREDNET_BASE_URL);
   const paths = getStoragePaths(dependencies.env);
-  const installationSecret = await getOrCreateInstallationSecret(paths);
-  // The driver is read off its own environment; --runtime only overrides the name.
-  const detected = detectRuntime(dependencies.env);
-  const runtimeKind = option(parsed, "runtime")
-    ? validateRuntime(option(parsed, "runtime")!)
-    : detected.kind;
-  const forceNew = parsed.options.get("new") === true;
-  let localInstanceKey: string | null = null;
-
-  if (!forceNew) {
-    if (detected.anchor === null || (option(parsed, "runtime") && runtimeKind !== detected.kind)) {
-      throw localError(
-        "runtime_session_not_detected",
-        "The current runtime session could not be detected; use --new deliberately.",
-      );
-    }
-    // The key goes to the server, which is the one place that can guarantee
-    // one live Instance per runtime session. The raw session id stays here.
-    localInstanceKey = computeLocalInstanceKey(
-      installationSecret,
-      runtimeKind,
-      detected.anchor,
-    );
-  }
-
-  const apiKey = await resolveApiKey(dependencies.env, paths, baseUrl);
-  const client = new ApiClient(baseUrl, dependencies.fetch);
-  const requestedTag = option(parsed, "agent");
-  const tag = requestedTag ? await resolveTag(client, apiKey, requestedTag) : undefined;
-
-  // A same-session re-registration comes back 200 with the existing Instance
-  // and a fresh token; a new session comes back 201. Both are a session.
-  const payload = await client.request<InstanceStartPayload>("POST", "/instances", apiKey, {
-    runtime_kind: runtimeKind,
-    cli_version: CLI_VERSION,
-    ...(localInstanceKey ? { local_instance_key: localInstanceKey } : {}),
-    ...(tag === undefined ? {} : { agent_id: tag?.id ?? null }),
-    runtime_metadata: { ...runtimeMetadata(dependencies.env), ...runtimeMetadataOf(detected) },
+  const { payload } = await registerInstance(dependencies.env, dependencies.fetch, paths, baseUrl, {
+    runtimeOverride: option(parsed, "runtime"),
+    forceNew: parsed.options.get("new") === true,
+    agent: option(parsed, "agent"),
+    freshWhenUndetected: false,
   });
-  const session = storedSessionFromStart(baseUrl, localInstanceKey, payload);
-  await writeSession(paths, session);
   return {
     instance: payload.instance,
     session_id: payload.instance.id,

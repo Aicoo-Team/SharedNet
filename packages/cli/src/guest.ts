@@ -3,10 +3,12 @@ import { randomUUID } from "node:crypto";
 import { ApiClient, resolveBaseUrl } from "./api-client.ts";
 import { CliError, localError } from "./errors.ts";
 import { detectRuntime } from "./runtime-detection.ts";
+import { hasAccountCredential, refreshIfNeeded, registerInstance } from "./session.ts";
 import {
   getStoragePaths,
   readProjectRoomState,
   readRoomCredential,
+  readSessionById,
   writeProjectRoomState,
   writeRoomCredential,
   type ProjectRoomState,
@@ -55,9 +57,14 @@ interface PageShape {
 
 interface GuestJoinPayload {
   room: { id: string; name?: string | null; [key: string]: unknown };
-  membership: { member_id: string; name?: string | null; [key: string]: unknown };
+  membership: { member_id: string; principal_id?: string; name?: string | null; [key: string]: unknown };
   member_token: string;
   history: PageShape;
+}
+
+interface AccountJoinPayload {
+  room: { id: string; name?: string | null; [key: string]: unknown };
+  membership: { member_id: string; principal_id?: string; name?: string | null; [key: string]: unknown };
 }
 
 const ROOM_ID_PATTERN = /^rom_[A-Za-z0-9]+$/;
@@ -198,8 +205,16 @@ async function join(args: string[], dependencies: GuestDependencies): Promise<un
   }
   const { roomId, token, baseUrl } = parseInvite(parsed.positionals[0]!, parsed, dependencies.env);
   const name = stringOption(parsed, "name") ?? defaultGuestName(dependencies.env);
-
+  const paths = getStoragePaths(dependencies.env);
   const client = new ApiClient(baseUrl, dependencies.fetch);
+
+  // Two doors, one model. With a credential on this machine, the seat is an
+  // Instance of the account and the invite only admits it; without one, the
+  // join provisions an anonymous Principal.
+  if (await hasAccountCredential(dependencies.env, paths, baseUrl)) {
+    return joinAsAccount(roomId, token, name, baseUrl, paths, client, dependencies);
+  }
+
   const runtime = runtimeReport(dependencies.env);
   const payload = await client.request<GuestJoinPayload>(
     "POST",
@@ -213,7 +228,6 @@ async function join(args: string[], dependencies: GuestDependencies): Promise<un
     throw invalidServerResponse();
   }
 
-  const paths = getStoragePaths(dependencies.env);
   const credential: StoredRoomCredential = {
     schema_version: 1,
     base_url: baseUrl,
@@ -238,9 +252,72 @@ async function join(args: string[], dependencies: GuestDependencies): Promise<un
   return {
     room: payload.room,
     member_id: memberId,
+    principal_id: payload.membership.principal_id ?? null,
+    as: "anonymous",
     name,
     last_sequence: state.last_sequence,
     history: payload.history,
+  };
+}
+
+async function joinAsAccount(
+  roomId: string,
+  invite: string,
+  name: string,
+  baseUrl: string,
+  paths: ReturnType<typeof getStoragePaths>,
+  client: ApiClient,
+  dependencies: GuestDependencies,
+): Promise<unknown> {
+  // This session is registered as an Instance of the account first; a
+  // detected driver session reuses its Instance, an undetected one gets a
+  // fresh Instance, since a join is not the place to refuse.
+  const { session } = await registerInstance(dependencies.env, dependencies.fetch, paths, baseUrl, {
+    forceNew: false,
+    freshWhenUndetected: true,
+  });
+  const payload = await client.request<AccountJoinPayload>(
+    "POST",
+    `/rooms/${encodeURIComponent(roomId)}/join`,
+    session.instance_token,
+    { invite },
+    { "idempotency-key": randomUUID() },
+  );
+  if (!payload.room?.id || !payload.membership?.member_id) throw invalidServerResponse();
+  const history = await client.request<PageShape>(
+    "GET",
+    `/rooms/${encodeURIComponent(roomId)}/messages?after=0&limit=100`,
+    session.instance_token,
+  );
+  if (!Array.isArray(history?.items)) throw invalidServerResponse();
+
+  // The seat file mirrors the session so say/wait need no second lookup; the
+  // session file stays the source of a fresh token when the lease is renewed.
+  await writeRoomCredential(paths, {
+    schema_version: 1,
+    base_url: baseUrl,
+    room_id: payload.room.id,
+    member_id: session.instance_id,
+    name,
+    member_token: session.instance_token,
+    joined_at: dependencies.now().toISOString(),
+  });
+  const state: ProjectRoomState = {
+    schema_version: 1,
+    base_url: baseUrl,
+    room_id: payload.room.id,
+    member_id: session.instance_id,
+    last_sequence: highestSequence(history.items, 0),
+  };
+  await writeProjectRoomState(dependencies.cwd, state);
+  return {
+    room: payload.room,
+    member_id: session.instance_id,
+    principal_id: session.principal_id,
+    as: "account",
+    name,
+    last_sequence: state.last_sequence,
+    history,
   };
 }
 
@@ -265,11 +342,18 @@ async function currentSeat(
       "The stored Room credential belongs to a different SharedNet origin.",
     );
   }
-  return {
-    client: new ApiClient(credential.base_url, dependencies.fetch),
-    state,
-    credential,
-  };
+  const client = new ApiClient(credential.base_url, dependencies.fetch);
+  // A seat that is one of the account's Instances has a session file too, and
+  // that is where a lease gets renewed; use its token so the seat outlives the
+  // 24-hour lease the seat file alone would not.
+  const session = state.member_id.startsWith("i_")
+    ? await readSessionById(paths, state.member_id).catch(() => null)
+    : null;
+  if (session && session.base_url === state.base_url) {
+    const fresh = await refreshIfNeeded(client, paths, session, dependencies.now());
+    return { client, state, credential: { ...credential, member_token: fresh.instance_token } };
+  }
+  return { client, state, credential };
 }
 
 async function say(args: string[], dependencies: GuestDependencies): Promise<unknown> {
