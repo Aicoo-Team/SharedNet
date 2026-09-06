@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  parseStartCliLoginRequest,
+  CLI_LOGIN_CODE_PATTERN,
+  normalizeCliLoginCode,
+  generateCliLoginCode,
   KNOWN_RUNTIME_KINDS,
   parseRuntimeReport,
   encodeInboxCursor,
@@ -179,6 +183,28 @@ describe("safe errors and public documentation", () => {
     expect(presenceFor("2026-09-05T11:59:30Z", now)).toBe("online");
     expect(presenceFor("2026-09-05T11:55:00Z", now)).toBe("away");
     expect(presenceFor("2026-09-05T11:00:00Z", now)).toBe("offline");
+  });
+
+  it("mints CLI login codes from an unambiguous alphabet and normalises what a human types", () => {
+    for (let index = 0; index < 50; index += 1) {
+      expect(generateCliLoginCode()).toMatch(CLI_LOGIN_CODE_PATTERN);
+    }
+    expect(normalizeCliLoginCode("abcd-efgh")).toBe("ABCD-EFGH");
+    expect(normalizeCliLoginCode(" abcd efgh ")).toBe("ABCD-EFGH");
+    expect(normalizeCliLoginCode("ABCDEFGH")).toBe("ABCD-EFGH");
+    expect(normalizeCliLoginCode("ABCD-EFG0")).toBeNull();
+    expect(normalizeCliLoginCode("ABC-DEFGH")).toBe("ABCD-EFGH");
+    expect(normalizeCliLoginCode("ABCDEFG")).toBeNull();
+    expect(parseStartCliLoginRequest(undefined)).toEqual({});
+    expect(parseStartCliLoginRequest({ label: "  laptop ", seats: [`sni_${"a".repeat(43)}`] })).toEqual({
+      label: "laptop",
+      seats: [`sni_${"a".repeat(43)}`],
+    });
+    expect(() => parseStartCliLoginRequest({ seats: ["rit_nope"] })).toThrow();
+    expect(() => parseStartCliLoginRequest({ label: "x".repeat(121) })).toThrow();
+    expect(ROUTE_CATALOGUE.map((route) => route.operationId)).toEqual(
+      expect.arrayContaining(["startCliLogin", "pollCliLogin"]),
+    );
   });
 
   it("accepts any well-formed driver handle and a bounded runtime report", () => {

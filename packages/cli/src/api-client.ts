@@ -57,7 +57,8 @@ export class ApiClient {
       response = await this.fetch(`${this.baseUrl}/api/v1${path}`, {
         method,
         headers: {
-          authorization: `Bearer ${credential}`,
+          // A public route is called with an empty credential and no header.
+          ...(credential ? { authorization: `Bearer ${credential}` } : {}),
           ...(body === undefined ? {} : { "content-type": "application/json" }),
           ...requestHeaders,
         },

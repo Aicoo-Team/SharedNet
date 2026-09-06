@@ -1,4 +1,8 @@
 import {
+  type CliLoginId,
+  CLI_LOGIN_ID_PATTERN,
+  CLP_SECRET_PATTERN,
+  parseStartCliLoginRequest,
   parseJoinRoomRequest,
   parseInboxCursor,
   type InboxPosition,
@@ -462,6 +466,43 @@ export async function handleRequest(
       if (isResponse(auth)) return auth;
       const roomId = parsePublicId(roomMatch[1], "rom");
       return jsonResponse(await repository.getRoom(auth, roomId), { status: 200 });
+    }
+
+    if (path === "/api/v1/cli/logins") {
+      if (request.method !== "POST") return routeMethodNotAllowed("POST");
+      const repository = getRepository();
+      requireNoIdempotency(request);
+      const input = await optionalJson(request, parseStartCliLoginRequest);
+      const started = await repository.startCliLogin({
+        label: input.label ?? null,
+        seats: input.seats ?? [],
+      });
+      // The page that approves it lives on the same origin the CLI called.
+      const verifyUrl = new URL(`/cli/authorize?code=${encodeURIComponent(started.user_code)}`, url.origin);
+      return jsonResponse(
+        {
+          login: started.login,
+          user_code: started.user_code,
+          poll_token: started.poll_token,
+          verify_url: verifyUrl.toString(),
+          interval_seconds: 3,
+        },
+        { status: 201, headers: NO_STORE_HEADERS },
+      );
+    }
+
+    const pollMatch = /^\/api\/v1\/cli\/logins\/([^/]+)\/poll$/.exec(path);
+    if (pollMatch) {
+      if (request.method !== "POST") return routeMethodNotAllowed("POST");
+      const repository = getRepository();
+      const bearer = parseBearer(request);
+      if (bearer === null) return errorResponse("authentication_required");
+      if (!CLP_SECRET_PATTERN.test(bearer)) return errorResponse("invalid_credentials");
+      const loginId = pollMatch[1]!;
+      if (!CLI_LOGIN_ID_PATTERN.test(loginId)) return errorResponse("invalid_id");
+      await optionalEmptyJson(request);
+      const result = await repository.pollCliLogin(loginId as CliLoginId, bearer);
+      return jsonResponse(result, { status: 200, headers: NO_STORE_HEADERS });
     }
 
     if (path === "/api/v1/inbox") {

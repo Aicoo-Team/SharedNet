@@ -15,6 +15,7 @@ import {
 } from "drizzle-orm/pg-core";
 
 import type {
+  CliLoginId,
   AgentId,
   ApiKeyId,
   DecisionId,
@@ -259,7 +260,7 @@ export const rooms = sharednetSchema.table(
       name: "room_creator_instance_fk",
       columns: [table.principalId, table.creatorInstanceId],
       foreignColumns: [instances.principalId, instances.id],
-    }),
+    }).onUpdate("cascade"),
     index("room_principal_created_at_idx").on(table.principalId, table.createdAt),
     check("room_id_format", sql`${table.id} ~ ${ROOM_ID_RE}`),
     check(
@@ -318,11 +319,15 @@ export const roomMembers = sharednetSchema.table(
       columns: [table.roomId],
       foreignColumns: [rooms.id],
     }).onDelete("cascade"),
+    // ON UPDATE CASCADE: binding an anonymous Principal re-points its
+    // Instances, and every row that carries the Instance's Principal follows.
     foreignKey({
       name: "room_member_instance_fk",
       columns: [table.principalId, table.instanceId],
       foreignColumns: [instances.principalId, instances.id],
-    }).onDelete("cascade"),
+    })
+      .onDelete("cascade")
+      .onUpdate("cascade"),
     index("room_member_principal_idx").on(table.principalId),
     index("room_member_instance_idx").on(table.instanceId),
     check("room_member_room_id_format", sql`${table.roomId} ~ ${ROOM_ID_RE}`),
@@ -458,7 +463,7 @@ export const messages = sharednetSchema.table(
       name: "message_sender_instance_fk",
       columns: [table.senderPrincipalId, table.senderInstanceId],
       foreignColumns: [instances.principalId, instances.id],
-    }),
+    }).onUpdate("cascade"),
     foreignKey({
       name: "message_sender_membership_fk",
       // The sending Instance must be a member, not merely some Instance of a
@@ -482,6 +487,58 @@ export const messages = sharednetSchema.table(
     check(
       "message_content_valid",
       sql`length(btrim(${table.content})) > 0 AND octet_length(${table.content}) <= 32768`,
+    ),
+  ],
+);
+
+/**
+ * A CLI login in flight: the CLI starts it, the human approves it in the Web,
+ * the CLI polls and receives an API key minted at that moment. Only digests of
+ * the user code and the poll token are stored. `bind_instance_ids` are the
+ * anonymous seats the CLI proved it holds; approval binds their Principals.
+ */
+export const cliLogins = sharednetSchema.table(
+  "cli_login",
+  {
+    id: text("id").$type<CliLoginId>().primaryKey(),
+    codeDigest: text("code_digest").notNull(),
+    pollTokenDigest: text("poll_token_digest").notNull(),
+    label: text("label"),
+    state: text("state")
+      .$type<"pending" | "approved" | "consumed" | "denied" | "expired">()
+      .default("pending")
+      .notNull(),
+    bindInstanceIds: text("bind_instance_ids").array().$type<InstanceId[]>().default([]).notNull(),
+    principalId: text("principal_id").$type<PrincipalId>(),
+    apiKeyId: text("api_key_id").$type<ApiKeyId>(),
+    createdAt: domainTimestamp("created_at").defaultNow().notNull(),
+    expiresAt: domainTimestamp("expires_at").notNull(),
+    approvedAt: domainTimestamp("approved_at"),
+    consumedAt: domainTimestamp("consumed_at"),
+  },
+  (table) => [
+    unique("cli_login_code_digest_unique").on(table.codeDigest),
+    unique("cli_login_poll_token_digest_unique").on(table.pollTokenDigest),
+    foreignKey({
+      name: "cli_login_principal_fk",
+      columns: [table.principalId],
+      foreignColumns: [principals.id],
+    }).onDelete("set null"),
+    index("cli_login_expires_at_idx").on(table.expiresAt),
+    check("cli_login_id_format", sql`${table.id} ~ '^cli_[0-9A-Za-z]{10}$'`),
+    check("cli_login_code_digest_format", sql`${table.codeDigest} ~ ${SHA256_HEX_RE}`),
+    check("cli_login_poll_token_digest_format", sql`${table.pollTokenDigest} ~ ${SHA256_HEX_RE}`),
+    check(
+      "cli_login_state_valid",
+      sql`${table.state} IN ('pending', 'approved', 'consumed', 'denied', 'expired')`,
+    ),
+    check(
+      "cli_login_label_length",
+      sql`${table.label} IS NULL OR length(${table.label}) BETWEEN 1 AND 120`,
+    ),
+    check(
+      "cli_login_approved_has_principal",
+      sql`${table.state} NOT IN ('approved', 'consumed') OR ${table.principalId} IS NOT NULL`,
     ),
   ],
 );
@@ -514,7 +571,7 @@ export const decisions = sharednetSchema.table(
       name: "decision_requester_instance_fk",
       columns: [table.principalId, table.requestedByInstanceId],
       foreignColumns: [instances.principalId, instances.id],
-    }),
+    }).onUpdate("cascade"),
     foreignKey({
       name: "decision_room_fk",
       columns: [table.principalId, table.roomId],
@@ -619,4 +676,5 @@ export const databaseSchema = {
   messages,
   decisions,
   idempotencyRecords,
+  cliLogins,
 } as const;
