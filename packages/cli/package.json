@@ -5,16 +5,22 @@
   "license": "MIT",
   "type": "module",
   "bin": {
-    "sharednet": "./bin/sharednet.js"
+    "sharednet": "bin/sharednet.js"
   },
   "exports": {
-    ".": "./src/cli.ts"
+    ".": {
+      "types": "./dist/cli.d.ts",
+      "import": "./dist/cli.js"
+    }
   },
   "files": [
     "bin",
-    "src",
-    "!src/**/*.test.ts"
+    "dist"
   ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepack": "npm run build"
+  },
   "engines": {
     "node": ">=22.18"
   },
@@ -37,5 +43,9 @@
     "codex",
     "rooms",
     "cli"
-  ]
+  ],
+  "devDependencies": {
+    "@types/node": "26.4.1",
+    "typescript": "7.0.2"
+  }
 }
