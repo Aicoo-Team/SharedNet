@@ -440,6 +440,7 @@ describe("sharednet say and wait", () => {
         ["watch", "--on", "message", "--run", "agent-turn", "--reply", "--max-runs", "1", "--json"],
         space,
         [
+          { status: 200, body: { instance: { id: MEMBER_ID } } },
           page([own(2, "what I said earlier")]),
           page([]),
           page([message(3, "please review the PR"), own(4, "typing…")]),
@@ -473,14 +474,17 @@ describe("sharednet say and wait", () => {
       const result = await run(
         ["watch", "--on", "count", "2", "--run", "agent-turn", "--reply", "--max-runs", "1", "--json"],
         space,
-        [page([message(2, "first")]), page([message(3, "second")])],
+        [
+          { status: 200, body: { instance: { id: MEMBER_ID } } },page([message(2, "first")]), page([message(3, "second")])],
         {},
         { exec },
       );
       expect(result.exitCode).toBe(0);
       expect(calls).toHaveLength(1);
       expect((calls[0]!.input as any).messages.map((item: any) => item.sequence)).toEqual([2, 3]);
-      expect(result.requests).toHaveLength(2);
+      // Identity, two polls, and no reply posted.
+      expect(result.requests).toHaveLength(3);
+      expect(result.requests.some((request) => request.init.method === "POST")).toBe(false);
       expect(result.stderr).toContain("boom");
       expect(JSON.parse(result.stdout).runs[0]).toMatchObject({ trigger: "count 2", messages: 2, exit_code: 3, reply_message_id: null });
     });
@@ -494,6 +498,7 @@ describe("sharednet say and wait", () => {
         ["watch", "--on", "every 10m", "--run", "tick", "--max-runs", "1", "--json"],
         space,
         [
+          { status: 200, body: { instance: { id: MEMBER_ID } } },
           { status: 200, body: { items: [], next_cursor: null, has_more: false } },
           { status: 200, body: { items: [], next_cursor: null, has_more: false } },
         ],
@@ -510,7 +515,8 @@ describe("sharednet say and wait", () => {
       const quiet = await run(
         ["watch", "--on", "idle 30s", "--run", "digest", "--max-runs", "1", "--json"],
         space,
-        [page([message(2, "a")]), page([message(3, "b")]), page([])],
+        [
+          { status: 200, body: { instance: { id: MEMBER_ID } } },page([message(2, "a")]), page([message(3, "b")]), page([])],
         {},
         {
           exec: idle.exec,

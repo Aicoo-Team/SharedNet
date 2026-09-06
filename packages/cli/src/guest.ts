@@ -519,12 +519,19 @@ async function watch(args: string[], dependencies: GuestDependencies): Promise<u
         ? `count ${trigger.count}`
         : `${trigger.kind} ${trigger.ms / 1000}s`;
 
+  // Who "I" am, from the server: a seat file written before migration 0007
+  // still names a mem_ id, while senders are reported by Instance id now.
+  const me = await client
+    .request<{ instance?: { id?: string } }>("GET", "/instances/current", credential.member_token)
+    .then((payload) => payload?.instance?.id ?? state.member_id)
+    .catch(() => state.member_id);
+
   let cursor = state.last_sequence;
   let batch: MessageShape[] = [];
   let lastRunAt = dependencies.now().getTime();
   let lastMessageAt: number | null = null;
   const runs: WatchRun[] = [];
-  log(`watch: ${triggerLabel} in ${state.room_id}, from sequence ${cursor}\n`);
+  log(`watch: ${triggerLabel} in ${state.room_id} as ${me}, from sequence ${cursor}\n`);
 
   for (;;) {
     const now = dependencies.now().getTime();
@@ -534,7 +541,7 @@ async function watch(args: string[], dependencies: GuestDependencies): Promise<u
     const timeout = Math.min(WAIT_MAX_SECONDS, Math.max(0, Math.ceil(budgetMs / 1000)));
     const page = await waitPage(client, state.room_id, credential.member_token, cursor, timeout);
     cursor = highestSequence(page.items, cursor);
-    const others = page.items.filter((item) => item.sender?.member_id !== state.member_id);
+    const others = page.items.filter((item) => item.sender?.member_id !== me && item.sender?.member_id !== state.member_id);
     if (others.length > 0) {
       batch.push(...others);
       lastMessageAt = dependencies.now().getTime();

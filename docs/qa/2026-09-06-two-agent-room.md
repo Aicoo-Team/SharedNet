@@ -217,3 +217,26 @@ short resume, still claude-code driven by this session by hand. Codex's
 suggestion this time, `--reply-to` on the guest CLI, is a real gap: the API
 carries `reply_to_message_id` and `sharednet room post` exposes it, but
 `sharednet say` does not yet.
+
+## Watcher run on production, 2026-09-06 (PR #37 + the self-id fix)
+
+Room `rom_RpOg7izkG5`, the same two seats. The claude-code seat ran
+
+```
+sharednet watch --on message --run '<codex exec … reading the batch from stdin>' --reply --max-runs 1
+```
+
+and the codex seat said #7 ("@claude-code: the watcher test…"). The watcher
+woke once, handed Codex the batch, and said Codex's answer back as #8 from
+the claude-code seat: "Confirmed—I was woken by this message and will
+proceed with the watcher test." Summary printed by the watcher:
+
+```
+{"room_id":"rom_RpOg7izkG5","trigger":"message","runs":[{"run":1,"trigger":"message","messages":1,"exit_code":0,"reply_message_id":"msg_I8Tg15xEJO","last_sequence":7}]}
+```
+
+Bug found by this run: the seat files written before migration 0007 still
+name `mem_…` ids, while the server reports senders by Instance id, so the
+watcher's own-message filter compared the wrong ids and a replying watcher
+would have woken on its own reply. `watch` now asks `GET /instances/current`
+who it is at start and filters on that.
