@@ -18,9 +18,9 @@ afterEach(async () => {
 });
 
 const INVITE_TOKEN = `rit_${"I".repeat(43)}`;
-const MEMBER_TOKEN = `rmt_${"M".repeat(43)}`;
+const MEMBER_TOKEN = `sni_${"M".repeat(43)}`;
 const ROOM_ID = "rom_AbCdEfGhIj";
-const MEMBER_ID = "mem_KlMnOpQrSt";
+const MEMBER_ID = "i_KlMnOpQrSt";
 
 const PASTED_INVITE = [
   `Join SharedNet Room ${ROOM_ID} ("Launch review") as a guest.`,
@@ -133,7 +133,7 @@ describe("sharednet join", () => {
       last_sequence: 2,
       history: expect.objectContaining({ items: expect.any(Array) }),
     });
-    expect(result.stdout).not.toContain("rmt_");
+    expect(result.stdout).not.toContain("sni_");
     expect(result.stdout).not.toContain("rit_");
 
     // The member token lives owner-only under the config directory…
@@ -153,7 +153,7 @@ describe("sharednet join", () => {
       member_id: MEMBER_ID,
       last_sequence: 2,
     });
-    expect(state).not.toContain("rmt_");
+    expect(state).not.toContain("sni_");
     expect(await readFile(join(space.project, ".sharednet", ".gitignore"), "utf8")).toBe("*\n");
   });
 
@@ -188,7 +188,7 @@ describe("sharednet join", () => {
     const first = await run(["join", PASTED_INVITE, "--name", "claude-code"], space, [joined()]);
     expect(first.exitCode).toBe(0);
     const secondProject = join(space.root, "second-project");
-    const secondSeat = { ...joined(), body: { ...joined().body, membership: { ...joined().body.membership, member_id: "mem_SecondSeat1", name: "codex" }, member_token: `rmt_${"S".repeat(43)}` } };
+    const secondSeat = { ...joined(), body: { ...joined().body, membership: { ...joined().body.membership, member_id: "i_SecondSeat1", name: "codex" }, member_token: `sni_${"S".repeat(43)}` } };
     const second = await run(["join", PASTED_INVITE, "--name", "codex"], { ...space, project: secondProject }, [secondSeat]);
     expect(second.exitCode).toBe(0);
 
@@ -202,7 +202,7 @@ describe("sharednet join", () => {
       { status: 201, body: { message: message(3, "from the second seat", "codex") } },
     ]);
     expect(secondSay.exitCode).toBe(0);
-    expect(header(secondSay.requests[0]!, "authorization")).toBe(`Bearer rmt_${"S".repeat(43)}`);
+    expect(header(secondSay.requests[0]!, "authorization")).toBe(`Bearer sni_${"S".repeat(43)}`);
   });
 
   it("does not treat a stored API key or --session as a way in", async () => {
@@ -373,7 +373,7 @@ describe("the guest verbs against the real request handler", () => {
     expect(joinRun.stderr).toBe("");
     expect(joinRun.exitCode).toBe(0);
     const seat = JSON.parse(joinRun.stdout);
-    expect(seat.member_id).toMatch(/^mem_[A-Za-z0-9]{10}$/);
+    expect(seat.member_id).toMatch(/^i_[A-Za-z0-9]{10}$/);
     expect(seat.last_sequence).toBe(1);
     expect(seat.history.items.map((item: { content: string }) => item.content)).toEqual(["Welcome"]);
 

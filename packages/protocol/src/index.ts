@@ -170,6 +170,12 @@ export interface Principal {
   id: PrincipalId;
   display_name: string | null;
   created_at: Timestamp;
+  /**
+   * Set for an anonymous Principal: one provisioned by an invite join for an
+   * Agent that arrived with nothing, not yet bound to an account. Null for a
+   * Principal with an account behind it.
+   */
+  invited_by_principal_id: PrincipalId | null;
 }
 
 export interface ApiKey {
@@ -204,10 +210,13 @@ export interface Instance {
   /** Where it runs — host, workspace, OS. Diagnostic; never authorization. */
   runtime_metadata: Record<string, string>;
   status: InstanceStatus;
+  /** What an invite-admitted Instance calls itself. Null for a key-registered one, whose tag says who it is. */
+  display_name: string | null;
   started_at: Timestamp;
   last_seen_at: Timestamp;
   lease_expires_at: Timestamp;
-  token_expires_at: Timestamp;
+  /** Null for an invite-admitted Instance: its seat lasts until removed. */
+  token_expires_at: Timestamp | null;
   ended_at: Timestamp | null;
   revoked_at: Timestamp | null;
 }
@@ -231,11 +240,15 @@ export interface Room {
 }
 
 /**
- * Two kinds of member sit in one Room. An `instance` member is a registered
- * Instance of a Principal (the power path). A `guest` joined with a Room invite
- * token and is known only by the name it gave and who invited it.
+ * Every member is an Instance of a Principal (decision 2026-09-06). `kind`
+ * says what stands behind that Principal: `instance` for one with an account,
+ * `guest` for an anonymous Principal provisioned by an invite join and not yet
+ * bound to an account. How the seat was admitted is `admitted_by`, separately.
  */
 export type MemberKind = "instance" | "guest";
+
+/** How a seat was admitted: by knowing the Room id, or by presenting an invite. */
+export type AdmittedBy = "room_id" | "invite";
 
 /**
  * Presence is derived from the member's most recent authenticated request, so
@@ -253,26 +266,31 @@ export function presenceFor(lastSeenAt: Timestamp | null, now: Date): Presence {
   return "offline";
 }
 
-/** Who a Message or membership belongs to, the same shape for both member kinds. */
+/** Who a Message or membership belongs to. */
 export interface MemberRef {
-  member_id: InstanceId | MemberId;
+  /** The Instance id; every member is an Instance. */
+  member_id: InstanceId;
   kind: MemberKind;
-  /** A guest's self-declared name; null for an Instance, whose tag says who it is. */
+  /** An invite-admitted Instance's self-declared name; null when its tag says who it is. */
   name: string | null;
 }
 
 export interface RoomMember {
   room_id: RoomId;
-  /** `i_…` for an Instance member, `mem_…` for a guest. */
-  member_id: InstanceId | MemberId;
+  /** The Instance id. (`mem_…` ids retired with migration 0007.) */
+  member_id: InstanceId;
   kind: MemberKind;
   name: string | null;
-  /** Derived from the member Instance's current tag; null for a guest. */
+  /** The member's own Principal. */
+  principal_id: PrincipalId;
+  /** Derived from the member Instance's current tag. */
   agent_id: AgentId | null;
-  /** Membership is per Instance: two sessions of one Agent are two members. Null for a guest. */
-  instance_id: InstanceId | null;
-  /** For a guest: the Principal whose invite admitted it. */
+  /** Membership is per Instance: two sessions of one Agent are two members. */
+  instance_id: InstanceId;
+  /** For an anonymous Principal: the Principal whose invite admitted it. */
   invited_by_principal_id: PrincipalId | null;
+  admitted_by: AdmittedBy;
+  invite_id: InviteId | null;
   state: "active" | "left";
   joined_at: Timestamp;
   left_at: Timestamp | null;
@@ -284,11 +302,11 @@ export interface Message {
   id: MessageId;
   room_id: RoomId;
   sequence: number;
-  /** The sending Instance's Principal, or for a guest the Principal that invited it. */
+  /** The sending Instance's Principal. */
   sender_principal_id: PrincipalId;
-  /** Derived from the sending Instance's current tag; follows regrouping. Null for a guest. */
+  /** Derived from the sending Instance's current tag; follows regrouping. */
   sender_agent_id: AgentId | null;
-  sender_instance_id: InstanceId | null;
+  sender_instance_id: InstanceId;
   sender: MemberRef;
   /** Reserved for typed events; every V1 message is `message`. */
   type: "message";
@@ -766,6 +784,22 @@ export interface JoinRoomWithInviteRequest {
   name: string;
 }
 
+/** An Instance joining a Room: optionally with the invite that admits it. */
+export interface JoinRoomRequest {
+  invite?: RitSecret;
+}
+
+export function parseJoinRoomRequest(value: unknown): JoinRoomRequest {
+  if (value === undefined || value === null) return {};
+  requireExactKeys(value, [], ["invite"]);
+  const { invite } = value as { invite?: unknown };
+  if (invite === undefined) return {};
+  if (typeof invite !== "string" || !RIT_SECRET_PATTERN.test(invite)) {
+    throw new ProtocolValidationError();
+  }
+  return { invite: invite as RitSecret };
+}
+
 export function parseJoinRoomWithInviteRequest(value: unknown): JoinRoomWithInviteRequest {
   requireExactKeys(value, ["name"]);
   const { name } = value;
@@ -1120,7 +1154,8 @@ export const OPENAPI_DOCUMENT = {
       accountApiKey: { type: "http", scheme: "bearer", bearerFormat: "snk_..." },
       instanceToken: { type: "http", scheme: "bearer", bearerFormat: "sni_..." },
       roomInviteToken: { type: "http", scheme: "bearer", bearerFormat: "rit_..." },
-      roomMemberToken: { type: "http", scheme: "bearer", bearerFormat: "rmt_..." },
+      /** Retired with migration 0007; an rmt_ minted before it still authenticates as its Instance's token. */
+      roomMemberToken: { type: "http", scheme: "bearer", bearerFormat: "rmt_... (retired; use sni_...)" },
     },
     schemas: { Error: errorSchema },
   },

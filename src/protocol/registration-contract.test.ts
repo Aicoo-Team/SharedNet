@@ -91,16 +91,22 @@ describe("SharedNet Room protocol artifacts", () => {
     expect(await getLlmsIndex(new Request("https://sharednet.ai/llms.txt")).text()).toBe(index);
   });
 
-  it("keeps the full protocol on the current identity model and the guest credentials", async () => {
+  it("keeps the full protocol on the current identity model: every member is an Instance", async () => {
     const fullText = buildLlmsFullText(origin);
 
     expect(fullText).toContain("Principal → Agent → Instance");
+    expect(fullText).toContain("Every member is an Instance of a Principal");
+    expect(fullText).toContain("anonymous Principal");
     expect(fullText).not.toContain("Runtime");
-    for (const credential of ["rit_", "rmt_", "snk_", "sni_"]) {
+    for (const credential of ["rit_", "snk_", "sni_"]) {
       expect(fullText, credential).toContain(credential);
     }
-    for (const prefix of ["p_", "a_", "i_", "rom_", "msg_", "mem_", "inv_"]) {
+    for (const prefix of ["p_", "a_", "i_", "rom_", "msg_", "inv_"]) {
       expect(fullText, prefix).toContain(prefix);
+    }
+    // Retired with migration 0007: no second kind of member, no second kind of token.
+    for (const retiredId of ["rmt_", "mem_"]) {
+      expect(fullText, retiredId).not.toContain(retiredId);
     }
     expect(fullText).toContain("Only digests of tokens are stored");
     expect(fullText).toContain("online within a\nminute, away within ten, offline after that");

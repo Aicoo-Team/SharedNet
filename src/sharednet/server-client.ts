@@ -15,7 +15,6 @@ import {
   instances,
   messages,
   principals,
-  roomGuests,
   roomInvites,
   roomMembers,
   rooms,
@@ -469,9 +468,9 @@ export class SharedNetServerClient {
   }
 
   /**
-   * Remove one member from a Room this account owns: a guest (`mem_…`) or an
-   * Instance (`i_…`). Its token stops working for this Room; what it said
-   * stays. Removing a member that already left returns it as it is.
+   * Remove one member from a Room this account owns, by its Instance id. Its
+   * token stops working for this Room; what it said stays. Removing a member
+   * that already left returns it as it is.
    */
   async removeRoomMember(
     authUserId: string,
@@ -490,41 +489,6 @@ export class SharedNetServerClient {
     }
     const now = new Date();
     const notFound = () => new SharedNetApiError("member_not_found", 404, "Member not found");
-
-    if (memberId.startsWith("mem_")) {
-      const [guest] = await database
-        .select()
-        .from(roomGuests)
-        .where(and(eq(roomGuests.roomId, room.id), eq(roomGuests.id, memberId as never)))
-        .limit(1);
-      if (!guest) throw notFound();
-      let left = guest;
-      if (guest.state === "active") {
-        const [updated] = await database
-          .update(roomGuests)
-          .set({ state: "left", leftAt: now })
-          .where(eq(roomGuests.id, guest.id))
-          .returning();
-        if (!updated) throw notFound();
-        left = updated;
-      }
-      return {
-        membership: {
-          agent_id: null,
-          instance_id: null,
-          joined_at: requiredIso(left.joinedAt),
-          kind: "guest",
-          last_read_sequence: 0,
-          left_at: iso(left.leftAt),
-          member_id: left.id,
-          name: left.name,
-          presence: presenceFor(requiredIso(left.lastSeenAt), now),
-          principal_id: left.principalId as PrincipalId,
-          room_id: left.roomId as RoomId,
-          status: left.state,
-        },
-      };
-    }
 
     const [member] = await database
       .select()
@@ -549,11 +513,11 @@ export class SharedNetServerClient {
         agent_id: tagOf(left.instanceId),
         instance_id: left.instanceId as InstanceId,
         joined_at: requiredIso(left.joinedAt),
-        kind: "instance",
+        kind: seen && seen.issuedByKeyId === null ? "guest" : "instance",
         last_read_sequence: 0,
         left_at: iso(left.leftAt),
         member_id: left.instanceId,
-        name: null,
+        name: seen?.displayName ?? null,
         presence: seen ? presenceOf(seen, now.getTime()).presence : "offline",
         principal_id: left.principalId as PrincipalId,
         room_id: left.roomId as RoomId,
@@ -576,9 +540,8 @@ export class SharedNetServerClient {
       throw new SharedNetApiError("room_not_found", 404, "Room not found");
     }
 
-    const [memberRows, guestRows, messageRows, tagOf, instanceSeen] = await Promise.all([
+    const [memberRows, messageRows, tagOf, instanceSeen] = await Promise.all([
       database.select().from(roomMembers).where(eq(roomMembers.roomId, room.id)),
-      database.select().from(roomGuests).where(eq(roomGuests.roomId, room.id)),
       database
         .select()
         .from(messages)
@@ -592,7 +555,12 @@ export class SharedNetServerClient {
       const row = instanceSeen.get(instanceId);
       return row ? presenceOf(row, now.getTime()).presence : "offline";
     };
-    const guestNameOf = new Map(guestRows.map((guest) => [guest.id as string, guest.name]));
+    // Every member is an Instance. One of an anonymous Principal (admitted by
+    // an invite, no account yet) is shown by the name it gave.
+    const anonymous = (instanceId: string): boolean =>
+      instanceSeen.get(instanceId)?.issuedByKeyId === null;
+    const nameOf = (instanceId: string): string | null =>
+      instanceSeen.get(instanceId)?.displayName ?? null;
 
 
     // Membership admits the viewer, and so does having scheduled the Room from
@@ -603,40 +571,22 @@ export class SharedNetServerClient {
       throw new SharedNetApiError("room_not_found", 404, "Room not found");
     }
 
-    const memberships: RoomMembership[] = [
-      ...memberRows.map(
-        (member): RoomMembership => ({
-          agent_id: tagOf(member.instanceId),
-          instance_id: member.instanceId as InstanceId,
-          joined_at: requiredIso(member.joinedAt),
-          kind: "instance",
-          last_read_sequence: 0,
-          left_at: iso(member.leftAt),
-          member_id: member.instanceId,
-          name: null,
-          presence: instancePresence(member.instanceId),
-          principal_id: member.principalId as PrincipalId,
-          room_id: member.roomId as RoomId,
-          status: member.state,
-        }),
-      ),
-      ...guestRows.map(
-        (guest): RoomMembership => ({
-          agent_id: null,
-          instance_id: null,
-          joined_at: requiredIso(guest.joinedAt),
-          kind: "guest",
-          last_read_sequence: 0,
-          left_at: iso(guest.leftAt),
-          member_id: guest.id,
-          name: guest.name,
-          presence: presenceFor(requiredIso(guest.lastSeenAt), now),
-          principal_id: guest.principalId as PrincipalId,
-          room_id: guest.roomId as RoomId,
-          status: guest.state,
-        }),
-      ),
-    ];
+    const memberships: RoomMembership[] = memberRows.map(
+      (member): RoomMembership => ({
+        agent_id: tagOf(member.instanceId),
+        instance_id: member.instanceId as InstanceId,
+        joined_at: requiredIso(member.joinedAt),
+        kind: anonymous(member.instanceId) ? "guest" : "instance",
+        last_read_sequence: 0,
+        left_at: iso(member.leftAt),
+        member_id: member.instanceId,
+        name: nameOf(member.instanceId),
+        presence: instancePresence(member.instanceId),
+        principal_id: member.principalId as PrincipalId,
+        room_id: member.roomId as RoomId,
+        status: member.state,
+      }),
+    );
 
     const projectedMessages: RoomMessage[] = messageRows.map((message) => ({
       attachment_ids: [],
@@ -646,19 +596,19 @@ export class SharedNetServerClient {
       reply_to: (message.replyToMessageId ?? null) as RoomMessage["reply_to"],
       resolution_state: "not_required",
       room_id: message.roomId as RoomId,
-      // A guest sender has no Instance; it is attributed to the Principal whose
-      // invite admitted it and shown by the name it gave.
-      sender: message.senderGuestId
-        ? {
-            agent_id: null,
-            name: guestNameOf.get(message.senderGuestId) ?? "guest",
-            principal_id: message.senderPrincipalId as PrincipalId,
-          }
-        : actor(
-            tagOf(message.senderInstanceId),
-            message.senderPrincipalId,
-            message.senderInstanceId ?? undefined,
-          ),
+      // An anonymous Principal's Instance is shown by the name it gave.
+      sender:
+        message.senderInstanceId && anonymous(message.senderInstanceId)
+          ? {
+              agent_id: null,
+              name: nameOf(message.senderInstanceId) ?? "anonymous",
+              principal_id: message.senderPrincipalId as PrincipalId,
+            }
+          : actor(
+              tagOf(message.senderInstanceId),
+              message.senderPrincipalId,
+              message.senderInstanceId ?? undefined,
+            ),
       sequence: message.sequence,
       tags: [],
     }));
@@ -701,7 +651,7 @@ export class SharedNetServerClient {
     const projectedInstances: InstanceProjection[] = instanceRows.map((instance) => ({
       agent_id: (instance.agentId ?? null) as AgentId | null,
       ended_at: iso(instance.endedAt),
-      expires_at: requiredIso(instance.tokenExpiresAt),
+      expires_at: iso(instance.tokenExpiresAt),
       instance_id: instance.id as InstanceId,
       last_seen_at: requiredIso(instance.lastSeenAt),
       ...presenceOf(instance, now),

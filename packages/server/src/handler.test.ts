@@ -692,16 +692,21 @@ describe("Room invites, guests, and wait", () => {
     expect(joined.status).toBe(200);
     expect(joined.headers.get("cache-control")).toContain("no-store");
     const body = await json(joined);
-    expect(body.member_token).toMatch(/^rmt_[A-Za-z0-9_-]{43}$/);
+    // Every member is an Instance of a Principal: the Agent that arrived with
+    // only an invite gets an anonymous Principal of its own and an Instance token.
+    expect(body.member_token).toMatch(/^sni_[A-Za-z0-9_-]{43}$/);
     expect(body.membership).toMatchObject({
       kind: "guest",
       name: "claude-code",
-      instance_id: null,
       invited_by_principal_id: principalId,
+      admitted_by: "invite",
       presence: "online",
       state: "active",
     });
-    expect(body.membership.member_id).toMatch(/^mem_[A-Za-z0-9]{10}$/);
+    expect(body.membership.member_id).toMatch(/^i_[A-Za-z0-9]{10}$/);
+    expect(body.membership.instance_id).toBe(body.membership.member_id);
+    expect(body.membership.principal_id).toMatch(/^p_[A-Za-z0-9]{10}$/);
+    expect(body.membership.principal_id).not.toBe(principalId);
     expect(body.history.items.map((m: any) => m.content)).toEqual(["Welcome"]);
     expect(body.history.items[0].sender).toEqual({
       member_id: host.instance.id,
@@ -716,8 +721,8 @@ describe("Room invites, guests, and wait", () => {
     expect(message).toMatchObject({
       sequence: 2,
       type: "message",
-      sender_instance_id: null,
-      sender_principal_id: principalId,
+      sender_instance_id: body.membership.member_id,
+      sender_principal_id: body.membership.principal_id,
       sender: { member_id: body.membership.member_id, kind: "guest", name: "claude-code" },
     });
 
@@ -737,7 +742,7 @@ describe("Room invites, guests, and wait", () => {
     expect(members.every((m: any) => m.presence === "online")).toBe(true);
 
     // Nothing secret is stored raw.
-    const serialized = JSON.stringify([...(store as any).guests.values(), ...(store as any).invites.values()]);
+    const serialized = JSON.stringify([...(store as any).instances.values(), ...(store as any).invites.values()]);
     expect(serialized).not.toContain(invite);
     expect(serialized).not.toContain(body.member_token);
   });
@@ -820,10 +825,61 @@ describe("Room invites, guests, and wait", () => {
     expect(foreign.status).toBe(403);
     expect((await json(foreign)).error.code).toBe("room_membership_required");
 
-    const notAnInstance = await request(store, "/api/v1/instances/current", {
+    // It is an Instance, of an anonymous Principal that records who invited it.
+    const self = await request(store, "/api/v1/instances/current", {
       headers: { authorization: `Bearer ${memberToken}` },
     });
-    expect(notAnInstance.status).toBe(401);
+    expect(self.status).toBe(200);
+    const current = await json(self);
+    expect(current.principal.invited_by_principal_id).toBe(principalId);
+    expect(current.instance.display_name).toBe("guest");
+    expect(current.instance.token_expires_at).toBeNull();
+    expect(current.agent).toBeNull();
+  });
+
+  it("lets an Instance join with an invite as its own Principal, and refuses an invite for another Room", async () => {
+    const store = makeStore();
+    const { room, principalId } = await openRoom(store);
+    const other = await openRoom(store);
+    const { token: invite } = await store.createRoomInvite({ roomId: room.id, principalId });
+    const joiner = await startInstance(store, { local_instance_key: OTHER_SESSION_KEY });
+
+    const wrongRoom = await request(store, `/api/v1/rooms/${other.room.id}/join`, {
+      method: "POST",
+      headers: instanceHeaders(joiner.token, { "content-type": "application/json", "idempotency-key": UUID }),
+      body: JSON.stringify({ invite }),
+    });
+    expect(wrongRoom.status).toBe(401);
+
+    const joined = await request(store, `/api/v1/rooms/${room.id}/join`, {
+      method: "POST",
+      headers: instanceHeaders(joiner.token, {
+        "content-type": "application/json",
+        "idempotency-key": "3f2504e0-4f89-41d3-9a0c-0305e82c3399",
+      }),
+      body: JSON.stringify({ invite }),
+    });
+    expect(joined.status).toBe(200);
+    const body = await json(joined);
+    expect(body.membership).toMatchObject({
+      kind: "instance",
+      member_id: joiner.instance.id,
+      instance_id: joiner.instance.id,
+      principal_id: joiner.instance.principal_id,
+      admitted_by: "invite",
+      name: null,
+    });
+    expect(body.membership.invite_id).toMatch(/^inv_[A-Za-z0-9]{10}$/);
+
+    const bareBody = await request(store, `/api/v1/rooms/${room.id}/join`, {
+      method: "POST",
+      headers: instanceHeaders(joiner.token, {
+        "content-type": "application/json",
+        "idempotency-key": "3f2504e0-4f89-41d3-9a0c-0305e82c3398",
+      }),
+      body: JSON.stringify({ invite: "not-an-invite" }),
+    });
+    expect(bareBody.status).toBe(422);
   });
 
   it("returns at once from wait when something was said after the cursor", async () => {

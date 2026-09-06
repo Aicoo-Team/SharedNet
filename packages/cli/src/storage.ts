@@ -388,7 +388,8 @@ export async function deleteSession(paths: StoragePaths, instanceId: string): Pr
 }
 
 const ROOM_ID_PATTERN = /^rom_[A-Za-z0-9]+$/;
-const MEMBER_ID_PATTERN = /^mem_[A-Za-z0-9]+$/;
+/** A seat is an Instance (`i_`); `mem_` files written before migration 0007 still open. */
+const MEMBER_ID_PATTERN = /^(?:i|mem)_[A-Za-z0-9]+$/;
 
 /**
  * A seat is one member in one Room. Two Agents on the same machine that join

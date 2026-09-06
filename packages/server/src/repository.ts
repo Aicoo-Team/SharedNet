@@ -1,4 +1,6 @@
 import type {
+  SniSecret,
+  JoinRoomRequest,
   InboxPosition,
   Agent,
   AgentId,
@@ -44,23 +46,20 @@ export type InstanceAuth = {
   principalId: PrincipalId;
   instanceId: InstanceId;
   actorId: InstanceId;
+  /**
+   * True when the Instance was admitted by an invite for an anonymous
+   * Principal rather than registered with an API key. Its presence is renewed
+   * by every authenticated request and its token never expires.
+   */
+  anonymous: boolean;
 };
 
 /**
- * A Room member token identifies a guest: a member admitted by an invite, not
- * by an Instance. It is scoped to one Room and attributed to the Principal
- * whose invite admitted it.
+ * Anything that can read, post, and wait inside a Room it belongs to. Since
+ * decision 2026-09-06 every member is an Instance, so this is one type; the
+ * alias stays because Room routes are written against it.
  */
-export type GuestAuth = {
-  kind: "guest";
-  principalId: PrincipalId;
-  roomId: RoomId;
-  memberId: MemberId;
-  actorId: MemberId;
-};
-
-/** Anything that can read, post, and wait inside a Room it belongs to. */
-export type RoomAuth = InstanceAuth | GuestAuth;
+export type RoomAuth = InstanceAuth;
 
 export type StoredHttpResult = {
   status: number;
@@ -94,8 +93,6 @@ export class RepositoryError extends Error {
 export interface SharedNetRepository {
   authenticateApiKey(token: string): Promise<PrincipalAuth | null>;
   authenticateInstance(token: string): Promise<InstanceAuth | null>;
-  /** Resolves a Room member token; also records the guest as seen now. */
-  authenticateGuest(token: string): Promise<GuestAuth | null>;
   /** Idempotent by canonical handle: `created` is false when the tag existed. */
   createAgent(
     auth: PrincipalAuth,
@@ -130,9 +127,15 @@ export interface SharedNetRepository {
     auth: InstanceAuth,
     input: { name: string; description?: string | null },
   ): Promise<{ room: Room; membership: RoomMember }>;
+  /**
+   * Joins as the caller's own Principal. With `invite`, the seat is recorded
+   * as admitted by that invite (which must open this Room and be usable) and
+   * the invite's use is counted; without one, by Room id.
+   */
   joinRoom(
     auth: InstanceAuth,
     roomId: RoomId,
+    input?: JoinRoomRequest,
   ): Promise<{ room: Room; membership: RoomMember }>;
   /**
    * Mints an invite for a Room the Principal owns. The raw token is returned
@@ -148,9 +151,10 @@ export interface SharedNetRepository {
     principalId: PrincipalId;
   }): Promise<{ invite: RoomInvite }>;
   /**
-   * Admits a guest with an invite token. Every join creates a new member and a
-   * new member token; a name is display text and never recovers an identity.
-   * Returns the first page of history so one call is enough to catch up.
+   * Admits an Agent that has only an invite: provisions an anonymous Principal
+   * and an Instance under it, joins the Instance, and returns its token. Every
+   * such join is a new member; a name is display text and never recovers an
+   * identity. Returns the first page of history so one call is enough.
    */
   joinRoomWithInvite(
     token: string,
@@ -159,7 +163,7 @@ export interface SharedNetRepository {
   ): Promise<{
     room: Room;
     membership: RoomMember;
-    member_token: RmtSecret;
+    member_token: SniSecret;
     history: Page<Message>;
   }>;
   getRoom(

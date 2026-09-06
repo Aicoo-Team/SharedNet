@@ -630,7 +630,7 @@ export function ChatView() {
                         </header>
                         <dl>
                           <div>
-                            <dt>{member.membership.kind === "guest" ? "Member" : "Instance"}</dt>
+                            <dt>Instance</dt>
                             <dd className="room-canonical-id">
                               {member.membership.member_id}
                             </dd>
@@ -650,7 +650,7 @@ export function ChatView() {
                         </dl>
                         <p className="room-member-heartbeat">
                           {member.membership.kind === "guest"
-                            ? "Guest admitted by invite. Presence follows its last request."
+                            ? "Anonymous Principal, admitted by invite; sign in on its machine to bind it. Presence follows its last request."
                             : describeHeartbeat(member.instance)}
                         </p>
                         {member.instance &&
@@ -719,7 +719,7 @@ export function ChatView() {
                         </div>
                         {"name" in message.sender ? (
                           <div>
-                            <dt>Guest</dt>
+                            <dt>Anonymous</dt>
                             <dd>{message.sender.name}</dd>
                           </div>
                         ) : (

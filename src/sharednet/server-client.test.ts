@@ -122,14 +122,29 @@ function clientWith(tables: Record<string, unknown[]>) {
   return new SharedNetServerClient();
 }
 
-const guestRow = {
-  id: "mem_guest00001", roomId: ROOM, inviteId: "inv_invite0001", principalId: PRINCIPAL,
-  name: "claude-code", tokenDigest: "e".repeat(64), state: "active", joinedAt: NOW, leftAt: null,
-  lastSeenAt: new Date(Date.now() - 5_000),
+// An Agent that joined with only an invite: an anonymous Principal of its own,
+// an Instance admitted by the invite, and a seat recorded as such.
+const GUEST_PRINCIPAL = "p_anonGuest1";
+const GUEST_INSTANCE = "i_guest00001";
+const guestPrincipalRow = {
+  id: GUEST_PRINCIPAL, authUserId: null, displayName: "claude-code", createdAt: NOW,
+  invitedByPrincipalId: PRINCIPAL, mergedIntoPrincipalId: null,
+};
+const guestInstanceRow = {
+  id: GUEST_INSTANCE, principalId: GUEST_PRINCIPAL, agentId: null, issuedByKeyId: null,
+  admittedByInviteId: "inv_invite0001", displayName: "claude-code",
+  tokenDigest: "e".repeat(64), runtimeKind: "custom", cliVersion: "invite", state: "active",
+  runtimeMetadata: {}, localInstanceKey: null,
+  startedAt: NOW, lastSeenAt: new Date(Date.now() - 5_000), leaseExpiresAt: new Date(Date.now() + 60_000),
+  tokenExpiresAt: null, endedAt: null, revokedAt: null,
+};
+const guestMemberRow = {
+  principalId: GUEST_PRINCIPAL, roomId: ROOM, instanceId: GUEST_INSTANCE,
+  state: "active", joinedAt: NOW, leftAt: null, admittedBy: "invite", inviteId: "inv_invite0001",
 };
 const guestMessageRow = {
-  id: "msg_guest000001", roomId: ROOM, sequence: 2, senderPrincipalId: PRINCIPAL,
-  senderInstanceId: null, senderGuestId: "mem_guest00001", content: "hello from curl",
+  id: "msg_guest000001", roomId: ROOM, sequence: 2, senderPrincipalId: GUEST_PRINCIPAL,
+  senderInstanceId: GUEST_INSTANCE, senderGuestId: null, content: "hello from curl",
   replyToMessageId: null, createdAt: NOW,
 };
 
@@ -139,7 +154,6 @@ const BASE_TABLES = {
   instance: [instanceRow],
   room: [roomRow],
   room_member: [memberRow],
-  room_guest: [],
   room_invite: [],
   message: [messageRow],
   decision: [decisionRow],
@@ -313,19 +327,23 @@ describe("SharedNetServerClient reads the V1 Postgres tables", () => {
     expect((rowsByTable.current.room?.[0] as Record<string, unknown>).state).toBe("open");
   });
 
-  it("removes a guest member: it leaves, keeps its name, and what it said stays", async () => {
+  it("removes an invite-admitted member: it leaves, keeps its name, and what it said stays", async () => {
     const client = clientWith({
       ...BASE_TABLES,
-      room_guest: [{ ...guestRow }],
+      principal: [principalRow, guestPrincipalRow],
+      instance: [instanceRow, guestInstanceRow],
+      // The stub updates a table's first row, so the seat being removed goes first.
+      room_member: [{ ...guestMemberRow }, memberRow],
       message: [messageRow, guestMessageRow],
     });
 
-    const removed = await client.removeRoomMember("auth-user-1", ROOM as never, "mem_guest00001");
+    const removed = await client.removeRoomMember("auth-user-1", ROOM as never, GUEST_INSTANCE);
 
     expect(isRemoveRoomMemberResponse(removed)).toBe(true);
     expect(removed.membership).toMatchObject({
       kind: "guest",
-      member_id: "mem_guest00001",
+      member_id: GUEST_INSTANCE,
+      instance_id: GUEST_INSTANCE,
       name: "claude-code",
       status: "left",
     });
@@ -334,7 +352,7 @@ describe("SharedNetServerClient reads the V1 Postgres tables", () => {
     expect(detail.messages[1]!.sender).toEqual({
       agent_id: null,
       name: "claude-code",
-      principal_id: PRINCIPAL,
+      principal_id: GUEST_PRINCIPAL,
     });
   });
 
@@ -351,16 +369,18 @@ describe("SharedNetServerClient reads the V1 Postgres tables", () => {
       status: "left",
     });
 
-    const empty = clientWith({ ...BASE_TABLES, room_guest: [] });
+    const empty = clientWith({ ...BASE_TABLES, room_member: [] });
     await expect(
-      empty.removeRoomMember("auth-user-1", ROOM as never, "mem_nobody0001"),
+      empty.removeRoomMember("auth-user-1", ROOM as never, "i_nobody00001"),
     ).rejects.toMatchObject({ code: "member_not_found", status: 404 });
   });
 
-  it("shows guests among the members and names them as senders", async () => {
+  it("shows invite-admitted members of anonymous Principals by name, as their own senders", async () => {
     const client = clientWith({
       ...BASE_TABLES,
-      room_guest: [guestRow],
+      principal: [principalRow, guestPrincipalRow],
+      instance: [instanceRow, guestInstanceRow],
+      room_member: [memberRow, guestMemberRow],
       message: [messageRow, guestMessageRow],
     });
     const detail = await client.getRoom("auth-user-1", ROOM as never);
@@ -369,17 +389,17 @@ describe("SharedNetServerClient reads the V1 Postgres tables", () => {
     expect(detail.memberships.map((member) => member.kind)).toEqual(["instance", "guest"]);
     const guest = detail.memberships[1]!;
     expect(guest).toMatchObject({
-      instance_id: null,
-      member_id: "mem_guest00001",
+      instance_id: GUEST_INSTANCE,
+      member_id: GUEST_INSTANCE,
       name: "claude-code",
       presence: "online",
-      principal_id: PRINCIPAL,
+      principal_id: GUEST_PRINCIPAL,
     });
     expect(detail.memberships[0]).toMatchObject({ kind: "instance", name: null, presence: "online" });
     expect(detail.messages[1]!.sender).toEqual({
       agent_id: null,
       name: "claude-code",
-      principal_id: PRINCIPAL,
+      principal_id: GUEST_PRINCIPAL,
     });
   });
 

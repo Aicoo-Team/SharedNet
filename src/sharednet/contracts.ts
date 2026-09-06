@@ -53,7 +53,8 @@ export type InstanceProjection = {
   /** Tag pointer; null renders under the synthetic "default" header. */
   agent_id: AgentId | null;
   ended_at: string | null;
-  expires_at: string;
+  /** Null for an invite-admitted Instance: its seat lasts until removed. */
+  expires_at: string | null;
   instance_id: InstanceId;
   last_seen_at: string;
   /**
@@ -99,16 +100,20 @@ export type MemberPresence = "online" | "away" | "offline";
 
 export type RoomMembership = {
   agent_id: AgentId | null;
-  /** Null for a guest admitted by an invite; guests have no Instance. */
-  instance_id: InstanceId | null;
+  /** Every member is an Instance (decision 2026-09-06). */
+  instance_id: InstanceId;
   joined_at: string;
-  /** `instance` joined with an Instance token; `guest` with a Room invite. */
+  /**
+   * What stands behind the member's Principal: `instance` for an account,
+   * `guest` for an anonymous Principal provisioned by an invite join and not
+   * yet bound to one.
+   */
   kind: "instance" | "guest";
   last_read_sequence: number;
   left_at: string | null;
-  /** The Instance id for an Instance member, `mem_…` for a guest. */
+  /** The Instance id. */
   member_id: string;
-  /** A guest's self-declared name; null for an Instance. */
+  /** An invite-admitted Instance's self-declared name; null when its tag says who it is. */
   name: string | null;
   /** Derived on the server from the member's last authenticated request. */
   presence: MemberPresence;
@@ -419,7 +424,7 @@ export function isInstanceProjection(
       value.heartbeat_state === "stopped") &&
     isTimestamp(value.started_at) &&
     isTimestamp(value.last_seen_at) &&
-    isTimestamp(value.expires_at) &&
+    isNullable(value.expires_at, isTimestamp) &&
     isNullable(value.ended_at, isTimestamp)
   );
 }
@@ -505,10 +510,9 @@ function isRoomMembership(value: unknown): value is RoomMembership {
   ) {
     return false;
   }
-  if (value.kind === "instance") {
-    return isInstanceId(value.instance_id) && value.name === null;
-  }
-  return value.kind === "guest" && value.instance_id === null && isNonEmptyString(value.name);
+  if (!isInstanceId(value.instance_id)) return false;
+  if (value.kind === "instance") return isNullable(value.name, isNonEmptyString);
+  return value.kind === "guest" && isNonEmptyString(value.name);
 }
 
 /** The Room after a human closed it from the Web. */
