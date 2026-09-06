@@ -211,12 +211,23 @@ function stopServer(server) {
   });
 }
 
+/** Drop every known driver's variables so the simulated sessions are only what the harness sets. */
+function withoutDriverMarkers(env) {
+  return Object.fromEntries(
+    Object.entries(env).filter(
+      ([key]) => !/^(CLAUDE|CLAUDECODE|ANTHROPIC|CODEX|OPENCODE|OPENHANDS|GEMINI_CLI|CURSOR)/.test(key),
+    ),
+  );
+}
+
 function runCli(baseUrl, args, sessionName) {
   return new Promise((resolveRun, rejectRun) => {
     const child = spawn(process.execPath, ["packages/cli/src/main.ts", ...args], {
       cwd: root,
       env: {
-        ...process.env,
+        // A clean Codex environment: whatever driver runs this harness must
+        // not leak its own markers into the sessions it simulates.
+        ...withoutDriverMarkers(process.env),
         CODEX_SESSION_ID: sessionName,
         CODEX_THREAD_ID: "local-lineage-must-stay-local",
         SHAREDNET_API_KEY: apiKey,
@@ -391,7 +402,10 @@ try {
   const joinResponse = await fetch(`${apiBaseUrl}/api/v1/rooms/${roomId}/join`, {
     method: "POST",
     headers: { authorization: `Bearer ${inviteToken}`, "content-type": "application/json" },
-    body: JSON.stringify({ name: "claude-code" }),
+    body: JSON.stringify({
+      name: "claude-code",
+      runtime: { kind: "opencode", version: "1.2.3", source: "declared" },
+    }),
   });
   await assertStatus(joinResponse, 200, "guest-join");
   const joined = await joinResponse.json();
@@ -405,6 +419,9 @@ try {
   assert.notEqual(joined.membership.principal_id, starts[0].instance.principal_id);
   assert.equal(joined.membership.invited_by_principal_id, starts[0].instance.principal_id);
   assert.equal(joined.membership.presence, "online");
+  assert.equal(joined.membership.runtime_kind, "opencode", "an open driver handle is stored as declared");
+  assert.equal(joined.membership.runtime_version, "1.2.3");
+  assert.equal(joined.membership.runtime_metadata.runtime_source, "declared");
   assert.deepEqual(
     joined.history.items.map((message) => message.sequence),
     [1, 2, 3, 4],

@@ -4,11 +4,8 @@ import { randomUUID } from "node:crypto";
 import { ApiClient, resolveBaseUrl } from "./api-client.ts";
 import { CliError, asCliError, localError } from "./errors.ts";
 import { isGuestVerb, runGuestVerb } from "./guest.ts";
-import {
-  computeLocalInstanceKey,
-  detectRuntimeSession,
-  type RuntimeKind,
-} from "./instance-computation.ts";
+import { computeLocalInstanceKey } from "./instance-computation.ts";
+import { detectRuntime, isRuntimeKind, runtimeMetadataOf } from "./runtime-detection.ts";
 import {
   deleteSession,
   getOrCreateInstallationSecret,
@@ -285,9 +282,10 @@ function runtimeMetadata(env: Environment): Record<string, string> {
   return metadata;
 }
 
-function validateRuntime(value: string): RuntimeKind {
-  if (value === "codex" || value === "claude-code" || value === "custom") return value;
-  throw localError("invalid_runtime", "Runtime must be codex, claude-code, or custom.");
+function validateRuntime(value: string): string {
+  const kind = value.normalize("NFKC").trim().toLowerCase();
+  if (isRuntimeKind(kind)) return kind;
+  throw localError("invalid_runtime", "Runtime must be a handle such as claude-code, codex, or opencode.");
 }
 
 function storedSessionFromStart(
@@ -428,15 +426,16 @@ async function startSession(
   const baseUrl = resolveBaseUrl(dependencies.env.SHAREDNET_BASE_URL);
   const paths = getStoragePaths(dependencies.env);
   const installationSecret = await getOrCreateInstallationSecret(paths);
-  const detected = detectRuntimeSession(dependencies.env);
+  // The driver is read off its own environment; --runtime only overrides the name.
+  const detected = detectRuntime(dependencies.env);
   const runtimeKind = option(parsed, "runtime")
     ? validateRuntime(option(parsed, "runtime")!)
-    : detected?.runtimeKind ?? "codex";
+    : detected.kind;
   const forceNew = parsed.options.get("new") === true;
   let localInstanceKey: string | null = null;
 
   if (!forceNew) {
-    if (!detected || detected.runtimeKind !== runtimeKind) {
+    if (detected.anchor === null || (option(parsed, "runtime") && runtimeKind !== detected.kind)) {
       throw localError(
         "runtime_session_not_detected",
         "The current runtime session could not be detected; use --new deliberately.",
@@ -463,7 +462,7 @@ async function startSession(
     cli_version: CLI_VERSION,
     ...(localInstanceKey ? { local_instance_key: localInstanceKey } : {}),
     ...(tag === undefined ? {} : { agent_id: tag?.id ?? null }),
-    runtime_metadata: runtimeMetadata(dependencies.env),
+    runtime_metadata: { ...runtimeMetadata(dependencies.env), ...runtimeMetadataOf(detected) },
   });
   const session = storedSessionFromStart(baseUrl, localInstanceKey, payload);
   await writeSession(paths, session);

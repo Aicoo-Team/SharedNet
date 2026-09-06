@@ -97,6 +97,7 @@ const roomDetail: RoomDetail = {
       presence: "online",
       principal_id: PRINCIPAL_ID,
       room_id: ROOM_ID,
+      runtime: { kind: "codex", version: "0.1.0", entrypoint: null, source: "detected" },
       status: "active",
     },
     {
@@ -111,6 +112,7 @@ const roomDetail: RoomDetail = {
       presence: "online",
       principal_id: SECOND_PRINCIPAL_ID,
       room_id: ROOM_ID,
+      runtime: { kind: "codex", version: "0.1.0", entrypoint: null, source: "detected" },
       status: "active",
     },
   ],
@@ -773,6 +775,7 @@ describe("SharedNet Rooms", () => {
             presence: "away",
             principal_id: PRINCIPAL_ID,
             room_id: ROOM_ID,
+            runtime: { kind: "codex", version: "0.1.0", entrypoint: null, source: "detected" },
             status: "active",
           },
         ],

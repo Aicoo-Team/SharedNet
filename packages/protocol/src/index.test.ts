@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  KNOWN_RUNTIME_KINDS,
+  parseRuntimeReport,
   encodeInboxCursor,
   parseInboxCursor,
   ROUTE_CATALOGUE,
@@ -177,6 +179,22 @@ describe("safe errors and public documentation", () => {
     expect(presenceFor("2026-09-05T11:59:30Z", now)).toBe("online");
     expect(presenceFor("2026-09-05T11:55:00Z", now)).toBe("away");
     expect(presenceFor("2026-09-05T11:00:00Z", now)).toBe("offline");
+  });
+
+  it("accepts any well-formed driver handle and a bounded runtime report", () => {
+    expect(parseStartInstanceRequest({ runtime_kind: "opencode", cli_version: "1.0.0" }).runtime_kind).toBe("opencode");
+    expect(() => parseStartInstanceRequest({ runtime_kind: "Claude Code", cli_version: "1.0.0" })).toThrow();
+    expect(parseRuntimeReport({ kind: "claude-code", version: "0.3.260", entrypoint: "cli", source: "detected" })).toEqual({
+      kind: "claude-code",
+      version: "0.3.260",
+      entrypoint: "cli",
+      source: "detected",
+    });
+    expect(parseRuntimeReport({ kind: "codex" })).toEqual({ kind: "codex" });
+    expect(() => parseRuntimeReport({ kind: "codex", source: "guessed" })).toThrow();
+    expect(() => parseRuntimeReport({ kind: "codex", version: "x".repeat(65) })).toThrow();
+    expect(() => parseRuntimeReport({ kind: "codex", extra: 1 })).toThrow();
+    expect(KNOWN_RUNTIME_KINDS).toContain("openhands");
   });
 
   it("accepts a guest name as display text only: trimmed, bounded, no control characters", () => {

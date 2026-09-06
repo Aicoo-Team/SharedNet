@@ -150,11 +150,14 @@ function memberKind(sender: SenderInfo): MemberKind {
   return sender?.issuedByKeyId === null ? "guest" : "instance";
 }
 
+type MemberInstance = Pick<
+  InstanceRow,
+  "agentId" | "lastSeenAt" | "displayName" | "issuedByKeyId" | "runtimeKind" | "cliVersion" | "runtimeMetadata"
+> & { invitedByPrincipalId?: PrincipalId | null };
+
 function projectMembership(
   row: typeof roomMembers.$inferSelect,
-  instance: (Pick<InstanceRow, "agentId" | "lastSeenAt" | "displayName" | "issuedByKeyId"> & {
-    invitedByPrincipalId?: PrincipalId | null;
-  }) | null,
+  instance: MemberInstance | null,
   now: Date,
 ): RoomMember {
   const seen = instance ? timestamp(instance.lastSeenAt) : null;
@@ -169,6 +172,9 @@ function projectMembership(
     invited_by_principal_id: instance?.invitedByPrincipalId ?? null,
     admitted_by: row.admittedBy,
     invite_id: row.inviteId ?? null,
+    runtime_kind: instance?.runtimeKind ?? "custom",
+    runtime_version: instance?.cliVersion ?? "",
+    runtime_metadata: { ...(instance?.runtimeMetadata ?? {}) },
     state: row.state,
     joined_at: timestamp(row.joinedAt),
     left_at: row.leftAt ? timestamp(row.leftAt) : null,
@@ -765,6 +771,14 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
         throw new RepositoryError(500, "internal_error", "Principal creation failed.");
       }
       const memberToken = generateSecret("sni");
+      const runtime = input.runtime;
+      const runtimeMetadata: Record<string, string> = runtime
+        ? {
+            runtime_source: runtime.source ?? "declared",
+            ...(runtime.version ? { driver_version: runtime.version } : {}),
+            ...(runtime.entrypoint ? { entrypoint: runtime.entrypoint } : {}),
+          }
+        : {};
       const [instance] = await this.executor()
         .insert(instances)
         .values({
@@ -776,9 +790,9 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
           displayName: input.name,
           tokenDigest: digestSecret(memberToken),
           localInstanceKey: null,
-          runtimeKind: "custom",
-          cliVersion: "invite",
-          runtimeMetadata: {},
+          runtimeKind: runtime?.kind ?? "custom",
+          cliVersion: runtime?.version ?? "invite",
+          runtimeMetadata,
           state: "active",
           startedAt: now,
           lastSeenAt: now,
@@ -838,6 +852,9 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
         lastSeenAt: instances.lastSeenAt,
         displayName: instances.displayName,
         issuedByKeyId: instances.issuedByKeyId,
+        runtimeKind: instances.runtimeKind,
+        cliVersion: instances.cliVersion,
+        runtimeMetadata: instances.runtimeMetadata,
         invitedByPrincipalId: principals.invitedByPrincipalId,
       })
       .from(roomMembers)
@@ -855,6 +872,9 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
             lastSeenAt: row.lastSeenAt,
             displayName: row.displayName,
             issuedByKeyId: row.issuedByKeyId,
+            runtimeKind: row.runtimeKind,
+            cliVersion: row.cliVersion,
+            runtimeMetadata: row.runtimeMetadata,
             invitedByPrincipalId: row.invitedByPrincipalId,
           },
           now,

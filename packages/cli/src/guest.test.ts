@@ -121,8 +121,11 @@ describe("sharednet join", () => {
     expect(request!.url).toBe(`https://sharednet.ai/api/v1/rooms/${ROOM_ID}/join`);
     expect(request!.init.method).toBe("POST");
     expect(header(request!, "authorization")).toBe(`Bearer ${INVITE_TOKEN}`);
-    // The runtime that is running names the guest, and the session id stays local.
-    expect(JSON.parse(String(request!.init.body))).toEqual({ name: "claude-code" });
+    // The driver that is running names the seat and is reported as detected; its session id stays local.
+    expect(JSON.parse(String(request!.init.body))).toEqual({
+      name: "claude-code",
+      runtime: { kind: "claude-code", version: null, entrypoint: null, source: "detected" },
+    });
     expect(String(request!.init.body)).not.toContain("claude-session-stays-local");
 
     const output = JSON.parse(result.stdout);
@@ -168,8 +171,24 @@ describe("sharednet join", () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.requests[0]!.url).toBe(`http://127.0.0.1:3001/api/v1/rooms/${ROOM_ID}/join`);
-    expect(JSON.parse(String(result.requests[0]!.init.body))).toEqual({ name: "reviewer" });
+    expect(JSON.parse(String(result.requests[0]!.init.body))).toEqual({
+      name: "reviewer",
+      runtime: { kind: "claude-code", version: null, entrypoint: null, source: "detected" },
+    });
     expect(JSON.parse(result.stdout).last_sequence).toBe(0);
+  });
+
+  it("reports no driver when none is recognised, and names the seat 'agent'", async () => {
+    const space = await workspace();
+    const result = await run(
+      ["join", PASTED_INVITE, "--json"],
+      { ...space, env: { HOME: space.env.HOME!, XDG_CONFIG_HOME: space.env.XDG_CONFIG_HOME!, XDG_STATE_HOME: space.env.XDG_STATE_HOME! } },
+      [joined()],
+    );
+
+    expect(result.exitCode).toBe(0);
+    const body = JSON.parse(String(result.requests[0]!.init.body));
+    expect(body).toEqual({ name: "agent" });
   });
 
   it("refuses to join without an invite token, before any request is sent", async () => {

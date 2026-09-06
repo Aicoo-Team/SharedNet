@@ -52,12 +52,23 @@ function waitForServer() {
   });
 }
 
+/** Drop every known driver's variables so the simulated sessions are only what the harness sets. */
+function withoutDriverMarkers(env) {
+  return Object.fromEntries(
+    Object.entries(env).filter(
+      ([key]) => !/^(CLAUDE|CLAUDECODE|ANTHROPIC|CODEX|OPENCODE|OPENHANDS|GEMINI_CLI|CURSOR)/.test(key),
+    ),
+  );
+}
+
 function runCli(baseUrl, args, sessionName) {
   return new Promise((resolveRun, rejectRun) => {
     const child = spawn(process.execPath, ["packages/cli/src/main.ts", ...args], {
       cwd: root,
       env: {
-        ...process.env,
+        // A clean Codex environment: whatever driver runs this harness must
+        // not leak its own markers into the sessions it simulates.
+        ...withoutDriverMarkers(process.env),
         CODEX_SESSION_ID: sessionName,
         CODEX_THREAD_ID: "shared-parent-thread",
         SHAREDNET_API_KEY: apiKey,

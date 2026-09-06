@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { ApiClient, resolveBaseUrl } from "./api-client.ts";
 import { CliError, localError } from "./errors.ts";
-import { detectRuntimeSession } from "./instance-computation.ts";
+import { detectRuntime } from "./runtime-detection.ts";
 import {
   getStoragePaths,
   readProjectRoomState,
@@ -159,7 +159,20 @@ function parseInvite(
 }
 
 function defaultGuestName(env: Environment): string {
-  return detectRuntimeSession(env)?.runtimeKind ?? "agent";
+  const detected = detectRuntime(env);
+  return detected.kind === "custom" ? "agent" : detected.kind;
+}
+
+/** What the join tells the server about the driver, when one was recognised. */
+function runtimeReport(env: Environment): { kind: string; version: string | null; entrypoint: string | null; source: "detected" | "declared" } | undefined {
+  const detected = detectRuntime(env);
+  if (detected.kind === "custom") return undefined;
+  return {
+    kind: detected.kind,
+    version: detected.version,
+    entrypoint: detected.entrypoint,
+    source: detected.source,
+  };
 }
 
 function highestSequence(items: MessageShape[], fallback: number): number {
@@ -187,11 +200,12 @@ async function join(args: string[], dependencies: GuestDependencies): Promise<un
   const name = stringOption(parsed, "name") ?? defaultGuestName(dependencies.env);
 
   const client = new ApiClient(baseUrl, dependencies.fetch);
+  const runtime = runtimeReport(dependencies.env);
   const payload = await client.request<GuestJoinPayload>(
     "POST",
     `/rooms/${encodeURIComponent(roomId)}/join`,
     token,
-    { name },
+    { name, ...(runtime ? { runtime } : {}) },
   );
   const memberId = payload.membership?.member_id;
   const memberToken = payload.member_token;

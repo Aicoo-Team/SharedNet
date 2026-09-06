@@ -837,6 +837,46 @@ describe("Room invites, guests, and wait", () => {
     expect(current.agent).toBeNull();
   });
 
+  it("records the driver an invite join declares, and refuses a malformed one", async () => {
+    const store = makeStore();
+    const { room, principalId } = await openRoom(store);
+    const { token: invite } = await store.createRoomInvite({ roomId: room.id, principalId });
+
+    const declared = await request(store, `/api/v1/rooms/${room.id}/join`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${invite}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        name: "codex",
+        runtime: { kind: "codex", version: "0.153.0", entrypoint: "exec", source: "detected" },
+      }),
+    });
+    expect(declared.status).toBe(200);
+    const seat = (await json(declared)).membership;
+    expect(seat).toMatchObject({
+      runtime_kind: "codex",
+      runtime_version: "0.153.0",
+      runtime_metadata: { runtime_source: "detected", driver_version: "0.153.0", entrypoint: "exec" },
+    });
+
+    const bare = await request(store, `/api/v1/rooms/${room.id}/join`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${invite}`, "content-type": "application/json" },
+      body: JSON.stringify({ name: "curl" }),
+    });
+    expect((await json(bare)).membership).toMatchObject({
+      runtime_kind: "custom",
+      runtime_version: "invite",
+      runtime_metadata: {},
+    });
+
+    const malformed = await request(store, `/api/v1/rooms/${room.id}/join`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${invite}`, "content-type": "application/json" },
+      body: JSON.stringify({ name: "x", runtime: { kind: "Not A Handle" } }),
+    });
+    expect(malformed.status).toBe(422);
+  });
+
   it("lets an Instance join with an invite as its own Principal, and refuses an invite for another Room", async () => {
     const store = makeStore();
     const { room, principalId } = await openRoom(store);

@@ -120,7 +120,16 @@ export type RoomMembership = {
   /** For a guest, the Principal whose invite admitted it. */
   principal_id: PrincipalId;
   room_id: RoomId;
+  /** The driver behind the member's Instance: a handle, its version, and how that was learned. */
+  runtime: RuntimeSummary;
   status: "active" | "left";
+};
+
+export type RuntimeSummary = {
+  kind: string;
+  version: string | null;
+  entrypoint: string | null;
+  source: "detected" | "declared" | null;
 };
 
 export type RoomInviteProjection = {
@@ -478,6 +487,16 @@ function isRoomProjection(value: unknown): value is RoomProjection {
   );
 }
 
+function isRuntimeSummary(value: unknown): value is RuntimeSummary {
+  return (
+    hasExactKeys(value, ["kind", "version", "entrypoint", "source"]) &&
+    isNonEmptyString(value.kind) &&
+    isNullable(value.version, isString) &&
+    isNullable(value.entrypoint, isString) &&
+    (value.source === null || value.source === "detected" || value.source === "declared")
+  );
+}
+
 function isMemberPresence(value: unknown): value is MemberPresence {
   return value === "online" || value === "away" || value === "offline";
 }
@@ -497,7 +516,9 @@ function isRoomMembership(value: unknown): value is RoomMembership {
       "joined_at",
       "left_at",
       "last_read_sequence",
+      "runtime",
     ]) ||
+    !isRuntimeSummary(value.runtime) ||
     !isIdentifier(value.room_id) ||
     !isPrincipalId(value.principal_id) ||
     !isNullable(value.agent_id, isAgentId) ||

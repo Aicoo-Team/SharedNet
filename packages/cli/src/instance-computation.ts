@@ -2,7 +2,9 @@ import { createHmac } from "node:crypto";
 
 import { localError } from "./errors.ts";
 
-export type RuntimeKind = "codex" | "claude-code" | "custom";
+import { detectRuntime } from "./runtime-detection.ts";
+
+export type RuntimeKind = string;
 
 export interface RuntimeSession {
   runtimeKind: RuntimeKind;
@@ -11,23 +13,10 @@ export interface RuntimeSession {
 
 type Environment = Record<string, string | undefined>;
 
-function nonEmpty(value: string | undefined): string | null {
-  const normalized = value?.trim();
-  return normalized ? normalized : null;
-}
-
+/** The driver's session, when the driver exposes one. See runtime-detection.ts. */
 export function detectRuntimeSession(env: Environment): RuntimeSession | null {
-  const codexSession = nonEmpty(env.CODEX_SESSION_ID);
-  if (codexSession) return { runtimeKind: "codex", anchor: codexSession };
-
-  const claudeSession = nonEmpty(env.CLAUDE_SESSION_ID);
-  if (claudeSession) {
-    return { runtimeKind: "claude-code", anchor: claudeSession };
-  }
-
-  // CODEX_THREAD_ID is deliberately ignored. It is lineage, not the executing
-  // runtime session, and would collapse concurrent child sessions.
-  return null;
+  const detected = detectRuntime(env, { parentProcess: () => null });
+  return detected.anchor === null ? null : { runtimeKind: detected.kind, anchor: detected.anchor };
 }
 
 export function computeLocalInstanceKey(

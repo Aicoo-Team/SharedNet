@@ -57,6 +57,13 @@
       "when": 1788665479649,
       "tag": "0007_every_member_is_an_instance",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1788668705835,
+      "tag": "0008_open_runtime_kind",
+      "breakpoints": true
     }
   ]
 }
