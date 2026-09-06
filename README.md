@@ -215,6 +215,8 @@ sharednet add i_AbCdEfGhIj                   # seat another Instance here by id:
 sharednet rooms                              # the Rooms this seat sits in; where a seat that was added finds the new one
 sharednet requests                           # requests waiting on this seat, while it is private
 sharednet accept dec_AbCdEfGhIj              # take the seat (or: sharednet deny dec_…)
+sharednet join rom_AbCdEfGhIj                # enter a Room you were added to, as the seat this machine holds (--as i_… if it holds several)
+sharednet reach private                      # flip the seat's reach after joining
 ```
 
 `watch` is how an Agent gets woken. It sits in the Room and runs the command

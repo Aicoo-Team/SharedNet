@@ -253,6 +253,8 @@ sharednet add <i_…> …     → POST /rooms/{id}/members { with }
 sharednet rooms           → GET  /rooms
 sharednet requests        → GET  /decisions?status=pending
 sharednet accept|deny <dec_…> → POST /decisions/{id}/resolve
+sharednet join <rom_…> [--as i_…] → POST /rooms/{id}/join with a held seat's token (idempotent for a member); how an added seat enters its new Room
+sharednet reach public|private → PATCH /instances/current { reach }
 sharednet join … --private, session start --private → reach: "private" on the Instance
 ```
 

@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { readdir } from "node:fs/promises";
+import { join as joinPath } from "node:path";
 
 import { ApiClient, resolveBaseUrl } from "./api-client.ts";
 import { CliError, localError } from "./errors.ts";
@@ -82,7 +84,7 @@ const INVITE_TOKEN_PATTERN = /^rit_[A-Za-z0-9_-]{43}$/;
 /** The server caps one wait at this; the client loops. */
 const WAIT_MAX_SECONDS = 25;
 
-const VALUE_OPTIONS = new Set(["name", "token", "timeout", "reply-to", "min", "on", "run", "max-runs"]);
+const VALUE_OPTIONS = new Set(["name", "token", "timeout", "reply-to", "min", "on", "run", "max-runs", "as"]);
 const FLAG_OPTIONS = new Set(["hook", "private", "reply"]);
 
 function parseGuestArguments(args: string[]): ParsedGuestArguments {
@@ -209,11 +211,21 @@ function invalidServerResponse(): CliError {
 
 async function join(args: string[], dependencies: GuestDependencies): Promise<unknown> {
   const parsed = parseGuestArguments(args);
-  assertOnlyOptions(parsed, ["name", "token", "private"]);
+  assertOnlyOptions(parsed, ["name", "token", "private", "as"]);
   if (parsed.positionals.length !== 1) {
-    throw localError("invalid_arguments", "Usage: sharednet join <invite> [--name <name>] [--private]");
+    throw localError(
+      "invalid_arguments",
+      "Usage: sharednet join <invite> [--name <name>] [--private], or sharednet join <rom_…> [--as <i_…>]",
+    );
   }
-  const { roomId, token, baseUrl } = parseInvite(parsed.positionals[0]!, parsed, dependencies.env);
+  // A Room id with no invite: this machine already holds a seat, and the
+  // seat was added to (or knows the id of) that Room. Enter it as that seat.
+  const argument = parsed.positionals[0]!;
+  const inviteToken = stringOption(parsed, "token") ?? dependencies.env.SHAREDNET_INVITE_TOKEN?.trim();
+  if (ROOM_ID_PATTERN.test(argument) && !inviteToken) {
+    return enterAsSeat(argument, stringOption(parsed, "as"), dependencies);
+  }
+  const { roomId, token, baseUrl } = parseInvite(argument, parsed, dependencies.env);
   const name = stringOption(parsed, "name") ?? defaultGuestName(dependencies.env);
   // --private: strangers who know this seat's Instance id have to ask before
   // seating it in another Room. Omitted, the seat is public.
@@ -270,6 +282,107 @@ async function join(args: string[], dependencies: GuestDependencies): Promise<un
     name,
     last_sequence: state.last_sequence,
     history: payload.history,
+  };
+}
+
+/** Every seat credential this machine holds, one per (Room, member). */
+async function heldSeats(paths: ReturnType<typeof getStoragePaths>): Promise<StoredRoomCredential[]> {
+  let roomDirs: string[];
+  try {
+    roomDirs = await readdir(paths.roomsDir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+  const seats: StoredRoomCredential[] = [];
+  for (const roomId of roomDirs) {
+    if (!ROOM_ID_PATTERN.test(roomId)) continue;
+    let files: string[];
+    try {
+      files = await readdir(joinPath(paths.roomsDir, roomId));
+    } catch {
+      continue;
+    }
+    for (const file of files) {
+      const memberId = file.replace(/\.json$/, "");
+      if (!/^(?:i|mem)_[A-Za-z0-9]+$/.test(memberId)) continue;
+      const credential = await readRoomCredential(paths, roomId, memberId).catch(() => null);
+      if (credential) seats.push(credential);
+    }
+  }
+  return seats;
+}
+
+/**
+ * Enter a Room by id as a seat this machine already holds: the one named by
+ * --as, or the only one there is. The server's join by Room id is idempotent
+ * for a member, so a seat that was added (decision 2026-09-06 reach, §3)
+ * lands in its new Room's directory with the same token.
+ */
+async function enterAsSeat(
+  roomId: string,
+  memberId: string | undefined,
+  dependencies: GuestDependencies,
+): Promise<unknown> {
+  const paths = getStoragePaths(dependencies.env);
+  const seats = await heldSeats(paths);
+  const byMember = new Map<string, StoredRoomCredential>();
+  for (const seat of seats) if (!byMember.has(seat.member_id)) byMember.set(seat.member_id, seat);
+  let seat: StoredRoomCredential | undefined;
+  if (memberId !== undefined) {
+    seat = byMember.get(memberId);
+    if (!seat) throw localError("seat_not_found", `No seat ${memberId} is stored on this machine.`);
+  } else if (byMember.size === 1) {
+    seat = [...byMember.values()][0];
+  } else if (byMember.size === 0) {
+    throw localError("invite_token_required", "No seat is stored on this machine; join with an invite first.");
+  } else {
+    throw localError(
+      "seat_selection_required",
+      `This machine holds ${byMember.size} seats; say which with --as <member_id>: ${[...byMember.keys()].join(", ")}`,
+    );
+  }
+  const baseUrl = resolveBaseUrl(dependencies.env.SHAREDNET_BASE_URL ?? seat.base_url);
+  if (baseUrl !== seat.base_url) {
+    throw localError("credential_origin_mismatch", "The stored seat belongs to a different SharedNet origin.");
+  }
+  const client = new ApiClient(baseUrl, dependencies.fetch);
+  const payload = await client.request<AccountJoinPayload>(
+    "POST",
+    `/rooms/${encodeURIComponent(roomId)}/join`,
+    seat.member_token,
+    undefined,
+    { "idempotency-key": randomUUID() },
+  );
+  if (!payload.room?.id || !payload.membership?.member_id) throw invalidServerResponse();
+  const history = await client.request<PageShape>(
+    "GET",
+    `/rooms/${encodeURIComponent(roomId)}/messages?after=0&limit=100`,
+    seat.member_token,
+  );
+  if (!Array.isArray(history?.items)) throw invalidServerResponse();
+  await writeRoomCredential(paths, {
+    ...seat,
+    room_id: payload.room.id,
+    member_id: payload.membership.member_id,
+    joined_at: dependencies.now().toISOString(),
+  });
+  const state: ProjectRoomState = {
+    schema_version: 1,
+    base_url: baseUrl,
+    room_id: payload.room.id,
+    member_id: payload.membership.member_id,
+    last_sequence: highestSequence(history.items, 0),
+  };
+  await writeProjectRoomState(dependencies.cwd, state);
+  return {
+    room: payload.room,
+    member_id: payload.membership.member_id,
+    as: "seat",
+    name: seat.name,
+    admitted_by: payload.membership.admitted_by ?? null,
+    last_sequence: state.last_sequence,
+    history,
   };
 }
 
@@ -687,6 +800,18 @@ async function add(args: string[], dependencies: GuestDependencies): Promise<unk
   );
 }
 
+/** `sharednet reach private|public`: whether strangers who know this seat's id must ask first. */
+async function reach(args: string[], dependencies: GuestDependencies): Promise<unknown> {
+  const parsed = parseGuestArguments(args);
+  assertOnlyOptions(parsed, []);
+  const value = parsed.positionals[0];
+  if (parsed.positionals.length !== 1 || (value !== "public" && value !== "private")) {
+    throw localError("invalid_arguments", "Usage: sharednet reach public|private");
+  }
+  const { client, credential } = await currentSeat(dependencies);
+  return client.request("PATCH", "/instances/current", credential.member_token, { reach: value });
+}
+
 /** The Rooms this seat sits in, newest first; where a seat that was added finds its new Room. */
 async function rooms(args: string[], dependencies: GuestDependencies): Promise<unknown> {
   const parsed = parseGuestArguments(args);
@@ -727,7 +852,17 @@ async function answer(
   );
 }
 
-export type GuestVerb = "join" | "say" | "wait" | "watch" | "add" | "rooms" | "requests" | "accept" | "deny";
+export type GuestVerb =
+  | "join"
+  | "say"
+  | "wait"
+  | "watch"
+  | "add"
+  | "rooms"
+  | "requests"
+  | "accept"
+  | "deny"
+  | "reach";
 
 export function isGuestVerb(value: string | undefined): value is GuestVerb {
   return (
@@ -739,7 +874,8 @@ export function isGuestVerb(value: string | undefined): value is GuestVerb {
     value === "rooms" ||
     value === "requests" ||
     value === "accept" ||
-    value === "deny"
+    value === "deny" ||
+    value === "reach"
   );
 }
 
@@ -756,5 +892,6 @@ export async function runGuestVerb(
   if (verb === "requests") return requests(args, dependencies);
   if (verb === "accept") return answer("approved", args, dependencies);
   if (verb === "deny") return answer("denied", args, dependencies);
+  if (verb === "reach") return reach(args, dependencies);
   return wait(args, dependencies);
 }
