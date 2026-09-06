@@ -15,6 +15,9 @@ import {
   generateRequestId,
   parseCreateAgentRequest,
   parseCreateRoomRequest,
+  parseAddRoomMembersRequest,
+  parseResolveDecisionRequest,
+  parseUpdateInstanceRequest,
   parseEmptyRequest,
   parseJoinRoomWithInviteRequest,
   parseJsonBody,
@@ -370,11 +373,48 @@ export async function handleRequest(
     }
 
     if (path === "/api/v1/instances/current") {
+      if (request.method !== "GET" && request.method !== "PATCH") return routeMethodNotAllowed("GET, PATCH");
+      const repository = getRepository();
+      const auth = await authenticateInstance(request, repository);
+      if (isResponse(auth)) return auth;
+      if (request.method === "PATCH") {
+        // What an Instance may change about itself: today its reach.
+        const input = await requiredJson(request, parseUpdateInstanceRequest);
+        return jsonResponse(await repository.updateInstance(auth, input), { status: 200 });
+      }
+      return jsonResponse(await repository.getCurrentInstance(auth), { status: 200 });
+    }
+
+    if (path === "/api/v1/decisions") {
       if (request.method !== "GET") return routeMethodNotAllowed("GET");
       const repository = getRepository();
       const auth = await authenticateInstance(request, repository);
       if (isResponse(auth)) return auth;
-      return jsonResponse(await repository.getCurrentInstance(auth), { status: 200 });
+      const status = url.searchParams.get("status");
+      if (
+        status !== null &&
+        status !== "pending" &&
+        status !== "approved" &&
+        status !== "denied" &&
+        status !== "answered"
+      ) {
+        return errorResponse("validation_failed");
+      }
+      return jsonResponse(await repository.listDecisions(auth, status === null ? {} : { status }), {
+        status: 200,
+        headers: NO_STORE_HEADERS,
+      });
+    }
+
+    const resolveMatch = /^\/api\/v1\/decisions\/([^/]+)\/resolve$/.exec(path);
+    if (resolveMatch) {
+      if (request.method !== "POST") return routeMethodNotAllowed("POST");
+      const repository = getRepository();
+      const auth = await authenticateInstance(request, repository);
+      if (isResponse(auth)) return auth;
+      const decisionId = parsePublicId(resolveMatch[1], "dec");
+      const input = await requiredJson(request, parseResolveDecisionRequest);
+      return jsonResponse(await repository.resolveDecision(auth, decisionId, input), { status: 200 });
     }
 
     if (path === "/api/v1/instances/current/heartbeat") {
@@ -387,10 +427,13 @@ export async function handleRequest(
     }
 
     if (path === "/api/v1/rooms") {
-      if (request.method !== "POST") return routeMethodNotAllowed("POST");
+      if (request.method !== "POST" && request.method !== "GET") return routeMethodNotAllowed("GET, POST");
       const repository = getRepository();
       const auth = await authenticateInstance(request, repository);
       if (isResponse(auth)) return auth;
+      if (request.method === "GET") {
+        return jsonResponse(await repository.listRooms(auth), { status: 200, headers: NO_STORE_HEADERS });
+      }
       const key = getIdempotencyKey(request);
       const input = await requiredJson(request, parseCreateRoomRequest);
       return await executeIdempotent(
@@ -436,6 +479,17 @@ export async function handleRequest(
         200,
         () => repository.joinRoom(auth, roomId, input),
       );
+    }
+
+    const membersMatch = /^\/api\/v1\/rooms\/([^/]+)\/members$/.exec(path);
+    if (membersMatch) {
+      if (request.method !== "POST") return routeMethodNotAllowed("POST");
+      const repository = getRepository();
+      const auth = await authenticateRoomMember(request, repository);
+      if (isResponse(auth)) return auth;
+      const roomId = parsePublicId(membersMatch[1], "rom");
+      const input = await requiredJson(request, parseAddRoomMembersRequest);
+      return jsonResponse(await repository.addRoomMembers(auth, roomId, input), { status: 200 });
     }
 
     const waitMatch = /^\/api\/v1\/rooms\/([^/]+)\/wait$/.exec(path);

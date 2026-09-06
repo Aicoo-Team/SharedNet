@@ -58,6 +58,7 @@ type StartBody = {
   agent_id?: string | null;
   local_instance_key?: string;
   runtime_metadata?: Record<string, string>;
+  reach?: "public" | "private";
 };
 
 async function startInstance(
@@ -72,6 +73,17 @@ async function startInstance(
   });
   expect(response.status).toBe(expectedStatus);
   expect(response.headers.get("cache-control")).toContain("no-store");
+  return json(response);
+}
+
+/** Registers an Instance under a specific key: a second Principal, with a body. */
+async function startWithKey(store: MemorySharedNetRepository, key: string, body: StartBody = {}) {
+  const response = await request(store, "/api/v1/instances", {
+    method: "POST",
+    headers: apiHeaders({ "content-type": "application/json" }, key),
+    body: JSON.stringify({ runtime_kind: "codex", cli_version: "0.1.0", ...body }),
+  });
+  expect(response.status).toBe(201);
   return json(response);
 }
 
@@ -566,11 +578,11 @@ describe("GET /api/v1/rooms/{room_id}", () => {
 describe("Rooms across Principals", () => {
   const now = () => new Date("2026-09-04T10:20:30.123Z");
 
-  async function startAs(store: MemorySharedNetRepository, key: string) {
+  async function startAs(store: MemorySharedNetRepository, key: string, body: StartBody = {}) {
     const response = await request(store, "/api/v1/instances", {
       method: "POST",
       headers: apiHeaders({ "content-type": "application/json" }, key),
-      body: JSON.stringify({ runtime_kind: "codex", cli_version: "0.1.0" }),
+      body: JSON.stringify({ runtime_kind: "codex", cli_version: "0.1.0", ...body }),
     });
     expect(response.status).toBe(201);
     return json(response);
@@ -859,6 +871,140 @@ describe("Room invites, guests, and wait", () => {
     const current = await request(store, "/api/v1/instances/current", { headers: { authorization: `Bearer ${token}` } });
     expect(current.status).toBe(200);
     expect((await json(current)).instance.id).toBe(instance.id);
+  });
+
+  it("forms a group: a public Instance is seated at once and finds the Room in its list", async () => {
+    const store = new MemorySharedNetRepository({ devApiKeys: [DEV_KEY, OTHER_KEY], now: () => new Date("2026-09-06T12:00:00Z") });
+    const host = await startInstance(store);
+    const guest = await startWithKey(store, OTHER_KEY);
+    expect(guest.instance.reach).toBe("public");
+
+    const created = await request(store, "/api/v1/rooms", {
+      method: "POST",
+      headers: instanceHeaders(host.token, { "content-type": "application/json", "idempotency-key": UUID }),
+      body: JSON.stringify({ name: "Formed", with: [guest.instance.id, "i_NoSuchInst"] }),
+    });
+    expect(created.status).toBe(201);
+    const body = await json(created);
+    // Refused says nothing about why: an unknown id reads like a private no.
+    expect(body.admissions).toEqual([
+      { instance_id: guest.instance.id, status: "member", decision_id: null },
+      { instance_id: "i_NoSuchInst", status: "refused", decision_id: null },
+    ]);
+
+    // The guest is a member: the Room is in its list, it can read, and the seat says who added it.
+    const list = await request(store, "/api/v1/rooms", { headers: instanceHeaders(guest.token) });
+    expect(list.status).toBe(200);
+    expect((await json(list)).items.map((room: any) => room.id)).toEqual([body.room.id]);
+    const detail = await request(store, `/api/v1/rooms/${body.room.id}`, { headers: instanceHeaders(guest.token) });
+    expect(detail.status).toBe(200);
+    const seat = (await json(detail)).memberships.find((m: any) => m.member_id === guest.instance.id);
+    expect(seat).toMatchObject({ admitted_by: "added", added_by_instance_id: host.instance.id, state: "active" });
+
+    // Adding again is a no-op, and only an active member may add.
+    const again = await request(store, `/api/v1/rooms/${body.room.id}/members`, {
+      method: "POST",
+      headers: instanceHeaders(guest.token, { "content-type": "application/json" }),
+      body: JSON.stringify({ with: [host.instance.id] }),
+    });
+    expect((await json(again)).admissions).toEqual([{ instance_id: host.instance.id, status: "member", decision_id: null }]);
+    const outsider = await startWithKey(store, OTHER_KEY, { local_instance_key: OTHER_SESSION_KEY });
+    const denied = await request(store, `/api/v1/rooms/${body.room.id}/members`, {
+      method: "POST",
+      headers: instanceHeaders(outsider.token, { "content-type": "application/json" }),
+      body: JSON.stringify({ with: [outsider.instance.id] }),
+    });
+    expect(denied.status).toBe(403);
+  });
+
+  it("asks a private Instance first, and the Instance answers for itself through the API", async () => {
+    const store = new MemorySharedNetRepository({ devApiKeys: [DEV_KEY, OTHER_KEY], now: () => new Date("2026-09-06T12:00:00Z") });
+    const host = await startInstance(store);
+    const guest = await startWithKey(store, OTHER_KEY);
+    const patched = await request(store, "/api/v1/instances/current", {
+      method: "PATCH",
+      headers: instanceHeaders(guest.token, { "content-type": "application/json" }),
+      body: JSON.stringify({ reach: "private" }),
+    });
+    expect(patched.status).toBe(200);
+    expect((await json(patched)).instance.reach).toBe("private");
+
+    const created = await request(store, "/api/v1/rooms", {
+      method: "POST",
+      headers: instanceHeaders(host.token, { "content-type": "application/json", "idempotency-key": UUID }),
+      body: JSON.stringify({ name: "Asked", with: [guest.instance.id] }),
+    });
+    const { room, admissions } = await json(created);
+    expect(admissions).toHaveLength(1);
+    expect(admissions[0]).toMatchObject({ instance_id: guest.instance.id, status: "pending" });
+    const decisionId = admissions[0].decision_id as string;
+    expect(decisionId).toMatch(/^dec_/);
+
+    // Not a member yet: no Room in the list, no reading.
+    expect((await json(await request(store, "/api/v1/rooms", { headers: instanceHeaders(guest.token) }))).items).toEqual([]);
+    expect((await request(store, `/api/v1/rooms/${room.id}`, { headers: instanceHeaders(guest.token) })).status).toBe(403);
+
+    // The request is a Decision addressed to the guest, and only the guest sees it.
+    const mine = await json(await request(store, "/api/v1/decisions?status=pending", { headers: instanceHeaders(guest.token) }));
+    expect(mine.decisions).toHaveLength(1);
+    expect(mine.decisions[0]).toMatchObject({
+      id: decisionId,
+      mode: "approval",
+      status: "pending",
+      room_id: room.id,
+      requested_by_instance_id: host.instance.id,
+      requested_for_instance_id: guest.instance.id,
+      principal_id: guest.instance.principal_id,
+    });
+    expect((await json(await request(store, "/api/v1/decisions", { headers: instanceHeaders(host.token) }))).decisions).toEqual([]);
+    const notYours = await request(store, `/api/v1/decisions/${decisionId}/resolve`, {
+      method: "POST",
+      headers: instanceHeaders(host.token, { "content-type": "application/json" }),
+      body: JSON.stringify({ resolution: "approved" }),
+    });
+    expect(notYours.status).toBe(404);
+
+    // Asking again while it is pending returns the same Decision.
+    const askedAgain = await request(store, `/api/v1/rooms/${room.id}/members`, {
+      method: "POST",
+      headers: instanceHeaders(host.token, { "content-type": "application/json" }),
+      body: JSON.stringify({ with: [guest.instance.id] }),
+    });
+    expect((await json(askedAgain)).admissions[0]).toEqual({ instance_id: guest.instance.id, status: "pending", decision_id: decisionId });
+
+    // The guest approves with its own token: seated, and the Room appears.
+    const approved = await request(store, `/api/v1/decisions/${decisionId}/resolve`, {
+      method: "POST",
+      headers: instanceHeaders(guest.token, { "content-type": "application/json" }),
+      body: JSON.stringify({ resolution: "approved" }),
+    });
+    expect(approved.status).toBe(200);
+    const outcome = await json(approved);
+    expect(outcome.decision.status).toBe("approved");
+    expect(outcome.membership).toMatchObject({ room_id: room.id, admitted_by: "accepted", added_by_instance_id: host.instance.id });
+    expect((await json(await request(store, "/api/v1/rooms", { headers: instanceHeaders(guest.token) }))).items.map((r: any) => r.id)).toEqual([room.id]);
+    const twice = await request(store, `/api/v1/decisions/${decisionId}/resolve`, {
+      method: "POST",
+      headers: instanceHeaders(guest.token, { "content-type": "application/json" }),
+      body: JSON.stringify({ resolution: "approved" }),
+    });
+    expect(twice.status).toBe(409);
+
+    // A denial seats nobody and looks, to the asker, like any other refusal later on.
+    const second = await startWithKey(store, OTHER_KEY, { local_instance_key: OTHER_SESSION_KEY, reach: "private" });
+    const asked = await json(await request(store, `/api/v1/rooms/${room.id}/members`, {
+      method: "POST",
+      headers: instanceHeaders(host.token, { "content-type": "application/json" }),
+      body: JSON.stringify({ with: [second.instance.id] }),
+    }));
+    const deniedOutcome = await json(await request(store, `/api/v1/decisions/${asked.admissions[0].decision_id}/resolve`, {
+      method: "POST",
+      headers: instanceHeaders(second.token, { "content-type": "application/json" }),
+      body: JSON.stringify({ resolution: "denied" }),
+    }));
+    expect(deniedOutcome.decision.status).toBe("denied");
+    expect(deniedOutcome.membership).toBeNull();
+    expect((await request(store, `/api/v1/rooms/${room.id}`, { headers: instanceHeaders(second.token) })).status).toBe(403);
   });
 
   it("records the driver an invite join declares, and refuses a malformed one", async () => {

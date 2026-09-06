@@ -140,6 +140,9 @@ describe("safe errors and public documentation", () => {
       "rooms.inbox",
       "decisions.approval",
       "decisions.text",
+      "decisions.resolve",
+      "instances.reach",
+      "rooms.members",
       "network",
     ]);
     expect(DISCOVERY_DOCUMENT.limits.wait_max_seconds).toBe(25);

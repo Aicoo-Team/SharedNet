@@ -61,6 +61,8 @@ export const principals = sharednetSchema.table(
     invitedByPrincipalId: text("invited_by_principal_id").$type<PrincipalId>(),
     /** Set when an anonymous Principal was bound into an existing one. */
     mergedIntoPrincipalId: text("merged_into_principal_id").$type<PrincipalId>(),
+    /** What a new Instance's reach is when its registration does not say. */
+    defaultReach: text("default_reach").$type<"public" | "private">().default("public").notNull(),
   },
   (table) => [
     unique("principal_auth_user_id_unique").on(table.authUserId),
@@ -75,6 +77,7 @@ export const principals = sharednetSchema.table(
       foreignColumns: [table.id],
     }).onDelete("set null"),
     check("principal_id_format", sql`${table.id} ~ ${PRINCIPAL_ID_RE}`),
+    check("principal_default_reach_valid", sql`${table.defaultReach} IN ('public', 'private')`),
     check(
       "principal_bound_or_invited",
       sql`${table.authUserId} IS NOT NULL OR ${table.invitedByPrincipalId} IS NOT NULL`,
@@ -126,6 +129,12 @@ export const instances = sharednetSchema.table(
     admittedByInviteId: text("admitted_by_invite_id").$type<InviteId>(),
     /** What an invite-admitted Instance calls itself in a Room. Display only. */
     displayName: text("display_name"),
+    /**
+     * Public: anyone who knows the id may seat this Instance in a Room at
+     * once. Private: they have to ask, and the Instance (or its human) says
+     * yes. Decision 2026-09-06 reach.
+     */
+    reach: text("reach").$type<"public" | "private">().default("public").notNull(),
     tokenDigest: text("token_digest").notNull(),
     /**
      * HMAC-SHA256(installation secret, runtime kind ‖ provider session anchor),
@@ -215,6 +224,7 @@ export const instances = sharednetSchema.table(
       sql`${table.runtimeKind} ~ '^[a-z][a-z0-9-]{0,31}$'`,
     ),
     check("instance_cli_version_length", sql`length(${table.cliVersion}) BETWEEN 1 AND 64`),
+    check("instance_reach_valid", sql`${table.reach} IN ('public', 'private')`),
     check("instance_state_valid", sql`${table.state} IN ('active', 'ended', 'revoked')`),
     check(
       "instance_terminal_state_consistent",
@@ -295,9 +305,18 @@ export const roomMembers = sharednetSchema.table(
     state: text("state").$type<"active" | "left">().default("active").notNull(),
     joinedAt: domainTimestamp("joined_at").defaultNow().notNull(),
     leftAt: domainTimestamp("left_at"),
-    /** How this seat was admitted: by knowing the Room id, or by an invite. */
-    admittedBy: text("admitted_by").$type<"room_id" | "invite">().default("room_id").notNull(),
+    /**
+     * How this seat was admitted: by knowing the Room id, by an invite, by
+     * being added as a public Instance, or by accepting a request as a
+     * private one.
+     */
+    admittedBy: text("admitted_by")
+      .$type<"room_id" | "invite" | "added" | "accepted">()
+      .default("room_id")
+      .notNull(),
     inviteId: text("invite_id").$type<InviteId>(),
+    /** For an added or accepted seat: the Instance that asked. */
+    addedByInstanceId: text("added_by_instance_id").$type<InstanceId>(),
   },
   (table) => [
     primaryKey({ name: "room_member_pk", columns: [table.roomId, table.instanceId] }),
@@ -306,11 +325,23 @@ export const roomMembers = sharednetSchema.table(
       columns: [table.roomId, table.inviteId],
       foreignColumns: [roomInvites.roomId, roomInvites.id],
     }),
-    check("room_member_admitted_by_valid", sql`${table.admittedBy} IN ('room_id', 'invite')`),
+    check(
+      "room_member_admitted_by_valid",
+      sql`${table.admittedBy} IN ('room_id', 'invite', 'added', 'accepted')`,
+    ),
     check(
       "room_member_admitted_by_invite_consistent",
       sql`(${table.admittedBy} = 'invite') = (${table.inviteId} IS NOT NULL)`,
     ),
+    check(
+      "room_member_added_by_consistent",
+      sql`(${table.admittedBy} IN ('added', 'accepted')) = (${table.addedByInstanceId} IS NOT NULL)`,
+    ),
+    foreignKey({
+      name: "room_member_added_by_instance_fk",
+      columns: [table.addedByInstanceId],
+      foreignColumns: [instances.id],
+    }).onUpdate("cascade"),
     // A Room id is the capability: any Instance that knows it may join, so a
     // member's Principal is not required to be the Room's. principal_id here
     // is the member's own, tied to its Instance by the foreign key below.
@@ -555,7 +586,14 @@ export const decisions = sharednetSchema.table(
       .$type<"pending" | "approved" | "denied" | "answered">()
       .default("pending")
       .notNull(),
+    /**
+     * Who asked. Since the reach decision this may be another Principal's
+     * Instance: a request to seat a private Instance is asked of that
+     * Instance's Principal by whoever wants it in the Room.
+     */
     requestedByInstanceId: text("requested_by_instance_id").$type<InstanceId>().notNull(),
+    /** For a request to seat a private Instance: the Instance being asked. */
+    requestedForInstanceId: text("requested_for_instance_id").$type<InstanceId>(),
     roomId: text("room_id").$type<RoomId>(),
     answer: text("answer"),
     createdAt: domainTimestamp("created_at").defaultNow().notNull(),
@@ -567,15 +605,22 @@ export const decisions = sharednetSchema.table(
       columns: [table.principalId],
       foreignColumns: [principals.id],
     }).onDelete("cascade"),
+    // The requester and the Room may belong to another Principal (migration
+    // 0011 relaxed both keys, as 0004 did for room_member).
     foreignKey({
       name: "decision_requester_instance_fk",
-      columns: [table.principalId, table.requestedByInstanceId],
-      foreignColumns: [instances.principalId, instances.id],
+      columns: [table.requestedByInstanceId],
+      foreignColumns: [instances.id],
+    }).onUpdate("cascade"),
+    foreignKey({
+      name: "decision_requested_for_instance_fk",
+      columns: [table.requestedForInstanceId],
+      foreignColumns: [instances.id],
     }).onUpdate("cascade"),
     foreignKey({
       name: "decision_room_fk",
-      columns: [table.principalId, table.roomId],
-      foreignColumns: [rooms.principalId, rooms.id],
+      columns: [table.roomId],
+      foreignColumns: [rooms.id],
     }),
     index("decision_principal_created_at_idx").on(table.principalId, table.createdAt),
     index("decision_principal_status_idx").on(table.principalId, table.status),

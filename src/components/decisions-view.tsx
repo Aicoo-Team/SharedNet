@@ -70,6 +70,14 @@ function DecisionFacts({ decision }: { decision: DecisionProjection }) {
         <dt>Room ID</dt>
         <dd>{decision.room_id ?? "No Room"}</dd>
       </div>
+      {decision.requested_for_instance_id ? (
+        <div>
+          <dt>Seat for</dt>
+          <dd>{decision.requested_for_instance_id}</dd>
+        </div>
+      ) : null}
+      <div>
+      </div>
       <div className="decision-response-fact">
         <dt>Response</dt>
         <dd>{decision.response_text ?? "No response yet."}</dd>

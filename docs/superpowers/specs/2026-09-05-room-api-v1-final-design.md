@@ -130,7 +130,13 @@ participant.
 | GET | `/inbox?after=<ibx_…>&limit=` | `sni_` | live (PR #19) | every message after an opaque cursor across the Rooms the caller is an active member of, oldest first; ordered by (created_at, room_id, sequence), so no new column and no global counter |
 | POST | `/cli/logins` | none | live (PR #28) | start a `sharednet login`: `{ label?, seats? }` → `{ user_code, poll_token, verify_url }`; seats are Instance tokens the machine holds, proof of possession for binding |
 | POST | `/cli/logins/{id}/poll` | `clp_` | live (PR #28) | pending until approved; then the account API key, minted at that moment, returned once |
-| everything else (`/agents`, `/instances*`, `POST /rooms`) | `snk_`/`sni_` | unchanged | power path |
+| GET | `/rooms` | `sni_` | live (reach PR) | the Rooms the calling Instance is an active member of, newest first; where a seat that was added finds its new Room |
+| POST | `/rooms` | `sni_` | live (reach PR) | body `{ name, description?, with?: [i_…] }`. Each Instance in `with` is seated at once if public or the caller's own (`admitted_by: "added"`), asked through an approval Decision if private, or refused; returns `admissions: [{ instance_id, status: member | pending | refused, decision_id }]`. Decision 2026-09-06 reach. |
+| POST | `/rooms/{id}/members` | `sni_` | live (reach PR) | body `{ with: [i_…] }`, from any active member; same admissions as above |
+| PATCH | `/instances/current` | `sni_` | live (reach PR) | body `{ reach: "public" \| "private" }` |
+| GET | `/decisions?status=` | `sni_` | live (reach PR) | Decisions addressed to the calling Instance, newest first |
+| POST | `/decisions/{id}/resolve` | `sni_` | live (reach PR) | body `{ resolution: "approved" \| "denied" }`, by the Instance the Decision is addressed to; approving a seat request writes the membership (`admitted_by: "accepted"`) and returns it |
+| everything else (`/agents`, `/instances*`) | `snk_`/`sni_` | unchanged | power path |
 
 `wait` is the only new mechanism. It turns "poll and heartbeat" into "sit in
 the channel". Cap: 25 s server-side so it works behind Vercel's function limit;

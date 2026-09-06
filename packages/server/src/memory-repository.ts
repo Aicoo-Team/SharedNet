@@ -38,6 +38,16 @@ import {
   type RoomMember,
   type StartInstanceRequest,
 } from "../../protocol/src/index.ts";
+import type {
+  AddRoomMembersRequest,
+  Admission,
+  CreateRoomRequest,
+  Decision,
+  DecisionId,
+  DecisionStatus,
+  ResolveDecisionRequest,
+  UpdateInstanceRequest,
+} from "../../protocol/src/index.ts";
 import {
   MAX_AGENTS_PER_PRINCIPAL,
   PRESENCE_LEASE_MS,
@@ -79,7 +89,10 @@ type MembershipRecord = {
   left_at: string | null;
   admitted_by: AdmittedBy;
   invite_id: InviteId | null;
+  added_by_instance_id: InstanceId | null;
 };
+/** The requester's tag is read at projection time, like everywhere else. */
+type DecisionRecord = Omit<Decision, "requested_by_agent_id">;
 type InviteRecord = RoomInvite & { tokenDigest: string };
 type MessageRecord = {
   id: MessageId;
@@ -167,6 +180,7 @@ export class MemorySharedNetRepository implements SharedNetRepository {
   private readonly instanceIdsByDigest = new Map<string, InstanceId>();
   private readonly rooms = new Map<RoomId, RoomRecord>();
   private readonly memberships = new Map<string, MembershipRecord>();
+  private readonly decisions = new Map<DecisionId, DecisionRecord>();
   private readonly invites = new Map<InviteId, InviteRecord>();
   private readonly messages = new Map<RoomId, MessageRecord[]>();
   private readonly idempotency = new Map<string, IdempotencyRecord>();
@@ -190,6 +204,7 @@ export class MemorySharedNetRepository implements SharedNetRepository {
       const principal: Principal = {
         id: generatePublicId("p"),
         display_name: null,
+        default_reach: "public",
         created_at: createdAt,
         invited_by_principal_id: null,
       };
@@ -338,6 +353,7 @@ export class MemorySharedNetRepository implements SharedNetRepository {
       existing.lease_expires_at = leaseExpiresAt;
       existing.token_expires_at = null;
       existing.status = "online";
+      if (input.reach !== undefined) existing.reach = input.reach;
       this.instanceIdsByDigest.set(tokenDigest, existing.id);
       return {
         instance: this.projectInstance(existing),
@@ -362,6 +378,7 @@ export class MemorySharedNetRepository implements SharedNetRepository {
       ended_at: null,
       revoked_at: null,
       display_name: null,
+      reach: input.reach ?? this.principals.get(auth.principalId)?.default_reach ?? "public",
       tokenDigest,
       issuedByKeyId: auth.actorId,
       admittedByInviteId: null,
@@ -405,9 +422,9 @@ export class MemorySharedNetRepository implements SharedNetRepository {
 
   async createRoom(
     auth: InstanceAuth,
-    input: { name: string; description?: string | null },
-  ): Promise<{ room: Room; membership: RoomMember }> {
-    this.requireOnline(auth);
+    input: CreateRoomRequest,
+  ): Promise<{ room: Room; membership: RoomMember; admissions: Admission[] }> {
+    const creator = this.requireOnline(auth);
     const createdAt = this.timestamp();
     const room: RoomRecord = {
       id: generatePublicId("rom"),
@@ -428,11 +445,156 @@ export class MemorySharedNetRepository implements SharedNetRepository {
       left_at: null,
       admitted_by: "room_id",
       invite_id: null,
+      added_by_instance_id: null,
     };
     this.rooms.set(room.id, room);
     this.memberships.set(membershipKey(room.id, auth.instanceId), membership);
     this.messages.set(room.id, []);
-    return { room: this.projectRoom(room), membership: this.projectMembership(membership) };
+    const admissions = (input.with ?? []).map((instanceId) => this.admit(creator, room, instanceId));
+    return { room: this.projectRoom(room), membership: this.projectMembership(membership), admissions };
+  }
+
+  async listRooms(auth: InstanceAuth): Promise<{ items: Room[] }> {
+    this.instanceRecord(auth);
+    const items = [...this.memberships.values()]
+      .filter((membership) => membership.instance_id === auth.instanceId && membership.state === "active")
+      .map((membership) => this.rooms.get(membership.room_id))
+      .filter((room): room is RoomRecord => room !== undefined)
+      .sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id))
+      .map((room) => this.projectRoom(room));
+    return { items };
+  }
+
+  async addRoomMembers(
+    auth: InstanceAuth,
+    roomId: RoomId,
+    input: AddRoomMembersRequest,
+  ): Promise<{ admissions: Admission[] }> {
+    const requester = this.requireOnline(auth);
+    const room = this.roomById(roomId);
+    this.requireMembership(auth, room.id);
+    if (room.state === "closed") {
+      throw new RepositoryError(409, "room_closed", "Room is closed.");
+    }
+    return { admissions: input.with.map((instanceId) => this.admit(requester, room, instanceId)) };
+  }
+
+  async updateInstance(auth: InstanceAuth, input: UpdateInstanceRequest): Promise<{ instance: Instance }> {
+    const record = this.instanceRecord(auth);
+    if (input.reach !== undefined) record.reach = input.reach;
+    return { instance: this.projectInstance(record) };
+  }
+
+  async listDecisions(
+    auth: InstanceAuth,
+    filter: { status?: DecisionStatus },
+  ): Promise<{ decisions: Decision[] }> {
+    this.instanceRecord(auth);
+    const decisions = [...this.decisions.values()]
+      .filter(
+        (decision) =>
+          decision.requested_for_instance_id === auth.instanceId &&
+          (filter.status === undefined || decision.status === filter.status),
+      )
+      .sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id))
+      .map((decision) => this.projectDecision(decision));
+    return { decisions };
+  }
+
+  async resolveDecision(
+    auth: InstanceAuth,
+    decisionId: DecisionId,
+    input: ResolveDecisionRequest,
+  ): Promise<{ decision: Decision; membership: RoomMember | null }> {
+    this.instanceRecord(auth);
+    const decision = this.decisions.get(decisionId);
+    // A Decision that is not addressed to this Instance does not exist for it.
+    if (!decision || decision.requested_for_instance_id !== auth.instanceId) {
+      throw new RepositoryError(404, "decision_not_found", "Decision was not found.");
+    }
+    if (decision.status !== "pending") {
+      throw new RepositoryError(409, "decision_already_resolved", "Decision was already resolved.");
+    }
+    let membership: MembershipRecord | null = null;
+    if (input.resolution === "approved") {
+      const room = decision.room_id ? this.rooms.get(decision.room_id) : undefined;
+      if (!room || room.state === "closed") {
+        throw new RepositoryError(409, "room_closed", "Room is closed.");
+      }
+      membership = this.seat(room, auth.instanceId, "accepted", decision.requested_by_instance_id);
+    }
+    decision.status = input.resolution;
+    decision.resolved_at = this.timestamp();
+    return {
+      decision: this.projectDecision(decision),
+      membership: membership ? this.projectMembership(membership) : null,
+    };
+  }
+
+  /**
+   * One Instance named in `with` (decision 2026-09-06 reach, §3): seated at
+   * once when public or the requester's own, asked through a Decision when
+   * private, refused otherwise. "refused" never says why, so ids cannot be
+   * told apart by asking.
+   */
+  private admit(requester: InstanceRecord, room: RoomRecord, targetId: InstanceId): Admission {
+    const refused: Admission = { instance_id: targetId, status: "refused", decision_id: null };
+    const target = this.instances.get(targetId);
+    if (!target || target.status === "ended" || target.status === "revoked") return refused;
+    const existing = this.memberships.get(membershipKey(room.id, target.id));
+    if (existing?.state === "active") return { instance_id: targetId, status: "member", decision_id: null };
+    if (target.principal_id === requester.principal_id || target.reach === "public") {
+      this.seat(room, target.id, "added", requester.id);
+      return { instance_id: targetId, status: "member", decision_id: null };
+    }
+    const pending = [...this.decisions.values()].find(
+      (decision) =>
+        decision.room_id === room.id &&
+        decision.requested_for_instance_id === target.id &&
+        decision.status === "pending",
+    );
+    if (pending) return { instance_id: targetId, status: "pending", decision_id: pending.id };
+    const decision: DecisionRecord = {
+      id: generatePublicId("dec"),
+      principal_id: target.principal_id,
+      mode: "approval",
+      title: `${requester.id} wants to add ${target.id} to Room "${room.name}"`,
+      description: `Instance ${requester.id} of Principal ${requester.principal_id} asked to seat ${target.id} in Room ${room.id} ("${room.name}"). Approve to take the seat; deny to refuse.`,
+      status: "pending",
+      requested_by_instance_id: requester.id,
+      requested_for_instance_id: target.id,
+      room_id: room.id,
+      answer: null,
+      created_at: this.timestamp(),
+      resolved_at: null,
+    };
+    this.decisions.set(decision.id, decision);
+    return { instance_id: targetId, status: "pending", decision_id: decision.id };
+  }
+
+  /** Writes an active membership, reviving a left one. */
+  private seat(
+    room: RoomRecord,
+    instanceId: InstanceId,
+    admittedBy: "added" | "accepted",
+    addedBy: InstanceId,
+  ): MembershipRecord {
+    const membership: MembershipRecord = {
+      room_id: room.id,
+      instance_id: instanceId,
+      state: "active",
+      joined_at: this.timestamp(),
+      left_at: null,
+      admitted_by: admittedBy,
+      invite_id: null,
+      added_by_instance_id: addedBy,
+    };
+    this.memberships.set(membershipKey(room.id, instanceId), membership);
+    return membership;
+  }
+
+  private projectDecision(record: DecisionRecord): Decision {
+    return { ...record, requested_by_agent_id: this.tagOf(record.requested_by_instance_id) };
   }
 
   async joinRoom(
@@ -459,6 +621,7 @@ export class MemorySharedNetRepository implements SharedNetRepository {
             left_at: null,
             admitted_by: invite ? "invite" : "room_id",
             invite_id: invite?.id ?? null,
+            added_by_instance_id: null,
           };
     if (membership !== existing) {
       this.memberships.set(key, membership);
@@ -554,6 +717,7 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     const principal: Principal = {
       id: generatePublicId("p"),
       display_name: input.name,
+      default_reach: "public",
       created_at: joinedAt,
       invited_by_principal_id: invite.principal_id,
     };
@@ -568,6 +732,7 @@ export class MemorySharedNetRepository implements SharedNetRepository {
       runtime_metadata: runtimeMetadataFromReport(runtime),
       status: "online",
       display_name: input.name,
+      reach: input.reach ?? "public",
       started_at: joinedAt,
       last_seen_at: joinedAt,
       lease_expires_at: new Date(now.getTime() + PRESENCE_LEASE_MS).toISOString(),
@@ -587,6 +752,7 @@ export class MemorySharedNetRepository implements SharedNetRepository {
       left_at: null,
       admitted_by: "invite",
       invite_id: invite.id,
+      added_by_instance_id: null,
     };
     this.principals.set(principal.id, principal);
     this.instances.set(instance.id, instance);
@@ -957,6 +1123,7 @@ export class MemorySharedNetRepository implements SharedNetRepository {
       invited_by_principal_id: principal?.invited_by_principal_id ?? null,
       admitted_by: record.admitted_by,
       invite_id: record.invite_id,
+      added_by_instance_id: record.added_by_instance_id,
       runtime_kind: instance?.runtime_kind ?? "custom",
       runtime_version: instance?.cli_version ?? "",
       runtime_metadata: { ...(instance?.runtime_metadata ?? {}) },

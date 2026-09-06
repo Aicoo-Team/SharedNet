@@ -147,6 +147,7 @@ const decision = {
   room_id: ROOM_ID,
   status: "pending",
   target_principal_id: PRINCIPAL_ID,
+  requested_for_instance_id: null,
   title: "Deployment region",
 };
 
