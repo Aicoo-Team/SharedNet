@@ -39,7 +39,6 @@ import {
   type StartInstanceRequest,
 } from "../../protocol/src/index.ts";
 import {
-  INSTANCE_TOKEN_TTL_MS,
   MAX_AGENTS_PER_PRINCIPAL,
   PRESENCE_LEASE_MS,
   RepositoryError,
@@ -315,7 +314,6 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     const token = generateSecret("sni");
     const tokenDigest = digestSecret(token);
     const leaseExpiresAt = new Date(now.getTime() + PRESENCE_LEASE_MS).toISOString();
-    const tokenExpiresAt = new Date(now.getTime() + INSTANCE_TOKEN_TTL_MS).toISOString();
 
     // One session, one live Instance: a re-registration of the same runtime
     // session hands back the existing row with a fresh token.
@@ -338,7 +336,7 @@ export class MemorySharedNetRepository implements SharedNetRepository {
       if (input.runtime_metadata !== undefined) existing.runtime_metadata = { ...input.runtime_metadata };
       existing.last_seen_at = now.toISOString();
       existing.lease_expires_at = leaseExpiresAt;
-      existing.token_expires_at = tokenExpiresAt;
+      existing.token_expires_at = null;
       existing.status = "online";
       this.instanceIdsByDigest.set(tokenDigest, existing.id);
       return {
@@ -360,7 +358,7 @@ export class MemorySharedNetRepository implements SharedNetRepository {
       started_at: now.toISOString(),
       last_seen_at: now.toISOString(),
       lease_expires_at: leaseExpiresAt,
-      token_expires_at: tokenExpiresAt,
+      token_expires_at: null,
       ended_at: null,
       revoked_at: null,
       display_name: null,

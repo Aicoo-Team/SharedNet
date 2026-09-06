@@ -542,6 +542,14 @@ try {
     token_expires_at: null,
     admitted_by: "invite",
   });
+  // Every Instance is permanent (decision 2026-09-06 reach §2a): a key-registered
+  // one has no token expiry either, and the API says so.
+  const keyRegistered = await database.query(
+    "SELECT token_expires_at FROM sharednet.instance WHERE id = $1",
+    [starts[0].instance.id],
+  );
+  assert.equal(keyRegistered.rows[0].token_expires_at, null, "a key-registered Instance must not expire");
+  assert.equal(starts[0].instance.token_expires_at, null);
   // --- sharednet login: a code approved in the Web hands the CLI a key, and
   //     binds the anonymous seat this machine holds to the approving account. ---
   const loginStart = await fetch(`${apiBaseUrl}/api/v1/cli/logins`, {

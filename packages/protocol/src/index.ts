@@ -1033,7 +1033,6 @@ export interface DiscoveryDocument {
     max_message_bytes: number;
     heartbeat_after_seconds: number;
     presence_lease_seconds: number;
-    instance_token_ttl_seconds: number;
     idempotency_retention_seconds: number;
     bearer_requests_per_minute: number;
     web_requests_per_minute: number;
@@ -1063,7 +1062,6 @@ export const DISCOVERY_DOCUMENT = {
     max_message_bytes: MAX_MESSAGE_BYTES,
     heartbeat_after_seconds: 30,
     presence_lease_seconds: 90,
-    instance_token_ttl_seconds: 86_400,
     idempotency_retention_seconds: 86_400,
     bearer_requests_per_minute: 600,
     web_requests_per_minute: 300,

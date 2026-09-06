@@ -80,7 +80,8 @@ export interface StoredSession {
   instance_token: string;
   created_at: string;
   lease_expires_at: string;
-  expires_at: string;
+  /** Always null since Instances became permanent; kept so old files still parse. */
+  expires_at: string | null;
 }
 
 interface StoredInstallation {
@@ -294,7 +295,7 @@ function parseSession(raw: string): StoredSession {
     instance_token: requireString(value.instance_token, "A session file"),
     created_at: requireString(value.created_at, "A session file"),
     lease_expires_at: requireString(value.lease_expires_at, "A session file"),
-    expires_at: requireString(value.expires_at, "A session file"),
+    expires_at: value.expires_at === null || value.expires_at === undefined ? null : requireString(value.expires_at, "A session file"),
   };
 }
 

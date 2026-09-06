@@ -31,7 +31,6 @@ import type {
 
 export const PRESENCE_LEASE_MS = 90_000;
 export const MAX_AGENTS_PER_PRINCIPAL = 100;
-export const INSTANCE_TOKEN_TTL_MS = 86_400_000;
 export const IDEMPOTENCY_RETENTION_MS = 86_400_000;
 
 export type PrincipalAuth = {

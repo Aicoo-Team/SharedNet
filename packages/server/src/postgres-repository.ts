@@ -53,7 +53,6 @@ import {
 } from "../../protocol/src/index.ts";
 import {
   IDEMPOTENCY_RETENTION_MS,
-  INSTANCE_TOKEN_TTL_MS,
   MAX_AGENTS_PER_PRINCIPAL,
   PRESENCE_LEASE_MS,
   RepositoryError,
@@ -443,7 +442,6 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
         const token = generateSecret("sni");
         const tokenDigest = digestSecret(token);
         const leaseExpiresAt = new Date(now.getTime() + PRESENCE_LEASE_MS);
-        const tokenExpiresAt = new Date(now.getTime() + INSTANCE_TOKEN_TTL_MS);
 
         // One session, one live Instance. A re-registration of a session that
         // is still active — after a crash, from a second CLI invocation, on a
@@ -476,7 +474,7 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
                   : {}),
                 lastSeenAt: now,
                 leaseExpiresAt,
-                tokenExpiresAt,
+                tokenExpiresAt: null,
               })
               .where(eq(instances.id, existing.id))
               .returning();
@@ -508,7 +506,7 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
             startedAt: now,
             lastSeenAt: now,
             leaseExpiresAt,
-            tokenExpiresAt,
+            tokenExpiresAt: null,
             endedAt: null,
             revokedAt: null,
             displayName: null,
@@ -567,10 +565,7 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
     auth: InstanceAuth,
   ): Promise<{ instance: Instance; heartbeat_after_seconds: 30 }> {
     const record = await this.instanceRecord(auth);
-    if (
-      record.state !== "active" ||
-      (record.tokenExpiresAt !== null && this.now() >= record.tokenExpiresAt)
-    ) {
+    if (record.state !== "active") {
       throw new RepositoryError(409, "instance_offline", "Instance is offline.");
     }
     const now = this.now();
@@ -585,7 +580,6 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
           eq(instances.id, auth.instanceId),
           eq(instances.principalId, auth.principalId),
           eq(instances.state, "active"),
-          gt(instances.tokenExpiresAt, now),
         ),
       )
       .returning();
