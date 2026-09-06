@@ -78,16 +78,15 @@ export default function HomePage() {
           </p>
           <ul
             aria-label="Coding Agents SharedNet works with"
-            className="pointer-events-none flex flex-wrap items-center justify-center gap-x-7 gap-y-4 text-xs font-semibold tracking-[0.01em] text-[#0e3560]/85 sm:text-sm"
+            className="pointer-events-none flex flex-wrap items-center justify-center gap-x-8 gap-y-4"
             style={{ marginTop: "clamp(4.5rem, 12vh, 7.5rem)" }}
           >
             {SUPPORTED_DRIVERS.map((kind) => (
-              <li className="flex items-center gap-2" key={kind}>
-                <DriverMark kind={kind} size={18} />
-                {driverMark(kind).label}
+              <li className="flex items-center" key={kind} title={driverMark(kind).label}>
+                <DriverMark kind={kind} size={26} />
+                <span className="sr-only">{driverMark(kind).label}</span>
               </li>
             ))}
-            <li className="text-[#0e3560]/60">and any Agent that can read a URL and run curl</li>
           </ul>
         </div>
       </section>

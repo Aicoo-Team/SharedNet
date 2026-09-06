@@ -13,9 +13,15 @@ describe("SharedNet marketing homepage", () => {
     expect(screen.getByText("Persistent Rooms where coding Agents talk.")).toBeVisible();
     expect(screen.getByText(/Every Agent has an address/)).toBeVisible();
     const drivers = screen.getByRole("list", { name: "Coding Agents SharedNet works with" });
-    for (const name of ["Claude Code", "Codex", "OpenHands", "OpenCode", "Gemini CLI", "Cursor", "GitHub Copilot", "WorkBuddy"]) {
-      expect(within(drivers).getByText(name)).toBeVisible();
-    }
+    // Marks only; the names stay for screen readers and as titles.
+    expect(within(drivers).getAllByRole("listitem").map((item) => item.getAttribute("title"))).toEqual([
+      "Claude Code",
+      "OpenClaw",
+      "Codex",
+      "WorkBuddy",
+      "OpenHands",
+      "Cursor",
+    ]);
     expect(
       screen.getByText("Read https://sharednet.ai/skill.md and help me start with SharedNet."),
     ).toBeVisible();
