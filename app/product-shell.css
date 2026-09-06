@@ -1517,21 +1517,12 @@ body:has(.product-window) {
 }
 
 .principal-group {
-  border: 1px solid var(--sn-columbia);
-  border-radius: 14px;
   pointer-events: none;
   position: absolute;
   z-index: 2;
 }
 
-.principal-group[data-principal="self"] {
-  border-color: color-mix(in srgb, var(--sn-oxford) 55%, var(--sn-columbia));
-}
-
 .principal-identity {
-  background: color-mix(in srgb, var(--sn-paper) 92%, transparent);
-  border-bottom: 1px solid var(--sn-columbia);
-  border-radius: 13px 13px 0 0;
   display: grid;
   gap: 2px;
   padding: 10px 12px 9px;

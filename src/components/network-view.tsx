@@ -106,6 +106,11 @@ export function untaggedGroupId(principalId: PrincipalId): AgentId {
   return `default:${principalId}` as AgentId;
 }
 
+/** True for the UI-local header id above; no such Agent exists on the server. */
+export function isUntaggedGroupId(agentId: AgentId): boolean {
+  return agentId.startsWith("default:");
+}
+
 function untaggedGroup(
   principal: PrincipalProjection,
   network: NetworkProjection,
@@ -121,7 +126,7 @@ function untaggedGroup(
     {
       agent_id: untaggedGroupId(principal.principal_id),
       created_at: "",
-      diagnostic_label: anonymous ? "seats" : "default",
+      diagnostic_label: anonymous ? principal.diagnostic_label : "Untagged",
       discoverability: false,
       handle: anonymous ? "seats" : "default",
       principal_id: principal.principal_id,
@@ -299,6 +304,25 @@ function visibleEdgeLines(
 }
 
 
+/**
+ * The driver behind an Instance, the way the Room member card says it:
+ * "claude-code 0.3.260 · claude-desktop · detected". The metadata keys come
+ * from the CLI's runtime report; cli_version "invite" is the placeholder an
+ * invite join wrote before driver detection existed, not a version.
+ */
+export function describeInstanceRuntime(instance: InstanceProjection): string {
+  const metadata = instance.runtime_metadata;
+  const cliVersion = metadata.cli_version && metadata.cli_version !== "invite" ? metadata.cli_version : undefined;
+  const version = metadata.driver_version ?? cliVersion;
+  const source = metadata.runtime_source;
+  const trust = source === "detected" ? "detected" : source === "declared" ? "self-declared" : "not reported";
+  return [
+    `${instance.runtime_type}${version ? ` ${version}` : ""}`,
+    ...(metadata.entrypoint ? [metadata.entrypoint] : []),
+    trust,
+  ].join(" · ");
+}
+
 function AgentCard({
   agentTree,
   onClose,
@@ -306,7 +330,7 @@ function AgentCard({
   agentTree: AgentTree;
   onClose: () => void;
 }) {
-  const { agent, instances, presence } = agentTree;
+  const { agent, instances } = agentTree;
 
   return (
     <aside aria-label="Agent Card" className="agent-card" role="region">
@@ -324,15 +348,7 @@ function AgentCard({
         </div>
         <div>
           <dt>Agent ID</dt>
-          <dd>{agent.agent_id}</dd>
-        </div>
-        <div>
-          <dt>Handle</dt>
-          <dd>@{agent.handle}</dd>
-        </div>
-        <div>
-          <dt>Presence</dt>
-          <dd>{presence}</dd>
+          <dd>{isUntaggedGroupId(agent.agent_id) ? "None · untagged" : agent.agent_id}</dd>
         </div>
       </dl>
 
@@ -353,21 +369,7 @@ function AgentCard({
                       ? "Offline · no heartbeat ever received"
                       : "Offline · heartbeat stopped"}
                 </small>
-                {Object.keys(instance.runtime_metadata).length > 0 ? (
-                  <details>
-                    <summary>Runtime · {instance.runtime_type}</summary>
-                    <dl>
-                      {Object.entries(instance.runtime_metadata).map(
-                        ([key, value]) => (
-                          <div key={key}>
-                            <dt>{key}</dt>
-                            <dd>{value}</dd>
-                          </div>
-                        ),
-                      )}
-                    </dl>
-                  </details>
-                ) : null}
+                <small>Runtime · {describeInstanceRuntime(instance)}</small>
               </li>
             ))}
           </ol>
