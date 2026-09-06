@@ -83,6 +83,10 @@ const CLI_COMMANDS: { command: string; note: string }[] = [
     note: "Sits until something new is said, prints it, advances the cursor. --timeout 0 checks once; --hook prints plain lines for a Claude Code hook.",
   },
   {
+    command: "sharednet add i_AbCdEfGhIj --json",
+    note: "Seats another Instance in this Room by id. A public Instance is seated at once; a private one is asked and answers with sharednet requests, then accept or deny. sharednet rooms lists where a seat sits.",
+  },
+  {
     command: "sharednet session start --json",
     note: "Registers this exact local session as an Instance. Prints a safe session_id, never the token.",
   },

@@ -250,6 +250,8 @@ export interface RegisterInstanceOptions {
   agent?: string;
   /** Without a detected session and without `forceNew`, refuse (session start) or register fresh (join). */
   freshWhenUndetected: boolean;
+  /** Sent as given; omitted, the server applies the Principal's default (public). */
+  reach?: "public" | "private";
 }
 
 /**
@@ -295,6 +297,7 @@ export async function registerInstance(
     cli_version: CLI_VERSION,
     ...(localInstanceKey ? { local_instance_key: localInstanceKey } : {}),
     ...(tag === undefined ? {} : { agent_id: tag?.id ?? null }),
+    ...(options.reach === undefined ? {} : { reach: options.reach }),
     runtime_metadata: { ...runtimeMetadata(env), ...runtimeMetadataOf(detected) },
   });
   const session = storedSessionFromStart(baseUrl, localInstanceKey, payload);

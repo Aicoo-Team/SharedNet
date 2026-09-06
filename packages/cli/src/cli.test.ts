@@ -54,6 +54,37 @@ async function harness(
   return { exitCode, stdout, stderr, requests };
 }
 
+/** Two commands against one machine: a session start, then the command under test. */
+async function harnessAfterStart(
+  argv: string[],
+  responses: Array<{ status?: number; body?: unknown }>,
+) {
+  const root = await mkdtemp(join(tmpdir(), "sharednet-cli-run-"));
+  cleanup.push(root);
+  const requests: Array<{ url: string; init: RequestInit }> = [];
+  const queue = [registered("i_seat00001"), ...responses];
+  const fetch = vi.fn(async (input: string | URL | Request, init: RequestInit = {}) => {
+    requests.push({ url: String(input), init });
+    const next = queue.shift();
+    if (!next) throw new Error("Unexpected fetch");
+    return new Response(JSON.stringify(next.body), { status: next.status ?? 200, headers: { "content-type": "application/json" } });
+  });
+  const env = {
+    HOME: root,
+    XDG_CONFIG_HOME: join(root, "config"),
+    XDG_STATE_HOME: join(root, "state"),
+    SHAREDNET_BASE_URL: "http://127.0.0.1:3001",
+    SHAREDNET_API_KEY: "snk_never-send-in-json",
+    CODEX_SESSION_ID: "provider-session-must-remain-local",
+  };
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  const started = await runCli(["session", "start", "--json"], { env, fetch, stdout: () => undefined, stderr: (v) => stderr.push(v) });
+  expect(started).toBe(0);
+  const exitCode = await runCli(argv, { env, fetch, stdout: (v) => stdout.push(v), stderr: (v) => stderr.push(v) });
+  return { exitCode, stdout, stderr, requests: requests.slice(1) };
+}
+
 const HEX_64 = /^[0-9a-f]{64}$/;
 
 function registered(id: string, extra: Record<string, unknown> = {}) {
@@ -277,4 +308,56 @@ describe("sharednet CLI vertical slice", () => {
     expect(malformed.stderr.join(" ")).toContain("invalid_agent");
   });
 
+});
+
+describe("reach: forming a group from the account CLI", () => {
+  it("registers a private Instance with --private and leaves reach out otherwise", async () => {
+    const quiet = await harness(["session", "start", "--private", "--json"], [registered("i_private001", { reach: "private" })]);
+    expect(quiet.exitCode).toBe(0);
+    expect(sentBody(quiet.requests[0]!)).toMatchObject({ reach: "private" });
+    const open = await harness(["session", "start", "--json"], [registered("i_public0001")]);
+    expect(sentBody(open.requests[0]!)).not.toHaveProperty("reach");
+  });
+
+  it("opens a Room with Instances seated by id, lists Rooms, and adds to one", async () => {
+    const created = await harnessAfterStart(
+      ["room", "create", "--name", "Formed", "--with", "i_AbCdEfGhIj,i_KlMnOpQrSt", "--json"],
+      [{ status: 201, body: { room: { id: "rom_AbCdEfGhIj" }, membership: {}, admissions: [] } }],
+    );
+    expect(created.exitCode).toBe(0);
+    expect(created.requests[0]!.url).toBe("http://127.0.0.1:3001/api/v1/rooms");
+    expect(sentBody(created.requests[0]!)).toEqual({ name: "Formed", with: ["i_AbCdEfGhIj", "i_KlMnOpQrSt"] });
+
+    const bad = await harnessAfterStart(["room", "create", "--name", "Formed", "--with", "nope", "--json"], []);
+    expect(bad.exitCode).not.toBe(0);
+    expect(bad.requests).toHaveLength(0);
+
+    const listed = await harnessAfterStart(["room", "list", "--json"], [{ status: 200, body: { items: [] } }]);
+    expect(listed.requests[0]!.url).toBe("http://127.0.0.1:3001/api/v1/rooms");
+
+    const added = await harnessAfterStart(
+      ["room", "add", "rom_AbCdEfGhIj", "--with", "i_AbCdEfGhIj", "--json"],
+      [{ status: 200, body: { admissions: [{ instance_id: "i_AbCdEfGhIj", status: "member", decision_id: null }] } }],
+    );
+    expect(added.requests[0]!.url).toBe("http://127.0.0.1:3001/api/v1/rooms/rom_AbCdEfGhIj/members");
+    expect(sentBody(added.requests[0]!)).toEqual({ with: ["i_AbCdEfGhIj"] });
+  });
+
+  it("lists the Decisions addressed to the Instance and answers one", async () => {
+    const listed = await harnessAfterStart(["decision", "list", "--status", "pending", "--json"], [{ status: 200, body: { decisions: [] } }]);
+    expect(listed.exitCode).toBe(0);
+    expect(listed.requests[0]!.url).toBe("http://127.0.0.1:3001/api/v1/decisions?status=pending");
+
+    const approved = await harnessAfterStart(
+      ["decision", "approve", "dec_AbCdEfGhIj", "--json"],
+      [{ status: 200, body: { decision: { id: "dec_AbCdEfGhIj", status: "approved" }, membership: null } }],
+    );
+    expect(approved.requests[0]!.url).toBe("http://127.0.0.1:3001/api/v1/decisions/dec_AbCdEfGhIj/resolve");
+    expect(sentBody(approved.requests[0]!)).toEqual({ resolution: "approved" });
+    const denied = await harnessAfterStart(
+      ["decision", "deny", "dec_AbCdEfGhIj", "--json"],
+      [{ status: 200, body: { decision: { id: "dec_AbCdEfGhIj", status: "denied" }, membership: null } }],
+    );
+    expect(sentBody(denied.requests[0]!)).toEqual({ resolution: "denied" });
+  });
 });

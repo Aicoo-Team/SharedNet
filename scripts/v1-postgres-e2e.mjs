@@ -553,9 +553,6 @@ try {
   // --- reach: forming a group by Instance id (decision 2026-09-06). The
   //     host seats one of its own Instances at once, asks the anonymous seat
   //     (now private), and is refused an unknown id without being told why. ---
-  const sessionTokenOf = async (id) =>
-    JSON.parse(await readFile(join(sandbox, "state", "sharednet", "sessions", `${id}.json`), "utf8")).instance_token;
-  const hostToken = await sessionTokenOf(instanceIds[0]);
   const guestToken = joined.member_token;
   const guestInstanceId = joined.membership.member_id;
   const madePrivate = await fetch(`${apiBaseUrl}/api/v1/instances/current`, {
@@ -565,13 +562,14 @@ try {
   });
   assert.equal(madePrivate.status, 200);
   assert.equal((await madePrivate.json()).instance.reach, "private");
-  const formed = await fetch(`${apiBaseUrl}/api/v1/rooms`, {
-    method: "POST",
-    headers: { authorization: `Bearer ${hostToken}`, "content-type": "application/json", "idempotency-key": randomUUID() },
-    body: JSON.stringify({ name: "Formed by id", with: [instanceIds[1], guestInstanceId, "i_NoSuchInst"] }),
-  });
-  assert.equal(formed.status, 201);
-  const formedBody = await formed.json();
+  // The host forms the Room through the CLI: `room create --with` is the
+  // account verb, and the Codex session it runs in is instanceIds[0].
+  const formedBody = await runCli(
+    apiBaseUrl,
+    ["room", "create", "--name", "Formed by id", "--with", `${instanceIds[1]},${guestInstanceId},i_NoSuchInst`, "--session", instanceIds[0], "--json"],
+    codexSessions[0],
+  );
+  assert.equal(formedBody.membership.member_id, instanceIds[0]);
   assert.deepEqual(
     formedBody.admissions.map((admission) => admission.status),
     ["member", "pending", "refused"],
