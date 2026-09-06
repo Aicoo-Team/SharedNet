@@ -245,28 +245,6 @@ const networkProjection: NetworkProjection = {
   },
 };
 
-const DRAFT = "Review the release evidence before launch.";
-const NEWER_DRAFT = "Preserve this newer handoff draft.";
-
-function deferredClipboardWrite() {
-  let resolve!: () => void;
-  let reject!: (reason: unknown) => void;
-  const promise = new Promise<void>((resolvePromise, rejectPromise) => {
-    resolve = () => resolvePromise();
-    reject = (reason) => rejectPromise(reason);
-  });
-
-  return { promise, reject, resolve };
-}
-
-function emptyInstruction(draft: string): string {
-  return `Build a SharedNet Room from your local Agent. Use this draft as the initial brief, post it locally as the Room's first plain-text message, and return the new Room ID:\n\n${draft}`;
-}
-
-function selectedInstruction(draft: string): string {
-  return `Use SharedNet Room ${ROOM_ID}. Join it if needed, retrieve its current history first, then post this draft locally as a plain-text message from your current local Agent Instance. Return the resulting message ID/cursor:\n\n${draft}`;
-}
-
 const INVITE_TOKEN = `rit_${"t".repeat(43)}`;
 
 function mintedInvite(roomId: string) {
@@ -309,13 +287,6 @@ function renderChat(overrides: Partial<SharedNetState> = {}) {
   const state = makeState(overrides);
   contextMocks.useSharedNet.mockReturnValue(state);
   return { state, ...render(<ChatView />) };
-}
-
-function enterDraftAndContinue(draft = DRAFT) {
-  fireEvent.change(screen.getByLabelText("What do you want done?"), {
-    target: { value: draft },
-  });
-  fireEvent.click(screen.getByRole("button", { name: "Continue locally" }));
 }
 
 describe("SharedNet Rooms", () => {
@@ -834,55 +805,35 @@ describe("SharedNet Rooms", () => {
     expect(within(dialog).getByRole("button", { name: "Schedule Room" })).toBeDisabled();
   });
 
-  it("builds the selected instruction with the exact Room ID and local return contract", () => {
+  it("has no composer: a Room is read here and written to by Agents", () => {
     renderChat();
-
-    enterDraftAndContinue();
-
-    const instructions = screen.getByLabelText("Local Agent instructions");
-    const instructionValue = instructions.textContent ?? "";
-    expect(instructionValue).toBe(selectedInstruction(DRAFT));
-    expect(instructionValue).toContain(ROOM_ID);
-    expect(instructionValue).not.toContain(SECOND_ROOM_ID);
-    expect(instructionValue).toContain("Join it if needed");
-    expect(instructionValue).toContain("retrieve its current history first");
-    expect(instructionValue).toContain("message ID/cursor");
+    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Continue locally" })).toBeNull();
+    expect(screen.queryByPlaceholderText("Type here…")).toBeNull();
   });
 
-  it("opens a native modal with initial focus contained over an inert background", async () => {
+  it("opens the invite as a native modal with focus contained over an inert background", async () => {
     renderChat();
-    const trigger = screen.getByRole("button", { name: "Continue locally" });
+    const trigger = screen.getByRole("button", { name: "Invite an Agent" });
     trigger.focus();
+    fireEvent.click(trigger);
 
-    enterDraftAndContinue();
-
-    const dialog = screen.getByRole("dialog", {
-      name: "Post this from a local Agent",
-    });
-    const primaryAction = within(dialog).getByRole("button", {
-      name: "Copy instructions",
-    });
-    const workspace = trigger.closest(".rooms-workspace");
+    const dialog = await screen.findByRole("dialog", { name: `Invite an Agent to ${roomDetail.room.name}` });
+    const primaryAction = within(dialog).getByRole("button", { name: "Copy invite" });
     await waitFor(() => expect(primaryAction).toHaveFocus());
     expect(dialog.tagName).toBe("DIALOG");
     expect(dialog).toHaveAttribute("open");
-    expect(dialog).toContainElement(document.activeElement as HTMLElement);
-    expect(workspace).toHaveAttribute("inert");
+    expect(trigger.closest(".rooms-workspace")).toHaveAttribute("inert");
     expect(dialog.closest("[inert]")).toBeNull();
   });
 
-  it("closes the modal on Escape and restores focus to its Continue locally trigger", async () => {
+  it("closes the invite on Escape and restores focus to the button that opened it", async () => {
     renderChat();
-    const trigger = screen.getByRole("button", { name: "Continue locally" });
+    const trigger = screen.getByRole("button", { name: "Invite an Agent" });
     trigger.focus();
-    enterDraftAndContinue();
-
-    const dialog = screen.getByRole("dialog", {
-      name: "Post this from a local Agent",
-    });
-    const primaryAction = within(dialog).getByRole("button", {
-      name: "Copy instructions",
-    });
+    fireEvent.click(trigger);
+    const dialog = await screen.findByRole("dialog", { name: `Invite an Agent to ${roomDetail.room.name}` });
+    const primaryAction = within(dialog).getByRole("button", { name: "Copy invite" });
     await waitFor(() => expect(primaryAction).toHaveFocus());
 
     fireEvent.keyDown(primaryAction, { code: "Escape", key: "Escape" });
@@ -890,195 +841,24 @@ describe("SharedNet Rooms", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(trigger).toHaveFocus();
     expect(trigger.closest(".rooms-workspace")).not.toHaveAttribute("inert");
-    expect(screen.getByLabelText("What do you want done?")).toHaveValue(DRAFT);
   });
 
-  it("retains a visible composer focus indicator under product-window specificity", () => {
-    const focusWithinRule = PRODUCT_SHELL_CSS.match(
-      /\.room-composer:focus-within\s*\{([^}]*)\}/,
-    )?.[1];
-    expect(focusWithinRule).toContain("outline: 2px solid");
-    expect(PRODUCT_SHELL_CSS).not.toMatch(
-      /\.product-window \.room-composer:focus-within[^{]*\{[^}]*outline:\s*none;/,
-    );
-  });
-
-  it("copies instructions through Clipboard and clears the draft only after success", async () => {
+  it("copies the invite through Clipboard and reports success, or explains a failure", async () => {
     renderChat();
-    enterDraftAndContinue();
-
-    fireEvent.click(screen.getByRole("button", { name: "Copy instructions" }));
-
-    await waitFor(() => {
-      expect(writeText).toHaveBeenCalledWith(selectedInstruction(DRAFT));
-    });
+    fireEvent.click(screen.getByRole("button", { name: "Invite an Agent" }));
+    const dialog = await screen.findByRole("dialog", { name: `Invite an Agent to ${roomDetail.room.name}` });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Copy invite" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    expect(String(writeText.mock.calls[0]![0])).toContain(`TOKEN=${INVITE_TOKEN}`);
     expect(screen.getByRole("status")).toHaveTextContent("Copied to clipboard.");
-    expect(screen.getByLabelText("What do you want done?")).toHaveValue("");
-    expect(
-      screen.getByRole("dialog", { name: "Post this from a local Agent" }),
-    ).toBeVisible();
-  });
-
-  it("restores focus to the composer after copied content disables the Continue trigger", async () => {
-    renderChat();
-    const textarea = screen.getByLabelText("What do you want done?");
-    const trigger = screen.getByRole("button", { name: "Continue locally" });
-    const workspace = trigger.closest(".rooms-workspace");
-    enterDraftAndContinue();
-
-    fireEvent.click(screen.getByRole("button", { name: "Copy instructions" }));
-    await screen.findByText("Copied to clipboard.");
-    expect(trigger).toBeDisabled();
-    expect(workspace).toHaveAttribute("inert");
-
-    fireEvent.click(screen.getByRole("button", { name: "Close" }));
-
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-    expect(textarea).toHaveFocus();
-    expect(trigger).toBeDisabled();
-    expect(workspace).not.toHaveAttribute("inert");
-  });
 
-  it("shows Clipboard failure and preserves the draft", async () => {
     writeText.mockRejectedValueOnce(new Error("Clipboard denied"));
-    renderChat();
-    enterDraftAndContinue();
-
-    fireEvent.click(screen.getByRole("button", { name: "Copy instructions" }));
-
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Clipboard access failed. Copy the instructions manually.",
-    );
-    expect(screen.getByLabelText("What do you want done?")).toHaveValue(DRAFT);
-    expect(
-      screen.getByRole("dialog", { name: "Post this from a local Agent" }),
-    ).toBeVisible();
-  });
-
-  it("ignores delayed Clipboard success from a closed dialog revision", async () => {
-    const staleWrite = deferredClipboardWrite();
-    writeText.mockReturnValueOnce(staleWrite.promise);
-    renderChat();
-    enterDraftAndContinue();
-    fireEvent.click(screen.getByRole("button", { name: "Copy instructions" }));
-    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
-
-    fireEvent.click(screen.getByRole("button", { name: "Close" }));
-    fireEvent.change(screen.getByLabelText("What do you want done?"), {
-      target: { value: NEWER_DRAFT },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Continue locally" }));
-    expect(
-      screen.getByLabelText("Local Agent instructions").textContent,
-    ).toBe(selectedInstruction(NEWER_DRAFT));
-
-    await act(async () => {
-      staleWrite.resolve();
-      await staleWrite.promise;
-    });
-
-    expect(screen.getByLabelText("What do you want done?")).toHaveValue(
-      NEWER_DRAFT,
-    );
-    expect(screen.queryByText("Copied to clipboard.")).toBeNull();
-    expect(screen.getByRole("button", { name: "Copy instructions" })).toBeVisible();
-  });
-
-  it("ignores delayed Clipboard failure from a closed dialog revision", async () => {
-    const staleWrite = deferredClipboardWrite();
-    writeText.mockReturnValueOnce(staleWrite.promise);
-    renderChat();
-    enterDraftAndContinue();
-    fireEvent.click(screen.getByRole("button", { name: "Copy instructions" }));
-    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
-
-    fireEvent.click(screen.getByRole("button", { name: "Close" }));
-    fireEvent.change(screen.getByLabelText("What do you want done?"), {
-      target: { value: NEWER_DRAFT },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Continue locally" }));
-
-    await act(async () => {
-      staleWrite.reject(new Error("Old Clipboard denial"));
-      await staleWrite.promise.catch(() => undefined);
-    });
-
-    expect(screen.getByLabelText("What do you want done?")).toHaveValue(
-      NEWER_DRAFT,
-    );
-    expect(
-      screen.queryByText("Clipboard access failed. Copy the instructions manually."),
-    ).toBeNull();
-    expect(screen.getByRole("button", { name: "Copy instructions" })).toBeVisible();
-  });
-
-  it("closes the dialog without clearing an uncopied draft", () => {
-    renderChat();
-    enterDraftAndContinue();
-
-    fireEvent.click(screen.getByRole("button", { name: "Close" }));
-
-    expect(screen.queryByRole("dialog")).toBeNull();
-    expect(screen.getByLabelText("What do you want done?")).toHaveValue(DRAFT);
-    expect(writeText).not.toHaveBeenCalled();
-  });
-
-  it("offers an explicit close-and-clear action", () => {
-    renderChat();
-    enterDraftAndContinue();
-
-    fireEvent.click(screen.getByRole("button", { name: "Close and clear" }));
-
-    expect(screen.queryByRole("dialog")).toBeNull();
-    expect(screen.getByLabelText("What do you want done?")).toHaveValue("");
-    expect(writeText).not.toHaveBeenCalled();
-  });
-
-  it("restores focus to the composer when Close and clear disables the Continue trigger", async () => {
-    renderChat();
-    const textarea = screen.getByLabelText("What do you want done?");
-    const trigger = screen.getByRole("button", { name: "Continue locally" });
-    const workspace = trigger.closest(".rooms-workspace");
-    enterDraftAndContinue();
-    expect(workspace).toHaveAttribute("inert");
-
-    fireEvent.click(screen.getByRole("button", { name: "Close and clear" }));
-
-    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-    expect(textarea).toHaveValue("");
-    expect(textarea).toHaveFocus();
-    expect(trigger).toBeDisabled();
-    expect(workspace).not.toHaveAttribute("inert");
-    expect(writeText).not.toHaveBeenCalled();
-  });
-
-  it("never POSTs a Room or message from browser handoff actions", async () => {
-    const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
-    renderChat();
-    enterDraftAndContinue();
-
-    fireEvent.click(screen.getByRole("button", { name: "Copy instructions" }));
-    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
-    fireEvent.click(screen.getByRole("button", { name: "Close" }));
-
-    const prohibitedWrites = fetchMock.mock.calls.filter(([input, init]) => {
-      const path = String(input);
-      const method = String(
-        (init as RequestInit | undefined)?.method ?? "GET",
-      ).toUpperCase();
-      return (
-        method === "POST" &&
-        (path === "/api/sharednet/rooms" || path.includes("/messages"))
-      );
-    });
-    expect(prohibitedWrites).toEqual([]);
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(
-      within(screen.getByRole("list", { name: "Room messages" })).getAllByRole(
-        "article",
-      ),
-    ).toHaveLength(2);
+    fireEvent.click(screen.getByRole("button", { name: "Invite an Agent" }));
+    const again = await screen.findByRole("dialog", { name: `Invite an Agent to ${roomDetail.room.name}` });
+    fireEvent.click(within(again).getByRole("button", { name: "Copy invite" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Clipboard access failed. Copy the instructions manually.");
   });
 
   it("does not expose the removed demo workflow or synthetic accounting", () => {

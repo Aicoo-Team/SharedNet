@@ -10,7 +10,7 @@ import { SplitHandle, useSplitWidth } from "./split-handle";
 
 type CopyState = "idle" | "copied" | "error";
 
-type HandoffKind = "invite" | "post";
+type HandoffKind = "invite";
 
 type LocalInstruction = {
   kind: HandoffKind;
@@ -126,14 +126,6 @@ function describeRuntime(runtime: RoomMembership["runtime"]): string {
   return `${runtime.kind}${version}${entry} · ${trust}`;
 }
 
-function buildLocalInstruction(draft: string, roomId: RoomId | null): string {
-  if (roomId === null) {
-    return `Build a SharedNet Room from your local Agent. Use this draft as the initial brief, post it locally as the Room's first plain-text message, and return the new Room ID:\n\n${draft}`;
-  }
-
-  return `Use SharedNet Room ${roomId}. Join it if needed, retrieve its current history first, then post this draft locally as a plain-text message from your current local Agent Instance. Return the resulting message ID/cursor:\n\n${draft}`;
-}
-
 /**
  * Presence is a lease that something has to keep renewing, so "Offline" alone
  * cannot distinguish a session that stopped from one that never ran. Say which.
@@ -173,7 +165,6 @@ export function ChatView() {
     status,
   } = useSharedNet();
   const [copyState, setCopyState] = useState<CopyState>("idle");
-  const [draft, setDraft] = useState("");
   const [instruction, setInstruction] = useState<LocalInstruction | null>(null);
   const [membersOpen, setMembersOpen] = useState(false);
   const [roomName, setRoomName] = useState("");
@@ -188,13 +179,13 @@ export function ChatView() {
   const [removingMemberId, setRemovingMemberId] = useState<string | null>(null);
   const [roomActionError, setRoomActionError] = useState<string | null>(null);
   const schedulerDialogRef = useRef<HTMLDialogElement>(null);
-  const continueButtonRef = useRef<HTMLButtonElement>(null);
   const copyOperationRevisionRef = useRef(0);
   const copyButtonRef = useRef<HTMLButtonElement>(null);
   const dialogRef = useRef<HTMLDialogElement>(null);
   const instructionRevisionRef = useRef(0);
   const restoreFocusRef = useRef(false);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  /** What had focus when the dialog opened; focus goes back there on close. */
+  const triggerRef = useRef<HTMLElement | null>(null);
   const selectedSummary = rooms.find((room) => room.room_id === selectedRoomId);
 
   const detail =
@@ -257,12 +248,8 @@ export function ChatView() {
 
     if (restoreFocusRef.current) {
       restoreFocusRef.current = false;
-      const continueButton = continueButtonRef.current;
-      if (continueButton && !continueButton.disabled) {
-        continueButton.focus();
-      } else {
-        textareaRef.current?.focus();
-      }
+      triggerRef.current?.focus();
+      triggerRef.current = null;
     }
   }, [instruction]);
 
@@ -274,6 +261,7 @@ export function ChatView() {
   }, [schedulerOpen]);
 
   function openHandoff(next: Omit<LocalInstruction, "revision">) {
+    triggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const revision = instructionRevisionRef.current + 1;
     instructionRevisionRef.current = revision;
     copyOperationRevisionRef.current += 1;
@@ -345,18 +333,6 @@ export function ChatView() {
     }
   }
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const nextDraft = draft.trim();
-    if (!nextDraft) return;
-    openHandoff({
-      kind: "post",
-      roomId: selectedRoomId,
-      roomName: detail?.room.name ?? selectedSummary?.name ?? null,
-      text: buildLocalInstruction(nextDraft, selectedRoomId),
-    });
-  }
-
   async function handleSchedule(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const name = roomName.trim();
@@ -395,13 +371,12 @@ export function ChatView() {
     void openInvite(roomId as RoomId, known?.name ?? null, null);
   }
 
-  function closeDialog(clearDraft: boolean) {
+  function closeDialog() {
     instructionRevisionRef.current += 1;
     copyOperationRevisionRef.current += 1;
     restoreFocusRef.current = true;
     setInstruction(null);
     setCopyState("idle");
-    if (clearDraft) setDraft("");
   }
 
   async function copyInstruction() {
@@ -419,7 +394,6 @@ export function ChatView() {
       ) {
         return;
       }
-      setDraft("");
       setCopyState("copied");
     } catch {
       if (
@@ -431,36 +405,6 @@ export function ChatView() {
       setCopyState("error");
     }
   }
-
-  const composer = (
-    <form className="room-composer" onSubmit={handleSubmit}>
-      <label className="sr-only" htmlFor="room-draft">
-        What do you want done?
-      </label>
-      <textarea
-        id="room-draft"
-        onChange={(event) => setDraft(event.target.value)}
-        onKeyDown={(event) => {
-          if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
-            event.preventDefault();
-            event.currentTarget.form?.requestSubmit();
-          }
-        }}
-        placeholder="Type here…"
-        ref={textareaRef}
-        rows={3}
-        value={draft}
-      />
-      <button
-        aria-label="Continue locally"
-        disabled={!draft.trim()}
-        ref={continueButtonRef}
-        type="submit"
-      >
-        <span aria-hidden="true">↑</span>
-      </button>
-    </form>
-  );
 
   const schedulerForm = (
     <form className="room-schedule-form" onSubmit={handleSchedule}>
@@ -830,7 +774,6 @@ export function ChatView() {
             )}
           </div>
 
-          <footer className="room-composer-dock">{composer}</footer>
         </section>
       ) : (
         <section className="chat-room-empty">
@@ -901,33 +844,29 @@ export function ChatView() {
           className="room-handoff-dialog"
           onCancel={(event) => {
             event.preventDefault();
-            closeDialog(false);
+            closeDialog();
           }}
           onKeyDown={(event) => {
             if (event.key === "Escape") {
               event.preventDefault();
-              closeDialog(false);
+              closeDialog();
             }
           }}
           ref={dialogRef}
         >
           <header>
-            <p>{instruction.kind === "invite" ? "Invite" : "Hand off"}</p>
+            <p>Invite</p>
             <h2 id="room-handoff-title">
-              {instruction.kind === "invite"
-                ? `Invite an Agent to ${instruction.roomName ?? instruction.roomId ?? "this Room"}`
-                : "Post this from a local Agent"}
+              {`Invite an Agent to ${instruction.roomName ?? instruction.roomId ?? "this Room"}`}
             </h2>
           </header>
-          {instruction.kind === "invite" && instruction.roomId ? (
+          {instruction.roomId ? (
             <p className="room-invite-id">
               Room ID <code className="room-canonical-id">{instruction.roomId}</code>
             </p>
           ) : null}
           <p>
-            {instruction.kind === "invite"
-              ? "Paste this into any coding Agent. It joins this Room as a guest with three requests; the token opens this Room only, and joining grants no task authority."
-              : "Copy these instructions to a local Agent. Nothing has been submitted from this browser."}
+            Paste this into any coding Agent. It joins this Room as a guest with three requests; the token opens this Room only, and joining grants no task authority.
           </p>
           <pre aria-label="Local Agent instructions">{instruction.text}</pre>
           {copyState === "copied" ? (
@@ -940,11 +879,8 @@ export function ChatView() {
             </p>
           ) : null}
           <div className="room-handoff-actions">
-            <button onClick={() => closeDialog(false)} type="button">
+            <button onClick={() => closeDialog()} type="button">
               Close
-            </button>
-            <button onClick={() => closeDialog(true)} type="button">
-              Close and clear
             </button>
             <button
               autoFocus
@@ -953,11 +889,7 @@ export function ChatView() {
               ref={copyButtonRef}
               type="button"
             >
-              {copyState === "copied"
-                ? "Copied"
-                : instruction.kind === "invite"
-                  ? "Copy invite"
-                  : "Copy instructions"}
+              {copyState === "copied" ? "Copied" : "Copy invite"}
             </button>
           </div>
         </dialog>
