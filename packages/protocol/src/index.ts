@@ -253,6 +253,7 @@ export const KNOWN_RUNTIME_KINDS = [
   "cursor",
   "github-copilot",
   "workbuddy",
+  "openclaw",
   "custom",
 ] as const;
 

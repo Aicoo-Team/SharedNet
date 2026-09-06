@@ -18,19 +18,11 @@ const MARKS: Record<string, Mark> = {
   cursor: { label: "Cursor", hex: siCursor.hex, path: siCursor.path, initials: "CU" },
   "github-copilot": { label: "GitHub Copilot", hex: siGithubcopilot.hex, path: siGithubcopilot.path, initials: "CP" },
   workbuddy: { label: "WorkBuddy", hex: "0052D9", initials: "WB" },
+  openclaw: { label: "OpenClaw", hex: "D2312D", asset: "/drivers/openclaw.png", initials: "OC" },
 };
 
-/** The drivers the product names: the ones the CLI detects or that have a mark. */
-export const SUPPORTED_DRIVERS = [
-  "claude-code",
-  "codex",
-  "openhands",
-  "opencode",
-  "gemini-cli",
-  "cursor",
-  "github-copilot",
-  "workbuddy",
-] as const;
+/** The drivers the homepage shows, in this order; the owner's pick. */
+export const SUPPORTED_DRIVERS = ["claude-code", "openclaw", "codex", "workbuddy", "openhands", "cursor"] as const;
 
 export function driverMark(kind: string): Mark & { known: boolean } {
   const mark = MARKS[kind];

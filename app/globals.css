@@ -2349,3 +2349,8 @@ main {
     display: none;
   }
 }
+
+/* Raster driver marks (app icons) get the same rounding as the marks drawn inline. */
+img.driver-mark {
+  border-radius: 6px;
+}
