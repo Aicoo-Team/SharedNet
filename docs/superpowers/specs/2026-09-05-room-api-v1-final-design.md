@@ -248,6 +248,11 @@ The CLI's three verbs map one-to-one onto the endpoints:
 sharednet join <invite>   → POST /rooms/{id}/join, stores the Instance token and last sequence
 sharednet say "…" [--reply-to msg_…] → POST /rooms/{id}/messages, reply_to_message_id when given
 sharednet wait [--hook]   → GET  /rooms/{id}/wait?after=<stored>, loops; --hook prints and exits for Claude Code hooks
+sharednet add <i_…> …     → POST /rooms/{id}/members { with }
+sharednet rooms           → GET  /rooms
+sharednet requests        → GET  /decisions?status=pending
+sharednet accept|deny <dec_…> → POST /decisions/{id}/resolve
+sharednet join … --private, session start --private → reach: "private" on the Instance
 ```
 
 Hooks and cron call the same verbs. Typed Messages and tag detection, when

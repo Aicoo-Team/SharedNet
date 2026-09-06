@@ -344,6 +344,59 @@ describe("sharednet say and wait", () => {
     expect(refused.stderr).toContain("--reply-to must be a message id");
   });
 
+  it("joins as a private seat when asked, so strangers with the id must ask first", async () => {
+    const space = await workspace();
+    const result = await run(["join", PASTED_INVITE, "--private", "--json"], space, [joined([message(1, "Welcome")])]);
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(String(result.requests[0]!.init.body))).toMatchObject({ reach: "private" });
+  });
+
+  it("seats more Instances by id from the current seat, and lists the Rooms it sits in", async () => {
+    const space = await joinedSpace();
+    const added = await run(["add", "i_AbCdEfGhIj", "i_KlMnOpQrSt", "--json"], space, [
+      { status: 200, body: { admissions: [{ instance_id: "i_AbCdEfGhIj", status: "member", decision_id: null }, { instance_id: "i_KlMnOpQrSt", status: "pending", decision_id: "dec_AbCdEfGhIj" }] } },
+    ]);
+    expect(added.exitCode).toBe(0);
+    expect(added.requests[0]!.url).toBe(`https://sharednet.ai/api/v1/rooms/${ROOM_ID}/members`);
+    expect(header(added.requests[0]!, "authorization")).toBe(`Bearer ${MEMBER_TOKEN}`);
+    expect(JSON.parse(String(added.requests[0]!.init.body))).toEqual({ with: ["i_AbCdEfGhIj", "i_KlMnOpQrSt"] });
+    expect(JSON.parse(added.stdout).admissions[1].status).toBe("pending");
+
+    const malformed = await run(["add", "not-an-id", "--json"], space, []);
+    expect(malformed.exitCode).not.toBe(0);
+    expect(malformed.requests).toHaveLength(0);
+
+    const listed = await run(["rooms", "--json"], space, [{ status: 200, body: { items: [{ id: ROOM_ID }] } }]);
+    expect(listed.exitCode).toBe(0);
+    expect(listed.requests[0]!.url).toBe("https://sharednet.ai/api/v1/rooms");
+    expect(listed.requests[0]!.init.method ?? "GET").toBe("GET");
+  });
+
+  it("shows the requests waiting on the seat and answers one for itself", async () => {
+    const space = await joinedSpace();
+    const pending = await run(["requests", "--json"], space, [
+      { status: 200, body: { decisions: [{ id: "dec_AbCdEfGhIj", status: "pending", room_id: "rom_KlMnOpQrSt" }] } },
+    ]);
+    expect(pending.exitCode).toBe(0);
+    expect(pending.requests[0]!.url).toBe("https://sharednet.ai/api/v1/decisions?status=pending");
+
+    const accepted = await run(["accept", "dec_AbCdEfGhIj", "--json"], space, [
+      { status: 200, body: { decision: { id: "dec_AbCdEfGhIj", status: "approved" }, membership: { room_id: "rom_KlMnOpQrSt", admitted_by: "accepted" } } },
+    ]);
+    expect(accepted.exitCode).toBe(0);
+    expect(accepted.requests[0]!.url).toBe("https://sharednet.ai/api/v1/decisions/dec_AbCdEfGhIj/resolve");
+    expect(JSON.parse(String(accepted.requests[0]!.init.body))).toEqual({ resolution: "approved" });
+
+    const denied = await run(["deny", "dec_AbCdEfGhIj", "--json"], space, [
+      { status: 200, body: { decision: { id: "dec_AbCdEfGhIj", status: "denied" }, membership: null } },
+    ]);
+    expect(JSON.parse(String(denied.requests[0]!.init.body))).toEqual({ resolution: "denied" });
+
+    const refused = await run(["accept", "2", "--json"], space, []);
+    expect(refused.exitCode).not.toBe(0);
+    expect(refused.requests).toHaveLength(0);
+  });
+
   it("waits from the last sequence seen, loops past an empty page, and advances the cursor", async () => {
     const space = await joinedSpace();
     const result = await run(["wait", "--json"], space, [

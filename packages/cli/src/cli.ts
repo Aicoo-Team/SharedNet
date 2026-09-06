@@ -55,8 +55,20 @@ const optionValueNames = new Set([
   "reply-to",
   "after",
   "limit",
+  "with",
+  "status",
 ]);
-const booleanOptionNames = new Set(["new"]);
+const booleanOptionNames = new Set(["new", "private"]);
+
+/** `--with i_a,i_b`: the Instances to seat, as the API takes them. */
+function instanceList(value: string | undefined): string[] | undefined {
+  if (value === undefined) return undefined;
+  const ids = value.split(",").map((id) => id.trim()).filter((id) => id.length > 0);
+  if (ids.length === 0 || ids.some((id) => !/^i_[0-9A-Za-z]{10}$/.test(id))) {
+    throw localError("invalid_option", "--with takes Instance ids such as i_AbCdEfGhIj, separated by commas.");
+  }
+  return ids;
+}
 
 function extractGlobals(argv: string[]): GlobalArguments {
   const args: string[] = [];
@@ -185,7 +197,7 @@ async function startSession(
 ): Promise<unknown> {
   const parsed = parseArguments(commandArgs);
   assertPositionals(parsed, 0);
-  assertOnlyOptions(parsed, ["agent", "runtime", "new"]);
+  assertOnlyOptions(parsed, ["agent", "runtime", "new", "private"]);
 
   const baseUrl = resolveBaseUrl(dependencies.env.SHAREDNET_BASE_URL);
   const paths = getStoragePaths(dependencies.env);
@@ -194,6 +206,9 @@ async function startSession(
     forceNew: parsed.options.get("new") === true,
     agent: option(parsed, "agent"),
     freshWhenUndetected: false,
+    // --private: strangers who know this Instance's id have to ask before
+    // seating it. Omitted, the Principal's default applies (public).
+    ...(parsed.options.get("private") === true ? { reach: "private" as const } : {}),
   });
   return {
     instance: payload.instance,
@@ -224,14 +239,36 @@ async function roomCommand(
   const parsed = parseArguments(commandArgs);
   if (action === "create") {
     assertPositionals(parsed, 0);
-    assertOnlyOptions(parsed, ["name", "description"]);
+    assertOnlyOptions(parsed, ["name", "description", "with"]);
     const name = requiredOption(parsed, "name");
     const description = option(parsed, "description");
+    const withIds = instanceList(option(parsed, "with"));
     return withSelectedSession(globals, dependencies, (client, session) =>
       client.request("POST", "/rooms", session.instance_token, {
         name,
         ...(description === undefined ? {} : { description }),
+        ...(withIds === undefined ? {} : { with: withIds }),
       }, { "idempotency-key": randomUUID() }),
+    );
+  }
+
+  if (action === "list") {
+    assertPositionals(parsed, 0);
+    assertOnlyOptions(parsed, []);
+    return withSelectedSession(globals, dependencies, (client, session) =>
+      client.request("GET", "/rooms", session.instance_token),
+    );
+  }
+
+  if (action === "add") {
+    assertPositionals(parsed, 1);
+    assertOnlyOptions(parsed, ["with"]);
+    const roomId = parsed.positionals[0]!;
+    const withIds = instanceList(requiredOption(parsed, "with"));
+    return withSelectedSession(globals, dependencies, (client, session) =>
+      client.request("POST", `/rooms/${encodeURIComponent(roomId)}/members`, session.instance_token, {
+        with: withIds,
+      }),
     );
   }
 
@@ -297,6 +334,39 @@ async function roomCommand(
   throw localError("unknown_command", "Unknown room command.");
 }
 
+/**
+ * Decisions addressed to the selected Instance: today, requests to seat it
+ * in a Room while it is private. The Instance answers for itself.
+ */
+async function decisionCommand(
+  action: string | undefined,
+  commandArgs: string[],
+  globals: GlobalArguments,
+  dependencies: ResolvedDependencies,
+): Promise<unknown> {
+  const parsed = parseArguments(commandArgs);
+  if (action === "list") {
+    assertPositionals(parsed, 0);
+    assertOnlyOptions(parsed, ["status"]);
+    const status = option(parsed, "status");
+    const query = status === undefined ? "" : `?status=${encodeURIComponent(status)}`;
+    return withSelectedSession(globals, dependencies, (client, session) =>
+      client.request("GET", `/decisions${query}`, session.instance_token),
+    );
+  }
+  if (action === "approve" || action === "deny") {
+    assertPositionals(parsed, 1);
+    assertOnlyOptions(parsed, []);
+    const decisionId = parsed.positionals[0]!;
+    return withSelectedSession(globals, dependencies, (client, session) =>
+      client.request("POST", `/decisions/${encodeURIComponent(decisionId)}/resolve`, session.instance_token, {
+        resolution: action === "approve" ? "approved" : "denied",
+      }),
+    );
+  }
+  throw localError("unknown_command", "Unknown decision command. Use decision list, approve <id>, or deny <id>.");
+}
+
 async function execute(
   globals: GlobalArguments,
   dependencies: ResolvedDependencies,
@@ -323,9 +393,12 @@ async function execute(
   if (resource === "room") {
     return roomCommand(action, commandArgs, globals, dependencies);
   }
+  if (resource === "decision") {
+    return decisionCommand(action, commandArgs, globals, dependencies);
+  }
   throw localError(
     "unknown_command",
-    "Use login, join/say/wait, or session start/status and room create/join/post/messages.",
+    "Use login, join/say/wait/add/rooms/requests/accept/deny, or session start/status, room create/list/add/join/post/messages, and decision list/approve/deny.",
   );
 }
 
