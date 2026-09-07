@@ -8,6 +8,7 @@ import type {
   InboxPosition,
   AddRoomMembersRequest,
   Admission,
+  InviteDescription,
   Agent,
   AgentId,
   ApiKeyId,
@@ -143,6 +144,8 @@ export interface SharedNetRepository {
     auth: InstanceAuth,
     input: CreateRoomRequest,
   ): Promise<{ room: Room; membership: RoomMember; admissions: Admission[] }>;
+  /** What an invite token opens; 401 if unknown, 410 if revoked or expired. */
+  describeInvite(token: string): Promise<InviteDescription>;
   /** The Rooms the calling Instance is an active member of, newest first. */
   listRooms(auth: InstanceAuth): Promise<{ items: Room[] }>;
   /** Grows a Room the way `with` formed it; any active member may ask. */

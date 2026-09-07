@@ -41,6 +41,7 @@ import {
 import type {
   AddRoomMembersRequest,
   Admission,
+  InviteDescription,
   CreateRoomRequest,
   Decision,
   DecisionId,
@@ -452,6 +453,21 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     this.messages.set(room.id, []);
     const admissions = (input.with ?? []).map((instanceId) => this.admit(creator, room, instanceId));
     return { room: this.projectRoom(room), membership: this.projectMembership(membership), admissions };
+  }
+
+  async describeInvite(token: string): Promise<InviteDescription> {
+    const candidate = digestSecret(token);
+    const invite = [...this.invites.values()].find((record) => secureDigestEquals(candidate, record.tokenDigest));
+    if (!invite) throw new RepositoryError(401, "invalid_credentials", "Credentials are invalid.");
+    if (invite.revoked_at !== null) throw new RepositoryError(410, "invite_revoked", "Room invite was revoked.");
+    if (invite.expires_at !== null && Date.parse(invite.expires_at) <= this.now().getTime()) {
+      throw new RepositoryError(410, "invite_expired", "Room invite has expired.");
+    }
+    const room = this.roomById(invite.room_id);
+    return {
+      room: { id: room.id, name: room.name, state: room.state },
+      invite: { id: invite.id, expires_at: invite.expires_at, uses: invite.uses },
+    };
   }
 
   async listRooms(auth: InstanceAuth): Promise<{ items: Room[] }> {

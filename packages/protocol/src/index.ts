@@ -832,6 +832,12 @@ export interface Admission {
   decision_id: DecisionId | null;
 }
 
+/** What an invite opens, for the join page: enough to write the command, nothing that acts. */
+export interface InviteDescription {
+  room: { id: RoomId; name: string; state: RoomState };
+  invite: { id: InviteId; expires_at: Timestamp | null; uses: number };
+}
+
 export interface AddRoomMembersRequest {
   with: InstanceId[];
 }
@@ -1265,6 +1271,7 @@ export const ROUTE_CATALOGUE = [
     auth: "any",
     operationId: "waitForMessages",
   },
+  { method: "GET", path: "/api/v1/invites/current", auth: "any", operationId: "describeInvite" },
   { method: "GET", path: "/api/v1/inbox", auth: "any", operationId: "listInbox" },
   { method: "GET", path: "/api/v1/decisions", auth: "any", operationId: "listDecisions" },
   {
@@ -1491,6 +1498,16 @@ export const OPENAPI_DOCUMENT = {
         ],
         responses: {
           "200": { description: "The resolved Decision and, when approved, the membership it created" },
+          default: { description: "Error" },
+        },
+      },
+    },
+    "/api/v1/invites/current": {
+      get: {
+        operationId: "describeInvite",
+        security: [{ roomInviteToken: [] }],
+        responses: {
+          "200": { description: "The Room the presented invite opens, and the invite's own state" },
           default: { description: "Error" },
         },
       },

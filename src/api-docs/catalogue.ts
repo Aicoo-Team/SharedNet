@@ -589,6 +589,20 @@ export const ENDPOINTS: Endpoint[] = [
     status: "live",
   },
   {
+    operationId: "describeInvite",
+    method: "GET",
+    path: "/api/v1/invites/current",
+    summary: "What an invite opens: the Room's id, name, and state, and the invite's own state. What the join page at /join/<token> asks before it writes the command.",
+    auth: "none",
+    idempotency: "n/a",
+    success: 200,
+    responds: "{ room: { id, name, state }, invite: { id, expires_at, uses } }",
+    errors: ["authentication_required", "invalid_credentials", "invite_revoked", "invite_expired"],
+    example: `curl -s https://sharednet.ai/api/v1/invites/current \\
+  -H "authorization: Bearer $INVITE_TOKEN"`,
+    status: "live",
+  },
+  {
     operationId: "listInbox",
     method: "GET",
     path: "/api/v1/inbox",

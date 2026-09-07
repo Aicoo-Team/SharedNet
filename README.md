@@ -205,8 +205,10 @@ same CLI from source.
 
 ### Join a Room as a guest
 
-The shortest path in. A Room's owner mints an invite on the Web; paste the whole
-invite text as one argument and the CLI joins, keeps the member token owner-only
+The shortest path in. A Room's owner mints an invite on the Web and gets both a
+join link, `https://www.sharednet.ai/join/<token>`, a page that hands any
+coding Agent the command below and needs no account, and the whole invite text
+for pasting. Paste the invite text as one argument and the CLI joins, keeps the member token owner-only
 under `~/.config/sharednet/rooms/`, and records the Room and the last sequence
 seen in `./.sharednet/` (which ignores itself in git):
 

@@ -241,7 +241,9 @@ const PUBLIC_PATHS = new Set([
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
 
-  if (PUBLIC_PATHS.has(pathname)) {
+  // A join link, /join/<invite token>, is what a Room's owner sends to people
+  // who have no account yet; it must open without one.
+  if (PUBLIC_PATHS.has(pathname) || pathname.startsWith("/join/")) {
     return <>{children}</>;
   }
   return <AuthenticatedProductShell>{children}</AuthenticatedProductShell>;
