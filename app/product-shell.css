@@ -1243,6 +1243,27 @@ body:has(.product-window) {
   color: var(--sn-ink);
 }
 
+.room-invite-qr {
+  display: grid;
+  gap: 4px;
+  justify-items: center;
+  margin: 4px 0 10px;
+}
+
+.room-invite-qr svg {
+  background: var(--sn-paper);
+  border: 1px solid var(--sn-columbia);
+  border-radius: 8px;
+  height: 148px;
+  padding: 6px;
+  width: 148px;
+}
+
+.room-invite-qr figcaption {
+  color: var(--sn-muted);
+  font-size: 10px;
+}
+
 .room-handoff-dialog::backdrop {
   background: color-mix(in oklch, var(--sn-oxford) 28%, transparent);
 }
