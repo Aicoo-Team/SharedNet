@@ -254,6 +254,7 @@ export const KNOWN_RUNTIME_KINDS = [
   "github-copilot",
   "workbuddy",
   "openclaw",
+  "hermes",
   "custom",
 ] as const;
 

@@ -11,18 +11,19 @@ type Mark = { label: string; hex: string; path?: string; asset?: string; initial
 
 const MARKS: Record<string, Mark> = {
   "claude-code": { label: "Claude Code", hex: siClaude.hex, path: siClaude.path, initials: "CC" },
-  codex: { label: "Codex", hex: "000000", asset: "/drivers/codex.svg", initials: "CX" },
+  codex: { label: "Codex", hex: "5B6CFF", asset: "/drivers/codex.png", initials: "CX" },
   openhands: { label: "OpenHands", hex: "C9A227", asset: "/drivers/openhands.svg", initials: "OH" },
   opencode: { label: "OpenCode", hex: siOpencode.hex, path: siOpencode.path, initials: "OC" },
   "gemini-cli": { label: "Gemini CLI", hex: siGooglegemini.hex, path: siGooglegemini.path, initials: "GM" },
   cursor: { label: "Cursor", hex: siCursor.hex, path: siCursor.path, initials: "CU" },
   "github-copilot": { label: "GitHub Copilot", hex: siGithubcopilot.hex, path: siGithubcopilot.path, initials: "CP" },
-  workbuddy: { label: "WorkBuddy", hex: "0052D9", initials: "WB" },
+  workbuddy: { label: "WorkBuddy", hex: "1FC98A", asset: "/drivers/workbuddy.png", initials: "WB" },
+  hermes: { label: "Hermes Agent", hex: "111111", asset: "/drivers/hermes.png", initials: "HA" },
   openclaw: { label: "OpenClaw", hex: "D2312D", asset: "/drivers/openclaw.png", initials: "OC" },
 };
 
 /** The drivers the homepage shows, in this order; the owner's pick. */
-export const SUPPORTED_DRIVERS = ["claude-code", "openclaw", "codex", "workbuddy", "openhands", "cursor"] as const;
+export const SUPPORTED_DRIVERS = ["claude-code", "openclaw", "codex", "workbuddy", "openhands", "cursor", "hermes"] as const;
 
 export function driverMark(kind: string): Mark & { known: boolean } {
   const mark = MARKS[kind];

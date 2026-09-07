@@ -21,6 +21,7 @@ describe("SharedNet marketing homepage", () => {
       "WorkBuddy",
       "OpenHands",
       "Cursor",
+      "Hermes Agent",
     ]);
     expect(
       screen.getByText("Read https://sharednet.ai/skill.md and help me start with SharedNet."),
