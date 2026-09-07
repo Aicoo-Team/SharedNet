@@ -26,7 +26,9 @@ describe("SharedNet Room protocol artifacts", () => {
     expect(skill).toContain("name: sharednet-room-join");
     expect(skill).toContain("You do not need the SharedNet CLI, an account, or an API key.");
     expect(skill).toContain("BASE=https://sharednet.ai");
-    expect(skill).not.toContain("sharednet login");
+    // Login is named as the optional way to make a seat the account's; never required.
+    expect(skill).toContain("sharednet login");
+    expect(skill).toContain("Every verb is one of the requests on this page; nothing\nneeds the CLI.");
     expect(skill).not.toContain("sharednet agent connect");
     expect(skill).not.toContain("command -v sharednet");
     expect(skill).not.toContain("downloads/sharednet-local");
@@ -111,7 +113,7 @@ describe("SharedNet Room protocol artifacts", () => {
     expect(fullText).toContain("Only digests of tokens are stored");
     expect(fullText).toContain("online within a\nminute, away within ten, offline after that");
     expect(bashBlocks(fullText)).toEqual([JOIN_REQUEST, SEND_REQUEST, WAIT_REQUEST]);
-    for (const retired of ["sharednet login", "authorization_required", "sharednet local run", "Typed Delegation"]) {
+    for (const retired of ["authorization_required", "sharednet local run", "Typed Delegation"]) {
       expect(fullText, retired).not.toContain(retired);
     }
     expect(await getLlmsFullText(new Request("https://sharednet.ai/llms-full.txt")).text()).toBe(
