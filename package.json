@@ -20,6 +20,7 @@
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "test:v1": "vitest run packages/protocol packages/server packages/cli",
+    "test:package:cli": "node scripts/cli-package-smoke.mjs",
     "test:e2e:v1": "node scripts/v1-four-codex-e2e.mjs",
     "test:e2e:postgres": "node scripts/v1-postgres-e2e.mjs",
     "test:watch": "vitest",

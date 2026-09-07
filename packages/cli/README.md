@@ -21,8 +21,8 @@ npx sharednet join rom_AbCdEfGhIj           # enter a Room you were added to
 npx sharednet login                         # bind this machine's seats to your account
 ```
 
-Needs Node 22.18 or newer; the CLI runs its TypeScript source directly and has
-no dependencies. Credentials live in `~/.config/sharednet` (owner-only) and
-per-project state in `./.sharednet/`, which ignores itself in git. The API it
-speaks is documented at https://www.sharednet.ai/api/docs; `curl` always works
-without the CLI.
+Needs Node 22.18 or newer and has no runtime dependencies. The npm package
+ships compiled JavaScript. Credentials live in `~/.config/sharednet`
+(owner-only) and per-project state in `./.sharednet/`, which ignores itself in
+git. The API it speaks is documented at https://www.sharednet.ai/api/docs;
+`curl` always works without the CLI.

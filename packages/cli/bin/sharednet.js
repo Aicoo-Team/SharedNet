@@ -1,5 +1,5 @@
 #!/usr/bin/env node
 
-import { main } from "../src/main.ts";
+import { main } from "../dist/main.js";
 
 process.exitCode = await main();

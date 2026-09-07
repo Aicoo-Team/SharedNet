@@ -10,6 +10,7 @@ before it is done. `pnpm test` is the fast loop; CI is the source of truth.
 | Typecheck | `pnpm run typecheck` | every PR, every push to `main` | the contract compiles: branded ids, nullable tags, exact request shapes |
 | Unit and component | `pnpm test` (Vitest) | every PR, every push | protocol parsers, repositories (in-memory), the HTTP handler, Dashboard contracts and components, auth configuration |
 | In-process end-to-end | `pnpm run test:e2e:v1` | every PR, every push | four Codex sessions through the real CLI against the in-process dev server: register, room, join, post, read, with nothing local uploaded |
+| CLI package smoke | `pnpm run test:package:cli` | before an npm release | the packed tarball contains compiled JavaScript and metadata, installs into a clean project, and runs without Node's TypeScript stripping |
 | Migrations on an empty database | `pnpm run db:migrate` in CI | every PR, every push | every migration applies, in order, to PostgreSQL 16 |
 | PostgreSQL end-to-end | `pnpm run test:e2e:postgres` | every PR, every push | sign-up, sign-in, API key issuance, Instance registration and a Room against a real database; raw keys never stored |
 | Production build | `pnpm run build` | every PR, every push | the Dashboard builds with placeholder env and no database |
@@ -72,7 +73,7 @@ those periodically. There is one database and it is production's — see
 | Auth, origins, credentials | `src/auth/trusted-origins.test.ts` or a sibling covers it, and a foreign `Origin` is shown to get 403 |
 | `src/sharednet/server-client.ts` (Dashboard BFF) | the projection passes the contract validator in a `server-client.test.ts` case driven by the Drizzle stub |
 | `src/components`, `app/` | a component test asserts the visible behaviour by role/text; nullable fields (a null tag, an empty room) render |
-| `packages/cli` | `cli.test.ts` asserts the exact requests sent and that no local-only value leaks; `test:e2e:v1` still passes |
+| `packages/cli` | `cli.test.ts` asserts the exact requests sent and that no local-only value leaks; `test:e2e:v1` and `test:package:cli` still pass |
 | A deploy | `/api/health` returns 200 and the post-deploy smoke workflow is green |
 
 ## Rules that keep tests honest
