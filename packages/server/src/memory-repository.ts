@@ -117,6 +117,8 @@ type CliLoginRecord = CliLogin & {
 };
 
 const CLI_LOGIN_TTL_MS = 10 * 60_000;
+/** A claim sits on a page the human is looking at; unused, it lapses after a week. */
+const CLI_CLAIM_TTL_MS = 7 * 24 * 60 * 60_000;
 
 export { RepositoryError } from "./repository.ts";
 export type {
@@ -916,6 +918,37 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     };
     this.cliLogins.set(record.id, record);
     return { login: this.projectCliLogin(record), user_code: code, poll_token: pollToken };
+  }
+
+  async createCliClaim(input: { principalId: PrincipalId; label: string | null }): Promise<{ login: CliLogin; claim: ClpSecret }> {
+    const principal = this.principals.get(input.principalId);
+    if (!principal) throw new RepositoryError(404, "principal_not_found", "Principal was not found.");
+    const now = this.now();
+    const claim = generateSecret("clp");
+    const record: CliLoginRecord = {
+      id: generatePublicId("cli"),
+      state: "approved",
+      label: input.label,
+      bind_instance_ids: [],
+      principal_id: principal.id,
+      created_at: now.toISOString(),
+      expires_at: new Date(now.getTime() + CLI_CLAIM_TTL_MS).toISOString(),
+      approved_at: now.toISOString(),
+      codeDigest: digestSecret(generateCliLoginCode()),
+      pollTokenDigest: digestSecret(claim),
+      apiKeyId: null,
+    };
+    this.cliLogins.set(record.id, record);
+    return { login: this.projectCliLogin(record), claim };
+  }
+
+  async redeemCliClaim(claim: string) {
+    const digest = digestSecret(claim);
+    const record = [...this.cliLogins.values()].find((candidate) => secureDigestEquals(digest, candidate.pollTokenDigest));
+    if (!record) throw new RepositoryError(404, "login_not_found", "CLI login was not found.");
+    const polled = await this.pollCliLogin(record.id, claim);
+    if (polled.state !== "approved") throw new RepositoryError(404, "login_not_found", "CLI login was not found.");
+    return polled;
   }
 
   private cliLoginByCode(code: string): CliLoginRecord | null {

@@ -95,6 +95,8 @@ type SenderInfo = (Pick<InstanceRow, "displayName"> & { principalAuthUserId: str
  */
 /** Any authenticated request is presence; the row is touched at most this often. */
 const SEEN_REFRESH_MS = 10_000;
+/** A claim sits on a page the human is looking at; unused, it lapses after a week. */
+const CLI_CLAIM_TTL_MS = 7 * 24 * 60 * 60_000;
 
 export type PostgresRepositoryOptions = {
   now?: () => Date;
@@ -1462,6 +1464,44 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
       if (!updated) throw new RepositoryError(500, "internal_error", "CLI login approval failed.");
       return { login: projectCliLogin(updated), bound_principal_ids: bound };
     });
+  }
+
+  async createCliClaim(input: { principalId: PrincipalId; label: string | null }): Promise<{ login: CliLogin; claim: ClpSecret }> {
+    const [principal] = await this.executor().select({ id: principals.id }).from(principals).where(eq(principals.id, input.principalId)).limit(1);
+    if (!principal) throw new RepositoryError(404, "principal_not_found", "Principal was not found.");
+    const now = this.now();
+    const claim = generateSecret("clp");
+    const [record] = await this.executor()
+      .insert(cliLogins)
+      .values({
+        id: generatePublicId("cli"),
+        codeDigest: digestSecret(generateCliLoginCode()),
+        pollTokenDigest: digestSecret(claim),
+        label: input.label,
+        state: "approved",
+        bindInstanceIds: [],
+        principalId: input.principalId,
+        apiKeyId: null,
+        createdAt: now,
+        expiresAt: new Date(now.getTime() + CLI_CLAIM_TTL_MS),
+        approvedAt: now,
+        consumedAt: null,
+      })
+      .returning();
+    if (!record) throw new RepositoryError(500, "internal_error", "CLI claim creation failed.");
+    return { login: projectCliLogin(record), claim };
+  }
+
+  async redeemCliClaim(claim: string) {
+    const [record] = await this.executor()
+      .select({ id: cliLogins.id })
+      .from(cliLogins)
+      .where(eq(cliLogins.pollTokenDigest, digestSecret(claim)))
+      .limit(1);
+    if (!record) throw new RepositoryError(404, "login_not_found", "CLI login was not found.");
+    const polled = await this.pollCliLogin(record.id, claim);
+    if (polled.state !== "approved") throw new RepositoryError(404, "login_not_found", "CLI login was not found.");
+    return polled;
   }
 
   async pollCliLogin(loginId: CliLoginId, pollToken: string) {

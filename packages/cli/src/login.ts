@@ -125,6 +125,26 @@ async function heldSeatTokens(paths: StoragePaths): Promise<string[]> {
   return tokens.slice(0, 50);
 }
 
+/** The key stays in the credential file, owner-only; the terminal sees only ids. */
+export async function storeAccountCredential(
+  paths: StoragePaths,
+  baseUrl: string,
+  result: { principal: { id: string }; api_key_id: string; api_key: string },
+  now: Date,
+): Promise<void> {
+  const installationSecret = await getOrCreateInstallationSecret(paths);
+  await writeStoredApiCredential(paths, {
+    schema_version: 1,
+    base_url: baseUrl,
+    principal_id: result.principal.id,
+    api_key_id: result.api_key_id,
+    api_key: result.api_key,
+    installation_secret: installationSecret,
+    created_at: now.toISOString(),
+    expires_at: null,
+  });
+}
+
 export async function login(args: string[], dependencies: LoginDependencies): Promise<unknown> {
   const { label, openBrowser } = parseLoginArguments(args);
   const baseUrl = resolveBaseUrl(dependencies.env.SHAREDNET_BASE_URL);
@@ -161,17 +181,7 @@ export async function login(args: string[], dependencies: LoginDependencies): Pr
       started.poll_token,
     );
     if (result.state === "approved") {
-      const installationSecret = await getOrCreateInstallationSecret(paths);
-      await writeStoredApiCredential(paths, {
-        schema_version: 1,
-        base_url: baseUrl,
-        principal_id: result.principal.id,
-        api_key_id: result.api_key_id,
-        api_key: result.api_key,
-        installation_secret: installationSecret,
-        created_at: dependencies.now().toISOString(),
-        expires_at: null,
-      });
+      await storeAccountCredential(paths, baseUrl, result, dependencies.now());
       // The key stays in the credential file; the terminal sees only ids.
       return {
         principal_id: result.principal.id,

@@ -22,22 +22,40 @@ describe("the join page", () => {
     vi.unstubAllGlobals();
   });
 
-  it("asks what the invite opens with the token as the only credential, then writes the Agent's command", async () => {
-    fetchMock.mockResolvedValueOnce(
-      jsonResponse({ room: { id: "rom_AbCdEfGhIj", name: "Hackathon", state: "open" }, invite: { id: "inv_AbCdEfGhIj", expires_at: null, uses: 3 } }),
-    );
+  it("asks what the invite opens, mints a claim for the signed-in account, and writes the Agent's command with it", async () => {
+    const CLAIM = `clp_${"c".repeat(43)}`;
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse({ room: { id: "rom_AbCdEfGhIj", name: "Hackathon", state: "open" }, invite: { id: "inv_AbCdEfGhIj", expires_at: null, uses: 3 } }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ claim: CLAIM, login_id: "cli_AbCdEfGhIj", expires_at: "2026-09-14T00:00:00.000Z", principal_id: "p_AbCdEfGhIj" }));
 
     render(<JoinView token={TOKEN} />);
 
     expect(await screen.findByRole("heading", { level: 1 })).toHaveTextContent("Join Hackathon");
     expect(fetchMock).toHaveBeenCalledWith("/api/v1/invites/current", { headers: { authorization: `Bearer ${TOKEN}` } });
-    const command = screen.getByText(/npx sharednet join/);
-    expect(command).toHaveTextContent(`npx sharednet join 'ROOM=rom_AbCdEfGhIj TOKEN=${TOKEN} BASE=${window.location.origin}'`);
+    const command = await screen.findByText(/--claim/);
+    expect(command).toHaveTextContent(`npx sharednet join 'ROOM=rom_AbCdEfGhIj TOKEN=${TOKEN} BASE=${window.location.origin}' --claim ${CLAIM}`);
+    expect(fetchMock).toHaveBeenLastCalledWith("/api/sharednet/cli/claims", expect.objectContaining({ method: "POST", credentials: "same-origin" }));
     expect(screen.getByRole("button", { name: "Copy" })).toBeVisible();
-    // The plain-HTTP fallback and the human's line are there, and no account is asked for first.
+    // The plain invite and the three requests stay for an Agent that is not the viewer's.
     expect(screen.getByLabelText("Plain HTTP join")).toHaveTextContent('curl -s -X POST "$BASE/api/v1/rooms/$ROOM/join"');
     expect(screen.getByLabelText("For you")).toHaveTextContent("npx sharednet login");
     expect(within(screen.getByLabelText("For you")).getByRole("link", { name: "Dashboard" })).toHaveAttribute("href", "/chat");
+  });
+
+  it("falls back to the plain command, and says so, when no claim could be minted", async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse({ room: { id: "rom_AbCdEfGhIj", name: "Hackathon", state: "open" }, invite: { id: "inv_AbCdEfGhIj", expires_at: null, uses: 3 } }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ error: { code: "authentication_required" } }, 401));
+
+    render(<JoinView token={TOKEN} />);
+
+    expect(await screen.findByText(/could not be minted/)).toBeVisible();
+    const commands = screen.getAllByText(/npx sharednet join/, { selector: "code" });
+    expect(commands.every((node) => !node.textContent?.includes("--claim"))).toBe(true);
   });
 
   it("explains a revoked invite and offers no command", async () => {

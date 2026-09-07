@@ -1281,6 +1281,7 @@ export const ROUTE_CATALOGUE = [
     operationId: "resolveDecision",
   },
   { method: "POST", path: "/api/v1/cli/logins", auth: "public", operationId: "startCliLogin" },
+  { method: "POST", path: "/api/v1/cli/claims/redeem", auth: "public", operationId: "redeemCliClaim" },
   {
     method: "POST",
     path: "/api/v1/cli/logins/{login_id}/poll",
@@ -1508,6 +1509,16 @@ export const OPENAPI_DOCUMENT = {
         security: [{ roomInviteToken: [] }],
         responses: {
           "200": { description: "The Room the presented invite opens, and the invite's own state" },
+          default: { description: "Error" },
+        },
+      },
+    },
+    "/api/v1/cli/claims/redeem": {
+      post: {
+        operationId: "redeemCliClaim",
+        security: [{ cliLoginPollToken: [] }],
+        responses: {
+          "200": { description: "The account API key the claim stands for, returned exactly once, with its Principal" },
           default: { description: "Error" },
         },
       },

@@ -247,6 +247,20 @@ export interface SharedNetRepository {
     code: string;
     principalId: PrincipalId;
   }): Promise<{ login: CliLogin; bound_principal_ids: PrincipalId[] }>;
+  /**
+   * The signed-in Web mints a claim for its own account: a login that is
+   * approved from the start, whose poll token is the claim code the join page
+   * puts into the Agent's command. Single use; expires in seven days unused.
+   */
+  createCliClaim(input: { principalId: PrincipalId; label: string | null }): Promise<{ login: CliLogin; claim: ClpSecret }>;
+  /** Redeems a claim by its code alone: the approved poll, found by the token's digest. */
+  redeemCliClaim(claim: string): Promise<{
+    state: "approved";
+    login: CliLogin;
+    api_key: SnkSecret;
+    api_key_id: ApiKeyId;
+    principal: Principal;
+  }>;
   /** What the approve page shows: the login behind a code, if it is still pending. */
   getCliLoginByCode(code: string): Promise<{ login: CliLogin } | null>;
   /**

@@ -824,6 +824,39 @@ describe("Room invites, guests, and wait", () => {
     expect((await join(forever)).status).toBe(200);
   });
 
+  it("redeems a claim the signed-in Web minted: the key once, then the code is spent", async () => {
+    const store = new MemorySharedNetRepository({ devApiKey: DEV_KEY });
+    const { principalId } = await openRoom(store);
+    const { claim } = await store.createCliClaim({ principalId, label: "join Hackathon" });
+    const redeem = (bearer: string) =>
+      request(store, "/api/v1/cli/claims/redeem", { method: "POST", headers: { authorization: `Bearer ${bearer}` } });
+
+    const redeemed = await redeem(claim);
+    expect(redeemed.status).toBe(200);
+    expect(redeemed.headers.get("cache-control")).toContain("no-store");
+    const body = await json(redeemed);
+    expect(body.state).toBe("approved");
+    expect(body.principal.id).toBe(principalId);
+    expect(body.api_key).toMatch(/^snk_/);
+
+    // The key is the account's: it registers Instances of that Principal.
+    const started = await request(store, "/api/v1/instances", {
+      method: "POST",
+      headers: { authorization: `Bearer ${body.api_key}`, "content-type": "application/json" },
+      body: JSON.stringify({ runtime_kind: "claude-code", cli_version: "0.1.0" }),
+    });
+    expect(started.status).toBe(201);
+    expect((await json(started)).instance.principal_id).toBe(principalId);
+
+    // Spent: a second redemption, an unknown code, and a token of another kind all fail.
+    const again = await redeem(claim);
+    expect(again.status).toBe(410);
+    expect((await json(again)).error.code).toBe("login_consumed");
+    expect((await redeem(`clp_${"n".repeat(43)}`)).status).toBe(404);
+    expect((await redeem(`sni_${"x".repeat(43)}`)).status).toBe(401);
+    expect((await request(store, "/api/v1/cli/claims/redeem", { method: "POST" })).status).toBe(401);
+  });
+
   it("tells the join page what an invite opens, and only that", async () => {
     let clock = new Date("2026-09-07T12:00:00Z");
     const store = new MemorySharedNetRepository({ devApiKey: DEV_KEY, now: () => clock });
