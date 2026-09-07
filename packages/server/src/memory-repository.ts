@@ -246,13 +246,13 @@ export class MemorySharedNetRepository implements SharedNetRepository {
 
     const record = this.instances.get(instanceId);
     if (!record) return null;
+    if (record.status === "ended" || record.status === "revoked") return null;
+    // Any authenticated request is presence, for every Instance.
+    const now = this.now();
+    record.last_seen_at = now.toISOString();
+    record.lease_expires_at = new Date(now.getTime() + PRESENCE_LEASE_MS).toISOString();
     if (record.issuedByKeyId === null) {
-      // An anonymous Principal's Instance: no key to check, no heartbeat to
-      // keep. Any authenticated request is its presence.
-      if (record.status === "ended" || record.status === "revoked") return null;
-      const now = this.now();
-      record.last_seen_at = now.toISOString();
-      record.lease_expires_at = new Date(now.getTime() + PRESENCE_LEASE_MS).toISOString();
+      // An anonymous Principal's Instance: no key to check.
       return {
         kind: "instance",
         principalId: record.principal_id,

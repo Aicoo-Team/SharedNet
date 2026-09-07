@@ -92,7 +92,8 @@ type SenderInfo = (Pick<InstanceRow, "displayName"> & { principalAuthUserId: str
  * An invite-admitted Instance counts as seen at most this often, so `wait`
  * polls do not write on every tick. Any authenticated request is its presence.
  */
-const ANONYMOUS_SEEN_REFRESH_MS = 10_000;
+/** Any authenticated request is presence; the row is touched at most this often. */
+const SEEN_REFRESH_MS = 10_000;
 
 export type PostgresRepositoryOptions = {
   now?: () => Date;
@@ -367,16 +368,19 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
     if (!record || instanceStatus(record, this.now()) === "expired") return null;
     if (record.state !== "active") return null;
 
+    // Any authenticated request is presence, for every Instance: a seat that
+    // sits in `wait` for an hour is online the whole time, with or without a
+    // heartbeat of its own. Throttled so a busy seat does not write on every call.
+    const now = this.now();
+    if (now.getTime() - record.lastSeenAt.getTime() >= SEEN_REFRESH_MS) {
+      await this.executor()
+        .update(instances)
+        .set({ lastSeenAt: now, leaseExpiresAt: new Date(now.getTime() + PRESENCE_LEASE_MS) })
+        .where(eq(instances.id, record.id));
+    }
+
     if (record.issuedByKeyId === null) {
-      // An anonymous Principal's Instance: no key to check, no heartbeat to
-      // keep. Any authenticated request is its presence.
-      const now = this.now();
-      if (now.getTime() - record.lastSeenAt.getTime() >= ANONYMOUS_SEEN_REFRESH_MS) {
-        await this.executor()
-          .update(instances)
-          .set({ lastSeenAt: now, leaseExpiresAt: new Date(now.getTime() + PRESENCE_LEASE_MS) })
-          .where(eq(instances.id, record.id));
-      }
+      // An anonymous Principal's Instance: no key to check.
       return {
         kind: "instance",
         principalId: record.principalId,
@@ -391,7 +395,6 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
       .from(apiKey)
       .where(eq(apiKey.id, record.issuedByKeyId))
       .limit(1);
-    const now = this.now();
     if (!issuer?.enabled || (issuer.expiresAt !== null && issuer.expiresAt <= now)) {
       return null;
     }
