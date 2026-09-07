@@ -385,6 +385,16 @@ export async function handleRequest(
       return jsonResponse(await repository.getCurrentInstance(auth), { status: 200 });
     }
 
+    if (path === "/api/v1/invites/current") {
+      if (request.method !== "GET") return routeMethodNotAllowed("GET");
+      const repository = getRepository();
+      const bearer = parseBearer(request);
+      if (bearer === null) return errorResponse("authentication_required");
+      if (!RIT_PATTERN.test(bearer)) return errorResponse("invalid_credentials");
+      // The join page asks what the invite opens; the token is the only credential.
+      return jsonResponse(await repository.describeInvite(bearer), { status: 200, headers: NO_STORE_HEADERS });
+    }
+
     if (path === "/api/v1/decisions") {
       if (request.method !== "GET") return routeMethodNotAllowed("GET");
       const repository = getRepository();

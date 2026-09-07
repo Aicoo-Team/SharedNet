@@ -824,6 +824,32 @@ describe("Room invites, guests, and wait", () => {
     expect((await join(forever)).status).toBe(200);
   });
 
+  it("tells the join page what an invite opens, and only that", async () => {
+    let clock = new Date("2026-09-07T12:00:00Z");
+    const store = new MemorySharedNetRepository({ devApiKey: DEV_KEY, now: () => clock });
+    const { room, principalId } = await openRoom(store);
+    const { token, invite } = await store.createRoomInvite({ roomId: room.id, principalId });
+    const describe = (bearer: string) => request(store, "/api/v1/invites/current", { headers: { authorization: `Bearer ${bearer}` } });
+
+    const described = await describe(token);
+    expect(described.status).toBe(200);
+    expect(await json(described)).toEqual({
+      room: { id: room.id, name: room.name, state: "open" },
+      invite: { id: invite.id, expires_at: null, uses: 0 },
+    });
+    // No token, or a token of another kind, opens nothing.
+    expect((await request(store, "/api/v1/invites/current")).status).toBe(401);
+    expect((await describe(`sni_${"x".repeat(43)}`)).status).toBe(401);
+    expect((await describe(`rit_${"z".repeat(43)}`)).status).toBe(401);
+    await store.revokeRoomInvite({ inviteId: invite.id, principalId });
+    const revoked = await describe(token);
+    expect(revoked.status).toBe(410);
+    expect((await json(revoked)).error.code).toBe("invite_revoked");
+    const { token: brief } = await store.createRoomInvite({ roomId: room.id, principalId, expiresInSeconds: 60 });
+    clock = new Date("2026-09-07T12:05:00Z");
+    expect((await json(await describe(brief))).error.code).toBe("invite_expired");
+  });
+
   it("keeps a guest inside its own Room only", async () => {
     const store = makeStore();
     const { room, principalId } = await openRoom(store);

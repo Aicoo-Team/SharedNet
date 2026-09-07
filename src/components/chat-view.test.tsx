@@ -725,6 +725,8 @@ describe("SharedNet Rooms", () => {
     expect(state.createInvite).toHaveBeenCalledWith("rom_lxw0rfaLIb");
     const invite = within(dialog).getByLabelText("Local Agent instructions").textContent ?? "";
     expect(invite).toContain("Join SharedNet Room rom_lxw0rfaLIb.");
+    expect(invite).toContain(`Link for people: ${window.location.origin}/join/${INVITE_TOKEN}`);
+    expect(within(dialog).getByText(`${window.location.origin}/join/${INVITE_TOKEN}`)).toBeVisible();
     // The CLI comes first; the curl route is the fallback.
     expect(invite.indexOf("npx sharednet join 'ROOM=rom_lxw0rfaLIb")).toBeLessThan(invite.indexOf('curl -s -X POST "$BASE/api/v1/rooms/$ROOM/join"'));
     expect(invite).toContain("sharednet login");

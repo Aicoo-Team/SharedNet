@@ -305,6 +305,20 @@ describe("SharedNet application shell", () => {
     expect(authClient.useSession).not.toHaveBeenCalled();
   });
 
+  it("leaves a join link outside the authenticated product frame: people arrive with no account", () => {
+    navigationState.pathname = `/join/rit_${"t".repeat(43)}`;
+
+    render(
+      <AppShell>
+        <p>Join page</p>
+      </AppShell>,
+    );
+
+    expect(screen.getByText("Join page")).toBeVisible();
+    expect(screen.queryByRole("navigation", { name: "Primary surfaces" })).toBeNull();
+    expect(authClient.useSession).not.toHaveBeenCalled();
+  });
+
   it("leaves the public homepage outside the authenticated product frame", () => {
     navigationState.pathname = "/";
 

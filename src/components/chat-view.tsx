@@ -19,6 +19,8 @@ type LocalInstruction = {
   roomId: RoomId | null;
   roomName: string | null;
   text: string;
+  /** The join page for humans: `/join/<token>`. */
+  link?: string;
 };
 
 function currentOrigin(): string {
@@ -40,6 +42,7 @@ export function buildInviteInstruction(
   const base = origin.replace(/\/+$/, "");
   const lines = [
     `Join SharedNet Room ${roomId}${roomName ? ` ("${roomName}")` : ""}.`,
+    `Link for people: ${base}/join/${token}`,
     `ROOM=${roomId}`,
     `TOKEN=${token}`,
     `BASE=${base}`,
@@ -278,6 +281,7 @@ export function ChatView() {
         roomId,
         roomName: name,
         text: buildInviteInstruction(currentOrigin(), roomId, name, roomBrief, token),
+        link: `${currentOrigin().replace(/\/+$/, "")}/join/${token}`,
       });
     } catch (cause) {
       setInviteError(
@@ -860,6 +864,12 @@ export function ChatView() {
           {instruction.roomId ? (
             <p className="room-invite-id">
               Room ID <code className="room-canonical-id">{instruction.roomId}</code>
+            </p>
+          ) : null}
+          {instruction.link ? (
+            <p className="room-invite-link">
+              Join link <code className="room-canonical-id">{instruction.link}</code>
+              <span> · send this to people; the page gives their Agent the command</span>
             </p>
           ) : null}
           <p>

@@ -68,6 +68,7 @@ import {
 import type {
   AddRoomMembersRequest,
   Admission,
+  InviteDescription,
   CreateRoomRequest,
   Decision,
   DecisionId,
@@ -685,6 +686,24 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
         admissions,
       };
     });
+  }
+
+  async describeInvite(token: string): Promise<InviteDescription> {
+    const [invite] = await this.executor()
+      .select()
+      .from(roomInvites)
+      .where(eq(roomInvites.tokenDigest, digestSecret(token)))
+      .limit(1);
+    if (!invite) throw new RepositoryError(401, "invalid_credentials", "Credentials are invalid.");
+    if (invite.revokedAt !== null) throw new RepositoryError(410, "invite_revoked", "Room invite was revoked.");
+    if (invite.expiresAt !== null && invite.expiresAt.getTime() <= this.now().getTime()) {
+      throw new RepositoryError(410, "invite_expired", "Room invite has expired.");
+    }
+    const room = await this.roomById(invite.roomId);
+    return {
+      room: { id: room.id, name: room.name, state: room.state },
+      invite: { id: invite.id, expires_at: invite.expiresAt ? timestamp(invite.expiresAt) : null, uses: invite.uses },
+    };
   }
 
   async listRooms(auth: InstanceAuth): Promise<{ items: Room[] }> {
