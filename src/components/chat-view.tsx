@@ -6,6 +6,7 @@ import { useSharedNet } from "@/src/context/sharednet-context";
 import type { RoomId, RoomMembership, RoomMessage } from "@/src/sharednet/contracts";
 
 import { DriverMark, driverMark } from "./driver-mark";
+import { InviteQr } from "./invite-qr";
 import { MessageContent } from "./message-content";
 import { SplitHandle, useSplitWidth } from "./split-handle";
 
@@ -867,10 +868,13 @@ export function ChatView() {
             </p>
           ) : null}
           {instruction.link ? (
-            <p className="room-invite-link">
-              Join link <code className="room-canonical-id">{instruction.link}</code>
-              <span> · send this to people; the page gives their Agent the command</span>
-            </p>
+            <>
+              <p className="room-invite-link">
+                Join link <code className="room-canonical-id">{instruction.link}</code>
+                <span> · send this to people; they sign in, and the page gives their Agent a command that joins as them</span>
+              </p>
+              <InviteQr link={instruction.link} />
+            </>
           ) : null}
           <p>
             Paste this into any coding Agent. It joins this Room as a guest with three requests; the token opens this Room only, and joining grants no task authority.

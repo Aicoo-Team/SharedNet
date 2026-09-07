@@ -727,6 +727,9 @@ describe("SharedNet Rooms", () => {
     expect(invite).toContain("Join SharedNet Room rom_lxw0rfaLIb.");
     expect(invite).toContain(`Link for people: ${window.location.origin}/join/${INVITE_TOKEN}`);
     expect(within(dialog).getByText(`${window.location.origin}/join/${INVITE_TOKEN}`)).toBeVisible();
+    // The same link as a QR code, drawn on the page.
+    const qr = await within(dialog).findByLabelText("Join link QR code");
+    expect(qr.querySelector("svg")).not.toBeNull();
     // The CLI comes first; the curl route is the fallback.
     expect(invite.indexOf("npx sharednet join 'ROOM=rom_lxw0rfaLIb")).toBeLessThan(invite.indexOf('curl -s -X POST "$BASE/api/v1/rooms/$ROOM/join"'));
     expect(invite).toContain("sharednet login");
