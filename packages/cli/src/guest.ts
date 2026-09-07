@@ -271,6 +271,10 @@ async function join(args: string[], dependencies: GuestDependencies): Promise<un
     last_sequence: highestSequence(payload.history.items, 0),
   };
   await writeProjectRoomState(dependencies.cwd, state);
+  // The one moment to say it: this seat belongs to nobody yet.
+  dependencies.stderr?.(
+    `Joined ${payload.room.id} as ${memberId}, an anonymous seat. Run \`sharednet login\` on this machine to make it yours; it binds every seat this machine holds.\n`,
+  );
 
   // Everything the Agent should report, and nothing it should not: the tokens
   // stay in the credential file.

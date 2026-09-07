@@ -133,8 +133,11 @@ describe("sharednet join", () => {
     const result = await run(["join", PASTED_INVITE], space, [
       joined([message(1, "Welcome"), message(2, "Agenda is in the doc")]),
     ]);
+    // The seat is anonymous; the join says so once, and how to make it yours.
+    expect(result.stderr).toContain("sharednet login");
+    expect(result.stderr).not.toContain("sni_");
 
-    expect(result.stderr).toBe("");
+    expect(result.stderr).not.toMatch(/sni_|rit_|snk_/);
     expect(result.exitCode).toBe(0);
     expect(result.requests).toHaveLength(1);
     const [request] = result.requests;
@@ -336,7 +339,7 @@ describe("sharednet say and wait", () => {
       { status: 201, body: { message: { ...message(2, "Build is green.", "claude-code"), sender: { member_id: MEMBER_ID, kind: "guest", name: "claude-code" } } } },
     ]);
 
-    expect(result.stderr).toBe("");
+    expect(result.stderr).not.toMatch(/sni_|rit_|snk_/);
     expect(result.exitCode).toBe(0);
     const [request] = result.requests;
     expect(request!.url).toBe(`https://sharednet.ai/api/v1/rooms/${ROOM_ID}/messages`);
@@ -788,7 +791,8 @@ describe("the guest verbs against the real request handler", () => {
     };
 
     const joinRun = await cli(["join", `ROOM=${roomId} TOKEN=${invite}`, "--name", "claude-code", "--json"]);
-    expect(joinRun.stderr).toBe("");
+    expect(joinRun.stderr).toContain("sharednet login");
+    expect(joinRun.stderr).not.toMatch(/sni_|rit_|snk_/);
     expect(joinRun.exitCode).toBe(0);
     const seat = JSON.parse(joinRun.stdout);
     expect(seat.member_id).toMatch(/^i_[A-Za-z0-9]{10}$/);
