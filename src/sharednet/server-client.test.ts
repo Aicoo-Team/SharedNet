@@ -75,13 +75,16 @@ vi.mock("@/packages/db/src/client.ts", () => {
     const chain: Record<string, unknown> = {
       then: (resolve: (value: unknown[]) => unknown) => resolve(rows),
     };
-    for (const method of ["where", "orderBy", "limit"]) {
+    for (const method of ["where", "orderBy", "limit", "for"]) {
       chain[method] = () => chain;
     }
     return chain;
   };
 
-  const database = {
+  const database: Record<string, unknown> = {
+    // A transaction runs its body against the same stub; enough to prove the
+    // client asks for one and does its writes inside it.
+    transaction: async (body: (tx: unknown) => Promise<unknown>) => body(database),
     insert: (table: Parameters<typeof getTableName>[0]) => ({
       values: (row: Record<string, unknown>) => ({
         returning: async () => {
@@ -467,6 +470,17 @@ describe("SharedNetServerClient reads the V1 Postgres tables", () => {
     );
     expect(isDecisionProjection(resolved)).toBe(true);
     expect(resolved.status).toBe("approved");
+  });
+
+  it("shows a Room to a removed member no more: a left seat reads nothing through the Web", async () => {
+    const client = clientWith({
+      ...BASE_TABLES,
+      room: [{ ...roomRow, principalId: "p_SomeoneElse" }],
+      room_member: [{ ...memberRow, state: "left", leftAt: NOW }],
+    });
+    await expect(client.getRoom("auth-user-1", ROOM as never)).rejects.toMatchObject({ code: "room_not_found", status: 404 });
+    const rooms = await client.listRooms("auth-user-1");
+    expect(rooms.rooms.map((room) => room.room_id)).toEqual([]);
   });
 
   it("names the asker's own Principal on a seat request from another Principal", async () => {

@@ -873,6 +873,33 @@ describe("Room invites, guests, and wait", () => {
     expect((await json(current)).instance.id).toBe(instance.id);
   });
 
+  it("keeps an account seat online while it only reads: any authenticated request renews the lease", async () => {
+    let clock = new Date("2026-09-06T12:00:00Z");
+    const store = new MemorySharedNetRepository({ devApiKey: DEV_KEY, now: () => clock });
+    const { token, instance } = await startInstance(store);
+    const created = await request(store, "/api/v1/rooms", {
+      method: "POST",
+      headers: instanceHeaders(token, { "content-type": "application/json", "idempotency-key": UUID }),
+      body: JSON.stringify({ name: "Quiet" }),
+    });
+    const { room } = await json(created);
+
+    // An hour of nothing but polling the Room, no heartbeat from the CLI.
+    clock = new Date("2026-09-06T13:00:00Z");
+    const polled = await request(store, `/api/v1/rooms/${room.id}/wait?after=0&timeout=0`, { headers: instanceHeaders(token) });
+    expect(polled.status).toBe(200);
+    const seen = await json(await request(store, "/api/v1/instances/current", { headers: instanceHeaders(token) }));
+    expect(seen.instance.id).toBe(instance.id);
+    expect(seen.instance.status).toBe("online");
+    // And it can still speak: posting requires an online Instance.
+    const said = await request(store, `/api/v1/rooms/${room.id}/messages`, {
+      method: "POST",
+      headers: instanceHeaders(token, { "content-type": "application/json", "idempotency-key": "5e6f7a8b-9c0d-4e1f-8a2b-3c4d5e6f7a8b" }),
+      body: JSON.stringify({ content: "still here" }),
+    });
+    expect(said.status).toBe(201);
+  });
+
   it("forms a group: a public Instance is seated at once and finds the Room in its list", async () => {
     const store = new MemorySharedNetRepository({ devApiKeys: [DEV_KEY, OTHER_KEY], now: () => new Date("2026-09-06T12:00:00Z") });
     const host = await startInstance(store);

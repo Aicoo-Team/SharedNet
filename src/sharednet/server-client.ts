@@ -717,8 +717,13 @@ export class SharedNetServerClient {
     // Membership admits the viewer, and so does having scheduled the Room from
     // the Web. A Room the account can neither see nor own is reported as absent
     // rather than as forbidden.
+    // Membership means an active seat: a removed member reads nothing more,
+    // which is the same rule the public API applies.
     const isOwner = room.principalId === principal.id;
-    if (!isOwner && !memberRows.some((member) => member.principalId === principal.id)) {
+    if (
+      !isOwner &&
+      !memberRows.some((member) => member.principalId === principal.id && member.state === "active")
+    ) {
       throw new SharedNetApiError("room_not_found", 404, "Room not found");
     }
 
@@ -910,17 +915,27 @@ export class SharedNetServerClient {
     resolution: DecisionResolution,
   ): Promise<DecisionProjection> {
     const principal = await this.requirePrincipal(authUserId);
-    const database = this.database();
+    // One transaction: the Decision is locked, moved, and the seat it grants
+    // written together, so "approved but never seated" cannot be left behind.
+    return this.database().transaction(async (tx) => this.resolveDecisionIn(tx, principal.id, decisionId, resolution));
+  }
 
+  private async resolveDecisionIn(
+    database: ReturnType<SharedNetServerClient["database"]>,
+    principalId: string,
+    decisionId: DecisionId,
+    resolution: DecisionResolution,
+  ): Promise<DecisionProjection> {
     const [existing] = await database
       .select()
       .from(decisions)
       .where(
         and(
           eq(decisions.id, decisionId as never),
-          eq(decisions.principalId, principal.id),
+          eq(decisions.principalId, principalId as never),
         ),
       )
+      .for("update")
       .limit(1);
 
     if (!existing) {
@@ -958,15 +973,20 @@ export class SharedNetServerClient {
     // Instances: the seat is written here, the same way the Instance's own
     // API answer writes it (decision 2026-09-06 reach, §4).
     if (resolution.outcome === "approved" && existing.requestedForInstanceId && existing.roomId) {
-      await this.seatAccepted(existing.roomId, existing.requestedForInstanceId, existing.requestedByInstanceId);
+      await this.seatAccepted(database, existing.roomId, existing.requestedForInstanceId, existing.requestedByInstanceId);
     }
 
-    return this.decisionProjection(updated, await this.instanceRows());
+    const instanceRows = await database.select().from(instances);
+    return this.decisionProjection(updated, new Map(instanceRows.map((row) => [row.id as string, row])));
   }
 
   /** Writes the accepted seat, reviving a left one; a live seat is left alone. */
-  private async seatAccepted(roomId: string, instanceId: string, addedBy: string): Promise<void> {
-    const database = this.database();
+  private async seatAccepted(
+    database: ReturnType<SharedNetServerClient["database"]>,
+    roomId: string,
+    instanceId: string,
+    addedBy: string,
+  ): Promise<void> {
     const memberRows = await database.select().from(roomMembers);
     const existing = memberRows.find(
       (row) => (row.roomId as string) === roomId && (row.instanceId as string) === instanceId,
@@ -1012,10 +1032,11 @@ export class SharedNetServerClient {
     principalId: string,
   ): Promise<Array<(typeof roomMembers.$inferSelect)["roomId"]>> {
     const rows = await this.database()
-      .select({ roomId: roomMembers.roomId })
+      .select({ roomId: roomMembers.roomId, state: roomMembers.state })
       .from(roomMembers)
-      .where(eq(roomMembers.principalId, principalId as never));
-    return [...new Set(rows.map((row) => row.roomId))];
+      .where(and(eq(roomMembers.principalId, principalId as never), eq(roomMembers.state, "active")));
+    // The filter is repeated here for the test stub, which ignores `where`.
+    return [...new Set(rows.filter((row) => row.state === "active").map((row) => row.roomId))];
   }
 
   /** Rooms this Principal is a member of, plus the ones it scheduled itself. */
