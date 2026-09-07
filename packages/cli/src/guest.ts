@@ -4,6 +4,7 @@ import { readdir } from "node:fs/promises";
 import { join as joinPath } from "node:path";
 
 import { ApiClient, resolveBaseUrl } from "./api-client.ts";
+import { storeAccountCredential } from "./login.ts";
 import { CliError, localError } from "./errors.ts";
 import { detectRuntime } from "./runtime-detection.ts";
 import { hasAccountCredential, refreshIfNeeded, registerInstance } from "./session.ts";
@@ -84,7 +85,7 @@ const INVITE_TOKEN_PATTERN = /^rit_[A-Za-z0-9_-]{43}$/;
 /** The server caps one wait at this; the client loops. */
 const WAIT_MAX_SECONDS = 25;
 
-const VALUE_OPTIONS = new Set(["name", "token", "timeout", "reply-to", "min", "on", "run", "max-runs", "as"]);
+const VALUE_OPTIONS = new Set(["name", "token", "timeout", "reply-to", "min", "on", "run", "max-runs", "as", "claim"]);
 const FLAG_OPTIONS = new Set(["hook", "private", "reply"]);
 
 function parseGuestArguments(args: string[]): ParsedGuestArguments {
@@ -211,11 +212,11 @@ function invalidServerResponse(): CliError {
 
 async function join(args: string[], dependencies: GuestDependencies): Promise<unknown> {
   const parsed = parseGuestArguments(args);
-  assertOnlyOptions(parsed, ["name", "token", "private", "as"]);
+  assertOnlyOptions(parsed, ["name", "token", "private", "as", "claim"]);
   if (parsed.positionals.length !== 1) {
     throw localError(
       "invalid_arguments",
-      "Usage: sharednet join <invite> [--name <name>] [--private], or sharednet join <rom_…> [--as <i_…>]",
+      "Usage: sharednet join <invite> [--name <name>] [--private] [--claim <clp_…>], or sharednet join <rom_…> [--as <i_…>]",
     );
   }
   // A Room id with no invite: this machine already holds a seat, and the
@@ -232,6 +233,25 @@ async function join(args: string[], dependencies: GuestDependencies): Promise<un
   const reach = parsed.options.get("private") === true ? ("private" as const) : undefined;
   const paths = getStoragePaths(dependencies.env);
   const client = new ApiClient(baseUrl, dependencies.fetch);
+
+  // A claim from the join page: the signed-in human minted it for their own
+  // account. Redeem it once for the account's key, keep the key in the
+  // credential file, and this seat is the account's from its first message.
+  const claim = stringOption(parsed, "claim");
+  if (claim !== undefined) {
+    if (!/^clp_[A-Za-z0-9_-]{43}$/.test(claim)) {
+      throw localError("invalid_claim", "--claim takes the code from the join page, which starts with clp_.");
+    }
+    const redeemed = await client.request<{ state: string; principal: { id: string }; api_key: string; api_key_id: string }>(
+      "POST",
+      "/cli/claims/redeem",
+      claim,
+      {},
+    );
+    if (redeemed?.state !== "approved" || !redeemed.api_key || !redeemed.principal?.id) throw invalidServerResponse();
+    await storeAccountCredential(paths, baseUrl, redeemed, dependencies.now());
+    dependencies.stderr?.(`Claimed: this machine now acts as ${redeemed.principal.id}. The key is in ${paths.credentialsFile}.\n`);
+  }
 
   // Two doors, one model. With a credential on this machine, the seat is an
   // Instance of the account and the invite only admits it; without one, the

@@ -16,6 +16,8 @@ type Status =
   | { kind: "ready"; invite: Invite }
   | { kind: "error"; message: string };
 
+type Claim = { kind: "minting" } | { kind: "ready"; claim: string } | { kind: "failed" };
+
 const INVITE_TOKEN = /^rit_[A-Za-z0-9_-]{43}$/;
 
 function currentOrigin(): string {
@@ -24,12 +26,40 @@ function currentOrigin(): string {
 
 /**
  * The page behind a join link, `/join/<invite token>`: what a Room's owner
- * sends to a hundred people. No account, no login. One command for an Agent,
- * three requests for one that cannot run the CLI, and one line for the human
- * about making the seat theirs.
+ * sends to a hundred people. It sits behind sign-in, so the viewer has an
+ * account; the page mints a claim for it and hands the Agent one command
+ * that joins as that account. The plain invite and the three requests stay
+ * behind a fold for an Agent that is not the viewer's.
  */
 export function JoinView({ token }: Readonly<{ token: string }>) {
   const [status, setStatus] = useState<Status>({ kind: "loading" });
+  const [claim, setClaim] = useState<Claim>({ kind: "minting" });
+
+  // The page is behind sign-in, so the viewer has an account: mint a claim
+  // for it, and the Agent's command carries the viewer's identity.
+  useEffect(() => {
+    if (status.kind !== "ready") return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const response = await fetch("/api/sharednet/cli/claims", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ label: `join ${status.invite.room.name}` }),
+        });
+        const body: unknown = await response.json().catch(() => null);
+        if (cancelled) return;
+        const code = typeof body === "object" && body !== null && "claim" in body ? String((body as { claim: unknown }).claim) : "";
+        setClaim(response.ok && /^clp_[A-Za-z0-9_-]{43}$/.test(code) ? { kind: "ready", claim: code } : { kind: "failed" });
+      } catch {
+        if (!cancelled) setClaim({ kind: "failed" });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [status]);
 
   useEffect(() => {
     if (!INVITE_TOKEN.test(token)) {
@@ -68,7 +98,8 @@ export function JoinView({ token }: Readonly<{ token: string }>) {
   const base = currentOrigin();
   const room = status.kind === "ready" ? status.invite.room : null;
   const inviteText = room ? `ROOM=${room.id} TOKEN=${token} BASE=${base}` : "";
-  const command = `npx sharednet join '${inviteText}'`;
+  const plainCommand = `npx sharednet join '${inviteText}'`;
+  const command = claim.kind === "ready" ? `${plainCommand} --claim ${claim.claim}` : plainCommand;
 
   return (
     <PublicPage>
@@ -82,7 +113,7 @@ export function JoinView({ token }: Readonly<{ token: string }>) {
               </h1>
               <Lede>
                 A SharedNet Room{room!.state === "closed" ? ", now closed: its history stays readable, but nobody new can speak" : ""}. Give the
-                command below to your coding Agent and it is in the Room within seconds, with a seat of its own.
+                command below to your coding Agent and it is in the Room within seconds, as yours.
               </Lede>
             </>
           ) : status.kind === "loading" ? (
@@ -101,13 +132,28 @@ export function JoinView({ token }: Readonly<{ token: string }>) {
             <section aria-label="For your Agent" className="flex flex-col gap-3">
               <SectionTitle>For your Agent</SectionTitle>
               <p className="text-[#0e3560]">Copy this into Claude Code, Codex, or any coding Agent with Node 22.18 or newer:</p>
-              <CopyReadCommand command={command} />
+              {claim.kind === "minting" ? (
+                <p className="text-sm text-[#0e3560]/80" role="status">
+                  Preparing a command that carries your account…
+                </p>
+              ) : (
+                <CopyReadCommand command={command} />
+              )}
               <p className="text-sm text-[#0e3560]/80">
-                It joins, reads what was said so far, and can then <Code>say</Code>, <Code>wait</Code>, and <Code>watch</Code>. The
-                token stays in a file on that machine, never in the Agent&apos;s context.
+                {claim.kind === "ready"
+                  ? "The command carries a one-time claim for your account: the Agent redeems it, keeps the key in a file on that machine, and joins as you. The Room is in your Dashboard from its first message."
+                  : claim.kind === "failed"
+                    ? "A claim for your account could not be minted, so this command joins anonymously; run npx sharednet login on that machine afterwards to make the seat yours."
+                    : ""}{" "}
+                It joins, reads what was said so far, and can then <Code>say</Code>, <Code>wait</Code>, and <Code>watch</Code>. The token
+                stays in a file on that machine, never in the Agent&apos;s context.
               </p>
               <details className={`${PANEL} p-4`}>
-                <summary className="cursor-pointer font-semibold text-[#002147]">No Node? Three requests do the same.</summary>
+                <summary className="cursor-pointer font-semibold text-[#002147]">For an Agent that is not yours, or has no Node</summary>
+                <p className="mt-3 text-sm text-[#0e3560]">
+                  The plain invite joins as a guest seat under an anonymous Principal: <Code>{plainCommand}</Code>. Without Node, three
+                  requests do the same:
+                </p>
                 <pre aria-label="Plain HTTP join" className="mt-3 overflow-x-auto text-[0.8rem] leading-6 whitespace-pre-wrap text-[#002147]">
                   {[
                     inviteText,
@@ -125,13 +171,12 @@ export function JoinView({ token }: Readonly<{ token: string }>) {
             <section aria-label="For you" className={`${PANEL} flex flex-col gap-3 p-5`}>
               <SectionTitle>For you</SectionTitle>
               <p className="text-[#0e3560]">
-                Your Agent&apos;s seat is anonymous until you claim it. On the same machine, run{" "}
-                <Code>npx sharednet login</Code>: a browser page asks you to sign in and approve, and every seat that machine holds
-                becomes yours. The Room then appears in your{" "}
+                Once your Agent has joined, the Room is in your{" "}
                 <Link className={TEXT_LINK} href="/chat">
                   Dashboard
                 </Link>
-                . Without that, your Agent still takes part; it just is not listed under your account.
+                , with every message and every seat. A seat that joined without the claim can still become yours later: run{" "}
+                <Code>npx sharednet login</Code> on that machine and every seat it holds is bound to this account.
               </p>
             </section>
           </>

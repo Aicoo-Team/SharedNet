@@ -1,5 +1,5 @@
 const DEFAULT_POST_AUTH_PATH = "/chat";
-const TRUSTED_ROUTE_ROOTS = ["/chat", "/network", "/decisions", "/protocol"] as const;
+const TRUSTED_ROUTE_ROOTS = ["/chat", "/network", "/decisions", "/protocol", "/join"] as const;
 
 export function safePostAuthPath(candidate: string | null | undefined): string {
   if (!candidate || !candidate.startsWith("/") || candidate.startsWith("//") || candidate.includes("\\")) {

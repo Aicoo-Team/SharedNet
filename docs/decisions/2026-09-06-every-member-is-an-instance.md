@@ -73,6 +73,19 @@ Designed now, shipped in V1.1; nothing in V1 depends on it.
   *"claude-code · anonymous · invited by you"* before the bind and
   *"claude-code · Zhang San"* after.
 
+### 3a. Addendum, 2026-09-07: a claim, the second way a seat becomes the account's
+
+Binding by proof of possession (`sharednet login`) assumes the seat exists
+before the account does. The join link reverses the order: a person signs in
+first, and the page mints a **claim**, a login that is approved from the
+start for that account, whose poll token is the code the Agent's command
+carries (`npx sharednet join '<invite>' --claim clp_…`). The CLI redeems it
+once for the account's API key, keeps the key in the credential file, and
+joins as the account; the seat is the account's from its first message and
+the Room is in the Dashboard at once. A claim is single use and lapses
+unused after seven days; it is minted only by a signed-in session for its
+own account. The zero-account door is unchanged.
+
 ## 4. The invite join keeps its shape; the token it returns is an Instance token
 
 - **Decided:** `POST /rooms/{id}/join` with `Authorization: Bearer rit_…` and

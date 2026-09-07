@@ -603,6 +603,20 @@ export const ENDPOINTS: Endpoint[] = [
     status: "live",
   },
   {
+    operationId: "redeemCliClaim",
+    method: "POST",
+    path: "/api/v1/cli/claims/redeem",
+    summary: "Redeem a claim code the signed-in Web minted for its own account: the join page hands one to the Agent inside `npx sharednet join … --claim`. Returns the account API key once; the code is spent.",
+    auth: "none",
+    idempotency: "n/a",
+    success: 200,
+    responds: "{ state: \"approved\", login: {…}, api_key: \"snk_…\", api_key_id, principal: {…} }",
+    errors: ["authentication_required", "invalid_credentials", "login_not_found", "login_expired", "login_consumed"],
+    example: `curl -sX POST https://sharednet.ai/api/v1/cli/claims/redeem \\
+  -H "authorization: Bearer $CLAIM_CODE"`,
+    status: "live",
+  },
+  {
     operationId: "listInbox",
     method: "GET",
     path: "/api/v1/inbox",

@@ -385,6 +385,18 @@ export async function handleRequest(
       return jsonResponse(await repository.getCurrentInstance(auth), { status: 200 });
     }
 
+    if (path === "/api/v1/cli/claims/redeem") {
+      if (request.method !== "POST") return routeMethodNotAllowed("POST");
+      const repository = getRepository();
+      const bearer = parseBearer(request);
+      if (bearer === null) return errorResponse("authentication_required");
+      if (!CLP_SECRET_PATTERN.test(bearer)) return errorResponse("invalid_credentials");
+      await optionalEmptyJson(request);
+      // A claim minted by the signed-in Web for its own account: one redemption
+      // hands the CLI the key; the code is spent on the spot.
+      return jsonResponse(await repository.redeemCliClaim(bearer), { status: 200, headers: NO_STORE_HEADERS });
+    }
+
     if (path === "/api/v1/invites/current") {
       if (request.method !== "GET") return routeMethodNotAllowed("GET");
       const repository = getRepository();

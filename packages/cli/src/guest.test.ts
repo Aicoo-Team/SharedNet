@@ -217,6 +217,58 @@ describe("sharednet join", () => {
     expect(body).toEqual({ name: "agent" });
   });
 
+  it("redeems a claim from the join page first, then joins as that account, with the key kept on disk", async () => {
+    const space = await workspace();
+    const CLAIM = `clp_${"c".repeat(43)}`;
+    const KEY = `snk_${"Q".repeat(43)}`;
+    const instance = {
+      id: "i_ClaimedSeat",
+      principal_id: "p_ClAiMeD001",
+      agent_id: null,
+      runtime_kind: "codex",
+      cli_version: "0.1.0",
+      status: "online",
+      display_name: null,
+      started_at: "2026-09-07T00:00:00.000Z",
+      last_seen_at: "2026-09-07T00:00:00.000Z",
+      lease_expires_at: "2099-09-07T00:01:30.000Z",
+      token_expires_at: null,
+      ended_at: null,
+      revoked_at: null,
+    };
+    const result = await run(["join", PASTED_INVITE, "--claim", CLAIM, "--json"], space, [
+      {
+        status: 200,
+        body: { state: "approved", login: { id: "cli_AbCdEfGhIj", bind_instance_ids: [] }, api_key: KEY, api_key_id: "key_AbCdEfGhIj", principal: { id: "p_ClAiMeD001", display_name: "Xisen" } },
+      },
+      { status: 201, body: { instance, token: `sni_${"C".repeat(43)}`, heartbeat_after_seconds: 30 } },
+      {
+        status: 200,
+        body: {
+          room: { id: ROOM_ID, name: "Launch review", state: "open" },
+          membership: { member_id: "i_ClaimedSeat", principal_id: "p_ClAiMeD001", kind: "instance", admitted_by: "invite", name: null, state: "active" },
+        },
+      },
+      { status: 200, body: { items: [message(1, "Welcome")], next_cursor: "1", has_more: false } },
+    ]);
+    expect(result.exitCode).toBe(0);
+    // The claim goes first, as the bearer, and nothing else; then the account door as usual.
+    expect(result.requests[0]!.url).toBe("https://sharednet.ai/api/v1/cli/claims/redeem");
+    expect(header(result.requests[0]!, "authorization")).toBe(`Bearer ${CLAIM}`);
+    expect(result.requests[1]!.url).toBe("https://sharednet.ai/api/v1/instances");
+    expect(header(result.requests[1]!, "authorization")).toBe(`Bearer ${KEY}`);
+    expect(JSON.parse(result.stdout)).toMatchObject({ as: "account", principal_id: "p_ClAiMeD001", member_id: "i_ClaimedSeat" });
+    expect(result.stderr).toContain("Claimed");
+    expect(result.stdout + result.stderr).not.toContain(KEY);
+    const credentialsFile = join(space.env.XDG_CONFIG_HOME!, "sharednet", "credentials.json");
+    expect((await stat(credentialsFile)).mode & 0o777).toBe(0o600);
+    expect(JSON.parse(await readFile(credentialsFile, "utf8"))).toMatchObject({ api_key: KEY, principal_id: "p_ClAiMeD001" });
+
+    const malformed = await run(["join", PASTED_INVITE, "--claim", "nope", "--json"], space, []);
+    expect(malformed.exitCode).not.toBe(0);
+    expect(malformed.requests).toHaveLength(0);
+  });
+
   it("joins as the account when a credential is present: registers an Instance, joins with the invite, reads history", async () => {
     const space = await workspace();
     const instance = {

@@ -25,6 +25,7 @@ import {
 } from "@/packages/db/src/schema.ts";
 
 import {
+  type CliClaimProjection,
   type CliLoginProjection,
   type RuntimeSummary,
   type CloseRoomResponse,
@@ -614,6 +615,13 @@ export class SharedNetServerClient {
       }
       throw error;
     }
+  }
+
+  /** A claim code for this account, for the join page's Agent command. */
+  async createCliClaim(authUserId: string, label: string | null): Promise<CliClaimProjection> {
+    const principal = await this.requirePrincipal(authUserId);
+    const { login, claim } = await this.loginRepository().createCliClaim({ principalId: principal.id as never, label });
+    return { claim, login_id: login.id, expires_at: login.expires_at, principal_id: principal.id as PrincipalId };
   }
 
   private loginRepository(): PostgresSharedNetRepository {

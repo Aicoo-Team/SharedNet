@@ -555,6 +555,25 @@ function isRoomMembership(value: unknown): value is RoomMembership {
   return value.kind === "guest" && isNonEmptyString(value.name);
 }
 
+/** A claim the signed-in Web minted for its own account; the code is returned once. */
+export type CliClaimProjection = {
+  claim: string;
+  login_id: string;
+  expires_at: string;
+  principal_id: PrincipalId;
+};
+
+export function isCliClaimProjection(value: unknown): value is CliClaimProjection {
+  return (
+    hasExactKeys(value, ["claim", "login_id", "expires_at", "principal_id"]) &&
+    typeof value.claim === "string" &&
+    /^clp_[A-Za-z0-9_-]{43}$/.test(value.claim) &&
+    isNonEmptyString(value.login_id) &&
+    isTimestamp(value.expires_at) &&
+    isPrincipalId(value.principal_id)
+  );
+}
+
 /** A CLI login as the approve page sees it: no code, no token. */
 export type CliLoginProjection = {
   login_id: string;
