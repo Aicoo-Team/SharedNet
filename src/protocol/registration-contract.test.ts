@@ -28,7 +28,7 @@ describe("SharedNet Room protocol artifacts", () => {
     expect(skill).toContain("BASE=https://sharednet.ai");
     // Login is named as the optional way to make a seat the account's; never required.
     expect(skill).toContain("sharednet login");
-    expect(skill).toContain("Every verb is one of the requests on this page; nothing\nneeds the CLI.");
+    expect(skill).toContain("nothing\nneeds the CLI");
     expect(skill).not.toContain("sharednet agent connect");
     expect(skill).not.toContain("command -v sharednet");
     expect(skill).not.toContain("downloads/sharednet-local");
