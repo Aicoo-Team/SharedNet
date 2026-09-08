@@ -24,6 +24,7 @@
     "test:e2e:v1": "node scripts/v1-four-codex-e2e.mjs",
     "test:e2e:postgres": "node scripts/v1-postgres-e2e.mjs",
     "test:e2e:dashboard": "node --experimental-strip-types scripts/dashboard-door-postgres-e2e.mjs",
+    "scenario:chat": "node --experimental-strip-types scripts/scenarios/chat-scenario.mjs",
     "test:watch": "vitest",
     "typecheck": "next typegen && tsc --noEmit",
     "demo:seed": "node --experimental-strip-types scripts/seed-demo-room.mjs"
