@@ -1,6 +1,6 @@
 import { hostname, platform } from "node:os";
 
-import { ApiClient } from "./api-client.ts";
+import { ApiClient, sameOrigin } from "./api-client.ts";
 import { CliError, localError } from "./errors.ts";
 import { computeLocalInstanceKey } from "./instance-computation.ts";
 import { detectRuntime, isRuntimeKind, runtimeMetadataOf } from "./runtime-detection.ts";
@@ -72,7 +72,7 @@ export async function resolveApiKey(
   if (environmentKey) return environmentKey;
   const credential = await readStoredApiCredential(paths);
   if (!credential) throw apiKeyAuthenticationError();
-  if (credential.base_url !== baseUrl) {
+  if (!sameOrigin(credential.base_url, baseUrl)) {
     throw localError(
       "credential_origin_mismatch",
       "The stored credential belongs to a different SharedNet origin.",
@@ -194,14 +194,14 @@ export async function selectSession(
       throw localError("invalid_session_id", "SHAREDNET_SESSION must be an Instance ID.");
     }
     const selected = await readSessionById(paths, selectedId);
-    if (!selected || selected.base_url !== baseUrl) {
+    if (!selected || !sameOrigin(selected.base_url, baseUrl)) {
       throw localError("session_not_found", "The selected local SharedNet session was not found.");
     }
     return selected;
   }
 
   const usable = (await listSessions(paths)).filter(
-    (session) => session.base_url === baseUrl,
+    (session) => sameOrigin(session.base_url, baseUrl),
   );
   if (usable.length !== 1) {
     throw localError(
@@ -309,5 +309,5 @@ export async function registerInstance(
 export async function hasAccountCredential(env: Environment, paths: StoragePaths, baseUrl: string): Promise<boolean> {
   if (env.SHAREDNET_API_KEY?.trim()) return true;
   const credential = await readStoredApiCredential(paths).catch(() => null);
-  return credential !== null && credential.base_url === baseUrl;
+  return credential !== null && sameOrigin(credential.base_url, baseUrl);
 }

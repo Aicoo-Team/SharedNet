@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { readdir } from "node:fs/promises";
 import { join as joinPath } from "node:path";
 
-import { ApiClient, resolveBaseUrl } from "./api-client.ts";
+import { ApiClient, resolveBaseUrl, sameOrigin } from "./api-client.ts";
 import { storeAccountCredential } from "./login.ts";
 import { CliError, localError } from "./errors.ts";
 import { detectRuntime } from "./runtime-detection.ts";
@@ -520,7 +520,7 @@ async function currentSeat(
       "The member token for this Room is not on this machine. Join again with a new invite.",
     );
   }
-  if (credential.base_url !== state.base_url) {
+  if (!sameOrigin(credential.base_url, state.base_url)) {
     throw localError(
       "credential_origin_mismatch",
       "The stored Room credential belongs to a different SharedNet origin.",
@@ -533,7 +533,7 @@ async function currentSeat(
   const session = state.member_id.startsWith("i_")
     ? await readSessionById(paths, state.member_id).catch(() => null)
     : null;
-  if (session && session.base_url === state.base_url) {
+  if (session && sameOrigin(session.base_url, state.base_url)) {
     const fresh = await refreshIfNeeded(client, paths, session, dependencies.now());
     return { client, state, credential: { ...credential, member_token: fresh.instance_token } };
   }
@@ -849,15 +849,18 @@ async function whoami(args: string[], dependencies: GuestDependencies): Promise<
   const stored = await readStoredApiCredential(paths).catch(() => null);
   const envKey = Boolean(dependencies.env.SHAREDNET_API_KEY?.trim());
   const account =
-    stored && stored.base_url === baseUrl
+    stored && sameOrigin(stored.base_url, baseUrl)
       ? { principal_id: stored.principal_id, api_key_id: stored.api_key_id, source: "credentials_file" as const, credentials_file: paths.credentialsFile }
       : envKey
         ? { principal_id: null, api_key_id: null, source: "SHAREDNET_API_KEY" as const, credentials_file: null }
         : null;
   const state = await readProjectRoomState(dependencies.cwd);
+  // The seat this directory holds is reported whatever origin it lives on;
+  // say/wait act on that origin, not on the environment's default.
   const seat =
-    state && state.base_url === baseUrl
+    state
       ? {
+          base_url: state.base_url,
           room_id: state.room_id,
           member_id: state.member_id,
           last_sequence: state.last_sequence,

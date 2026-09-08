@@ -3,7 +3,7 @@ import { readdir } from "node:fs/promises";
 import { hostname } from "node:os";
 import { join } from "node:path";
 
-import { ApiClient, resolveBaseUrl } from "./api-client.ts";
+import { ApiClient, resolveBaseUrl, sameOrigin } from "./api-client.ts";
 import { CliError, localError } from "./errors.ts";
 import {
   getOrCreateInstallationSecret,
@@ -102,7 +102,6 @@ async function defaultOpenBrowser(url: string): Promise<boolean> {
  * to the server that issued it, and nothing to any other.
  */
 async function heldSeatTokens(paths: StoragePaths, baseUrl: string): Promise<string[]> {
-  const origin = baseUrl.replace(/\/+$/, "");
   let roomDirs: string[];
   try {
     roomDirs = await readdir(paths.roomsDir);
@@ -125,7 +124,7 @@ async function heldSeatTokens(paths: StoragePaths, baseUrl: string): Promise<str
       const credential = await readRoomCredential(paths, roomId, memberId).catch(() => null);
       if (
         credential &&
-        credential.base_url.replace(/\/+$/, "") === origin &&
+        sameOrigin(credential.base_url, baseUrl) &&
         /^(?:sni|rmt)_[A-Za-z0-9_-]{43}$/.test(credential.member_token)
       ) {
         tokens.push(credential.member_token);

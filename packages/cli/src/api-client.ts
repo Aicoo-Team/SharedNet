@@ -9,8 +9,31 @@ interface ApiErrorEnvelope {
   };
 }
 
+/** Where SharedNet lives. The apex domain only redirects here. */
+export const DEFAULT_BASE_URL = "https://www.sharednet.ai";
+
+/**
+ * One name per SharedNet. `sharednet.ai` and `www.sharednet.ai` are the same
+ * service (the apex answers every request with a redirect to www), and a
+ * credential written under one must match an invite that names the other,
+ * or a machine that logged in would still join as nobody.
+ */
+export function canonicalOrigin(origin: string): string {
+  try {
+    const url = new URL(origin);
+    if (url.hostname === "sharednet.ai") url.hostname = "www.sharednet.ai";
+    return url.origin;
+  } catch {
+    return origin.replace(/\/+$/, "");
+  }
+}
+
+export function sameOrigin(left: string, right: string): boolean {
+  return canonicalOrigin(left) === canonicalOrigin(right);
+}
+
 export function resolveBaseUrl(value: string | undefined): string {
-  const candidate = value?.trim() || "https://sharednet.ai";
+  const candidate = value?.trim() || DEFAULT_BASE_URL;
   let url: URL;
   try {
     url = new URL(candidate);
@@ -27,7 +50,7 @@ export function resolveBaseUrl(value: string | undefined): string {
   if (url.username || url.password || url.search || url.hash || (url.pathname !== "/" && url.pathname !== "")) {
     throw localError("invalid_base_url", "SHAREDNET_BASE_URL must be an origin.");
   }
-  return url.origin;
+  return canonicalOrigin(url.origin);
 }
 
 function safeErrorCode(value: unknown): string {
