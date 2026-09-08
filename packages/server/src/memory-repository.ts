@@ -1,4 +1,4 @@
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 
 import {
   type ClpSecret,
@@ -39,7 +39,7 @@ import {
   type RoomMember,
   type StartInstanceRequest,
 } from "../../protocol/src/index.ts";
-import { sharedRoomsEdges, type DecisionAnswer, type DecisionOverview, type NetworkView, type RoomOverview, type SeatOverview } from "./repository.ts";
+import { sharedRoomsEdges, type DecisionAnswer, type DecisionOverview, type McpClient, type McpSeat, type NetworkView, type RoomOverview, type SeatOverview } from "./repository.ts";
 import type {
   AddRoomMembersRequest,
   Admission,
@@ -70,6 +70,8 @@ type ApiKeyRecord = {
   principalId: PrincipalId;
   digest: string;
   revokedAt: string | null;
+  /** Set for a key minted for an MCP client, so the same client finds it again. */
+  mcpClientId?: string;
 };
 
 type InstanceRecord = Instance & {
@@ -129,6 +131,8 @@ export type {
   IdempotencyScope,
   InstanceAuth,
   PrincipalAuth,
+  McpClient,
+  McpSeat,
   RoomAuth,
   SharedNetRepository,
 } from "./repository.ts";
@@ -141,6 +145,29 @@ export type MemoryRepositoryOptions = {
   accounts?: Array<{ authUserId: string; apiKey?: string; displayName?: string }>;
   now?: () => Date;
 };
+
+/**
+ * The driver a connector reports. ChatGPT and Claude are named; anything else
+ * takes a handle from its own name, and an unnamed client is just `mcp` —
+ * never a handle derived from an opaque client id, which says nothing.
+ */
+export function runtimeKindForMcp(client: McpClient): string {
+  const haystack = `${client.id} ${client.label}`.toLowerCase();
+  if (haystack.includes("chatgpt") || haystack.includes("openai")) return "chatgpt";
+  if (haystack.includes("claude") || haystack.includes("anthropic")) return "claude-ai";
+  if (client.label === client.id) return "mcp";
+  const handle = client.label.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32);
+  return /^[a-z][a-z0-9-]*$/.test(handle) ? handle : "mcp";
+}
+
+/**
+ * The local session key for an MCP connection: one client on one account is
+ * one session, so the same client finds its Instance again. The key is a
+ * digest, like every other local key the schema accepts.
+ */
+export function mcpLocalInstanceKey(client: McpClient): string {
+  return createHash("sha256").update(`mcp:${client.id}`).digest("hex");
+}
 
 function secureDigestEquals(left: string, right: string): boolean {
   const leftBytes = Buffer.from(left, "hex");
@@ -250,6 +277,45 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     const id = this.principalsByAccount.get(authUserId);
     const principal = id ? this.principals.get(id) : undefined;
     return principal ? { ...principal } : null;
+  }
+
+  private readonly cursors = new Map<string, number>();
+
+  async mcpSeat(authUserId: string, client: McpClient): Promise<McpSeat> {
+    let principalId = this.principalsByAccount.get(authUserId);
+    if (!principalId) {
+      // An account that never touched the API yet: its Principal is provisioned here, as a key would.
+      const principal: Principal = { id: generatePublicId("p"), display_name: null, default_reach: "public", created_at: this.timestamp(), invited_by_principal_id: null };
+      this.principals.set(principal.id, principal);
+      this.principalsByAccount.set(authUserId, principal.id);
+      principalId = principal.id;
+    }
+    let key = [...this.apiKeysByDigest.values()].find((record) => record.principalId === principalId && record.mcpClientId === client.id && record.revokedAt === null);
+    if (!key) {
+      key = { id: generatePublicId("key"), principalId, digest: digestSecret(generateSecret("snk")), revokedAt: null, mcpClientId: client.id };
+      this.apiKeysByDigest.set(key.digest, key);
+    }
+    const principalAuth: PrincipalAuth = { kind: "api_key", principalId, actorId: key.id };
+    const { instance, created } = await this.startInstance(principalAuth, {
+      runtime_kind: runtimeKindForMcp(client),
+      cli_version: "mcp",
+      local_instance_key: mcpLocalInstanceKey(client),
+      runtime_metadata: { connector: client.id, connector_label: client.label, runtime_source: "declared" },
+    });
+    return {
+      principal: { ...this.principals.get(principalId)! },
+      instance,
+      auth: { kind: "instance", principalId, instanceId: instance.id, actorId: instance.id, anonymous: false },
+      created,
+    };
+  }
+
+  async getCursor(instanceId: InstanceId, roomId: RoomId): Promise<number> {
+    return this.cursors.get(`${instanceId}|${roomId}`) ?? 0;
+  }
+
+  async setCursor(instanceId: InstanceId, roomId: RoomId, lastSequence: number): Promise<void> {
+    this.cursors.set(`${instanceId}|${roomId}`, lastSequence);
   }
 
   /** A Room the Principal scheduled, or has an active seat in; anything else is absent. */

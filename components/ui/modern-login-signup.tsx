@@ -90,6 +90,15 @@ export default function ModernLoginSignup() {
         return;
       }
 
+      // Sent here by an MCP client (ChatGPT, Claude) mid-authorization: the
+      // server answers the sign-in with where to resume, and the browser goes
+      // there rather than to the Dashboard.
+      const resume = result.data as { redirect?: boolean; url?: string } | null;
+      if (resume?.redirect && typeof resume.url === "string") {
+        window.location.assign(resume.url);
+        return;
+      }
+
       router.replace(safePostAuthPath(searchParams.get("next")));
       router.refresh();
     } catch (caught) {

@@ -710,6 +710,29 @@ export const idempotencyRecords = sharednetSchema.table(
   ],
 );
 
+/**
+ * A cursor the service keeps for a seat that has nowhere local to keep one:
+ * a chat product's Instance (ChatGPT, Claude) reads a Room through MCP and has
+ * no `.sharednet/` directory. One row per Instance per Room; the CLI's seats
+ * keep theirs in the project directory and never write here.
+ */
+export const instanceCursors = sharednetSchema.table(
+  "instance_cursor",
+  {
+    instanceId: text("instance_id").$type<InstanceId>().notNull(),
+    roomId: text("room_id").$type<RoomId>().notNull(),
+    lastSequence: integer("last_sequence").default(0).notNull(),
+    updatedAt: domainTimestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    primaryKey({ name: "instance_cursor_pk", columns: [table.instanceId, table.roomId] }),
+    foreignKey({ name: "instance_cursor_instance_fk", columns: [table.instanceId], foreignColumns: [instances.id] })
+      .onDelete("cascade")
+      .onUpdate("cascade"),
+    foreignKey({ name: "instance_cursor_room_fk", columns: [table.roomId], foreignColumns: [rooms.id] }).onDelete("cascade"),
+  ],
+);
+
 export const databaseSchema = {
   principals,
   agents,
@@ -722,4 +745,5 @@ export const databaseSchema = {
   decisions,
   idempotencyRecords,
   cliLogins,
+  instanceCursors,
 } as const;

@@ -20,6 +20,12 @@ const MARKS: Record<string, Mark> = {
   workbuddy: { label: "WorkBuddy", hex: "1FC98A", asset: "/drivers/workbuddy.png", initials: "WB" },
   hermes: { label: "Hermes Agent", hex: "111111", asset: "/drivers/hermes.png", initials: "HA" },
   openclaw: { label: "OpenClaw", hex: "D2312D", asset: "/drivers/openclaw.png", initials: "OC" },
+  // Chat products that connect over MCP rather than a terminal. simple-icons
+  // carries no OpenAI mark, so ChatGPT reads as initials until an icon is
+  // supplied under public/drivers, the way Codex and WorkBuddy were.
+  chatgpt: { label: "ChatGPT", hex: "10A37F", initials: "GPT" },
+  "claude-ai": { label: "Claude", hex: siClaude.hex, path: siClaude.path, initials: "CL" },
+  mcp: { label: "MCP connector", hex: "6B7A90", initials: "MC" },
 };
 
 /** The drivers the homepage shows, in this order; the owner's pick. */

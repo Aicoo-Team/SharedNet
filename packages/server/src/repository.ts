@@ -174,9 +174,26 @@ export type SeatOverview = { instance: Instance; rooms: Array<{ id: RoomId; name
  * Principal that scheduled it and to a Principal with an active seat in it;
  * everything else reads as absent.
  */
+/** An MCP client that connected on a person's behalf: ChatGPT, Claude, or another. */
+export type McpClient = { id: string; label: string };
+
+/** The seat an MCP connection acts as: one Instance of the account's Principal per client. */
+export type McpSeat = { principal: Principal; instance: Instance; auth: InstanceAuth; created: boolean };
+
 export interface PrincipalRepository {
   /** The Principal behind an account, or null when none was provisioned. */
   principalForAccount(authUserId: string): Promise<Principal | null>;
+  /**
+   * The Instance an MCP client acts as for this account. The first call for a
+   * client mints an API key for the account (named for the client, so the
+   * person can see and revoke it) and registers an Instance whose local key
+   * is the client id; later calls find the same Instance. No token leaves the
+   * server: the connection acts through the returned InstanceAuth.
+   */
+  mcpSeat(authUserId: string, client: McpClient): Promise<McpSeat>;
+  /** The cursor the service keeps for a seat with nowhere local to keep one; 0 when none yet. */
+  getCursor(instanceId: InstanceId, roomId: RoomId): Promise<number>;
+  setCursor(instanceId: InstanceId, roomId: RoomId, lastSequence: number): Promise<void>;
   /** Rooms the Principal scheduled or has an active seat in, newest first. */
   listRoomsForPrincipal(principalId: PrincipalId): Promise<{ items: RoomOverview[] }>;
   /** A Room the Principal may see, with every seat and every message, in order. */

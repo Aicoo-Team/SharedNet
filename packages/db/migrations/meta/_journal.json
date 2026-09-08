@@ -85,6 +85,13 @@
       "when": 1788681399147,
       "tag": "0011_reach",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1788899593488,
+      "tag": "0012_mcp_connector",
+      "breakpoints": true
     }
   ]
 }

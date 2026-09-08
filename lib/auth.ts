@@ -1,16 +1,28 @@
 import { randomUUID } from "node:crypto";
 
 import { apiKey } from "@better-auth/api-key";
+import { cimd } from "@better-auth/cimd";
+import { fetchClientMetadataResource } from "@better-auth/cimd/node";
 import { drizzleAdapter } from "@better-auth/drizzle-adapter";
+import { mcp } from "@better-auth/mcp";
 import { betterAuth, type BetterAuthOptions } from "better-auth";
 import { createAuthMiddleware } from "better-auth/api";
+import { jwt } from "better-auth/plugins";
 
 import {
   apiKey as apiKeyTable,
   authAccount,
+  authJwks,
   authSession,
   authUser,
   authVerification,
+  oauthAccessToken,
+  oauthClient,
+  oauthClientAssertion,
+  oauthClientResource,
+  oauthConsent,
+  oauthRefreshToken,
+  oauthResource,
 } from "../packages/db/src/auth-schema.ts";
 import { getDatabase } from "../packages/db/src/client.ts";
 import { principals } from "../packages/db/src/schema.ts";
@@ -81,6 +93,11 @@ export function resolveTrustedOrigins(
 
 type AuthDatabase = NonNullable<BetterAuthOptions["database"]>;
 
+/** The MCP endpoint, which is the protected resource every access token is bound to. */
+export function mcpResourceUrl(baseURL: string): string {
+  return `${baseURL.replace(/\/+$/, "")}/api/mcp`;
+}
+
 export type CreateSharedNetAuthOptions = {
   afterUserCreated?: (user: { id: string; name: string }) => Promise<void>;
   baseURL: string;
@@ -110,6 +127,14 @@ function createPostgresAdapter(): AuthDatabase {
       session: authSession,
       user: authUser,
       verification: authVerification,
+      jwks: authJwks,
+      oauthClient,
+      oauthResource,
+      oauthClientResource,
+      oauthRefreshToken,
+      oauthAccessToken,
+      oauthConsent,
+      oauthClientAssertion,
     },
     schemaName: "sharednet_auth",
     transaction: true,
@@ -164,6 +189,21 @@ export function createSharedNetAuth({
     },
     trustedOrigins,
     plugins: [
+      // SharedNet as an OAuth 2.1 authorization server for MCP clients:
+      // ChatGPT and Claude register themselves (dynamic registration or a
+      // hosted client metadata document), send the person to /login and
+      // /consent once, and hold a token bound to /api/mcp. jwt signs it.
+      jwt(),
+      mcp({
+        loginPage: "/login",
+        consentPage: "/consent",
+        resource: mcpResourceUrl(baseURL),
+        // A client registers itself before anyone is signed in: ChatGPT and
+        // Claude do this the first time a person adds SharedNet.
+        allowDynamicClientRegistration: true,
+        allowUnauthenticatedClientRegistration: true,
+      }),
+      cimd({ fetchClientMetadataResource, metadataProfile: "mcp-2026-07-28" }),
       apiKey({
         customKeyGenerator: () => generateSecret("snk"),
         defaultKeyLength: 43,
@@ -217,6 +257,15 @@ let runtimeAuth: SharedNetAuth | undefined;
  * connections are intentionally unavailable.
  */
 export function getAuth(): SharedNetAuth {
-  runtimeAuth ??= createRuntimeAuth();
+  if (!runtimeAuth) {
+    runtimeAuth = createRuntimeAuth();
+    // Construction starts the plugins' startup work (the OAuth provider seeds
+    // its protected-resource row). If that fails, every later call fails the
+    // same way and says so; the startup itself must not surface as an
+    // unhandled rejection in a process that only imported the module.
+    void runtimeAuth.$context.catch((error: unknown) => {
+      console.error("SharedNet authentication startup failed:", error instanceof Error ? error.message : error);
+    });
+  }
   return runtimeAuth;
 }
