@@ -1,4 +1,4 @@
-import { requireAuthUserId } from "@/src/sharednet/current-account";
+import { requireWebMutation } from "@/src/sharednet/current-account";
 import {
   parseDecisionId,
   type DecisionResolution,
@@ -50,7 +50,7 @@ export function PATCH(
   { params }: DecisionRouteContext,
 ): Promise<Response> {
   return sharedNetResponse(async () => {
-    const authUserId = await requireAuthUserId(request.headers);
+    const authUserId = await requireWebMutation(request);
     const { decisionId: untrustedDecisionId } = await params;
     const decisionId = parseDecisionId(untrustedDecisionId);
     if (decisionId === null) throw invalidRouteIdentifier();

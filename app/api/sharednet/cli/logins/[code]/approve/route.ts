@@ -1,4 +1,4 @@
-import { requireAuthUserId } from "@/src/sharednet/current-account";
+import { requireWebMutation } from "@/src/sharednet/current-account";
 import { getSharedNetServerClient } from "@/src/sharednet/server-client";
 
 import { invalidRouteIdentifier, sharedNetResponse } from "../../../../route-response";
@@ -12,7 +12,7 @@ const CODE = /^[A-Za-z0-9-]{8,9}$/;
 /** Approve a pending CLI login as this account, binding the seats it holds. */
 export function POST(request: Request, { params }: ApproveRouteContext): Promise<Response> {
   return sharedNetResponse(async () => {
-    const authUserId = await requireAuthUserId(request.headers);
+    const authUserId = await requireWebMutation(request);
     const { code } = await params;
     if (!CODE.test(code)) throw invalidRouteIdentifier();
     return getSharedNetServerClient().approveCliLogin(authUserId, code);

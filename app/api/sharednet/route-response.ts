@@ -2,6 +2,7 @@ import "server-only";
 
 import {
   SharedNetAuthError,
+  SharedNetOriginError,
 } from "@/src/sharednet/current-account";
 import { SharedNetApiError } from "@/src/sharednet/server-client";
 
@@ -55,7 +56,7 @@ export async function sharedNetResponse<T>(
   try {
     return Response.json(await operation(), { headers: RESPONSE_HEADERS });
   } catch (error) {
-    if (error instanceof SharedNetAuthError) {
+    if (error instanceof SharedNetAuthError || error instanceof SharedNetOriginError) {
       return errorResponse(error.status, error.code, error.message);
     }
     if (error instanceof SharedNetRouteInputError) {
