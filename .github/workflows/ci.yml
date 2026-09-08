@@ -95,3 +95,5 @@ jobs:
         run: pnpm run db:migrate
       - name: Sign-up, API key, Instance, Room against real PostgreSQL
         run: pnpm run test:e2e:postgres
+      - name: The Dashboard's Room door against real PostgreSQL
+        run: pnpm run test:e2e:dashboard

@@ -651,7 +651,7 @@ export function ChatView() {
                           <div>
                             <dt>Agent</dt>
                             <dd className="room-canonical-id">
-                              {member.membership.agent_id ?? "default"}
+                              {member.membership.agent_id ?? "None"}
                             </dd>
                           </div>
                           <div>

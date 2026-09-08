@@ -4,22 +4,21 @@ import { and, asc, desc, eq, inArray } from "drizzle-orm";
 
 import { getDatabase } from "@/packages/db/src/client.ts";
 import { PostgresSharedNetRepository } from "@/packages/server/src/postgres-repository.ts";
-import { RepositoryError } from "@/packages/server/src/repository.ts";
+import { RepositoryError, type SharedNetRepository } from "@/packages/server/src/repository.ts";
 import {
   type CliLogin,
+  type Message,
+  type Principal,
+  type Room,
+  type RoomInvite,
+  type RoomMember,
   normalizeCliLoginCode,
-  digestSecret,
-  generatePublicId,
-  generateSecret,
-  presenceFor,
 } from "@/packages/protocol/src/index.ts";
 import {
   agents,
   decisions,
   instances,
-  messages,
   principals,
-  roomInvites,
   roomMembers,
   rooms,
 } from "@/packages/db/src/schema.ts";
@@ -53,6 +52,7 @@ import {
   type RoomListResponse,
   type RoomMembership,
   type RoomMessage,
+  type RoomProjection,
   type RoomSummary,
 } from "./contracts";
 
@@ -76,9 +76,6 @@ export class SharedNetApiError extends Error {
     this.status = status;
   }
 }
-
-/** Presence lease, mirrored from packages/server/src/repository.ts. */
-const PRESENCE_LEASE_GRACE_MS = 0;
 
 function iso(value: Date | string | null): string | null {
   if (value === null) return null;
@@ -198,48 +195,96 @@ function tagLookup(rows: Array<{ id: string; agentId: string | null }>): TagLook
     (instanceId === null ? null : (byInstance.get(instanceId) ?? null)) as AgentId | null;
 }
 
-/**
- * Who opened the Room. A Room scheduled from the Web has no creator Instance:
- * the Principal itself is the actor, so the projection carries no instance_id.
- */
-function roomCreator(
-  tagOf: TagLookup,
-  principalId: string,
-  creatorInstanceId: string | null,
-): ActorProjection {
-  return creatorInstanceId === null
-    ? actor(null, principalId)
-    : actor(tagOf(creatorInstanceId), principalId, creatorInstanceId);
-}
-
 const ROOM_NAME_MAX = 120;
 const ROOM_DESCRIPTION_MAX = 2000;
 
 export type CreateRoomInput = { name: string; description?: string | null };
 
-/** The driver behind an Instance, for a member card or a Network node. */
-function runtimeSummary(
-  instance: Pick<typeof instances.$inferSelect, "runtimeKind" | "cliVersion" | "runtimeMetadata"> | undefined,
-): RuntimeSummary {
-  if (!instance) return { kind: "custom", version: null, entrypoint: null, source: null };
-  const metadata = instance.runtimeMetadata ?? {};
+/** The driver behind a seat, for a member card. */
+function runtimeSummary(member: Pick<RoomMember, "runtime_kind" | "runtime_version" | "runtime_metadata">): RuntimeSummary {
+  const metadata = member.runtime_metadata ?? {};
   const source = metadata.runtime_source;
   return {
-    kind: instance.runtimeKind,
-    version: metadata.driver_version ?? (instance.cliVersion === "invite" ? null : instance.cliVersion),
+    kind: member.runtime_kind,
+    version: metadata.driver_version ?? (member.runtime_version === "invite" || member.runtime_version === "" ? null : member.runtime_version),
     entrypoint: metadata.entrypoint ?? null,
     source: source === "detected" || source === "declared" ? source : null,
   };
 }
 
-function inviteProjection(row: typeof roomInvites.$inferSelect): RoomInviteProjection {
+function inviteProjection(invite: RoomInvite): RoomInviteProjection {
   return {
-    created_at: requiredIso(row.createdAt),
-    expires_at: iso(row.expiresAt),
-    invite_id: row.id,
-    revoked_at: iso(row.revokedAt),
-    room_id: row.roomId as RoomId,
-    uses: row.uses,
+    created_at: invite.created_at,
+    expires_at: invite.expires_at,
+    invite_id: invite.id,
+    revoked_at: invite.revoked_at,
+    room_id: invite.room_id as RoomId,
+    uses: invite.uses,
+  };
+}
+
+/**
+ * Who opened the Room. A Room scheduled from the Web has no creator Instance:
+ * the Principal itself is the actor, so the projection carries no instance_id.
+ */
+function roomProjection(room: Room, updatedAt: string): RoomProjection {
+  return {
+    access_policy: "anyone_with_id",
+    created_at: room.created_at,
+    creator:
+      room.creator_instance_id === null
+        ? actor(null, room.principal_id)
+        : actor(room.creator_agent_id as AgentId | null, room.principal_id, room.creator_instance_id),
+    description: room.description,
+    name: room.name,
+    room_id: room.id as RoomId,
+    status: room.state,
+    updated_at: updatedAt,
+  };
+}
+
+/** A seat as the Room page shows it: the domain's member, plus the driver summary. */
+function membershipProjection(member: RoomMember): RoomMembership {
+  return {
+    agent_id: member.agent_id as AgentId | null,
+    instance_id: member.instance_id as InstanceId,
+    joined_at: member.joined_at,
+    kind: member.kind,
+    last_read_sequence: 0,
+    admitted_by: member.admitted_by,
+    added_by_instance_id: member.added_by_instance_id as InstanceId | null,
+    left_at: member.left_at,
+    member_id: member.instance_id,
+    name: member.name,
+    presence: member.presence,
+    principal_id: member.principal_id as PrincipalId,
+    room_id: member.room_id as RoomId,
+    runtime: runtimeSummary(member),
+    status: member.state,
+  };
+}
+
+/** An anonymous Principal's Instance is shown by the name it gave. */
+function messageProjection(message: Message): RoomMessage {
+  return {
+    attachment_ids: [],
+    content: message.content,
+    created_at: message.created_at,
+    message_id: message.id as RoomMessage["message_id"],
+    reply_to: message.reply_to_message_id as RoomMessage["reply_to"],
+    resolution_state: "not_required",
+    room_id: message.room_id as RoomId,
+    sender:
+      message.sender.kind === "guest"
+        ? {
+            agent_id: null,
+            instance_id: message.sender_instance_id as InstanceId,
+            name: message.sender.name ?? "anonymous",
+            principal_id: message.sender_principal_id as PrincipalId,
+          }
+        : actor(message.sender_agent_id as AgentId | null, message.sender_principal_id, message.sender_instance_id),
+    sequence: message.sequence,
+    tags: [],
   };
 }
 
@@ -267,22 +312,44 @@ function workspaceLabel(metadata: Record<string, string> | null | undefined): st
 }
 
 export class SharedNetServerClient {
+  private readonly injected: SharedNetRepository | undefined;
+
+  /**
+   * The Dashboard is one more door onto the domain: every Room operation goes
+   * through the same repository the V1 API uses, scoped to the account's
+   * Principal. Tests hand in a memory repository; production reads Postgres.
+   */
+  constructor(repository?: SharedNetRepository) {
+    this.injected = repository;
+  }
+
   private database() {
     return getDatabase();
   }
 
-  /** Resolve the Principal this Better Auth user owns, or fail closed. */
-  private async requirePrincipal(authUserId: string) {
-    const [row] = await this.database()
-      .select()
-      .from(principals)
-      .where(eq(principals.authUserId, authUserId))
-      .limit(1);
+  private repository(): SharedNetRepository {
+    return this.injected ?? new PostgresSharedNetRepository(this.database());
+  }
 
-    if (!row) {
+  /** Resolve the Principal this Better Auth user owns, or fail closed. */
+  private async requirePrincipal(authUserId: string): Promise<Principal> {
+    const principal = await this.repository().principalForAccount(authUserId);
+    if (!principal) {
       throw new SharedNetApiError("principal_not_found", 404, "No Principal for this account");
     }
-    return row;
+    return principal;
+  }
+
+  /** Run a repository call, and speak its refusal in the Dashboard's error shape. */
+  private async domain<T>(call: () => Promise<T>): Promise<T> {
+    try {
+      return await call();
+    } catch (error) {
+      if (error instanceof RepositoryError) {
+        throw new SharedNetApiError(error.code, error.status, error.message);
+      }
+      throw error;
+    }
   }
 
   async provisionAccount(authUserId: string): Promise<ProvisionAccountResponse> {
@@ -302,49 +369,25 @@ export class SharedNetServerClient {
     );
   }
 
+  /** The Rooms this account scheduled or holds an active seat in, newest first. */
   async listRooms(authUserId: string): Promise<RoomListResponse> {
     const principal = await this.requirePrincipal(authUserId);
-    const database = this.database();
-
-    // A Room is visible to a Principal that has a membership in it, whether or
-    // not it created the Room, and to the Principal that scheduled it from the
-    // Web: an empty Room has no members yet, but its owner must see it to invite.
-    const visibleRoomIds = await this.visibleRoomIds(principal.id);
-    if (visibleRoomIds.length === 0) return { rooms: [] };
-
-    const [roomRows, memberRows, tagOf] = await Promise.all([
-      database
-        .select()
-        .from(rooms)
-        .where(inArray(rooms.id, visibleRoomIds))
-        .orderBy(desc(rooms.createdAt)),
-      database
-        .select()
-        .from(roomMembers)
-        .where(inArray(roomMembers.roomId, visibleRoomIds)),
-      this.tagsFor(principal.id),
-    ]);
-
-    // Belt and braces over the SQL filter: never project a Room outside the set.
-    const visible = new Set<string>(visibleRoomIds);
-    const summaries: RoomSummary[] = roomRows.filter((room) => visible.has(room.id)).map((room) => {
-      const members = memberRows.filter((member) => member.roomId === room.id);
-      const latestSequence = room.nextSequence - 1;
-      const creatorTag = tagOf(room.creatorInstanceId ?? null);
-      return {
-        description: room.description,
-        latest_cursor: cursor(latestSequence),
-        latest_sequence: latestSequence,
-        member_count: members.filter((member) => member.state === "active").length,
-        name: room.name,
-        owner_agent_ids: creatorTag ? [creatorTag] : [],
-        room_id: room.id as RoomId,
-        status: room.state,
-        updated_at: requiredIso(room.createdAt),
-      };
-    });
-
-    return { rooms: summaries };
+    const { items } = await this.domain(() => this.repository().listRoomsForPrincipal(principal.id));
+    return {
+      rooms: items.map(
+        ({ room, active_member_count, latest_sequence }): RoomSummary => ({
+          description: room.description,
+          latest_cursor: cursor(latest_sequence),
+          latest_sequence,
+          member_count: active_member_count,
+          name: room.name,
+          owner_agent_ids: room.creator_agent_id ? [room.creator_agent_id as AgentId] : [],
+          room_id: room.id as RoomId,
+          status: room.state,
+          updated_at: room.created_at,
+        }),
+      ),
+    };
   }
 
   /**
@@ -366,27 +409,7 @@ export class SharedNetServerClient {
         "Room description must be at most 2000 characters",
       );
     }
-
-    const [room] = await this.database()
-      .insert(rooms)
-      .values({
-        id: generatePublicId("rom"),
-        // The dashboard's ids and the V1 schema's ids are the same strings under
-        // different brands; the file's convention is to cross that seam with `never`.
-        principalId: principal.id as never,
-        name,
-        description,
-        state: "open",
-        creatorInstanceId: null,
-        nextSequence: 1,
-        createdAt: new Date(),
-        closedAt: null,
-      })
-      .returning();
-    if (!room) {
-      throw new SharedNetApiError("room_create_failed", 500, "Room creation failed");
-    }
-
+    const { room } = await this.domain(() => this.repository().scheduleRoom(principal.id, { name, description }));
     return {
       description: room.description,
       latest_cursor: cursor(0),
@@ -396,7 +419,7 @@ export class SharedNetServerClient {
       owner_agent_ids: [],
       room_id: room.id as RoomId,
       status: room.state,
-      updated_at: requiredIso(room.createdAt),
+      updated_at: room.created_at,
     };
   }
 
@@ -411,41 +434,13 @@ export class SharedNetServerClient {
     input: { expires_in_seconds?: number | null } = {},
   ): Promise<CreateRoomInviteResponse> {
     const principal = await this.requirePrincipal(authUserId);
-    const [room] = await this.database()
-      .select()
-      .from(rooms)
-      .where(eq(rooms.id, roomId as never))
-      .limit(1);
-    // Only the Principal that owns the Room may open a door into it. A Room the
-    // account does not own is reported as absent, as everywhere else.
-    if (!room || room.principalId !== principal.id) {
-      throw new SharedNetApiError("room_not_found", 404, "Room not found");
-    }
-    if (room.state === "closed") {
-      throw new SharedNetApiError("room_closed", 409, "Room is closed");
-    }
     const seconds = input.expires_in_seconds ?? 0;
     if (!Number.isSafeInteger(seconds) || seconds < 0) {
       throw new SharedNetApiError("invalid_invite_expiry", 400, "Invite expiry must be a non-negative number of seconds");
     }
-    const token = generateSecret("rit");
-    const createdAt = new Date();
-    const [invite] = await this.database()
-      .insert(roomInvites)
-      .values({
-        id: generatePublicId("inv"),
-        roomId: room.id,
-        principalId: principal.id as never,
-        tokenDigest: digestSecret(token),
-        expiresAt: seconds > 0 ? new Date(createdAt.getTime() + seconds * 1000) : null,
-        revokedAt: null,
-        uses: 0,
-        createdAt,
-      })
-      .returning();
-    if (!invite) {
-      throw new SharedNetApiError("invite_create_failed", 500, "Invite creation failed");
-    }
+    const { invite, token } = await this.domain(() =>
+      this.repository().createRoomInvite({ roomId: roomId as never, principalId: principal.id, expiresInSeconds: seconds }),
+    );
     return { invite: inviteProjection(invite), token };
   }
 
@@ -455,18 +450,12 @@ export class SharedNetServerClient {
     inviteId: string,
   ): Promise<{ invite: RoomInviteProjection }> {
     const principal = await this.requirePrincipal(authUserId);
-    const [invite] = await this.database()
-      .update(roomInvites)
-      .set({ revokedAt: new Date() })
-      .where(
-        and(
-          eq(roomInvites.id, inviteId as never),
-          eq(roomInvites.roomId, roomId as never),
-          eq(roomInvites.principalId, principal.id as never),
-        ),
-      )
-      .returning();
-    if (!invite) {
+    const { invite } = await this.domain(() =>
+      this.repository().revokeRoomInvite({ inviteId: inviteId as never, principalId: principal.id }),
+    );
+    // An invite is addressed by its Room on the Web; one that opens another
+    // Room is reported as absent, the way the Room itself would be.
+    if ((invite.room_id as string) !== (roomId as string)) {
       throw new SharedNetApiError("room_not_found", 404, "Room not found");
     }
     return { invite: inviteProjection(invite) };
@@ -479,40 +468,8 @@ export class SharedNetServerClient {
    */
   async closeRoom(authUserId: string, roomId: RoomId): Promise<CloseRoomResponse> {
     const principal = await this.requirePrincipal(authUserId);
-    const database = this.database();
-    const [room] = await database
-      .select()
-      .from(rooms)
-      .where(eq(rooms.id, roomId as never))
-      .limit(1);
-    if (!room || room.principalId !== principal.id) {
-      throw new SharedNetApiError("room_not_found", 404, "Room not found");
-    }
-    let closed = room;
-    if (room.state !== "closed") {
-      const [updated] = await database
-        .update(rooms)
-        .set({ state: "closed", closedAt: new Date() })
-        .where(eq(rooms.id, room.id))
-        .returning();
-      if (!updated) {
-        throw new SharedNetApiError("room_close_failed", 500, "Room close failed");
-      }
-      closed = updated;
-    }
-    const tagOf = await this.tagsFor(principal.id);
-    return {
-      room: {
-        access_policy: "anyone_with_id",
-        created_at: requiredIso(closed.createdAt),
-        creator: roomCreator(tagOf, closed.principalId, closed.creatorInstanceId),
-        description: closed.description,
-        name: closed.name,
-        room_id: closed.id as RoomId,
-        status: closed.state,
-        updated_at: requiredIso(closed.closedAt ?? closed.createdAt),
-      },
-    };
+    const { room } = await this.domain(() => this.repository().closeRoom(principal.id, roomId as never));
+    return { room: roomProjection(room, room.closed_at ?? room.created_at) };
   }
 
   /**
@@ -526,62 +483,21 @@ export class SharedNetServerClient {
     memberId: string,
   ): Promise<RemoveRoomMemberResponse> {
     const principal = await this.requirePrincipal(authUserId);
-    const database = this.database();
-    const [room] = await database
-      .select()
-      .from(rooms)
-      .where(eq(rooms.id, roomId as never))
-      .limit(1);
-    if (!room || room.principalId !== principal.id) {
-      throw new SharedNetApiError("room_not_found", 404, "Room not found");
-    }
-    const now = new Date();
-    const notFound = () => new SharedNetApiError("member_not_found", 404, "Member not found");
+    const { membership } = await this.domain(() =>
+      this.repository().removeRoomMember(principal.id, roomId as never, memberId as never),
+    );
+    return { membership: membershipProjection(membership) };
+  }
 
-    const [member] = await database
-      .select()
-      .from(roomMembers)
-      .where(and(eq(roomMembers.roomId, room.id), eq(roomMembers.instanceId, memberId as never)))
-      .limit(1);
-    if (!member) throw notFound();
-    let left = member;
-    if (member.state === "active") {
-      const [updated] = await database
-        .update(roomMembers)
-        .set({ state: "left", leftAt: now })
-        .where(and(eq(roomMembers.roomId, room.id), eq(roomMembers.instanceId, member.instanceId)))
-        .returning();
-      if (!updated) throw notFound();
-      left = updated;
-    }
-    const [tagOf, instanceSeen, principalRows] = await Promise.all([
-      this.tagsFor(principal.id),
-      this.instanceRows(),
-      database
-        .select({ id: principals.id, authUserId: principals.authUserId })
-        .from(principals)
-        .where(eq(principals.id, left.principalId as never)),
-    ]);
-    const seen = instanceSeen.get(left.instanceId);
-    const leftPrincipal = principalRows.find((row) => (row.id as string) === (left.principalId as string));
+  /** A Room this account owns or sits in, with every seat and the whole log. */
+  async getRoom(authUserId: string, roomId: RoomId): Promise<RoomDetail> {
+    const principal = await this.requirePrincipal(authUserId);
+    const detail = await this.domain(() => this.repository().getRoomForPrincipal(principal.id, roomId as never));
     return {
-      membership: {
-        agent_id: tagOf(left.instanceId),
-        instance_id: left.instanceId as InstanceId,
-        joined_at: requiredIso(left.joinedAt),
-        kind: leftPrincipal && leftPrincipal.authUserId === null ? "guest" : "instance",
-        last_read_sequence: 0,
-        admitted_by: left.admittedBy,
-        added_by_instance_id: (left.addedByInstanceId ?? null) as InstanceId | null,
-        left_at: iso(left.leftAt),
-        member_id: left.instanceId,
-        name: seen?.displayName ?? null,
-        presence: seen ? presenceOf(seen, now.getTime()).presence : "offline",
-        principal_id: left.principalId as PrincipalId,
-        room_id: left.roomId as RoomId,
-        runtime: runtimeSummary(seen),
-        status: left.state,
-      },
+      memberships: detail.memberships.map(membershipProjection),
+      messages: detail.messages.map(messageProjection),
+      next_cursor: cursor(detail.latest_sequence),
+      room: roomProjection(detail.room, detail.room.created_at),
     };
   }
 
@@ -664,137 +580,6 @@ export class SharedNetServerClient {
       expires_at: login.expires_at,
       approved_at: login.approved_at,
       seats,
-    };
-  }
-
-  async getRoom(authUserId: string, roomId: RoomId): Promise<RoomDetail> {
-    const principal = await this.requirePrincipal(authUserId);
-    const database = this.database();
-
-    const [room] = await database
-      .select()
-      .from(rooms)
-      .where(eq(rooms.id, roomId as never))
-      .limit(1);
-
-    if (!room) {
-      throw new SharedNetApiError("room_not_found", 404, "Room not found");
-    }
-
-    const [memberRows, messageRows, tagOf, instanceSeen] = await Promise.all([
-      database.select().from(roomMembers).where(eq(roomMembers.roomId, room.id)),
-      database
-        .select()
-        .from(messages)
-        .where(eq(messages.roomId, room.id))
-        .orderBy(asc(messages.sequence)),
-      this.tagsFor(principal.id),
-      this.instanceRows(),
-    ]);
-    const now = new Date();
-    const instancePresence = (instanceId: string): RoomMembership["presence"] => {
-      const row = instanceSeen.get(instanceId);
-      return row ? presenceOf(row, now.getTime()).presence : "offline";
-    };
-    // Every member is an Instance. One of an anonymous Principal (no account
-    // behind it, not yet bound) is shown by the name it gave. Kind follows the
-    // Principal, so a bound seat reads as an Instance of the account.
-    const principalIds = [...new Set(memberRows.map((member) => member.principalId as string))];
-    const anonymousPrincipals = new Set(
-      principalIds.length === 0
-        ? []
-        : (
-            await database
-              .select({ id: principals.id, authUserId: principals.authUserId })
-              .from(principals)
-              .where(inArray(principals.id, principalIds as never))
-          )
-            .filter((row) => row.authUserId === null)
-            .map((row) => row.id as string),
-    );
-    const anonymous = (instanceId: string): boolean => {
-      const principalId = instanceSeen.get(instanceId)?.principalId;
-      return principalId !== undefined && anonymousPrincipals.has(principalId as string);
-    };
-    const nameOf = (instanceId: string): string | null =>
-      instanceSeen.get(instanceId)?.displayName ?? null;
-    const runtimeOf = (instanceId: string): RuntimeSummary =>
-      runtimeSummary(instanceSeen.get(instanceId));
-
-
-    // Membership admits the viewer, and so does having scheduled the Room from
-    // the Web. A Room the account can neither see nor own is reported as absent
-    // rather than as forbidden.
-    // Membership means an active seat: a removed member reads nothing more,
-    // which is the same rule the public API applies.
-    const isOwner = room.principalId === principal.id;
-    if (
-      !isOwner &&
-      !memberRows.some((member) => member.principalId === principal.id && member.state === "active")
-    ) {
-      throw new SharedNetApiError("room_not_found", 404, "Room not found");
-    }
-
-    const memberships: RoomMembership[] = memberRows.map(
-      (member): RoomMembership => ({
-        agent_id: tagOf(member.instanceId),
-        instance_id: member.instanceId as InstanceId,
-        joined_at: requiredIso(member.joinedAt),
-        kind: anonymous(member.instanceId) ? "guest" : "instance",
-        last_read_sequence: 0,
-        admitted_by: member.admittedBy,
-        added_by_instance_id: (member.addedByInstanceId ?? null) as InstanceId | null,
-        left_at: iso(member.leftAt),
-        member_id: member.instanceId,
-        name: nameOf(member.instanceId),
-        presence: instancePresence(member.instanceId),
-        principal_id: member.principalId as PrincipalId,
-        room_id: member.roomId as RoomId,
-        runtime: runtimeOf(member.instanceId),
-        status: member.state,
-      }),
-    );
-
-    const projectedMessages: RoomMessage[] = messageRows.map((message) => ({
-      attachment_ids: [],
-      content: message.content,
-      created_at: requiredIso(message.createdAt),
-      message_id: message.id as RoomMessage["message_id"],
-      reply_to: (message.replyToMessageId ?? null) as RoomMessage["reply_to"],
-      resolution_state: "not_required",
-      room_id: message.roomId as RoomId,
-      // An anonymous Principal's Instance is shown by the name it gave.
-      sender:
-        message.senderInstanceId && anonymous(message.senderInstanceId)
-          ? {
-              agent_id: null,
-              instance_id: message.senderInstanceId as InstanceId,
-              name: nameOf(message.senderInstanceId) ?? "anonymous",
-              principal_id: message.senderPrincipalId as PrincipalId,
-            }
-          : actor(
-              tagOf(message.senderInstanceId),
-              message.senderPrincipalId,
-              message.senderInstanceId ?? undefined,
-            ),
-      sequence: message.sequence,
-      tags: [],
-    }));
-
-    return {
-      memberships,
-      messages: projectedMessages,
-      next_cursor: cursor(room.nextSequence - 1),
-      room: {
-        access_policy: "anyone_with_id",
-        created_at: requiredIso(room.createdAt),
-        creator: roomCreator(tagOf, room.principalId, room.creatorInstanceId),
-        description: room.description,
-        name: room.name,
-        room_id: room.id as RoomId,
-        status: room.state,
-        updated_at: requiredIso(room.createdAt),
-      },
     };
   }
 
@@ -899,7 +684,7 @@ export class SharedNetServerClient {
         .map((row) => connectedPrincipalProjection(row, principal.id as string)),
       edges: [...weights.values()],
       instances: projectedInstances,
-      principal: principalProjection(principal),
+      principal: principalProjection({ id: principal.id, displayName: principal.display_name, createdAt: principal.created_at }),
     };
   }
 

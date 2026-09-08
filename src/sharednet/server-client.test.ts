@@ -5,6 +5,8 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
+import { MemorySharedNetRepository } from "@/packages/server/src/memory-repository.ts";
+import type { InstanceAuth, SharedNetRepository } from "@/packages/server/src/repository.ts";
 import { SharedNetServerClient } from "./server-client";
 import {
   isCloseRoomResponse,
@@ -119,6 +121,62 @@ vi.mock("@/packages/db/src/client.ts", () => {
   return { getDatabase: () => database };
 });
 
+/**
+ * Room cases run on the memory repository: the same domain the API serves,
+ * seeded through the API's own doors, so what the Dashboard shows is what an
+ * Agent did. Network and Decision cases still drive the Drizzle stub below,
+ * until their slice of the consolidation lands.
+ */
+const ACCOUNT = "auth-user-1";
+type WebRoomId = Parameters<SharedNetServerClient["getRoom"]>[1];
+
+async function principalOf(client: SharedNetServerClient) {
+  return { id: (await client.provisionAccount(ACCOUNT)).principal_id as string };
+}
+
+/** An account's Instance, registered with its API key the way the CLI does. */
+async function seatFor(repository: SharedNetRepository, authUserId: string, apiKey: string, agent = false) {
+  const principalAuth = (await repository.authenticateApiKey(apiKey))!;
+  const agentId = agent ? (await repository.createAgent(principalAuth, { handle: `reviewer-${authUserId}` })).agent.id : null;
+  const started = await repository.startInstance(principalAuth, {
+    runtime_kind: "codex",
+    cli_version: "0.1.0",
+    agent_id: agentId,
+    runtime_metadata: { device_id: "dev-1", workspace: "/Users/x/proj/sharednet" },
+  });
+  const auth = (await repository.authenticateInstance(started.token))!;
+  return { auth, instance: started.instance };
+}
+
+/** One account, one Instance of it, one Room it opened with one message in it. */
+async function seededRoom(options: { agent?: boolean } = {}) {
+  const repository = new MemorySharedNetRepository({
+    accounts: [
+      { authUserId: ACCOUNT, apiKey: "key-1", displayName: "Xisen" },
+      { authUserId: "auth-user-2", apiKey: "key-2" },
+    ],
+  });
+  const client = new SharedNetServerClient(repository);
+  const { auth, instance } = await seatFor(repository, ACCOUNT, "key-1", options.agent ?? false);
+  const { room } = await repository.createRoom(auth, { name: "Hosted V1 migration", description: "seeded" });
+  await repository.postMessage(auth, room.id, { content: "first message" });
+  const principal = (await repository.principalForAccount(ACCOUNT))!;
+  // The protocol and the Dashboard brand the same id string differently.
+  return { repository, client, auth, instance, room, roomId: room.id as unknown as WebRoomId, principal };
+}
+
+/** An Agent with only an invite: it joins as a guest seat and says one thing. */
+async function guestIn(client: SharedNetServerClient, repository: SharedNetRepository, roomId: string) {
+  const minted = await client.createRoomInvite(ACCOUNT, roomId as never);
+  const joined = await repository.joinRoomWithInvite(minted.token, roomId as never, {
+    name: "claude-code",
+    runtime: { kind: "claude-code", version: "1.0.0", source: "detected" },
+  });
+  const auth = (await repository.authenticateInstance(joined.member_token))! as InstanceAuth;
+  await repository.postMessage(auth, roomId as never, { content: "hello from curl" });
+  return { ...joined, auth };
+}
+
 function clientWith(tables: Record<string, unknown[]>) {
   // A copy, so an update in one test never leaks into the shared fixtures.
   rowsByTable.current = { ...tables };
@@ -164,7 +222,7 @@ const BASE_TABLES = {
 
 describe("SharedNetServerClient reads the V1 Postgres tables", () => {
   it("fails closed when the account has no Principal", async () => {
-    const client = clientWith({ ...BASE_TABLES, principal: [] });
+    const client = new SharedNetServerClient(new MemorySharedNetRepository({ accounts: [] }));
     await expect(client.listRooms("auth-user-1")).rejects.toMatchObject({
       code: "principal_not_found",
       status: 404,
@@ -172,23 +230,25 @@ describe("SharedNetServerClient reads the V1 Postgres tables", () => {
   });
 
   it("projects rooms in the shape the browser validates", async () => {
-    const client = clientWith(BASE_TABLES);
-    const result = await client.listRooms("auth-user-1");
+    const { client, roomId, room } = await seededRoom();
+    const result = await client.listRooms(ACCOUNT);
 
     expect(isRoomListResponse(result)).toBe(true);
     expect(result.rooms[0]).toMatchObject({
-      room_id: ROOM,
-      latest_sequence: 2,
-      latest_cursor: "cursor_2",
+      room_id: room.id,
+      latest_sequence: 1,
+      latest_cursor: "cursor_1",
       member_count: 1,
+      owner_agent_ids: [],
       status: "open",
     });
   });
 
   it("schedules an empty Room owned by the Principal, with no creator Instance", async () => {
-    const client = clientWith({ ...BASE_TABLES, room: [], room_member: [] });
+    const repository = new MemorySharedNetRepository({ accounts: [{ authUserId: ACCOUNT }] });
+    const client = new SharedNetServerClient(repository);
 
-    const created = await client.createRoom("auth-user-1", {
+    const created = await client.createRoom(ACCOUNT, {
       description: "  Ship the launch review  ",
       name: "  Launch review  ",
     });
@@ -203,180 +263,188 @@ describe("SharedNetServerClient reads the V1 Postgres tables", () => {
       status: "open",
     });
     expect(created.room_id).toMatch(/^rom_[0-9A-Za-z]{10}$/);
-    expect(rowsByTable.current.room?.[0]).toMatchObject({
-      creatorInstanceId: null,
-      principalId: PRINCIPAL,
-      state: "open",
-    });
+    const principal = (await repository.principalForAccount(ACCOUNT))!;
+    const { items } = await repository.listRoomsForPrincipal(principal.id);
+    expect(items[0]!.room).toMatchObject({ id: created.room_id, creator_instance_id: null, principal_id: principal.id, state: "open" });
   });
 
-  it("rejects a blank or over-long Room name before touching the database", async () => {
-    const client = clientWith({ ...BASE_TABLES, room: [] });
+  it("rejects a blank or over-long Room name before touching the domain", async () => {
+    const repository = new MemorySharedNetRepository({ accounts: [{ authUserId: ACCOUNT }] });
+    const client = new SharedNetServerClient(repository);
 
-    await expect(client.createRoom("auth-user-1", { name: "   " })).rejects.toMatchObject({
+    await expect(client.createRoom(ACCOUNT, { name: "   " })).rejects.toMatchObject({
       code: "invalid_room_name",
       status: 400,
     });
-    await expect(
-      client.createRoom("auth-user-1", { name: "x".repeat(121) }),
-    ).rejects.toMatchObject({ code: "invalid_room_name" });
-    expect(rowsByTable.current.room).toEqual([]);
+    await expect(client.createRoom(ACCOUNT, { name: "x".repeat(121) })).rejects.toMatchObject({ code: "invalid_room_name" });
+    await expect(client.listRooms(ACCOUNT)).resolves.toEqual({ rooms: [] });
   });
 
   it("shows a scheduled Room to its owner before any Instance has joined", async () => {
-    const scheduledRow = {
-      ...roomRow, id: "rom_sched00001", name: "Scheduled", creatorInstanceId: null,
-      nextSequence: 1,
-    };
-    const client = clientWith({ ...BASE_TABLES, room: [scheduledRow], room_member: [] });
+    const client = new SharedNetServerClient(new MemorySharedNetRepository({ accounts: [{ authUserId: ACCOUNT }] }));
+    const scheduled = await client.createRoom(ACCOUNT, { name: "Scheduled" });
 
-    const list = await client.listRooms("auth-user-1");
+    const list = await client.listRooms(ACCOUNT);
     expect(isRoomListResponse(list)).toBe(true);
-    expect(list.rooms.map((room) => room.room_id)).toEqual(["rom_sched00001"]);
+    expect(list.rooms.map((room) => room.room_id)).toEqual([scheduled.room_id]);
     expect(list.rooms[0]).toMatchObject({ member_count: 0, owner_agent_ids: [] });
 
-    const detail = await client.getRoom("auth-user-1", "rom_sched00001" as never);
+    const detail = await client.getRoom(ACCOUNT, scheduled.room_id);
     expect(isRoomDetail(detail)).toBe(true);
-    expect(detail.room.creator).toEqual({ agent_id: null, principal_id: PRINCIPAL });
+    expect(detail.room.creator).toEqual({ agent_id: null, principal_id: (await principalOf(client)).id });
     expect(detail.memberships).toEqual([]);
   });
 
   it("still hides a Room the account neither owns nor joined", async () => {
-    const foreignRow = {
-      ...roomRow, id: "rom_foreign0001", principalId: "p_someoneElse", creatorInstanceId: null,
-    };
-    const client = clientWith({ ...BASE_TABLES, room: [foreignRow], room_member: [] });
+    const { client, roomId, room } = await seededRoom();
+    const stranger = "auth-user-2";
 
-    await expect(client.listRooms("auth-user-1")).resolves.toEqual({ rooms: [] });
-    await expect(
-      client.getRoom("auth-user-1", "rom_foreign0001" as never),
-    ).rejects.toMatchObject({ code: "room_not_found", status: 404 });
+    await expect(client.listRooms(stranger)).resolves.toEqual({ rooms: [] });
+    await expect(client.getRoom(stranger, roomId)).rejects.toMatchObject({ code: "room_not_found", status: 404 });
+    await expect(client.closeRoom(stranger, roomId)).rejects.toMatchObject({ code: "room_not_found", status: 404 });
+    await expect(client.createRoomInvite(stranger, roomId)).rejects.toMatchObject({ code: "room_not_found", status: 404 });
   });
 
   it("projects room detail with senders resolved to V1 ids", async () => {
-    const client = clientWith(BASE_TABLES);
-    const detail = await client.getRoom("auth-user-1", ROOM as never);
+    const { client, roomId, room, instance, principal } = await seededRoom({ agent: true });
+    const detail = await client.getRoom(ACCOUNT, roomId);
 
     expect(isRoomDetail(detail)).toBe(true);
-    expect(detail.messages[0].sender).toMatchObject({
-      agent_id: AGENT,
-      instance_id: INSTANCE,
-      principal_id: PRINCIPAL,
+    expect(detail.messages[0]!.sender).toEqual({
+      agent_id: instance.agent_id,
+      instance_id: instance.id,
+      principal_id: principal.id,
     });
-    expect(detail.room.creator.agent_id).toBe(AGENT);
+    expect(detail.room.creator).toEqual({ agent_id: instance.agent_id, instance_id: instance.id, principal_id: principal.id });
+    expect(detail.memberships[0]).toMatchObject({
+      agent_id: instance.agent_id,
+      admitted_by: "room_id",
+      instance_id: instance.id,
+      kind: "instance",
+      presence: "online",
+      runtime: { kind: "codex", version: "0.1.0" },
+      status: "active",
+    });
+    expect(detail.next_cursor).toBe("cursor_1");
   });
 
-  it("mints a Room invite for the owner, returns the raw token once, and stores only its digest", async () => {
-    const client = clientWith({ ...BASE_TABLES, room_invite: [] });
+  it("mints a Room invite for the owner, returns the raw token once, and describes it to the Agent that opens it", async () => {
+    const { client, roomId, repository, room } = await seededRoom();
 
-    const minted = await client.createRoomInvite("auth-user-1", ROOM as never);
+    const minted = await client.createRoomInvite(ACCOUNT, roomId);
 
     expect(isCreateRoomInviteResponse(minted)).toBe(true);
     expect(minted.token).toMatch(/^rit_[A-Za-z0-9_-]{43}$/);
-    expect(minted.invite).toMatchObject({ room_id: ROOM, expires_at: null, revoked_at: null, uses: 0 });
+    expect(minted.invite).toMatchObject({ room_id: room.id, expires_at: null, revoked_at: null, uses: 0 });
     expect(minted.invite.invite_id).toMatch(/^inv_[0-9A-Za-z]{10}$/);
-    const stored = rowsByTable.current.room_invite?.[0] as Record<string, unknown>;
-    expect(stored.tokenDigest).toMatch(/^[a-f0-9]{64}$/);
-    expect(JSON.stringify(stored)).not.toContain(minted.token);
-    expect(stored.expiresAt).toBeNull();
+    // The same token opens the same Room through the public API.
+    await expect(repository.describeInvite(minted.token)).resolves.toMatchObject({ room: { id: room.id } });
   });
 
   it("puts an expiry on an invite only when asked, and refuses a Room the account does not own", async () => {
-    const client = clientWith({ ...BASE_TABLES, room_invite: [] });
-    const timed = await client.createRoomInvite("auth-user-1", ROOM as never, {
-      expires_in_seconds: 3600,
-    });
+    const { client, roomId, room } = await seededRoom();
+    const timed = await client.createRoomInvite(ACCOUNT, roomId, { expires_in_seconds: 3600 });
     expect(timed.invite.expires_at).not.toBeNull();
-
-    const foreign = clientWith({
-      ...BASE_TABLES,
-      room: [{ ...roomRow, principalId: "p_someoneElse" }],
-      room_invite: [],
+    await expect(client.createRoomInvite(ACCOUNT, roomId, { expires_in_seconds: -1 })).rejects.toMatchObject({
+      code: "invalid_invite_expiry",
+      status: 400,
     });
-    await expect(foreign.createRoomInvite("auth-user-1", ROOM as never)).rejects.toMatchObject({
+
+    // A Room another account's Instance opened is not the first account's to open a door into.
+    const { repository } = await seededRoom();
+    const client2 = new SharedNetServerClient(repository);
+    const theirSeat = await seatFor(repository, "auth-user-2", "key-2");
+    const { room: theirs } = await repository.createRoom(theirSeat.auth, { name: "Theirs" });
+    await expect(client2.createRoomInvite(ACCOUNT, theirs.id as unknown as WebRoomId)).rejects.toMatchObject({
       code: "room_not_found",
       status: 404,
     });
-    expect(rowsByTable.current.room_invite).toEqual([]);
+  });
+
+  it("revokes an invite of a Room the account owns, and reports one of another Room as absent", async () => {
+    const { client, roomId, repository, room } = await seededRoom();
+    const minted = await client.createRoomInvite(ACCOUNT, roomId);
+
+    const revoked = await client.revokeRoomInvite(ACCOUNT, roomId, minted.invite.invite_id);
+    expect(revoked.invite.revoked_at).not.toBeNull();
+    await expect(repository.describeInvite(minted.token)).rejects.toMatchObject({ code: "invite_revoked" });
+
+    const elsewhere = await client.createRoom(ACCOUNT, { name: "Elsewhere" });
+    const second = await client.createRoomInvite(ACCOUNT, roomId);
+    await expect(client.revokeRoomInvite(ACCOUNT, elsewhere.room_id, second.invite.invite_id)).rejects.toMatchObject({
+      code: "room_not_found",
+      status: 404,
+    });
   });
 
   it("closes a Room the account owns, once, and reports it closed", async () => {
-    const client = clientWith({ ...BASE_TABLES, room: [{ ...roomRow }] });
+    const { client, roomId, repository, room, auth } = await seededRoom();
 
-    const closed = await client.closeRoom("auth-user-1", ROOM as never);
+    const closed = await client.closeRoom(ACCOUNT, roomId);
 
     expect(isCloseRoomResponse(closed)).toBe(true);
-    expect(closed.room).toMatchObject({ room_id: ROOM, status: "closed" });
-    const stored = rowsByTable.current.room?.[0] as Record<string, unknown>;
-    expect(stored.state).toBe("closed");
-    expect(stored.closedAt).toBeInstanceOf(Date);
+    expect(closed.room).toMatchObject({ room_id: room.id, status: "closed" });
+    // The seat's token stops working for this Room at once.
+    await expect(repository.postMessage(auth, room.id, { content: "too late" })).rejects.toMatchObject({ code: "room_closed" });
 
     // Closing again changes nothing and still answers with the closed Room.
-    const again = await client.closeRoom("auth-user-1", ROOM as never);
+    const again = await client.closeRoom(ACCOUNT, roomId);
     expect(again.room.status).toBe("closed");
     expect(again.room.updated_at).toBe(closed.room.updated_at);
   });
 
-  it("refuses to close a Room the account does not own", async () => {
-    const client = clientWith({
-      ...BASE_TABLES,
-      room: [{ ...roomRow, principalId: "p_someoneElse" }],
-    });
-
-    await expect(client.closeRoom("auth-user-1", ROOM as never)).rejects.toMatchObject({
-      code: "room_not_found",
-      status: 404,
-    });
-    expect((rowsByTable.current.room?.[0] as Record<string, unknown>).state).toBe("open");
-  });
-
   it("removes an invite-admitted member: it leaves, keeps its name, and what it said stays", async () => {
-    const client = clientWith({
-      ...BASE_TABLES,
-      principal: [principalRow, guestPrincipalRow],
-      instance: [instanceRow, guestInstanceRow],
-      // The stub updates a table's first row, so the seat being removed goes first.
-      room_member: [{ ...guestMemberRow }, memberRow],
-      message: [messageRow, guestMessageRow],
-    });
+    const { client, roomId, repository, room, instance } = await seededRoom();
+    const guest = await guestIn(client, repository, room.id);
 
-    const removed = await client.removeRoomMember("auth-user-1", ROOM as never, GUEST_INSTANCE);
+    const removed = await client.removeRoomMember(ACCOUNT, roomId, guest.membership.instance_id);
 
     expect(isRemoveRoomMemberResponse(removed)).toBe(true);
     expect(removed.membership).toMatchObject({
+      admitted_by: "invite",
       kind: "guest",
-      member_id: GUEST_INSTANCE,
-      instance_id: GUEST_INSTANCE,
+      member_id: guest.membership.instance_id,
+      instance_id: guest.membership.instance_id,
       name: "claude-code",
+      runtime: { kind: "claude-code", version: "1.0.0", source: "detected" },
       status: "left",
     });
     expect(removed.membership.left_at).not.toBeNull();
-    const detail = await client.getRoom("auth-user-1", ROOM as never);
+    // What the guest said stays, under its own anonymous Principal.
+    const detail = await client.getRoom(ACCOUNT, roomId);
     expect(detail.messages[1]!.sender).toEqual({
       agent_id: null,
-      instance_id: expect.stringMatching(/^i_/),
+      instance_id: guest.membership.instance_id,
       name: "claude-code",
-      principal_id: GUEST_PRINCIPAL,
+      principal_id: guest.membership.principal_id,
     });
+    expect(detail.memberships.map((member) => [member.instance_id, member.status])).toEqual([
+      [instance.id, "active"],
+      [guest.membership.instance_id, "left"],
+    ]);
+    await expect(repository.postMessage(guest.auth, room.id, { content: "still here?" })).rejects.toMatchObject({ status: 403 });
   });
 
   it("removes an Instance member by its Instance id, and reports an unknown member", async () => {
-    const client = clientWith({ ...BASE_TABLES, room_member: [{ ...memberRow }] });
+    const { client, roomId, room, instance } = await seededRoom({ agent: true });
 
-    const removed = await client.removeRoomMember("auth-user-1", ROOM as never, INSTANCE);
+    const removed = await client.removeRoomMember(ACCOUNT, roomId, instance.id);
     expect(isRemoveRoomMemberResponse(removed)).toBe(true);
     expect(removed.membership).toMatchObject({
       kind: "instance",
-      instance_id: INSTANCE,
-      member_id: INSTANCE,
-      agent_id: AGENT,
+      instance_id: instance.id,
+      member_id: instance.id,
+      agent_id: instance.agent_id,
       status: "left",
     });
+    // Removing it again reports the seat as it is.
+    const again = await client.removeRoomMember(ACCOUNT, roomId, instance.id);
+    expect(again.membership).toMatchObject({ status: "left", left_at: removed.membership.left_at });
 
-    const empty = clientWith({ ...BASE_TABLES, room_member: [] });
-    await expect(
-      empty.removeRoomMember("auth-user-1", ROOM as never, "i_nobody00001"),
-    ).rejects.toMatchObject({ code: "member_not_found", status: 404 });
+    await expect(client.removeRoomMember(ACCOUNT, roomId, "i_nobody00001")).rejects.toMatchObject({
+      code: "member_not_found",
+      status: 404,
+    });
   });
 
   it("puts a Room's anonymous co-member on the Network as its own Principal, invited by me, with a Room edge", async () => {
@@ -408,32 +476,43 @@ describe("SharedNetServerClient reads the V1 Postgres tables", () => {
   });
 
   it("shows invite-admitted members of anonymous Principals by name, as their own senders", async () => {
-    const client = clientWith({
-      ...BASE_TABLES,
-      principal: [principalRow, guestPrincipalRow],
-      instance: [instanceRow, guestInstanceRow],
-      room_member: [memberRow, guestMemberRow],
-      message: [messageRow, guestMessageRow],
-    });
-    const detail = await client.getRoom("auth-user-1", ROOM as never);
+    const { client, roomId, repository, room } = await seededRoom();
+    const guest = await guestIn(client, repository, room.id);
+    const detail = await client.getRoom(ACCOUNT, roomId);
 
     expect(isRoomDetail(detail)).toBe(true);
     expect(detail.memberships.map((member) => member.kind)).toEqual(["instance", "guest"]);
-    const guest = detail.memberships[1]!;
-    expect(guest).toMatchObject({
-      instance_id: GUEST_INSTANCE,
-      member_id: GUEST_INSTANCE,
+    expect(detail.memberships[1]).toMatchObject({
+      admitted_by: "invite",
+      instance_id: guest.membership.instance_id,
+      member_id: guest.membership.instance_id,
       name: "claude-code",
       presence: "online",
-      principal_id: GUEST_PRINCIPAL,
+      principal_id: guest.membership.principal_id,
     });
     expect(detail.memberships[0]).toMatchObject({ kind: "instance", name: null, presence: "online" });
     expect(detail.messages[1]!.sender).toEqual({
       agent_id: null,
-      instance_id: expect.stringMatching(/^i_/),
+      instance_id: guest.membership.instance_id,
       name: "claude-code",
-      principal_id: GUEST_PRINCIPAL,
+      principal_id: guest.membership.principal_id,
     });
+  });
+
+  it("shows a Room the account sits in but did not schedule, and hides it again once its seat has left", async () => {
+    const { client, roomId, repository, room } = await seededRoom();
+    // A second account joins the first account's Room with its own Instance.
+    const seated = await seatFor(repository, "auth-user-2", "key-2");
+    await repository.joinRoom(seated.auth, room.id);
+    const theirs = await client.listRooms("auth-user-2");
+    expect(theirs.rooms.map((entry) => entry.room_id)).toEqual([room.id]);
+    await expect(client.getRoom("auth-user-2", roomId)).resolves.toMatchObject({ room: { room_id: room.id } });
+    // The owner may still not close or invite into it as the visitor.
+    await expect(client.closeRoom("auth-user-2", roomId)).rejects.toMatchObject({ code: "room_not_found" });
+
+    await client.removeRoomMember(ACCOUNT, roomId, seated.instance.id);
+    await expect(client.getRoom("auth-user-2", roomId)).rejects.toMatchObject({ code: "room_not_found", status: 404 });
+    await expect(client.listRooms("auth-user-2")).resolves.toEqual({ rooms: [] });
   });
 
   it("projects Instances with lease-derived presence and no Runtime tier", async () => {
@@ -470,17 +549,6 @@ describe("SharedNetServerClient reads the V1 Postgres tables", () => {
     );
     expect(isDecisionProjection(resolved)).toBe(true);
     expect(resolved.status).toBe("approved");
-  });
-
-  it("shows a Room to a removed member no more: a left seat reads nothing through the Web", async () => {
-    const client = clientWith({
-      ...BASE_TABLES,
-      room: [{ ...roomRow, principalId: "p_SomeoneElse" }],
-      room_member: [{ ...memberRow, state: "left", leftAt: NOW }],
-    });
-    await expect(client.getRoom("auth-user-1", ROOM as never)).rejects.toMatchObject({ code: "room_not_found", status: 404 });
-    const rooms = await client.listRooms("auth-user-1");
-    expect(rooms.rooms.map((room) => room.room_id)).toEqual([]);
   });
 
   it("names the asker's own Principal on a seat request from another Principal", async () => {

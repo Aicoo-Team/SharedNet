@@ -102,7 +102,39 @@ export class RepositoryError extends Error {
   }
 }
 
-export interface SharedNetRepository {
+/** A Room as the Dashboard lists it: the Room plus what the list shows beside it. */
+export type RoomOverview = {
+  room: Room;
+  active_member_count: number;
+  latest_sequence: number;
+};
+
+/**
+ * The Dashboard's door: what a signed-in human's Principal may see and do.
+ * Authorization lives here, in the one place the public API's rules also
+ * live, so the two can never drift apart again: a Room is visible to the
+ * Principal that scheduled it and to a Principal with an active seat in it;
+ * everything else reads as absent.
+ */
+export interface PrincipalRepository {
+  /** The Principal behind an account, or null when none was provisioned. */
+  principalForAccount(authUserId: string): Promise<Principal | null>;
+  /** Rooms the Principal scheduled or has an active seat in, newest first. */
+  listRoomsForPrincipal(principalId: PrincipalId): Promise<{ items: RoomOverview[] }>;
+  /** A Room the Principal may see, with every seat and every message, in order. */
+  getRoomForPrincipal(
+    principalId: PrincipalId,
+    roomId: RoomId,
+  ): Promise<{ room: Room; memberships: RoomMember[]; messages: Message[]; latest_sequence: number }>;
+  /** Schedule an empty Room from the Web: no creator Instance, no members yet. */
+  scheduleRoom(principalId: PrincipalId, input: { name: string; description: string | null }): Promise<{ room: Room }>;
+  /** Close a Room the Principal owns; closing a closed Room returns it as it is. */
+  closeRoom(principalId: PrincipalId, roomId: RoomId): Promise<{ room: Room }>;
+  /** Remove one seat from a Room the Principal owns; a seat that already left is returned as it is. */
+  removeRoomMember(principalId: PrincipalId, roomId: RoomId, instanceId: InstanceId): Promise<{ membership: RoomMember }>;
+}
+
+export interface SharedNetRepository extends PrincipalRepository {
   authenticateApiKey(token: string): Promise<PrincipalAuth | null>;
   authenticateInstance(token: string): Promise<InstanceAuth | null>;
   /** Idempotent by canonical handle: `created` is false when the tag existed. */
