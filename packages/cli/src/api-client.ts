@@ -5,6 +5,7 @@ type Fetch = typeof globalThis.fetch;
 interface ApiErrorEnvelope {
   error?: {
     code?: unknown;
+    message?: unknown;
     request_id?: unknown;
   };
 }
@@ -122,6 +123,10 @@ export class ApiClient {
         : undefined;
     if (response.status === 401) {
       throw new CliError(code, "SharedNet authentication failed.", 3, requestId);
+    }
+    if (code === "cli_upgrade_required") {
+      const message = typeof envelope.error?.message === "string" && envelope.error.message.length < 400 ? envelope.error.message : "This SharedNet CLI is too old.";
+      throw new CliError(code, message, 4, requestId);
     }
     if (response.status >= 400 && response.status < 500) {
       throw new CliError(code, "SharedNet rejected the request.", 4, requestId);

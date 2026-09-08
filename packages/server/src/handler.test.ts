@@ -69,7 +69,7 @@ async function startInstance(
   const response = await request(store, "/api/v1/instances", {
     method: "POST",
     headers: apiHeaders({ "content-type": "application/json" }),
-    body: JSON.stringify({ runtime_kind: "codex", cli_version: "0.1.0", ...body }),
+    body: JSON.stringify({ runtime_kind: "codex", cli_version: "0.1.3", ...body }),
   });
   expect(response.status).toBe(expectedStatus);
   expect(response.headers.get("cache-control")).toContain("no-store");
@@ -81,7 +81,7 @@ async function startWithKey(store: MemorySharedNetRepository, key: string, body:
   const response = await request(store, "/api/v1/instances", {
     method: "POST",
     headers: apiHeaders({ "content-type": "application/json" }, key),
-    body: JSON.stringify({ runtime_kind: "codex", cli_version: "0.1.0", ...body }),
+    body: JSON.stringify({ runtime_kind: "codex", cli_version: "0.1.3", ...body }),
   });
   expect(response.status).toBe(201);
   return json(response);
@@ -220,7 +220,7 @@ describe("SharedNet V1 HTTP handler", () => {
       headers: apiHeaders({ "content-type": "application/json" }),
       body: JSON.stringify({
         runtime_kind: "codex",
-        cli_version: "0.1.0",
+        cli_version: "0.1.3",
         agent_id: "a_zzzzzzzzzz",
       }),
     });
@@ -243,7 +243,7 @@ describe("SharedNet V1 HTTP handler", () => {
       const response = await request(store, "/api/v1/instances", {
         method: "POST",
         headers: apiHeaders({ "content-type": "application/json" }),
-        body: JSON.stringify({ runtime_kind: "codex", cli_version: "0.1.0", ...body }),
+        body: JSON.stringify({ runtime_kind: "codex", cli_version: "0.1.3", ...body }),
       });
       expect(response.status, JSON.stringify(body)).toBe(422);
     }
@@ -493,7 +493,7 @@ describe("SharedNet V1 HTTP handler", () => {
         "content-type": "application/json",
         "idempotency-key": crypto.randomUUID(),
       }),
-      body: JSON.stringify({ runtime_kind: "codex", cli_version: "0.1.0" }),
+      body: JSON.stringify({ runtime_kind: "codex", cli_version: "0.1.3" }),
     });
 
     expect(response.status).toBe(400);
@@ -582,7 +582,7 @@ describe("Rooms across Principals", () => {
     const response = await request(store, "/api/v1/instances", {
       method: "POST",
       headers: apiHeaders({ "content-type": "application/json" }, key),
-      body: JSON.stringify({ runtime_kind: "codex", cli_version: "0.1.0", ...body }),
+      body: JSON.stringify({ runtime_kind: "codex", cli_version: "0.1.3", ...body }),
     });
     expect(response.status).toBe(201);
     return json(response);
@@ -843,7 +843,7 @@ describe("Room invites, guests, and wait", () => {
     const started = await request(store, "/api/v1/instances", {
       method: "POST",
       headers: { authorization: `Bearer ${body.api_key}`, "content-type": "application/json" },
-      body: JSON.stringify({ runtime_kind: "claude-code", cli_version: "0.1.0" }),
+      body: JSON.stringify({ runtime_kind: "claude-code", cli_version: "0.1.3" }),
     });
     expect(started.status).toBe(201);
     expect((await json(started)).instance.principal_id).toBe(principalId);
@@ -885,6 +885,27 @@ describe("Room invites, guests, and wait", () => {
     expect((await json(refused)).error.code).toBe("room_not_found");
     expect((await request(store, `/api/v1/rooms/${room.id}/invites`, { method: "POST" })).status).toBe(401);
     expect((await request(store, `/api/v1/rooms/${room.id}/invites`, { headers: instanceHeaders(host.token) })).status).toBe(405);
+  });
+
+  it("names the oldest CLI it registers, and refuses an older one with the command to run", async () => {
+    const store = new MemorySharedNetRepository({ devApiKey: DEV_KEY });
+    const index = await json(await request(store, "/api/v1"));
+    expect(index.min_cli_version).toBe("0.1.3");
+    const register = (cli_version: string) =>
+      request(store, "/api/v1/instances", {
+        method: "POST",
+        headers: { authorization: `Bearer ${DEV_KEY}`, "content-type": "application/json" },
+        body: JSON.stringify({ runtime_kind: "claude-code", cli_version }),
+      });
+    const old = await register("0.1.2");
+    expect(old.status).toBe(426);
+    const body = await json(old);
+    expect(body.error.code).toBe("cli_upgrade_required");
+    expect(body.error.message).toContain("npx -y sharednet@latest");
+    expect((await register("0.1.3")).status).toBe(201);
+    expect((await register("0.2.0")).status).toBe(201);
+    // A version that is not a version (a script, an invite seat) is not judged.
+    expect((await register("scenario")).status).toBe(201);
   });
 
   it("tells the join page what an invite opens, and only that", async () => {
@@ -944,7 +965,7 @@ describe("Room invites, guests, and wait", () => {
     const started = await request(store, "/api/v1/instances", {
       method: "POST",
       headers: { authorization: `Bearer ${DEV_KEY}`, "content-type": "application/json" },
-      body: JSON.stringify({ runtime_kind: "claude-code", cli_version: "0.1.0" }),
+      body: JSON.stringify({ runtime_kind: "claude-code", cli_version: "0.1.3" }),
     });
     expect(started.status).toBe(201);
     const { instance, token } = await json(started);
@@ -1436,7 +1457,7 @@ describe("Room invites, guests, and wait", () => {
       const registered = await request(store, "/api/v1/instances", {
         method: "POST",
         headers: { authorization: `Bearer ${body.api_key}`, "content-type": "application/json" },
-        body: JSON.stringify({ runtime_kind: "claude-code", cli_version: "0.1.0" }),
+        body: JSON.stringify({ runtime_kind: "claude-code", cli_version: "0.1.3" }),
       });
       expect(registered.status).toBe(201);
       expect((await json(registered)).instance.principal_id).toBe(host.instance.principal_id);

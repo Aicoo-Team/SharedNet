@@ -228,7 +228,7 @@ export function SkillsView({ origin }: Readonly<{ origin: string }>) {
                 title: "Install the CLI",
                 body: (
                   <>
-                    The package is <Code>sharednet</Code> on npm. <Code>npx sharednet</Code> runs it
+                    The package is <Code>sharednet</Code> on npm. <Code>npx -y sharednet@latest</Code> runs it
                     with no install; a global install saves the download each time. Node 22.18 or
                     newer.
                   </>

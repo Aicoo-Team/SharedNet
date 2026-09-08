@@ -211,7 +211,7 @@ const networkProjection: NetworkProjection = {
       last_seen_at: NOW,
       display_name: null,
       heartbeat_state: "renewing",
-      runtime_metadata: { cli_version: "0.1.0", device_id: "dev-a" },
+      runtime_metadata: { cli_version: "0.1.3", device_id: "dev-a" },
       presence: "online",
       principal_id: PRINCIPAL_ID,
       runtime_type: "codex",
@@ -227,7 +227,7 @@ const networkProjection: NetworkProjection = {
       last_seen_at: EARLIER,
       display_name: null,
       heartbeat_state: "stopped",
-      runtime_metadata: { cli_version: "0.1.0" },
+      runtime_metadata: { cli_version: "0.1.3" },
       presence: "offline",
       principal_id: SECOND_PRINCIPAL_ID,
       runtime_type: "claude-code",
@@ -614,7 +614,7 @@ describe("SharedNet Rooms", () => {
     expect(within(dialog).getByText("room_Launch:Sched.1")).toBeVisible();
     // The dialog opens on "Invite my Agents": one command that joins as this account.
     const command = within(dialog).getByLabelText("Command for my Agent").textContent ?? "";
-    expect(command).toBe(`npx sharednet join 'ROOM=room_Launch:Sched.1 TOKEN=${INVITE_TOKEN} BASE=${window.location.origin}' --claim ${CLAIM}`);
+    expect(command).toBe(`npx -y sharednet@latest join 'ROOM=room_Launch:Sched.1 TOKEN=${INVITE_TOKEN} BASE=${window.location.origin}' --claim ${CLAIM}`);
     expect(within(dialog).getByRole("button", { name: "Copy command" })).toBeVisible();
     // "Ask people" is the link and its QR; "Other" is the guest protocol.
     fireEvent.click(within(dialog).getByRole("tab", { name: "Ask people to invite their Agents" }));
@@ -632,7 +632,7 @@ describe("SharedNet Rooms", () => {
     expect(invite).toContain("Ship the launch review");
     // The CLI path leads, naming the login that makes a join an account's; curl stays as the fallback.
     expect(invite).toContain("sharednet login");
-    expect(invite.indexOf("npx sharednet join")).toBeLessThan(invite.indexOf("curl -s -X POST"));
+    expect(invite.indexOf("npx -y sharednet@latest join")).toBeLessThan(invite.indexOf("curl -s -X POST"));
     expect(within(dialog).getByRole("button", { name: "Copy invite" })).toBeVisible();
   });
 
@@ -642,7 +642,7 @@ describe("SharedNet Rooms", () => {
     const dialog = await screen.findByRole("dialog", { name: `Invite an Agent to ${roomDetail.room.name}` });
     expect(state.createClaim).toHaveBeenCalled();
     const command = within(dialog).getByLabelText("Command for my Agent").textContent ?? "";
-    expect(command).toBe(`npx sharednet join 'ROOM=${ROOM_ID} TOKEN=${INVITE_TOKEN} BASE=${window.location.origin}'`);
+    expect(command).toBe(`npx -y sharednet@latest join 'ROOM=${ROOM_ID} TOKEN=${INVITE_TOKEN} BASE=${window.location.origin}'`);
     expect(within(dialog).getByText(/could not be minted/)).toBeVisible();
   });
 
@@ -763,7 +763,7 @@ describe("SharedNet Rooms", () => {
     expect(invite).toContain("Join SharedNet Room rom_lxw0rfaLIb.");
     expect(invite).toContain(`Link for people: ${window.location.origin}/join/${INVITE_TOKEN}`);
     // The CLI comes first; the curl route is the fallback.
-    expect(invite.indexOf("npx sharednet join 'ROOM=rom_lxw0rfaLIb")).toBeLessThan(invite.indexOf('curl -s -X POST "$BASE/api/v1/rooms/$ROOM/join"'));
+    expect(invite.indexOf("npx -y sharednet@latest join 'ROOM=rom_lxw0rfaLIb")).toBeLessThan(invite.indexOf('curl -s -X POST "$BASE/api/v1/rooms/$ROOM/join"'));
     expect(invite).toContain("sharednet login");
     expect(invite).toContain(`TOKEN=${INVITE_TOKEN}`);
   });
@@ -895,7 +895,7 @@ describe("SharedNet Rooms", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Copy command" }));
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
     expect(String(writeText.mock.calls[0]![0])).toContain(`TOKEN=${INVITE_TOKEN} BASE=${window.location.origin}' --claim ${CLAIM}`);
-    expect(String(writeText.mock.calls[0]![0])).toContain("npx sharednet wait");
+    expect(String(writeText.mock.calls[0]![0])).toContain("npx -y sharednet@latest wait");
     expect(screen.getByRole("status")).toHaveTextContent("Copied to clipboard.");
     // On "Ask people" it gets the link alone.
     fireEvent.click(within(dialog).getByRole("tab", { name: "Ask people to invite their Agents" }));

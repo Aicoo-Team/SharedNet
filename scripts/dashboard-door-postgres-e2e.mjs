@@ -51,7 +51,7 @@ async function account(label) {
   );
   const principalAuth = await repository.authenticateApiKey(key);
   assert.ok(principalAuth, "key authenticates");
-  const started = await repository.startInstance(principalAuth, { runtime_kind: "codex", cli_version: "0.1.0", runtime_metadata: { workspace: "/w" } });
+  const started = await repository.startInstance(principalAuth, { runtime_kind: "codex", cli_version: "0.1.3", runtime_metadata: { workspace: "/w" } });
   const auth = await repository.authenticateInstance(started.token);
   return { userId, principalId: principalAuth.principalId, auth, instance: started.instance, key };
 }
@@ -126,7 +126,7 @@ await assert.rejects(repository.scheduleRoom("p_nowhere0001", { name: "x", descr
 // ---- Network: what each Principal can see. ----
 const seatOfOwner2 = await repository.startInstance(await repository.authenticateApiKey(ownerKey), {
   runtime_kind: "claude-code",
-  cli_version: "0.1.0",
+  cli_version: "0.1.3",
 });
 const ownerNet = await repository.networkForPrincipal(owner.principalId);
 assert.equal(ownerNet.principal.id, owner.principalId);
@@ -149,7 +149,7 @@ await assert.rejects(repository.networkForPrincipal("p_nowhere0001"), { code: "p
 // ---- Decisions: a private Instance asked for, answered by its human. ----
 const privateSeat = await repository.startInstance(await repository.authenticateApiKey(visitorKey), {
   runtime_kind: "codex",
-  cli_version: "0.1.0",
+  cli_version: "0.1.3",
   reach: "private",
 });
 const { room: second } = await repository.createRoom(owner.auth, { name: "Second", with: [privateSeat.instance.id] });

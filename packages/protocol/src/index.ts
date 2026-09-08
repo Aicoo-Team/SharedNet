@@ -1131,10 +1131,33 @@ export const CAPABILITIES = [
 
 export type Capability = (typeof CAPABILITIES)[number];
 
+/**
+ * The oldest CLI the service still registers Instances for. Raised when a
+ * released CLI has a bug the service cannot work around; 0.1.3 is the first
+ * whose `join` never folds two windows into one Instance.
+ */
+export const MIN_CLI_VERSION = "0.1.3";
+
+/** Semantic-version order for `MAJOR.MINOR.PATCH` strings; anything else compares as unknown (0). */
+export function compareVersions(left: string, right: string): number {
+  const parse = (value: string) => value.trim().split(".").slice(0, 3).map((part) => Number.parseInt(part, 10));
+  const a = parse(left);
+  const b = parse(right);
+  if (a.length !== 3 || b.length !== 3 || a.some(Number.isNaN) || b.some(Number.isNaN)) return 0;
+  for (let i = 0; i < 3; i += 1) if (a[i] !== b[i]) return a[i]! < b[i]! ? -1 : 1;
+  return 0;
+}
+
+export function isVersionString(value: string): boolean {
+  return /^\d+\.\d+\.\d+(?:[-+].*)?$/.test(value.trim());
+}
+
 export interface DiscoveryDocument {
   service: "sharednet";
   api_major: 1;
   protocol_version: string;
+  /** CLIs older than this are refused at Instance registration and told to update. */
+  min_cli_version: string;
   openapi_url: "/api/v1/openapi.json";
   capabilities: readonly Capability[];
   limits: {
@@ -1164,6 +1187,7 @@ export const DISCOVERY_DOCUMENT = {
   service: "sharednet",
   api_major: 1,
   protocol_version: "1.0.0",
+  min_cli_version: MIN_CLI_VERSION,
   openapi_url: "/api/v1/openapi.json",
   capabilities: CAPABILITIES,
   limits: {

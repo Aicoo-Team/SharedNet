@@ -189,7 +189,7 @@ describe("sharednet login", () => {
     const host = await api("/instances", {
       method: "POST",
       headers: { authorization: `Bearer ${DEV_KEY}`, "content-type": "application/json" },
-      body: JSON.stringify({ runtime_kind: "codex", cli_version: "0.1.0" }),
+      body: JSON.stringify({ runtime_kind: "codex", cli_version: "0.1.3" }),
     });
     const created = await api("/rooms", {
       method: "POST",

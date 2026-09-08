@@ -235,7 +235,7 @@ describe("sharednet join", () => {
       principal_id: "p_ClAiMeD001",
       agent_id: null,
       runtime_kind: "codex",
-      cli_version: "0.1.0",
+      cli_version: "0.1.3",
       status: "online",
       display_name: null,
       started_at: "2026-09-07T00:00:00.000Z",
@@ -285,7 +285,7 @@ describe("sharednet join", () => {
       principal_id: "p_AcCoUnT0001",
       agent_id: null,
       runtime_kind: "claude-code",
-      cli_version: "0.1.0",
+      cli_version: "0.1.3",
       status: "online",
       display_name: null,
       started_at: "2026-09-06T00:00:00.000Z",
@@ -722,7 +722,7 @@ describe("sharednet say and wait", () => {
       const host = await api("/instances", {
         method: "POST",
         headers: { authorization: `Bearer ${DEV_KEY}`, "content-type": "application/json" },
-        body: JSON.stringify({ runtime_kind: "codex", cli_version: "0.1.0" }),
+        body: JSON.stringify({ runtime_kind: "codex", cli_version: "0.1.3" }),
       });
       const created = await api("/rooms", {
         method: "POST",
@@ -832,7 +832,7 @@ describe("sharednet say and wait", () => {
       api_key: `snk_${"K".repeat(43)}`, installation_secret: Buffer.alloc(32, 7).toString("base64url"), created_at: "2026-09-08T00:00:00.000Z", expires_at: null,
     });
     const instance = {
-      id: "i_AccountSeat1", principal_id: "p_AcCoUnT0001", agent_id: null, runtime_kind: "claude-code", cli_version: "0.1.0",
+      id: "i_AccountSeat1", principal_id: "p_AcCoUnT0001", agent_id: null, runtime_kind: "claude-code", cli_version: "0.1.3",
       runtime_metadata: {}, reach: "public", status: "online", display_name: null,
       started_at: "2026-09-08T00:00:00.000Z", last_seen_at: "2026-09-08T00:00:00.000Z", lease_expires_at: "2026-09-08T00:01:00.000Z",
       token_expires_at: null, ended_at: null, revoked_at: null,
@@ -866,7 +866,7 @@ describe("sharednet say and wait", () => {
       status: 201,
       body: {
         instance: {
-          id, principal_id: "p_AcCoUnT0001", agent_id: null, runtime_kind: "claude-code", cli_version: "0.1.0", runtime_metadata: {}, reach: "public", status: "online",
+          id, principal_id: "p_AcCoUnT0001", agent_id: null, runtime_kind: "claude-code", cli_version: "0.1.3", runtime_metadata: {}, reach: "public", status: "online",
           display_name: null, started_at: "2026-09-08T00:00:00.000Z", last_seen_at: "2026-09-08T00:00:00.000Z", lease_expires_at: "2026-09-08T00:01:00.000Z", token_expires_at: null, ended_at: null, revoked_at: null,
         },
         token: `sni_${id.slice(2).padEnd(43, "x")}`,
@@ -896,7 +896,7 @@ describe("sharednet say and wait", () => {
   it("groups an account's seat under a tag with --agent, and refuses the flag for a machine that acts as nobody", async () => {
     const space = await workspace();
     const instance = {
-      id: "i_TaggedSeat1", principal_id: "p_AcCoUnT0001", agent_id: "a_ReViEwEr01", runtime_kind: "claude-code", cli_version: "0.1.0",
+      id: "i_TaggedSeat1", principal_id: "p_AcCoUnT0001", agent_id: "a_ReViEwEr01", runtime_kind: "claude-code", cli_version: "0.1.3",
       runtime_metadata: {}, reach: "public", status: "online", display_name: null,
       started_at: "2026-09-08T00:00:00.000Z", last_seen_at: "2026-09-08T00:00:00.000Z", lease_expires_at: "2026-09-08T00:01:00.000Z",
       token_expires_at: null, ended_at: null, revoked_at: null,
@@ -1065,7 +1065,7 @@ describe("the guest verbs against the real request handler", () => {
     const started = await api("/instances", {
       method: "POST",
       headers: { authorization: `Bearer ${DEV_KEY}`, "content-type": "application/json" },
-      body: JSON.stringify({ runtime_kind: "codex", cli_version: "0.1.0" }),
+      body: JSON.stringify({ runtime_kind: "codex", cli_version: "0.1.3" }),
     });
     expect(started.status).toBe(201);
     const hostToken = started.body.token as string;

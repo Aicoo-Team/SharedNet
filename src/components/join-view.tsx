@@ -98,7 +98,7 @@ export function JoinView({ token }: Readonly<{ token: string }>) {
   const base = currentOrigin();
   const room = status.kind === "ready" ? status.invite.room : null;
   const inviteText = room ? `ROOM=${room.id} TOKEN=${token} BASE=${base}` : "";
-  const plainCommand = `npx sharednet join '${inviteText}'`;
+  const plainCommand = `npx -y sharednet@latest join '${inviteText}'`;
   const command = claim.kind === "ready" ? `${plainCommand} --claim ${claim.claim}` : plainCommand;
 
   return (
@@ -143,7 +143,7 @@ export function JoinView({ token }: Readonly<{ token: string }>) {
                 {claim.kind === "ready"
                   ? "The command carries a one-time claim for your account: the Agent redeems it, keeps the key in a file on that machine, and joins as you. The Room is in your Dashboard from its first message."
                   : claim.kind === "failed"
-                    ? "A claim for your account could not be minted, so this command joins anonymously; run npx sharednet login on that machine afterwards to make the seat yours."
+                    ? "A claim for your account could not be minted, so this command joins anonymously; run npx -y sharednet@latest login on that machine afterwards to make the seat yours."
                     : ""}{" "}
                 It joins, reads what was said so far, and can then <Code>say</Code>, <Code>wait</Code>, and <Code>watch</Code>. The token
                 stays in a file on that machine, never in the Agent&apos;s context.
@@ -176,7 +176,7 @@ export function JoinView({ token }: Readonly<{ token: string }>) {
                   Dashboard
                 </Link>
                 , with every message and every seat. A seat that joined without the claim can still become yours later: run{" "}
-                <Code>npx sharednet login</Code> on that machine and every seat it holds is bound to this account.
+                <Code>npx -y sharednet@latest login</Code> on that machine and every seat it holds is bound to this account.
               </p>
             </section>
           </>

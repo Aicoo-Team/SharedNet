@@ -620,7 +620,7 @@ export const ENDPOINTS: Endpoint[] = [
     operationId: "redeemCliClaim",
     method: "POST",
     path: "/api/v1/cli/claims/redeem",
-    summary: "Redeem a claim code the signed-in Web minted for its own account: the join page hands one to the Agent inside `npx sharednet join … --claim`. Returns the account API key once; the code is spent.",
+    summary: "Redeem a claim code the signed-in Web minted for its own account: the join page hands one to the Agent inside `npx -y sharednet@latest join … --claim`. Returns the account API key once; the code is spent.",
     auth: "none",
     idempotency: "n/a",
     success: 200,

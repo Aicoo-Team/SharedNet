@@ -104,7 +104,7 @@ function instance(id: string) {
     principal_id: "p_demo",
     agent_id: null,
     runtime_kind: "codex",
-    cli_version: "0.1.0",
+    cli_version: "0.1.3",
     status: "online",
     started_at: "2026-09-04T00:00:00.000Z",
     lease_expires_at: "2099-09-04T00:01:30.000Z",
@@ -348,7 +348,7 @@ describe("reach: forming a group from the account CLI", () => {
       room_id: "rom_AbCdEfGhIj",
       link: `http://127.0.0.1:3001/join/rit_${"t".repeat(43)}`,
       for_agents: `ROOM=rom_AbCdEfGhIj TOKEN=rit_${"t".repeat(43)} BASE=http://127.0.0.1:3001`,
-      command: `npx sharednet join 'ROOM=rom_AbCdEfGhIj TOKEN=rit_${"t".repeat(43)} BASE=http://127.0.0.1:3001'`,
+      command: `npx -y sharednet@latest join 'ROOM=rom_AbCdEfGhIj TOKEN=rit_${"t".repeat(43)} BASE=http://127.0.0.1:3001'`,
     });
     const notARoom = await harnessAfterStart(["room", "invite", "nope", "--json"], []);
     expect(notARoom.exitCode).not.toBe(0);
