@@ -277,6 +277,46 @@ describe("SharedNet Network", () => {
     expect(screen.getByRole("status")).toHaveTextContent("No Principal p_nowhere0001 in your Network");
   });
 
+  it("stands Instances with no line on a ring around the connected ones, in id order, never in the corners", () => {
+    const net = network();
+    const loners = ["i_lonelyAaaa", "i_lonelyBbbb", "i_lonelyCccc"].map((id) => instance(id as InstanceId, OWN_PRINCIPAL_ID, null));
+    const graph = buildGraph({ ...net, instances: [...net.instances, ...loners] });
+    const layout = layoutGraph(graph.nodes.map((n) => ({ id: n.instance.instance_id, group: n.instance.principal_id })), graph.edges);
+    const centre = { x: layout.width / 2, y: layout.height / 2 };
+    const radii = loners.map((l) => Math.hypot(layout.positions.get(l.instance_id)!.x - centre.x, layout.positions.get(l.instance_id)!.y - centre.y));
+    expect(Math.max(...radii) - Math.min(...radii)).toBeLessThan(2);
+    // The connected four sit inside that ring.
+    for (const id of [OWN_A, OWN_B, OTHER, GUEST]) {
+      expect(Math.hypot(layout.positions.get(id)!.x - centre.x, layout.positions.get(id)!.y - centre.y)).toBeLessThan(Math.min(...radii));
+    }
+    // With no lines at all, everything is one ring.
+    const none = buildGraph({ ...net, edges: [] });
+    const ring = layoutGraph(none.nodes.map((n) => ({ id: n.instance.instance_id, group: n.instance.principal_id })), []);
+    const all = [...ring.positions.values()].map((p) => Math.hypot(p.x - ring.width / 2, p.y - ring.height / 2));
+    expect(Math.max(...all) - Math.min(...all)).toBeLessThan(2);
+  });
+
+  it("zooms with the wheel and the buttons, pans by dragging the stage, and Fit brings the whole canvas back", () => {
+    const { container } = renderNetwork();
+    const stage = container.querySelector<HTMLElement>(".graph-stage")!;
+    const canvas = () => container.querySelector<HTMLElement>(".network-canvas")!;
+    expect(canvas().dataset.scale).toBe("1.00");
+    fireEvent.wheel(stage, { deltaY: -100, clientX: 0, clientY: 0 });
+    expect(Number(canvas().dataset.scale)).toBeGreaterThan(1);
+    fireEvent.click(screen.getByRole("button", { name: "Zoom out" }));
+    fireEvent.click(screen.getByRole("button", { name: "Zoom out" }));
+    expect(Number(canvas().dataset.scale)).toBeLessThan(1);
+    fireEvent.pointerDown(stage, { button: 0, clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(stage, { clientX: 160, clientY: 130 });
+    fireEvent.pointerUp(stage);
+    expect(Number(canvas().dataset.tx)).not.toBe(0);
+    // A drag that ends on a node does not select it.
+    expect(screen.queryByRole("region", { name: "Agent Card" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Fit the whole graph" }));
+    expect(canvas().dataset.scale).toBe("1.00");
+    expect(canvas().dataset.tx).toBe("0");
+  });
+
   it("renders an empty Network without inventing anything, and the loading and unavailable states", () => {
     renderNetwork({ network: network({ instances: [], edges: [], agents: [], connected_principals: [] }) });
     openInstances();

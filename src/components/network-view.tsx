@@ -204,39 +204,66 @@ export function layoutGraph(
   availableWidth = 0,
 ): { positions: Map<string, Point>; width: number; height: number } {
   const count = nodes.length;
-  // The canvas fits the stage it is shown in and grows downward with the
-  // crowd, so a Network never hides nodes off to the right.
-  const wanted = Math.round(150 * Math.sqrt(Math.max(count, 1)) + 200);
+  // The canvas fits the stage it is shown in and grows with the crowd; the
+  // view can be zoomed and panned, so nothing has to fit at once.
+  const wanted = Math.round(170 * Math.sqrt(Math.max(count, 1)) + 240);
   const width = availableWidth > 0 ? Math.max(MIN_CANVAS, Math.floor(availableWidth)) : Math.round(Math.max(MIN_CANVAS, wanted) * 1.4);
-  const height = Math.max(Math.round(width / 1.6), Math.min(wanted, Math.round((wanted * wanted) / width) + 120), 420);
+  const height = Math.max(Math.round(width / 1.6), Math.min(wanted, Math.round((wanted * wanted) / width) + 160), 460);
   const positions = new Map<string, Point>();
   if (count === 0) return { positions, width, height };
+  // Nodes with no line at all are not thrown to the corners by the
+  // repulsion; they stand on a ring around whatever is connected, in id
+  // order, so they read as "present, unconnected" rather than as noise.
+  const linked = new Set(edges.flatMap((edge) => [edge.source, edge.target]));
+  const connected = nodes.filter((node) => linked.has(node.id));
+  const isolated = nodes.filter((node) => !linked.has(node.id)).sort((left, right) => compareIds(left.id, right.id));
+  const centre = { x: width / 2, y: height / 2 };
+  const outerRadius = Math.min(width, height) / 2 - CANVAS_PADDING;
+  const innerRadius = isolated.length > 0 ? outerRadius * 0.62 : outerRadius;
+  if (connected.length > 0) {
+    for (const [id, point] of simulate(connected, edges, centre, innerRadius)) positions.set(id, point);
+  }
+  isolated.forEach((node, i) => {
+    const angle = -Math.PI / 2 + (i / isolated.length) * Math.PI * 2;
+    const radius = connected.length > 0 ? outerRadius : Math.min(outerRadius, 40 + isolated.length * 14);
+    positions.set(node.id, { x: Math.round(centre.x + Math.cos(angle) * radius), y: Math.round(centre.y + Math.sin(angle) * radius) });
+  });
+  return { positions, width, height };
+}
+
+/**
+ * A force layout, run to rest before render, inside a circle: nodes repel,
+ * shared Rooms pull, a Principal's seats drift together, and gravity keeps
+ * everything near the centre. Deterministic: the same ids start from the
+ * same places and settle in the same ones.
+ */
+function simulate(nodes: readonly LayoutNode[], edges: readonly LayoutEdge[], centre: Point, radius: number): Map<string, Point> {
+  const count = nodes.length;
   const ids = nodes.map((node) => node.id);
   const index = new Map(ids.map((id, i) => [id, i]));
   const x = new Float64Array(count);
   const y = new Float64Array(count);
   for (let i = 0; i < count; i += 1) {
     const angle = (i / count) * Math.PI * 2 + hashId(ids[i]!) * 0.5;
-    const radius = (Math.min(width, height) / 2 - CANVAS_PADDING) * (0.55 + 0.4 * hashId(`${ids[i]}:r`));
-    x[i] = width / 2 + Math.cos(angle) * radius;
-    y[i] = height / 2 + Math.sin(angle) * radius;
+    const distance = radius * (0.35 + 0.5 * hashId(`${ids[i]}:r`));
+    x[i] = centre.x + Math.cos(angle) * distance;
+    y[i] = centre.y + Math.sin(angle) * distance;
   }
-  const area = width * height;
-  const k = Math.sqrt(area / count) * 0.55;
-  const springs = [
-    ...edges.map((edge) => ({ a: index.get(edge.source)!, b: index.get(edge.target)!, strength: 1 + Math.min(edge.weight, 4) * 0.25 })),
-  ];
-  // Same group (a Principal's seats): a weak spring, so they read as a cluster.
+  const area = Math.PI * radius * radius;
+  // Rest length between linked nodes: room for two marks and their labels.
+  const k = Math.max(170, Math.sqrt(area / Math.max(count, 2)) * 0.9);
+  const springs = edges
+    .filter((edge) => index.has(edge.source) && index.has(edge.target))
+    .map((edge) => ({ a: index.get(edge.source)!, b: index.get(edge.target)!, strength: 1 + Math.min(edge.weight, 4) * 0.25 }));
   const byGroup = new Map<string, number[]>();
   nodes.forEach((node, i) => byGroup.set(node.group, [...(byGroup.get(node.group) ?? []), i]));
   for (const members of byGroup.values()) {
     for (let a = 0; a < members.length; a += 1) for (let b = a + 1; b < members.length; b += 1) springs.push({ a: members[a]!, b: members[b]!, strength: 0.2 });
   }
-  let temperature = Math.min(width, height) / 8;
-  const iterations = 300;
+  let temperature = radius / 4;
   const dx = new Float64Array(count);
   const dy = new Float64Array(count);
-  for (let step = 0; step < iterations; step += 1) {
+  for (let step = 0; step < 300; step += 1) {
     dx.fill(0);
     dy.fill(0);
     for (let i = 0; i < count; i += 1) {
@@ -267,19 +294,26 @@ export function layoutGraph(
       dy[spring.b]! += (ddy / distance) * attraction;
     }
     for (let i = 0; i < count; i += 1) {
-      // Gravity toward the middle keeps disconnected Instances in view.
-      dx[i]! += (width / 2 - x[i]!) * 0.02;
-      dy[i]! += (height / 2 - y[i]!) * 0.02;
+      dx[i]! += (centre.x - x[i]!) * 0.03;
+      dy[i]! += (centre.y - y[i]!) * 0.03;
       const length = Math.max(Math.hypot(dx[i]!, dy[i]!), 0.01);
       const capped = Math.min(length, temperature);
-      x[i] = Math.min(width - CANVAS_PADDING, Math.max(CANVAS_PADDING, x[i]! + (dx[i]! / length) * capped));
-      // A node's labels hang below its mark, so the vertical margin is deeper.
-      y[i] = Math.min(height - CANVAS_PADDING - 16, Math.max(CANVAS_PADDING + 8, y[i]! + (dy[i]! / length) * capped));
+      let nx = x[i]! + (dx[i]! / length) * capped;
+      let ny = y[i]! + (dy[i]! / length) * capped;
+      // Stay inside the circle the layout was given.
+      const away = Math.hypot(nx - centre.x, ny - centre.y);
+      if (away > radius) {
+        nx = centre.x + ((nx - centre.x) / away) * radius;
+        ny = centre.y + ((ny - centre.y) / away) * radius;
+      }
+      x[i] = nx;
+      y[i] = ny;
     }
     temperature *= 0.985;
   }
+  const positions = new Map<string, Point>();
   for (let i = 0; i < count; i += 1) positions.set(ids[i]!, { x: Math.round(x[i]!), y: Math.round(y[i]!) });
-  return { positions, width, height };
+  return positions;
 }
 
 /** The Instance a search names: an exact id, or the one id that starts with what was typed. */
@@ -427,13 +461,26 @@ export function NetworkView() {
   const [query, setQuery] = useState("");
   const [searchNote, setSearchNote] = useState<string | null>(null);
   const stageRef = useRef<HTMLDivElement>(null);
-  const [stageWidth, setStageWidth] = useState(0);
+  // The view: a scale and an offset over the canvas. Wheel zooms around the
+  // pointer, dragging the stage pans, Fit puts the whole canvas back.
+  const [view, setView] = useState({ scale: 1, tx: 0, ty: 0 });
+  const drag = useRef<{ x: number; y: number; tx: number; ty: number; moved: boolean } | null>(null);
   useEffect(() => {
     const stage = stageRef.current;
-    if (!stage || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(([entry]) => setStageWidth(Math.floor(entry?.contentRect.width ?? 0)));
-    observer.observe(stage);
-    return () => observer.disconnect();
+    if (!stage) return;
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      const rect = stage.getBoundingClientRect();
+      const px = event.clientX - rect.left;
+      const py = event.clientY - rect.top;
+      setView((current) => {
+        const scale = Math.min(4, Math.max(0.25, current.scale * (event.deltaY < 0 ? 1.12 : 1 / 1.12)));
+        const ratio = scale / current.scale;
+        return { scale, tx: px - (px - current.tx) * ratio, ty: py - (py - current.ty) * ratio };
+      });
+    };
+    stage.addEventListener("wheel", onWheel, { passive: false });
+    return () => stage.removeEventListener("wheel", onWheel);
   }, [network]);
   const whole = useMemo(() => (network ? buildGraph(network) : { nodes: [], edges: [] }), [network]);
   const principalGraph = useMemo(() => (network ? buildPrincipalGraph(network, whole) : { nodes: [], edges: [] }), [network, whole]);
@@ -443,15 +490,43 @@ export function NetworkView() {
   const layout = useMemo(
     () =>
       level === "principals"
-        ? layoutGraph(principalGraph.nodes.map((node) => ({ id: node.principal.principal_id, group: node.principal.principal_id })), principalGraph.edges, stageWidth)
-        : layoutGraph(graph.nodes.map((node) => ({ id: node.instance.instance_id, group: node.instance.principal_id })), graph.edges, stageWidth),
-    [level, principalGraph, graph, stageWidth],
+        ? layoutGraph(principalGraph.nodes.map((node) => ({ id: node.principal.principal_id, group: node.principal.principal_id })), principalGraph.edges)
+        : layoutGraph(graph.nodes.map((node) => ({ id: node.instance.instance_id, group: node.instance.principal_id })), graph.edges),
+    [level, principalGraph, graph],
   );
+  function zoomBy(factor: number) {
+    const stage = stageRef.current;
+    const px = stage ? stage.clientWidth / 2 : 0;
+    const py = stage ? stage.clientHeight / 2 : 0;
+    setView((current) => {
+      const scale = Math.min(4, Math.max(0.25, current.scale * factor));
+      const ratio = scale / current.scale;
+      return { scale, tx: px - (px - current.tx) * ratio, ty: py - (py - current.ty) * ratio };
+    });
+  }
+  function fitView() {
+    const stage = stageRef.current;
+    if (!stage || stage.clientHeight === 0) {
+      setView({ scale: 1, tx: 0, ty: 0 });
+      return;
+    }
+    const scale = Math.min(1, stage.clientWidth / layout.width, stage.clientHeight / layout.height);
+    setView({ scale, tx: (stage.clientWidth - layout.width * scale) / 2, ty: (stage.clientHeight - layout.height * scale) / 2 });
+  }
+  // A fresh layout (new data, a new level, a resized stage) starts fitted.
   useEffect(() => {
-    if (!selectedId || !stageRef.current) return;
-    const element = stageRef.current.querySelector<HTMLElement>(`[data-instance-id="${selectedId}"]`);
-    if (element && typeof element.scrollIntoView === "function") element.scrollIntoView({ block: "center", inline: "center" });
-  }, [selectedId, layout]);
+    fitView();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layout]);
+  // A selection made by search or by drilling down is brought to the middle of the stage.
+  useEffect(() => {
+    const stage = stageRef.current;
+    const id = level === "principals" ? selectedPrincipalId : selectedId;
+    if (!stage || !id || stage.clientHeight === 0) return;
+    const point = layout.positions.get(id);
+    if (!point) return;
+    setView((current) => ({ ...current, tx: stage.clientWidth / 2 - point.x * current.scale, ty: stage.clientHeight / 2 - point.y * current.scale }));
+  }, [selectedId, selectedPrincipalId, level, layout]);
   const selected = level === "instances" ? (graph.nodes.find((node) => node.instance.instance_id === selectedId) ?? null) : null;
   const selectedPrincipal = level === "principals" ? (principalGraph.nodes.find((node) => node.principal.principal_id === selectedPrincipalId) ?? null) : null;
 
@@ -581,6 +656,17 @@ export function NetworkView() {
                 Instances
               </button>
             </div>
+            <div className="graph-zoom" role="group" aria-label="Zoom">
+              <button aria-label="Zoom out" onClick={() => zoomBy(1 / 1.25)} type="button">
+                −
+              </button>
+              <button aria-label="Zoom in" onClick={() => zoomBy(1.25)} type="button">
+                +
+              </button>
+              <button aria-label="Fit the whole graph" onClick={fitView} type="button">
+                Fit
+              </button>
+            </div>
             <p>
               {level === "principals"
                 ? `${principalGraph.nodes.length} Principal${principalGraph.nodes.length === 1 ? "" : "s"} · ${principalGraph.edges.length} connection${principalGraph.edges.length === 1 ? "" : "s"}`
@@ -603,8 +689,45 @@ export function NetworkView() {
           ) : null}
           </div>
 
-          <div className="graph-stage" ref={stageRef}>
-            <div className="network-canvas" style={{ height: `${layout.height}px`, width: `${layout.width}px` }}>
+          <div
+            className="graph-stage"
+            data-dragging={drag.current !== null ? "true" : undefined}
+            onClickCapture={(event) => {
+              // A drag that ends on a node is not a click on it.
+              if (drag.current?.moved) {
+                event.stopPropagation();
+                event.preventDefault();
+              }
+              drag.current = null;
+            }}
+            onPointerDown={(event) => {
+              if (event.button !== 0) return;
+              drag.current = { x: event.clientX, y: event.clientY, tx: view.tx, ty: view.ty, moved: false };
+            }}
+            onPointerLeave={() => {
+              drag.current = null;
+            }}
+            onPointerMove={(event) => {
+              const start = drag.current;
+              if (!start) return;
+              const ddx = event.clientX - start.x;
+              const ddy = event.clientY - start.y;
+              if (!start.moved && Math.hypot(ddx, ddy) < 4) return;
+              start.moved = true;
+              setView((current) => ({ ...current, tx: start.tx + ddx, ty: start.ty + ddy }));
+            }}
+            onPointerUp={() => {
+              if (drag.current && !drag.current.moved) drag.current = null;
+            }}
+            ref={stageRef}
+          >
+            <div
+              className="network-canvas"
+              data-scale={view.scale.toFixed(2)}
+              data-tx={Math.round(view.tx)}
+              data-ty={Math.round(view.ty)}
+              style={{ height: `${layout.height}px`, transform: `translate(${view.tx}px, ${view.ty}px) scale(${view.scale})`, transformOrigin: "0 0", width: `${layout.width}px` }}
+            >
               <svg aria-hidden="true" className="relationship-lines" height={layout.height} viewBox={`0 0 ${layout.width} ${layout.height}`} width={layout.width}>
                 {level === "principals"
                   ? principalGraph.edges.map((edge) => {
@@ -667,7 +790,7 @@ export function NetworkView() {
                         style={{ left: `${position.x}px`, top: `${position.y}px` }}
                         type="button"
                       >
-                        <span aria-hidden="true" className="relationship-node-mark" style={{ height: `${28 + Math.min(node.instances, 12) * 3}px`, width: `${28 + Math.min(node.instances, 12) * 3}px` }}>
+                        <span aria-hidden="true" className="relationship-node-mark" style={{ height: `${44 + Math.min(node.instances, 12) * 4}px`, width: `${44 + Math.min(node.instances, 12) * 4}px` }}>
                           {node.instances}
                         </span>
                         <strong>{node.own ? "You" : node.principal.diagnostic_label}</strong>
@@ -697,7 +820,7 @@ export function NetworkView() {
                     type="button"
                   >
                     <span aria-hidden="true" className="relationship-node-mark">
-                      <DriverMark kind={node.instance.runtime_type} size={16} />
+                      <DriverMark kind={node.instance.runtime_type} size={24} />
                     </span>
                     <strong>{node.instance.display_name ?? agentLabel(node)}</strong>
                     <code>{id}</code>
