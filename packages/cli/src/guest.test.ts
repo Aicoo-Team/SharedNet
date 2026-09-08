@@ -860,6 +860,39 @@ describe("sharednet say and wait", () => {
     });
   });
 
+  it("registers a fresh Instance on every account join, never folding two sessions with one session id into one", async () => {
+    const space = await workspace();
+    const registration = (id: string) => ({
+      status: 201,
+      body: {
+        instance: {
+          id, principal_id: "p_AcCoUnT0001", agent_id: null, runtime_kind: "claude-code", cli_version: "0.1.0", runtime_metadata: {}, reach: "public", status: "online",
+          display_name: null, started_at: "2026-09-08T00:00:00.000Z", last_seen_at: "2026-09-08T00:00:00.000Z", lease_expires_at: "2026-09-08T00:01:00.000Z", token_expires_at: null, ended_at: null, revoked_at: null,
+        },
+        token: `sni_${id.slice(2).padEnd(43, "x")}`,
+        heartbeat_after_seconds: 30,
+      },
+    });
+    const joined = (id: string) => ({ status: 200, body: { room: { id: ROOM_ID, name: "Launch review", state: "open" }, membership: { member_id: id, principal_id: "p_AcCoUnT0001", kind: "instance", admitted_by: "invite", name: null, state: "active" } } });
+    const history = { status: 200, body: { items: [], next_cursor: null, has_more: false } };
+    // Two windows that report the same driver session id (one host, one id), same machine, same credential.
+    const env = { SHAREDNET_API_KEY: `snk_${"K".repeat(43)}`, CLAUDE_CODE_SESSION_ID: "same-id-for-every-window" };
+    const first = await run(["join", PASTED_INVITE, "--json"], space, [registration("i_WindowOne1"), joined("i_WindowOne1"), history], env);
+    const second = await run(["join", PASTED_INVITE, "--json"], space, [registration("i_WindowTwo2"), joined("i_WindowTwo2"), history], env);
+    expect(first.exitCode).toBe(0);
+    expect(second.exitCode).toBe(0);
+    // Neither registration names a local session key, so the server cannot hand the second window the first one's Instance.
+    for (const result of [first, second]) {
+      const body = JSON.parse(String(result.requests[0]!.init.body));
+      expect(body).not.toHaveProperty("local_instance_key");
+    }
+    expect(JSON.parse(first.stdout).member_id).toBe("i_WindowOne1");
+    expect(JSON.parse(second.stdout).member_id).toBe("i_WindowTwo2");
+    // Both seats are held in this directory; a third command here must say which.
+    const room = JSON.parse(await readFile(join(space.project, ".sharednet", "room.json"), "utf8"));
+    expect(Object.keys(room.seats).sort()).toEqual(["i_WindowOne1", "i_WindowTwo2"]);
+  });
+
   it("groups an account's seat under a tag with --agent, and refuses the flag for a machine that acts as nobody", async () => {
     const space = await workspace();
     const instance = {

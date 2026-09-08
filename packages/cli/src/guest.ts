@@ -471,11 +471,14 @@ async function joinAsAccount(
   reach?: "public" | "private",
   agent?: string,
 ): Promise<unknown> {
-  // This session is registered as an Instance of the account first; a
-  // detected driver session reuses its Instance, an undetected one gets a
-  // fresh Instance, since a join is not the place to refuse.
+  // A join is one session taking one seat, so it always registers a fresh
+  // Instance. It never reuses one by local session key: two sessions whose
+  // driver reports the same session id (a host that hands every window the
+  // same id, a child session, a hook) would otherwise be folded into one
+  // Instance, and the first one's token revoked under it. Re-entering a
+  // Room this directory already holds a seat in goes through `join rom_…`.
   const { session } = await registerInstance(dependencies.env, dependencies.fetch, paths, baseUrl, {
-    forceNew: false,
+    forceNew: true,
     freshWhenUndetected: true,
     ...(reach === undefined ? {} : { reach }),
     ...(agent === undefined ? {} : { agent }),
