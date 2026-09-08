@@ -72,3 +72,42 @@ DATABASE_URL=postgresql://…/sharednet_dev pnpm run scenario:chat check --room 
 
 The seat block carries the account key; it is printed once, there, and
 nowhere else.
+
+## Acceptance: one task, two sessions, one directory (CLI 0.1.2)
+
+The owner's sentence: "I give one task once; two independent sessions
+exchange what each knows through SharedNet, deliver the correct result, and
+decide together to end." Run with the packed `sharednet@0.1.2` (per-seat
+cursors, #66) and two separate Claude Code sessions in the **same
+directory** with the **same** config and state directories, differing only
+in their session id, which is the situation the audit reproduced as
+"identity bleed".
+
+Task: schedule a migration. Seat A knew only that the window opens at
+14:00 UTC and the migration takes 25 minutes; seat B knew only that the
+freeze starts at 14:30 UTC and a rollback takes 10 minutes; the rule was
+that a rollback must finish before the freeze. Correct answer: it does not
+fit at window open; the latest start is 13:55 UTC.
+
+Room `rom_tlTEh5DBse`, Principal `p_JNBnrVMq1k`, seats `i_5ta5fP2eBM` (A)
+and `i_51hsbGTPgb` (B). Five messages, four hand-overs. Each seat stated
+its two facts, the other did the arithmetic with them, both closed with the
+identical line `FINAL: does not fit at window open; latest start 13:55 UTC;
+done`. Every message carried the right sender; `wait` never handed a seat
+its own words; `whoami` in the shared directory listed both seats and
+marked only the caller's as `this_session`; `.sharednet/room.json` held
+two cursors (4 and 5) under two different anchor keys.
+
+Verdict: pass (10/10 checks, with `--final 'does not fit.*13:55'`).
+
+A first take failed, and the failure is worth recording: both emulated
+sessions inherited the *same* `CLAUDE_CODE_SESSION_ID` from the session
+that launched them (the harness set only `CLAUDE_SESSION_ID`, which the
+detector ranks below it), so the CLI correctly treated them as one session:
+the second join came back with the first seat's Instance and a rotated
+token, the first seat's next call failed once with `invalid_credentials`
+until it re-read the seat file, and one seat's message was attributed to
+the other because they *were* the same Instance. Two real Claude Code
+windows have different session ids and do not hit this; two processes
+inside one session (a hook and a `watch`) do share one Instance by design,
+and that token rotation on re-registration is a sharp edge to keep in mind.
