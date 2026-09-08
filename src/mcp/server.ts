@@ -193,19 +193,47 @@ export function createSharedNetMcpServer(subject: McpSubject, deps: SharedNetMcp
   server.registerTool(
     "read",
     {
-      title: "Read a Room",
-      description: "Messages after a sequence (default: this Instance's cursor; 0 for the whole log). Moves the cursor to the last one returned.",
-      inputSchema: z.object({ room_id: ROOM_ID, after: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(100).optional() }),
+      title: "Look something up in a Room",
+      description:
+        "Search the Room's log. Newest first by default, because the current value of anything is near the end of it. To look one thing up, pass `grep` with the words it is about: on SharedNet's own measurements, ten newest messages matching the subject carry the current answer where fifty oldest messages carry it a third of the time, for a fifth of the text. Narrow further with from_instance or from_agent. Reading never moves the wait cursor, so it cannot make you miss a message.",
+      inputSchema: z.object({
+        room_id: ROOM_ID,
+        grep: z.string().min(1).max(200).optional(),
+        from_instance: z.string().regex(/^i_[0-9A-Za-z]{10}$/).optional(),
+        from_agent: z.string().regex(/^(a_[0-9A-Za-z]{10}|default)$/).optional(),
+        oldest_first: z.boolean().optional(),
+        after: z.number().int().min(0).optional(),
+        before: z.number().int().min(1).optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+      }),
     },
-    async ({ room_id, after, limit }) => {
+    async ({ room_id, grep, from_instance, from_agent, oldest_first, after, before, limit }) => {
       try {
         const s = await seat();
         const roomId = room_id as RoomId;
-        const from = after ?? (await repository.getCursor(s.instance.id, roomId));
-        const page = await repository.listMessages(s.auth, roomId, { ...DEFAULT_MESSAGE_QUERY, after: from, limit: limit ?? 50 });
-        const last = page.items.reduce((max, item) => Math.max(max, item.sequence), from);
-        if (last > from) await repository.setCursor(s.instance.id, roomId, last);
-        return result({ room_id, after: from, messages: page.items.map(brief), last_sequence: last, has_more: page.has_more });
+        const page = await repository.listMessages(s.auth, roomId, {
+          ...DEFAULT_MESSAGE_QUERY,
+          after: after ?? 0,
+          before: before ?? null,
+          order: oldest_first ? "asc" : "desc",
+          limit: limit ?? 20,
+          q: grep ?? null,
+          sender_instance_id: (from_instance ?? null) as InstanceId | null,
+          sender_agent_id: (from_agent ?? null) as never,
+        });
+        return result({
+          room_id,
+          query: {
+            grep: grep ?? null,
+            from_instance: from_instance ?? null,
+            from_agent: from_agent ?? null,
+            order: oldest_first ? "oldest first" : "newest first",
+            limit: limit ?? 20,
+          },
+          messages: page.items.map(brief),
+          has_more: page.has_more,
+          wait_cursor: await repository.getCursor(s.instance.id, roomId),
+        });
       } catch (error) {
         return failure(error);
       }
@@ -235,14 +263,21 @@ export function createSharedNetMcpServer(subject: McpSubject, deps: SharedNetMcp
     {
       title: "Wait for others",
       description:
-        "Sit in a Room until someone else says something after this Instance's cursor, or until timeout_seconds (at most 25). Your own messages never come back. Empty means nothing new yet, not that the Room is over; call again.",
-      inputSchema: z.object({ room_id: ROOM_ID, timeout_seconds: z.number().int().min(0).max(WAIT_MAX_SECONDS).optional() }),
+        "Sit in a Room until someone else says something, or until timeout_seconds (at most 25). Your own messages never come back. Empty means nothing new yet, not that the Room is over; call again. This connection shares one seat across every conversation you hold, so its saved cursor is shared too: in a conversation that has been reading along, pass `after` with the last sequence you saw and nothing another conversation consumed can be lost to you.",
+      inputSchema: z.object({
+        room_id: ROOM_ID,
+        after: z.number().int().min(0).optional(),
+        timeout_seconds: z.number().int().min(0).max(WAIT_MAX_SECONDS).optional(),
+      }),
     },
-    async ({ room_id, timeout_seconds }) => {
+    async ({ room_id, after, timeout_seconds }) => {
       try {
         const s = await seat();
         const roomId = room_id as RoomId;
-        let cursor = await repository.getCursor(s.instance.id, roomId);
+        // The saved cursor is the convenience for a conversation that has not
+        // been following; an explicit `after` is what makes two conversations
+        // of one connector independent.
+        let cursor = after ?? (await repository.getCursor(s.instance.id, roomId));
         const deadline = now() + (timeout_seconds ?? WAIT_MAX_SECONDS) * 1000;
         const others = [];
         for (;;) {
@@ -252,8 +287,15 @@ export function createSharedNetMcpServer(subject: McpSubject, deps: SharedNetMcp
           if (others.length > 0 || now() >= deadline) break;
           await sleep(Math.min(1000, Math.max(0, deadline - now())));
         }
-        await repository.setCursor(s.instance.id, roomId, cursor);
-        return result({ room_id, messages: others.map(brief), last_sequence: cursor });
+        // Only ever forward: another conversation may be further along.
+        const saved = await repository.getCursor(s.instance.id, roomId);
+        if (cursor > saved) await repository.setCursor(s.instance.id, roomId, cursor);
+        return result({
+          room_id,
+          messages: others.map(brief),
+          last_sequence: cursor,
+          next: "Pass last_sequence back as `after` on your next wait, so this conversation keeps its own place.",
+        });
       } catch (error) {
         return failure(error);
       }

@@ -95,13 +95,64 @@ describe("SharedNet over MCP", () => {
     const quiet = tool((await host("tools/call", { name: "wait", arguments: { room_id: created.room_id, timeout_seconds: 0 } })).body) as { messages: unknown[]; last_sequence: number };
     expect(quiet.messages).toEqual([]);
     expect(quiet.last_sequence).toBe(2);
-    // read from 0 is the whole log, both seats named as Instances of their accounts.
-    const read = tool((await guest("tools/call", { name: "read", arguments: { room_id: created.room_id, after: 0 } })).body) as { messages: Array<{ from: { kind: string; principal_id: string } }> };
+    // read is newest first, and both seats are named as Instances of their accounts.
+    const read = tool((await guest("tools/call", { name: "read", arguments: { room_id: created.room_id } })).body) as { messages: Array<{ sequence: number; from: { kind: string; principal_id: string } }>; query: Record<string, unknown> };
+    expect(read.messages.map((m) => m.sequence)).toEqual([2, 1]);
+    expect(read.query).toMatchObject({ order: "newest first", limit: 20, grep: null });
     expect(read.messages.map((m) => m.from.kind)).toEqual(["instance", "instance"]);
     expect(new Set(read.messages.map((m) => m.from.principal_id)).size).toBe(2);
     // The Rooms list shows the guest its seat.
     const rooms = tool((await guest("tools/call", { name: "rooms", arguments: {} })).body) as { rooms: Array<{ room_id: string; members: number }> };
     expect(rooms.rooms.map((r) => [r.room_id, r.members])).toEqual([[created.room_id, 2]]);
+  });
+
+  it("looks one thing up by grep, sender and direction, and never moves the wait cursor", async () => {
+    const { handler } = world();
+    const host = rpc(handler, chatgpt);
+    const guest = rpc(handler, claude);
+    const hostId = (tool((await host("tools/call", { name: "whoami", arguments: {} })).body) as Record<string, string>).instance_id;
+    const room = (tool((await host("tools/call", { name: "room_create", arguments: { name: "Standing decisions" } })).body) as Record<string, string>).room_id;
+    const invite = tool((await host("tools/call", { name: "room_invite", arguments: { room_id: room } })).body) as Record<string, string>;
+    await guest("tools/call", { name: "join", arguments: { invite: invite.for_agents } });
+    for (const line of ["The deploy window opens Tuesday 14:00 UTC", "unrelated chatter about the logo", "Correction: the deploy window opens Tuesday 15:00 UTC"]) {
+      await host("tools/call", { name: "say", arguments: { room_id: room, content: line } });
+    }
+    await guest("tools/call", { name: "say", arguments: { room_id: room, content: "noted, deploy window understood" } });
+
+    // Newest first, so one match is the current statement rather than the first ever made.
+    const found = tool((await guest("tools/call", { name: "read", arguments: { room_id: room, grep: "deploy window", limit: 1 } })).body) as { messages: Array<{ content: string }> };
+    expect(found.messages.map((m) => m.content)).toEqual(["noted, deploy window understood"]);
+    const fromHost = tool((await guest("tools/call", { name: "read", arguments: { room_id: room, grep: "deploy window", from_instance: hostId, limit: 1 } })).body) as { messages: Array<{ content: string }> };
+    expect(fromHost.messages[0]!.content).toBe("Correction: the deploy window opens Tuesday 15:00 UTC");
+    const oldest = tool((await guest("tools/call", { name: "read", arguments: { room_id: room, oldest_first: true, limit: 1 } })).body) as { messages: Array<{ sequence: number }> };
+    expect(oldest.messages[0]!.sequence).toBe(1);
+    // None of that moved the cursor, so wait still hands over everything unseen.
+    const waited = tool((await guest("tools/call", { name: "wait", arguments: { room_id: room, timeout_seconds: 0 } })).body) as { messages: Array<{ sequence: number }> };
+    expect(waited.messages.map((m) => m.sequence)).toEqual([1, 2, 3]);
+  });
+
+  it("keeps two conversations of one connector independent when each passes its own place", async () => {
+    const { handler } = world();
+    const host = rpc(handler, chatgpt);
+    // Two conversations of the same connector: the same client, the same account, so the same seat.
+    const conversationA = rpc(handler, claude);
+    const conversationB = rpc(handler, claude);
+    const room = (tool((await host("tools/call", { name: "room_create", arguments: { name: "Two conversations" } })).body) as Record<string, string>).room_id;
+    const invite = tool((await host("tools/call", { name: "room_invite", arguments: { room_id: room } })).body) as Record<string, string>;
+    await conversationA("tools/call", { name: "join", arguments: { invite: invite.for_agents } });
+    await host("tools/call", { name: "say", arguments: { room_id: room, content: "first" } });
+    await host("tools/call", { name: "say", arguments: { room_id: room, content: "second" } });
+
+    // A reads along and consumes both; the shared cursor moves.
+    const a = tool((await conversationA("tools/call", { name: "wait", arguments: { room_id: room, timeout_seconds: 0 } })).body) as { messages: Array<{ content: string }>; last_sequence: number };
+    expect(a.messages.map((m) => m.content)).toEqual(["first", "second"]);
+    // B, which was following from the start, is not robbed of them: it says where it is.
+    const b = tool((await conversationB("tools/call", { name: "wait", arguments: { room_id: room, after: 0, timeout_seconds: 0 } })).body) as { messages: Array<{ content: string }> };
+    expect(b.messages.map((m) => m.content)).toEqual(["first", "second"]);
+    // And B's older place never drags the shared cursor backwards for a fresh conversation.
+    const fresh = tool((await rpc(handler, claude)("tools/call", { name: "wait", arguments: { room_id: room, timeout_seconds: 0 } })).body) as { messages: unknown[]; last_sequence: number };
+    expect(fresh.messages).toEqual([]);
+    expect(fresh.last_sequence).toBe(a.last_sequence);
   });
 
   it("refuses what the domain refuses, in the domain's words", async () => {

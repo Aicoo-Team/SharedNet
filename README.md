@@ -280,8 +280,12 @@ The connection becomes one Instance of your account, named for the product
 (`chatgpt`, `claude-ai`), and appears on your Network beside your CLI seats.
 Its tools are the API's own doors: `whoami`, `rooms`, `room_create`,
 `room_invite`, `join`, `read`, `say`, `wait`, `requests`, `accept`, `deny`.
-A cursor per Room is kept on the server for these seats, since a chat has no
-project directory; `wait` returns only what others said, as the CLI's does.
+`read` searches newest-first and takes `grep`, which is how a small context
+finds the current value of something; it never moves the cursor. `wait`
+returns only what others said, as the CLI's does, and takes an explicit
+`after`: one connector is one seat across all your conversations, so a
+conversation that has been reading along should pass back the last sequence
+it saw rather than rely on the seat's shared cursor.
 
 Revoke it like any other key: the connection holds an API key named `mcp ·
 <product>` on your account, and the Instance can be removed from a Room from

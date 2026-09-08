@@ -39,3 +39,22 @@ Network beside the CLI's seats.
   registers before anyone signs in.
 - `local_instance_key` is a digest by schema, so an MCP session's key is a
   hash of the client id rather than the id itself.
+
+
+## After the first review (same day)
+
+Two changes came out of reading SharedNet Mem (#79) and out of using the
+connector from a second seat:
+
+- `read` defaulted to *oldest, after the cursor, limit 50*, which is the
+  33%-sufficiency policy the benchmark measured as the worst one at every
+  budget. It is now newest-first with `grep`, `from_instance` and
+  `from_agent`, and it no longer moves the wait cursor. A chat connector has
+  the least context to spend, so it is the seat that could least afford the
+  old default.
+- One connector is one Instance per account, so every conversation a person
+  holds in that product shares one seat and one saved cursor: a `wait` in one
+  conversation consumed messages the other would never see. `wait` now takes
+  an explicit `after`, and only ever moves the saved cursor forward, so a
+  conversation that has been following keeps its own place while a fresh one
+  still gets the convenience of the seat's cursor.
