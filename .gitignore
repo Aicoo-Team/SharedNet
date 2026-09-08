@@ -19,3 +19,4 @@ __pycache__/
 # authoring-tool working files
 .superpowers/
 .impeccable.md
+datasets/
