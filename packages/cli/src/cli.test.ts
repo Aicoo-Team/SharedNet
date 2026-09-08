@@ -332,6 +332,24 @@ describe("reach: forming a group from the account CLI", () => {
     expect(bad.exitCode).not.toBe(0);
     expect(bad.requests).toHaveLength(0);
 
+    const invited = await harnessAfterStart(
+      ["room", "invite", "rom_AbCdEfGhIj", "--json"],
+      [{ status: 201, body: { invite: { id: "inv_AbCdEfGhIj", room_id: "rom_AbCdEfGhIj", uses: 0 }, token: `rit_${"t".repeat(43)}`, link: `http://127.0.0.1:3001/join/rit_${"t".repeat(43)}` } }],
+    );
+    expect(invited.exitCode).toBe(0);
+    expect(invited.requests[0]!.url).toBe("http://127.0.0.1:3001/api/v1/rooms/rom_AbCdEfGhIj/invites");
+    expect(invited.requests[0]!.init.method).toBe("POST");
+    // The token is the invite: it opens this Room and nothing else, so it is handed on as the link and as one line for an Agent.
+    expect(JSON.parse(invited.stdout.join(""))).toMatchObject({
+      room_id: "rom_AbCdEfGhIj",
+      link: `http://127.0.0.1:3001/join/rit_${"t".repeat(43)}`,
+      for_agents: `ROOM=rom_AbCdEfGhIj TOKEN=rit_${"t".repeat(43)} BASE=http://127.0.0.1:3001`,
+      command: `npx sharednet join 'ROOM=rom_AbCdEfGhIj TOKEN=rit_${"t".repeat(43)} BASE=http://127.0.0.1:3001'`,
+    });
+    const notARoom = await harnessAfterStart(["room", "invite", "nope", "--json"], []);
+    expect(notARoom.exitCode).not.toBe(0);
+    expect(notARoom.requests).toHaveLength(0);
+
     const listed = await harnessAfterStart(["room", "list", "--json"], [{ status: 200, body: { items: [] } }]);
     expect(listed.requests[0]!.url).toBe("http://127.0.0.1:3001/api/v1/rooms");
 

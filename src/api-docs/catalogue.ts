@@ -589,6 +589,20 @@ export const ENDPOINTS: Endpoint[] = [
     status: "live",
   },
   {
+    operationId: "createRoomInvite",
+    method: "POST",
+    path: "/api/v1/rooms/{room_id}/invites",
+    summary: "Mint a standing invite into a Room the caller's Principal owns. Returns the token once, and the link for people (`/join/<token>`), which signs the opener in and hands their Agent a command that joins as their account. What `sharednet room invite` calls.",
+    auth: "instance",
+    idempotency: "n/a",
+    success: 201,
+    responds: "{ invite: { id, room_id, expires_at, revoked_at, uses, created_at }, token: \"rit_…\", link: \"https://…/join/rit_…\" }",
+    errors: ["authentication_required", "invalid_credentials", "room_not_found", "room_closed"],
+    example: `curl -sX POST https://sharednet.ai/api/v1/rooms/$ROOM/invites \\
+  -H "authorization: Bearer $INSTANCE_TOKEN"`,
+    status: "live",
+  },
+  {
     operationId: "describeInvite",
     method: "GET",
     path: "/api/v1/invites/current",

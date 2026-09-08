@@ -13,6 +13,7 @@ import {
   readProjectRoomState,
   readRoomCredential,
   readSessionById,
+  readStoredApiCredential,
   writeProjectRoomState,
   writeRoomCredential,
   type ProjectRoomState,
@@ -85,7 +86,7 @@ const INVITE_TOKEN_PATTERN = /^rit_[A-Za-z0-9_-]{43}$/;
 /** The server caps one wait at this; the client loops. */
 const WAIT_MAX_SECONDS = 25;
 
-const VALUE_OPTIONS = new Set(["name", "token", "timeout", "reply-to", "min", "on", "run", "max-runs", "as", "claim"]);
+const VALUE_OPTIONS = new Set(["name", "token", "timeout", "reply-to", "min", "on", "run", "max-runs", "as", "claim", "agent"]);
 const FLAG_OPTIONS = new Set(["hook", "private", "reply"]);
 
 function parseGuestArguments(args: string[]): ParsedGuestArguments {
@@ -231,13 +232,16 @@ function invalidServerResponse(): CliError {
 
 async function join(args: string[], dependencies: GuestDependencies): Promise<unknown> {
   const parsed = parseGuestArguments(args);
-  assertOnlyOptions(parsed, ["name", "token", "private", "as", "claim"]);
+  assertOnlyOptions(parsed, ["name", "token", "private", "as", "claim", "agent"]);
   if (parsed.positionals.length !== 1) {
     throw localError(
       "invalid_arguments",
-      "Usage: sharednet join <invite> [--name <name>] [--private] [--claim <clp_…>], or sharednet join <rom_…> [--as <i_…>]",
+      "Usage: sharednet join <invite> [--name <name>] [--agent <tag>] [--private] [--claim <clp_…>], or sharednet join <rom_…> [--as <i_…>]",
     );
   }
+  // --agent: the tag (an a_ id or a handle) to group this seat under. A tag
+  // belongs to an account, so it needs one on this machine.
+  const agent = stringOption(parsed, "agent");
   // A Room id with no invite: this machine already holds a seat, and the
   // seat was added to (or knows the id of) that Room. Enter it as that seat.
   const argument = parsed.positionals[0]!;
@@ -276,7 +280,13 @@ async function join(args: string[], dependencies: GuestDependencies): Promise<un
   // Instance of the account and the invite only admits it; without one, the
   // join provisions an anonymous Principal.
   if (await hasAccountCredential(dependencies.env, paths, baseUrl)) {
-    return joinAsAccount(roomId, token, name, baseUrl, paths, client, dependencies, reach);
+    return joinAsAccount(roomId, token, name, baseUrl, paths, client, dependencies, reach, agent);
+  }
+  if (agent !== undefined) {
+    throw localError(
+      "account_required",
+      "--agent groups the seat under one of your account's tags; run `sharednet login` on this machine first, or join without it.",
+    );
   }
 
   const runtime = runtimeReport(dependencies.env);
@@ -438,6 +448,7 @@ async function joinAsAccount(
   client: ApiClient,
   dependencies: GuestDependencies,
   reach?: "public" | "private",
+  agent?: string,
 ): Promise<unknown> {
   // This session is registered as an Instance of the account first; a
   // detected driver session reuses its Instance, an undetected one gets a
@@ -446,6 +457,7 @@ async function joinAsAccount(
     forceNew: false,
     freshWhenUndetected: true,
     ...(reach === undefined ? {} : { reach }),
+    ...(agent === undefined ? {} : { agent }),
   });
   const payload = await client.request<AccountJoinPayload>(
     "POST",
@@ -485,6 +497,7 @@ async function joinAsAccount(
     room: payload.room,
     member_id: session.instance_id,
     principal_id: session.principal_id,
+    agent_id: session.agent_id,
     as: "account",
     name,
     last_sequence: state.last_sequence,
@@ -824,6 +837,48 @@ async function wait(args: string[], dependencies: GuestDependencies): Promise<un
 }
 
 /**
+ * `sharednet whoami`: who this machine acts as, and which seat this
+ * directory holds, from the files alone. Ids only; never a key or a token.
+ */
+async function whoami(args: string[], dependencies: GuestDependencies): Promise<unknown> {
+  const parsed = parseGuestArguments(args);
+  assertOnlyOptions(parsed, []);
+  if (parsed.positionals.length !== 0) throw localError("invalid_arguments", "Usage: sharednet whoami");
+  const baseUrl = resolveBaseUrl(dependencies.env.SHAREDNET_BASE_URL);
+  const paths = getStoragePaths(dependencies.env);
+  const stored = await readStoredApiCredential(paths).catch(() => null);
+  const envKey = Boolean(dependencies.env.SHAREDNET_API_KEY?.trim());
+  const account =
+    stored && stored.base_url === baseUrl
+      ? { principal_id: stored.principal_id, api_key_id: stored.api_key_id, source: "credentials_file" as const, credentials_file: paths.credentialsFile }
+      : envKey
+        ? { principal_id: null, api_key_id: null, source: "SHAREDNET_API_KEY" as const, credentials_file: null }
+        : null;
+  const state = await readProjectRoomState(dependencies.cwd);
+  const seat =
+    state && state.base_url === baseUrl
+      ? {
+          room_id: state.room_id,
+          member_id: state.member_id,
+          last_sequence: state.last_sequence,
+          credential_present: (await readRoomCredential(paths, state.room_id, state.member_id).catch(() => null)) !== null,
+        }
+      : null;
+  return {
+    base_url: baseUrl,
+    account,
+    seat,
+    // What to do about it, in one line each.
+    next:
+      account === null
+        ? "This machine acts as nobody. Run `sharednet login` so seats are your account's; `join` without it seats an anonymous Principal."
+        : seat === null
+          ? "Logged in. Run `sharednet join <invite>` in a project directory to take a seat."
+          : "Logged in and seated. `say`, `wait`, and `watch` act as this seat.",
+  };
+}
+
+/**
  * Seat more Instances in this directory's Room, by id: public ones at once,
  * private ones by asking (decision 2026-09-06 reach, §3).
  */
@@ -896,6 +951,7 @@ async function answer(
 }
 
 export type GuestVerb =
+  | "whoami"
   | "join"
   | "say"
   | "wait"
@@ -909,6 +965,7 @@ export type GuestVerb =
 
 export function isGuestVerb(value: string | undefined): value is GuestVerb {
   return (
+    value === "whoami" ||
     value === "join" ||
     value === "say" ||
     value === "wait" ||
@@ -927,6 +984,7 @@ export async function runGuestVerb(
   args: string[],
   dependencies: GuestDependencies,
 ): Promise<unknown> {
+  if (verb === "whoami") return whoami(args, dependencies);
   if (verb === "join") return join(args, dependencies);
   if (verb === "say") return say(args, dependencies);
   if (verb === "watch") return watch(args, dependencies);

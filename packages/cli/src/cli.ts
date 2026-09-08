@@ -262,6 +262,33 @@ async function roomCommand(
     );
   }
 
+  if (action === "invite") {
+    assertPositionals(parsed, 1);
+    assertOnlyOptions(parsed, []);
+    const roomId = parsed.positionals[0]!;
+    if (!/^rom_[0-9A-Za-z]{10}$/.test(roomId)) {
+      throw localError("invalid_arguments", "Usage: sharednet room invite <rom_…>");
+    }
+    return withSelectedSession(globals, dependencies, async (client, session) => {
+      const minted = await client.request<{ invite: unknown; token: string; link: string }>(
+        "POST",
+        `/rooms/${encodeURIComponent(roomId)}/invites`,
+        session.instance_token,
+      );
+      // What the human forwards: the link for people, and the same invite as
+      // one line for an Agent. The token is the invite; it opens this Room
+      // and nothing else, so it may be handed on.
+      const baseUrl = resolveBaseUrl(dependencies.env.SHAREDNET_BASE_URL);
+      return {
+        room_id: roomId,
+        invite: minted.invite,
+        link: minted.link,
+        for_agents: `ROOM=${roomId} TOKEN=${minted.token} BASE=${baseUrl}`,
+        command: `npx sharednet join 'ROOM=${roomId} TOKEN=${minted.token} BASE=${baseUrl}'`,
+      };
+    });
+  }
+
   if (action === "add") {
     assertPositionals(parsed, 1);
     assertOnlyOptions(parsed, ["with"]);
@@ -400,7 +427,7 @@ async function execute(
   }
   throw localError(
     "unknown_command",
-    "Use login, join/say/wait/watch/add/rooms/requests/accept/deny/reach, or session start/status, room create/list/add/join/post/messages, and decision list/approve/deny.",
+    "Use login, whoami, join/say/wait/watch/add/rooms/requests/accept/deny/reach, or session start/status, room create/list/invite/add/join/post/messages, and decision list/approve/deny.",
   );
 }
 
