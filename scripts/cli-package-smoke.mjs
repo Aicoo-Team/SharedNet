@@ -83,6 +83,35 @@ try {
   assert.equal(errorEnvelope.error.code, "unknown_command");
   assert(!invocation.stderr.includes("ERR_UNKNOWN_FILE_EXTENSION"));
 
+  // The command the join page writes must be one the installed CLI accepts.
+  // It cannot redeem the claim (the base URL below answers nothing), but the
+  // failure has to come from the network, never from the argument parser:
+  // an option the parser refuses would mean the site hands out commands the
+  // registry's CLI cannot run.
+  let joinAttempt;
+  try {
+    await execFileAsync(
+      process.execPath,
+      [
+        "--no-experimental-strip-types",
+        installedBin,
+        "join",
+        "ROOM=rom_AbCdEfGhIj TOKEN=rit_" + "t".repeat(43) + " BASE=http://127.0.0.1:9",
+        "--claim",
+        "clp_" + "c".repeat(43),
+        "--json",
+      ],
+      { cwd: consumerRoot, env: { ...npmEnv, HOME: scratch, XDG_CONFIG_HOME: join(scratch, "config"), XDG_STATE_HOME: join(scratch, "state") } },
+    );
+    assert.fail("a join against a dead base URL must fail");
+  } catch (error) {
+    joinAttempt = error;
+  }
+  const joinError = JSON.parse(joinAttempt.stderr).error;
+  assert.notEqual(joinError.code, "unknown_option", "installed CLI must accept the join page's --claim command");
+  assert.notEqual(joinError.code, "invalid_arguments", "installed CLI must accept the join page's command shape");
+  assert.equal(joinError.code, "service_unavailable", "the only thing wrong with the rehearsal command is the dead server");
+
   process.stdout.write(
     "CLI package smoke passed (" +
       manifest[0].filename +

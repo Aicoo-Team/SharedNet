@@ -549,7 +549,6 @@ describe("sharednet say and wait", () => {
         ["watch", "--on", "message", "--run", "agent-turn", "--reply", "--max-runs", "1", "--json"],
         space,
         [
-          { status: 200, body: { instance: { id: MEMBER_ID } } },
           page([own(2, "what I said earlier")]),
           page([]),
           page([message(3, "please review the PR"), own(4, "typing…")]),
@@ -584,15 +583,17 @@ describe("sharednet say and wait", () => {
         ["watch", "--on", "count", "2", "--run", "agent-turn", "--reply", "--max-runs", "1", "--json"],
         space,
         [
-          { status: 200, body: { instance: { id: MEMBER_ID } } },page([message(2, "first")]), page([message(3, "second")])],
+          page([message(2, "first")]),
+          page([message(3, "second")]),
+        ],
         {},
         { exec },
       );
       expect(result.exitCode).toBe(0);
       expect(calls).toHaveLength(1);
       expect((calls[0]!.input as any).messages.map((item: any) => item.sequence)).toEqual([2, 3]);
-      // Identity, two polls, and no reply posted.
-      expect(result.requests).toHaveLength(3);
+      // Two polls, and no reply posted; a seat that carries its Instance id asks nobody who it is.
+      expect(result.requests).toHaveLength(2);
       expect(result.requests.some((request) => request.init.method === "POST")).toBe(false);
       expect(result.stderr).toContain("boom");
       expect(JSON.parse(result.stdout).runs[0]).toMatchObject({ trigger: "count 2", messages: 2, exit_code: 3, reply_message_id: null });
@@ -607,7 +608,6 @@ describe("sharednet say and wait", () => {
         ["watch", "--on", "every 10m", "--run", "tick", "--max-runs", "1", "--json"],
         space,
         [
-          { status: 200, body: { instance: { id: MEMBER_ID } } },
           { status: 200, body: { items: [], next_cursor: null, has_more: false } },
           { status: 200, body: { items: [], next_cursor: null, has_more: false } },
         ],
@@ -625,7 +625,10 @@ describe("sharednet say and wait", () => {
         ["watch", "--on", "idle 30s", "--run", "digest", "--max-runs", "1", "--json"],
         space,
         [
-          { status: 200, body: { instance: { id: MEMBER_ID } } },page([message(2, "a")]), page([message(3, "b")]), page([])],
+          page([message(2, "a")]),
+          page([message(3, "b")]),
+          page([]),
+        ],
         {},
         {
           exec: idle.exec,
@@ -738,6 +741,26 @@ describe("sharednet say and wait", () => {
     expect(JSON.parse(result.stdout).items.map((item: { sequence: number }) => item.sequence)).toEqual([2, 3]);
     const state = JSON.parse(await readFile(join(space.project, ".sharednet", "room.json"), "utf8"));
     expect(state.last_sequence).toBe(3);
+  });
+
+  it("never hands a seat its own words: a page of only them is consumed and the sit goes on", async () => {
+    const space = await joinedSpace();
+    const result = await run(["wait", "--json"], space, [
+      page([own(2, "what I just said")]),
+      page([]),
+      page([own(3, "and again"), message(4, "Reply from the host")]),
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout).items.map((item: any) => [item.sequence, item.content])).toEqual([[4, "Reply from the host"]]);
+    // The cursor moved over its own messages too, so nothing is read twice.
+    expect(result.requests.map((request) => new URL(request.url).searchParams.get("after"))).toEqual(["1", "2", "2"]);
+    const state = JSON.parse(await readFile(join(space.project, ".sharednet", "room.json"), "utf8"));
+    expect(state.last_sequence).toBe(4);
+
+    // With a deadline, a sit that heard only itself returns empty, cursor advanced.
+    const quiet = await run(["wait", "--timeout", "0", "--json"], space, [page([own(5, "me again")])]);
+    expect(JSON.parse(quiet.stdout).items).toEqual([]);
+    expect(JSON.parse(await readFile(join(space.project, ".sharednet", "room.json"), "utf8")).last_sequence).toBe(5);
   });
 
   it("returns after --timeout 0 with an empty page instead of sitting", async () => {
@@ -874,8 +897,9 @@ describe("the guest verbs against the real request handler", () => {
     const waitRun = await cli(["wait", "--json"]);
     expect(waitRun.stderr).toBe("");
     expect(waitRun.exitCode).toBe(0);
+    // The log holds both, but a seat is never woken by its own words: only the
+    // host's reply comes back, and the cursor still moves past both.
     expect(JSON.parse(waitRun.stdout).items.map((item: { sequence: number; content: string }) => [item.sequence, item.content])).toEqual([
-      [2, "Hello from the CLI"],
       [3, "Heard you"],
     ]);
 

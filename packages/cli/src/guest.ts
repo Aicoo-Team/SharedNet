@@ -195,6 +195,25 @@ function runtimeReport(env: Environment): { kind: string; version: string | null
   };
 }
 
+/** A message this seat sent, by the Instance id the server reports or the one the seat file names. */
+function isOwn(item: MessageShape, me: string, memberId: string): boolean {
+  const sender = item.sender?.member_id;
+  return sender === me || sender === memberId;
+}
+
+/**
+ * Who "I" am, from the server: a seat file written before migration 0007
+ * still names a mem_ id, while senders are reported by Instance id now. A
+ * seat that already carries an Instance id needs no round trip.
+ */
+async function whoAmI(client: ApiClient, state: ProjectRoomState, credential: StoredRoomCredential): Promise<string> {
+  if (/^i_[0-9A-Za-z]{10}$/.test(state.member_id)) return state.member_id;
+  return client
+    .request<{ instance?: { id?: string } }>("GET", "/instances/current", credential.member_token)
+    .then((payload) => payload?.instance?.id ?? state.member_id)
+    .catch(() => state.member_id);
+}
+
 function highestSequence(items: MessageShape[], fallback: number): number {
   return items.reduce(
     (max, item) => (Number.isSafeInteger(item.sequence) && item.sequence > max ? item.sequence : max),
@@ -656,12 +675,7 @@ async function watch(args: string[], dependencies: GuestDependencies): Promise<u
         ? `count ${trigger.count}`
         : `${trigger.kind} ${trigger.ms / 1000}s`;
 
-  // Who "I" am, from the server: a seat file written before migration 0007
-  // still names a mem_ id, while senders are reported by Instance id now.
-  const me = await client
-    .request<{ instance?: { id?: string } }>("GET", "/instances/current", credential.member_token)
-    .then((payload) => payload?.instance?.id ?? state.member_id)
-    .catch(() => state.member_id);
+  const me = await whoAmI(client, state, credential);
 
   let cursor = state.last_sequence;
   let batch: MessageShape[] = [];
@@ -678,7 +692,7 @@ async function watch(args: string[], dependencies: GuestDependencies): Promise<u
     const timeout = Math.min(WAIT_MAX_SECONDS, Math.max(0, Math.ceil(budgetMs / 1000)));
     const page = await waitPage(client, state.room_id, credential.member_token, cursor, timeout);
     cursor = highestSequence(page.items, cursor);
-    const others = page.items.filter((item) => item.sender?.member_id !== me && item.sender?.member_id !== state.member_id);
+    const others = page.items.filter((item) => !isOwn(item, me, state.member_id));
     if (others.length > 0) {
       batch.push(...others);
       lastMessageAt = dependencies.now().getTime();
@@ -767,10 +781,14 @@ async function wait(args: string[], dependencies: GuestDependencies): Promise<un
   const minimum = parseCount(stringOption(parsed, "min"), "--min") ?? 1;
   const { client, state, credential } = await currentSeat(dependencies);
   const sleep = dependencies.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const me = await whoAmI(client, state, credential);
 
   const deadline =
     totalSeconds === null ? null : dependencies.now().getTime() + totalSeconds * 1000;
-  // --min N: keep sitting until N messages have arrived, or the deadline.
+  // The Room log is raw and includes what this seat said; the cursor moves
+  // over all of it, but only other members' words wake the caller, count
+  // toward --min, or come back. A page of nothing but one's own words is
+  // consumed and the sit continues.
   const items: MessageShape[] = [];
   let cursor = state.last_sequence;
   for (;;) {
@@ -780,16 +798,17 @@ async function wait(args: string[], dependencies: GuestDependencies): Promise<un
         : Math.max(0, Math.ceil((deadline - dependencies.now().getTime()) / 1000));
     const timeout = Math.min(WAIT_MAX_SECONDS, remaining);
     const page = await waitPage(client, state.room_id, credential.member_token, cursor, timeout);
-    items.push(...page.items);
+    const advanced = highestSequence(page.items, cursor) > cursor;
     cursor = highestSequence(page.items, cursor);
+    items.push(...page.items.filter((item) => !isOwn(item, me, state.member_id)));
     if (items.length >= minimum) break;
     if (deadline !== null && dependencies.now().getTime() >= deadline) break;
-    // The server answered at its cap; ask again from the cursor.
-    await sleep(0);
+    // The server answered at its cap, or with only our own words; ask again.
+    if (!advanced) await sleep(0);
   }
   const page: PageShape = { items, next_cursor: null, has_more: false };
 
-  if (page.items.length > 0) {
+  if (cursor > state.last_sequence) {
     await writeProjectRoomState(dependencies.cwd, { ...state, last_sequence: cursor });
   }
 
