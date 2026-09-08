@@ -48,12 +48,33 @@ export interface StoredRoomCredential {
  * sequence it has seen. Nothing here is secret, and the directory ignores
  * itself so it never rides into a commit.
  */
+/** One seat's view of the directory's Room: what say, wait and watch act as. */
 export interface ProjectRoomState {
   schema_version: 1;
   base_url: string;
   room_id: string;
   member_id: string;
   last_sequence: number;
+}
+
+/**
+ * The directory's Room, with every seat this directory has taken in it and
+ * a cursor per seat. Two Agent sessions in one checkout are two seats, each
+ * tied to its own session by `anchor_key` (the local Instance key derived
+ * from the driver's session id and this machine's installation secret; never
+ * the raw session id), so neither ever speaks or reads as the other.
+ */
+export interface ProjectRoom {
+  schema_version: 2;
+  base_url: string;
+  room_id: string;
+  seats: Record<string, ProjectSeat>;
+}
+
+export interface ProjectSeat {
+  last_sequence: number;
+  anchor_key: string | null;
+  joined_at: string | null;
 }
 
 export const PROJECT_STATE_DIR = ".sharednet";
@@ -455,7 +476,7 @@ function projectStateFile(cwd: string): string {
   return join(cwd, PROJECT_STATE_DIR, "room.json");
 }
 
-export async function readProjectRoomState(cwd: string): Promise<ProjectRoomState | null> {
+export async function readProjectRoom(cwd: string): Promise<ProjectRoom | null> {
   let raw: string;
   try {
     raw = await readFile(projectStateFile(cwd), "utf8");
@@ -464,30 +485,120 @@ export async function readProjectRoomState(cwd: string): Promise<ProjectRoomStat
     throw error;
   }
   const value = parseJsonObject(raw, "The project Room state");
-  if (value.schema_version !== 1) {
+  const source = "The project Room state";
+  const sequence = (candidate: unknown): number => {
+    if (!Number.isSafeInteger(candidate) || (candidate as number) < 0) {
+      throw localError("invalid_local_state", `${source} is not valid SharedNet state.`);
+    }
+    return candidate as number;
+  };
+  // A file from before seats were separated: one member, one cursor, no session tie.
+  if (value.schema_version === 1) {
+    const memberId = requireString(value.member_id, source);
+    return {
+      schema_version: 2,
+      base_url: requireString(value.base_url, source),
+      room_id: requireString(value.room_id, source),
+      seats: { [memberId]: { last_sequence: sequence(value.last_sequence), anchor_key: null, joined_at: null } },
+    };
+  }
+  if (value.schema_version !== 2) {
     throw localError("invalid_local_state", "The project Room state has an unsupported version.");
   }
-  const source = "The project Room state";
-  const lastSequence = value.last_sequence;
-  if (!Number.isSafeInteger(lastSequence) || (lastSequence as number) < 0) {
+  const seatsValue = value.seats;
+  if (typeof seatsValue !== "object" || seatsValue === null || Array.isArray(seatsValue)) {
     throw localError("invalid_local_state", `${source} is not valid SharedNet state.`);
   }
+  const seats: Record<string, ProjectSeat> = {};
+  for (const [memberId, seat] of Object.entries(seatsValue as Record<string, unknown>)) {
+    if (typeof seat !== "object" || seat === null) {
+      throw localError("invalid_local_state", `${source} is not valid SharedNet state.`);
+    }
+    const record = seat as Record<string, unknown>;
+    seats[memberId] = {
+      last_sequence: sequence(record.last_sequence),
+      anchor_key: typeof record.anchor_key === "string" ? record.anchor_key : null,
+      joined_at: typeof record.joined_at === "string" ? record.joined_at : null,
+    };
+  }
   return {
-    schema_version: 1,
+    schema_version: 2,
     base_url: requireString(value.base_url, source),
     room_id: requireString(value.room_id, source),
-    member_id: requireString(value.member_id, source),
-    last_sequence: lastSequence as number,
+    seats,
   };
 }
 
-export async function writeProjectRoomState(cwd: string, state: ProjectRoomState): Promise<void> {
+async function writeProjectRoom(cwd: string, room: ProjectRoom): Promise<void> {
   const directory = join(cwd, PROJECT_STATE_DIR);
   await mkdir(directory, { recursive: true });
   // The directory ignores itself, so a project that has no .gitignore entry for
   // it still never commits a cursor file by accident.
   await writeFile(join(directory, ".gitignore"), "*\n", { flag: "w" });
   const temp = join(directory, `.room-${randomBytes(6).toString("hex")}.tmp`);
-  await writeFile(temp, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+  await writeFile(temp, `${JSON.stringify(room, null, 2)}\n`, "utf8");
   await rename(temp, projectStateFile(cwd));
+}
+
+/**
+ * Records one seat's cursor in the directory's Room. A different Room
+ * replaces the file: a directory is in one Room at a time. `anchorKey` ties
+ * the seat to the session that took it; omitted, an existing tie is kept.
+ */
+export async function writeProjectRoomState(
+  cwd: string,
+  state: ProjectRoomState,
+  options: { anchorKey?: string | null; joinedAt?: string } = {},
+): Promise<void> {
+  const existing = await readProjectRoom(cwd).catch(() => null);
+  const sameRoom = existing !== null && existing.room_id === state.room_id;
+  const previous = sameRoom ? existing.seats[state.member_id] : undefined;
+  const seats = sameRoom ? { ...existing.seats } : {};
+  seats[state.member_id] = {
+    last_sequence: state.last_sequence,
+    anchor_key: options.anchorKey !== undefined ? options.anchorKey : (previous?.anchor_key ?? null),
+    joined_at: options.joinedAt ?? previous?.joined_at ?? null,
+  };
+  await writeProjectRoom(cwd, { schema_version: 2, base_url: state.base_url, room_id: state.room_id, seats });
+}
+
+/**
+ * The seat this call acts as. In order: `--as` or SHAREDNET_SEAT; the seat
+ * tied to this session; the only seat there is. Two seats and no way to
+ * tell them apart is refused rather than guessed, since guessing is how one
+ * session ends up speaking as another.
+ */
+export async function selectProjectSeat(
+  cwd: string,
+  choice: { explicit?: string; anchorKey: string | null },
+): Promise<ProjectRoomState | null> {
+  const room = await readProjectRoom(cwd);
+  if (!room) return null;
+  const view = (memberId: string): ProjectRoomState => ({
+    schema_version: 1,
+    base_url: room.base_url,
+    room_id: room.room_id,
+    member_id: memberId,
+    last_sequence: room.seats[memberId]!.last_sequence,
+  });
+  const ids = Object.keys(room.seats);
+  if (choice.explicit) {
+    if (!room.seats[choice.explicit]) {
+      throw localError(
+        "seat_not_found",
+        `This directory holds no seat ${choice.explicit} in ${room.room_id}; it holds: ${ids.join(", ") || "none"}.`,
+      );
+    }
+    return view(choice.explicit);
+  }
+  if (choice.anchorKey) {
+    const mine = ids.filter((id) => room.seats[id]!.anchor_key === choice.anchorKey);
+    if (mine.length === 1) return view(mine[0]!);
+  }
+  if (ids.length === 1) return view(ids[0]!);
+  if (ids.length === 0) return null;
+  throw localError(
+    "seat_selection_required",
+    `This directory holds ${ids.length} seats in ${room.room_id} and none is this session's; say which with --as <member_id> or SHAREDNET_SEAT: ${ids.join(", ")}`,
+  );
 }
