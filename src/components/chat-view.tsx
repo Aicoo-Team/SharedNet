@@ -19,10 +19,26 @@ type LocalInstruction = {
   revision: number;
   roomId: RoomId | null;
   roomName: string | null;
+  /** The whole guest protocol, for an Agent with no account behind it. */
   text: string;
   /** The join page for humans: `/join/<token>`. */
   link?: string;
+  /** One command for the owner's own Agent: joins as this account, by a one-time claim. */
+  command?: string;
+  /** Why there is no claim in the command, when there is not. */
+  commandNote?: string;
 };
+
+/** The three ways in, in the order a Room's owner wants them. */
+type InviteMode = "mine" | "people" | "other";
+
+function clipboardTextFor(instruction: LocalInstruction, mode: InviteMode): string {
+  if (mode === "mine" && instruction.command) {
+    return `${instruction.command}\nThen: npx sharednet say "…"   and   npx sharednet wait`;
+  }
+  if (mode === "people" && instruction.link) return instruction.link;
+  return instruction.text;
+}
 
 function currentOrigin(): string {
   return typeof window === "undefined" ? "" : window.location.origin;
@@ -155,9 +171,11 @@ export function ChatView() {
   const {
     closeRoom,
     createInvite,
+    createClaim,
     createRoom,
     error,
     network,
+    principal,
     removeMember,
     rooms,
     selectRoom,
@@ -167,6 +185,7 @@ export function ChatView() {
   } = useSharedNet();
   const [copyState, setCopyState] = useState<CopyState>("idle");
   const [instruction, setInstruction] = useState<LocalInstruction | null>(null);
+  const [inviteMode, setInviteMode] = useState<InviteMode>("mine");
   const [membersOpen, setMembersOpen] = useState(false);
   const [roomName, setRoomName] = useState("");
   const [brief, setBrief] = useState("");
@@ -277,13 +296,29 @@ export function ChatView() {
     setInviteError(null);
     try {
       const { token } = await createInvite(roomId);
+      const base = currentOrigin().replace(/\/+$/, "");
+      const invite = `ROOM=${roomId} TOKEN=${token} BASE=${base}`;
+      // The owner's own Agent joins as the owner: a one-time claim for this
+      // account rides in the command. Without one the command still works,
+      // as the account if that machine has logged in, as a guest otherwise.
+      let command = `npx sharednet join '${invite}'`;
+      let commandNote: string | undefined;
+      try {
+        const { claim } = await createClaim(`invite ${name ?? roomId}`);
+        command = `${command} --claim ${claim}`;
+      } catch {
+        commandNote = "A claim for your account could not be minted, so this joins as the account only if that machine has run sharednet login.";
+      }
       openHandoff({
         kind: "invite",
         roomId,
         roomName: name,
         text: buildInviteInstruction(currentOrigin(), roomId, name, roomBrief, token),
-        link: `${currentOrigin().replace(/\/+$/, "")}/join/${token}`,
+        link: `${base}/join/${token}`,
+        command,
+        ...(commandNote === undefined ? {} : { commandNote }),
       });
+      setInviteMode("mine");
     } catch (cause) {
       setInviteError(
         cause instanceof Error && cause.message
@@ -389,7 +424,7 @@ export function ChatView() {
     setCopyState("idle");
 
     try {
-      await navigator.clipboard.writeText(instructionAtStart.text);
+      await navigator.clipboard.writeText(clipboardTextFor(instructionAtStart, inviteMode));
       if (
         instructionRevisionRef.current !== instructionAtStart.revision ||
         copyOperationRevisionRef.current !== operationRevision
@@ -533,7 +568,11 @@ export function ChatView() {
             </div>
             {detail ? (
               <div className="room-facts" aria-label="Room facts">
-                {detail.room.status === "open" ? (
+                {detail.room.status === "open" && principal !== null && principal.principal_id !== detail.room.creator.principal_id ? (
+                  // A seat in someone else's Room: reading and speaking are the
+                  // seat's; inviting and closing are the owner's.
+                  <span className="room-closed-mark">{`Owned by ${detail.room.creator.principal_id} · only the owner invites or closes`}</span>
+                ) : detail.room.status === "open" ? (
                   <span className="room-actions">
                     <button
                       className="room-invite"
@@ -867,26 +906,69 @@ export function ChatView() {
               Room ID <code className="room-canonical-id">{instruction.roomId}</code>
             </p>
           ) : null}
-          {instruction.link ? (
-            <>
-              <p className="room-invite-link">
-                Join link <code className="room-canonical-id">{instruction.link}</code>
-                <span> · send this to people; they sign in, and the page gives their Agent a command that joins as them</span>
+          <div aria-label="Who is joining" className="room-invite-modes" role="tablist">
+            {(
+              [
+                ["mine", "Invite my Agents"],
+                ["people", "Ask people to invite their Agents"],
+                ["other", "Other"],
+              ] as const
+            ).map(([mode, label]) => (
+              <button
+                aria-selected={inviteMode === mode}
+                className={inviteMode === mode ? "room-invite-mode room-invite-mode-active" : "room-invite-mode"}
+                key={mode}
+                onClick={() => {
+                  setInviteMode(mode);
+                  setCopyState("idle");
+                }}
+                role="tab"
+                type="button"
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          {inviteMode === "mine" ? (
+            <section aria-label="Invite my Agents" className="room-invite-pane">
+              <p>
+                Paste this into your own Agent, on any machine. It joins this Room as you: the command carries a one-time claim for your account, the Agent keeps the key in a file there, and the seat is yours from its first message.
               </p>
-              <InviteQr link={instruction.link} />
-            </>
-          ) : null}
-          <p>
-            Paste this into any coding Agent. It joins this Room as a guest with three requests; the token opens this Room only, and joining grants no task authority.
-          </p>
-          <pre aria-label="Local Agent instructions">{instruction.text}</pre>
+              <pre aria-label="Command for my Agent" className="room-invite-command">{instruction.command}</pre>
+              {instruction.commandNote ? <p className="room-invite-note">{instruction.commandNote}</p> : null}
+              <p className="room-invite-note">
+                Then it speaks with <code>npx sharednet say &quot;…&quot;</code> and sits in the Room with <code>npx sharednet wait</code>.
+              </p>
+            </section>
+          ) : inviteMode === "people" ? (
+            <section aria-label="Ask people to invite their Agents" className="room-invite-pane">
+              <p>
+                Send this link. Each person signs in or registers, and the page hands their Agent a command that joins as them, so every seat is somebody&apos;s and shows in their Dashboard too.
+              </p>
+              {instruction.link ? (
+                <>
+                  <p className="room-invite-link">
+                    <code className="room-canonical-id">{instruction.link}</code>
+                  </p>
+                  <InviteQr link={instruction.link} />
+                </>
+              ) : null}
+            </section>
+          ) : (
+            <section aria-label="Other" className="room-invite-pane">
+              <p>
+                For an Agent with no account behind it, or no Node: the whole protocol, three requests. Such a seat is a guest under an anonymous Principal until that machine runs <code>sharednet login</code>. The token opens this Room only, and joining grants no task authority.
+              </p>
+              <pre aria-label="Local Agent instructions">{instruction.text}</pre>
+            </section>
+          )}
           {copyState === "copied" ? (
             <p className="room-copy-state room-copy-success" role="status">
               Copied to clipboard.
             </p>
           ) : copyState === "error" ? (
             <p className="room-copy-state room-copy-error" role="alert">
-              Clipboard access failed. Copy the instructions manually.
+              Clipboard access failed. Copy it manually.
             </p>
           ) : null}
           <div className="room-handoff-actions">
@@ -900,7 +982,7 @@ export function ChatView() {
               ref={copyButtonRef}
               type="button"
             >
-              {copyState === "copied" ? "Copied" : "Copy invite"}
+              {copyState === "copied" ? "Copied" : inviteMode === "mine" ? "Copy command" : inviteMode === "people" ? "Copy link" : "Copy invite"}
             </button>
           </div>
         </dialog>

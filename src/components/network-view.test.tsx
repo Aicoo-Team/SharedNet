@@ -143,6 +143,7 @@ function makeState(overrides: Partial<SharedNetState> = {}): SharedNetState {
     claimPairing: vi.fn(async () => undefined),
     closeRoom: vi.fn(async () => { throw new Error("closeRoom not stubbed"); }),
     createInvite: vi.fn(async () => { throw new Error("createInvite not stubbed"); }),
+    createClaim: vi.fn(async () => { throw new Error("createClaim not stubbed"); }),
     createRoom: vi.fn(async () => { throw new Error("createRoom not stubbed"); }),
     decisions: [],
     error: null,

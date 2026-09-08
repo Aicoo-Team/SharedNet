@@ -1311,6 +1311,53 @@ body:has(.product-window) {
   line-height: 1.5;
 }
 
+.room-invite-modes {
+  border-bottom: 1px solid var(--sn-line);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.room-invite-mode {
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: var(--sn-oxford);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: -1px;
+  padding: 8px 10px;
+}
+
+.room-invite-mode-active {
+  border-bottom-color: var(--sn-ink);
+  color: var(--sn-ink);
+}
+
+.room-invite-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.room-invite-pane > p {
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.room-invite-note {
+  color: color-mix(in oklch, var(--sn-oxford) 75%, transparent);
+  font-size: 12px;
+}
+
+.room-handoff-dialog pre.room-invite-command {
+  font-size: 12px;
+  min-height: 0;
+}
+
 .room-handoff-dialog pre {
   background: var(--sn-paper-deep);
   border: 1px solid var(--sn-line);
