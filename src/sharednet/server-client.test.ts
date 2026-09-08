@@ -372,7 +372,8 @@ describe("SharedNetServerClient is one door onto the domain", () => {
     const seat = network.instances.find((entry) => entry.instance_id === guest.membership.instance_id)!;
     expect(seat).toMatchObject({ principal_id: guest.membership.principal_id, display_name: "claude-code", agent_id: null, runtime_type: "claude-code" });
     expect(network.edges).toEqual([
-      { kind: "room_co_membership", source_id: [instance.id, guest.membership.instance_id].sort()[0], target_id: [instance.id, guest.membership.instance_id].sort()[1], weight: 1 },
+      // Two seats in one Room of two: one shared Room, a whole connection.
+      { kind: "room_co_membership", source_id: [instance.id, guest.membership.instance_id].sort()[0], target_id: [instance.id, guest.membership.instance_id].sort()[1], weight: 1, strength: 1 },
     ]);
     // Own tags are never marked discoverable; there is nothing of theirs to discover here.
     expect(network.agents.map((agent) => [agent.agent_id, agent.discoverability])).toEqual([[instance.agent_id, false]]);

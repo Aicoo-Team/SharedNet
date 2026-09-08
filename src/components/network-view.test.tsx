@@ -50,8 +50,8 @@ function instance(id: InstanceId, principalId: PrincipalId, agentId: AgentId | n
 function network(overrides: Partial<NetworkProjection> = {}): NetworkProjection {
   const ids = [OWN_A, OWN_B, OTHER, GUEST];
   const edges: NetworkProjection["edges"] = [];
-  for (let i = 0; i < ids.length; i += 1) for (let j = i + 1; j < ids.length; j += 1) edges.push({ kind: "room_co_membership", source_id: ids[i]!, target_id: ids[j]!, weight: 1 });
-  edges[0] = { ...edges[0]!, weight: 2 };
+  for (let i = 0; i < ids.length; i += 1) for (let j = i + 1; j < ids.length; j += 1) edges.push({ kind: "room_co_membership", source_id: ids[i]!, target_id: ids[j]!, weight: 1, strength: 1 / 3 });
+  edges[0] = { ...edges[0]!, weight: 2, strength: 1 / 3 + 1 };
   return {
     agents: [agent(OWN_AGENT_ID, OWN_PRINCIPAL_ID, "Reviewer"), agent(OTHER_AGENT_ID, OTHER_PRINCIPAL_ID, "Planner")],
     connected_principals: [principal(OTHER_PRINCIPAL_ID, "Atlantic partner"), principal(GUEST_PRINCIPAL_ID, "claude-code", "anonymous")],
@@ -118,12 +118,16 @@ describe("SharedNet Network", () => {
   it("joins every pair that shares a Room with one line, weighted by how many Rooms they share", () => {
     const { container } = renderNetwork();
     openInstances();
+    // Seen from my Principal: the five lines that touch my two Instances; the chord between the two others waits for a selection.
+    expect(container.querySelectorAll('line[data-edge-kind="room_co_membership"]')).toHaveLength(5);
+    fireEvent.click(node(OTHER));
     const lines = container.querySelectorAll('line[data-edge-kind="room_co_membership"]');
     expect(lines).toHaveLength(6);
+    // Thickness follows strength, which weights each Room by its size, not the bare count.
     const heavy = Array.from(lines).find((line) => line.getAttribute("data-weight") === "2")!;
     expect(Number(heavy.getAttribute("stroke-width"))).toBeGreaterThan(Number(Array.from(lines).find((line) => line.getAttribute("data-weight") === "1")!.getAttribute("stroke-width")));
     const listed = within(screen.getByRole("list", { name: "Visible relationships" })).getAllByRole("listitem").map((item) => item.textContent);
-    expect(listed).toContain(`room_co_membership: source ${OWN_A}; target ${OWN_B}; weight 2`);
+    expect(listed).toContain(`room_co_membership: source ${OWN_A}; target ${OWN_B}; weight 2; strength 1.333`);
     // Every line ends on a drawn node.
     const positions = new Map(Array.from(container.querySelectorAll<HTMLElement>("[data-instance-id]")).map((n) => [`${n.dataset.layoutX},${n.dataset.layoutY}`, n.dataset.instanceId]));
     for (const line of Array.from(lines)) {
@@ -136,8 +140,8 @@ describe("SharedNet Network", () => {
     const net = network();
     net.edges = [
       ...net.edges,
-      { kind: "room_co_membership", source_id: OWN_B, target_id: OWN_A, weight: 5 },
-      { kind: "room_co_membership", source_id: OWN_A, target_id: "i_nobody00001" as InstanceId, weight: 1 },
+      { kind: "room_co_membership", source_id: OWN_B, target_id: OWN_A, weight: 5, strength: 5 },
+      { kind: "room_co_membership", source_id: OWN_A, target_id: "i_nobody00001" as InstanceId, weight: 1, strength: 1 },
     ];
     const graph = buildGraph(net);
     expect(graph.edges).toHaveLength(6);
@@ -147,8 +151,8 @@ describe("SharedNet Network", () => {
   it("lays every Instance out at a finite, distinct, on-canvas position, the same way each time", () => {
     const graph = buildGraph(network());
     const asLayout = graph.nodes.map((n) => ({ id: n.instance.instance_id, group: n.instance.principal_id }));
-    const first = layoutGraph(asLayout, graph.edges);
-    const second = layoutGraph(asLayout, graph.edges);
+    const first = layoutGraph(asLayout, graph.edges, [OWN_A, OWN_B]);
+    const second = layoutGraph(asLayout, graph.edges, [OWN_A, OWN_B]);
     expect(first.positions.size).toBe(4);
     const seen = new Set<string>();
     for (const [id, point] of first.positions) {
@@ -161,15 +165,17 @@ describe("SharedNet Network", () => {
       seen.add(`${point.x},${point.y}`);
       expect(second.positions.get(id)).toEqual(point);
     }
-    // Instances that share Rooms sit closer than a stranger sits to them.
-    const d = (a: InstanceId, b: InstanceId) => Math.hypot(first.positions.get(a)!.x - first.positions.get(b)!.x, first.positions.get(a)!.y - first.positions.get(b)!.y);
-    expect(d(OWN_A, OWN_B)).toBeLessThan(first.width);
+    // The ego's Instances sit in the middle; everyone tied to them stands around.
+    const centre = { x: first.width / 2, y: first.height / 2 };
+    const d = (id: InstanceId) => Math.hypot(first.positions.get(id)!.x - centre.x, first.positions.get(id)!.y - centre.y);
+    expect(d(OWN_A)).toBeLessThan(d(OTHER));
+    expect(d(OWN_B)).toBeLessThan(d(GUEST));
   });
 
   it("keeps a large Network on one canvas with room for every node", () => {
     const many: InstanceProjection[] = Array.from({ length: 40 }, (_, i) => instance(`i_many${String(i).padStart(6, "0")}` as InstanceId, OWN_PRINCIPAL_ID, null));
     const graph = buildGraph(network({ instances: many, edges: [], connected_principals: [] }));
-    const layout = layoutGraph(graph.nodes.map((n) => ({ id: n.instance.instance_id, group: n.instance.principal_id })), graph.edges);
+    const layout = layoutGraph(graph.nodes.map((n) => ({ id: n.instance.instance_id, group: n.instance.principal_id })), graph.edges, [graph.nodes[0]!.instance.instance_id]);
     expect(layout.positions.size).toBe(40);
     expect(layout.width).toBeGreaterThan(900);
     const minGap = Math.min(...graph.nodes.flatMap((a, i) => graph.nodes.slice(i + 1).map((b) => Math.hypot(layout.positions.get(a.instance.instance_id)!.x - layout.positions.get(b.instance.instance_id)!.x, layout.positions.get(a.instance.instance_id)!.y - layout.positions.get(b.instance.instance_id)!.y))));
@@ -187,6 +193,8 @@ describe("SharedNet Network", () => {
     expect(within(card).getByText(OWN_AGENT_ID)).toBeVisible();
     expect(within(card).getByText(OWN_A)).toBeVisible();
     expect(within(card).getByText("3 Instances across 4 shared Room memberships")).toBeVisible();
+    // Weighted by Room size: two thirds from the Room of four, one from the Room of two.
+    expect(within(card).getByText("2.0 · each Room counts 1/(members − 1)")).toBeVisible();
     // The sibling under the same tag is one click away.
     fireEvent.click(within(card).getByRole("button", { name: OWN_B }));
     expect(within(screen.getByRole("region", { name: "Agent Card" })).getByText(OWN_B)).toBeVisible();
@@ -233,10 +241,13 @@ describe("SharedNet Network", () => {
     expect(principalNode(GUEST_PRINCIPAL_ID).dataset.principal).toBe("anonymous");
     expect(screen.getByText("3 Principals · 3 connections")).toBeVisible();
     // My two Instances each share a Room with the other account's one: weight 2 between the Principals.
+    // From me: my two lines; the line between the two others shows once one of them is selected.
+    expect(container.querySelectorAll('line[data-edge-kind="principal_connection"]')).toHaveLength(2);
+    fireEvent.click(principalNode(GUEST_PRINCIPAL_ID));
     const lines = container.querySelectorAll('line[data-edge-kind="principal_connection"]');
     expect(lines).toHaveLength(3);
     const listed = within(screen.getByRole("list", { name: "Visible relationships" })).getAllByRole("listitem").map((item) => item.textContent);
-    expect(listed).toContain(`principal_connection: source ${OWN_PRINCIPAL_ID}; target ${OTHER_PRINCIPAL_ID}; weight 2`);
+    expect(listed).toContain(`principal_connection: source ${OWN_PRINCIPAL_ID}; target ${OTHER_PRINCIPAL_ID}; weight 2; strength 0.667`);
     const folded = buildPrincipalGraph(network(), buildGraph(network()));
     expect(folded.nodes.map((n) => [n.principal.principal_id, n.instances, n.degree])).toEqual([
       [OWN_PRINCIPAL_ID, 2, 2],
@@ -253,6 +264,7 @@ describe("SharedNet Network", () => {
     expect(within(card).getByText(OTHER_PRINCIPAL_ID)).toBeVisible();
     expect(within(card).getByText("1 · 1 online")).toBeVisible();
     expect(within(card).getByText("2 Principals across 3 shared Room memberships")).toBeVisible();
+    expect(within(card).getByText("1.0 · each Room counts 1/(members − 1)")).toBeVisible();
     fireEvent.click(within(card).getByRole("button", { name: "Open its 1 Instance →" }));
     // The Instance level, seen from that Principal: its seat and everything it touches (here, everyone).
     expect(screen.getByRole("navigation", { name: "Where you are" })).toHaveTextContent(`${OTHER_PRINCIPAL_ID} · its Instances and what they connect to`);
@@ -277,22 +289,31 @@ describe("SharedNet Network", () => {
     expect(screen.getByRole("status")).toHaveTextContent("No Principal p_nowhere0001 in your Network");
   });
 
-  it("stands Instances with no line on a ring around the connected ones, in id order, never in the corners", () => {
+  it("stands everyone on rings around the ego by how strongly they are tied to it, the untied outermost, never in a corner", () => {
+    // Seen from OWN_A alone: OWN_B shares two Rooms (strong), OTHER and GUEST one crowded Room (weak), three loners none.
     const net = network();
-    const loners = ["i_lonelyAaaa", "i_lonelyBbbb", "i_lonelyCccc"].map((id) => instance(id as InstanceId, OWN_PRINCIPAL_ID, null));
+    const loners = ["i_lonelyAaaa", "i_lonelyBbbb", "i_lonelyCccc"].map((id) => instance(id as InstanceId, OTHER_PRINCIPAL_ID, null));
     const graph = buildGraph({ ...net, instances: [...net.instances, ...loners] });
-    const layout = layoutGraph(graph.nodes.map((n) => ({ id: n.instance.instance_id, group: n.instance.principal_id })), graph.edges);
+    const layout = layoutGraph(graph.nodes.map((n) => ({ id: n.instance.instance_id, group: n.instance.principal_id })), graph.edges, [OWN_A]);
     const centre = { x: layout.width / 2, y: layout.height / 2 };
-    const radii = loners.map((l) => Math.hypot(layout.positions.get(l.instance_id)!.x - centre.x, layout.positions.get(l.instance_id)!.y - centre.y));
-    expect(Math.max(...radii) - Math.min(...radii)).toBeLessThan(2);
-    // The connected four sit inside that ring.
-    for (const id of [OWN_A, OWN_B, OTHER, GUEST]) {
-      expect(Math.hypot(layout.positions.get(id)!.x - centre.x, layout.positions.get(id)!.y - centre.y)).toBeLessThan(Math.min(...radii));
+    const r = (id: string) => Math.hypot(layout.positions.get(id)!.x - centre.x, layout.positions.get(id)!.y - centre.y);
+    expect(r(OWN_A)).toBe(0);
+    expect(r(OWN_B)).toBeLessThan(r(OTHER));
+    expect(Math.abs(r(OTHER) - r(GUEST))).toBeLessThan(2);
+    const lonerRadii = loners.map((l) => r(l.instance_id));
+    expect(Math.max(...lonerRadii) - Math.min(...lonerRadii)).toBeLessThan(2);
+    expect(Math.min(...lonerRadii)).toBeGreaterThan(r(OTHER));
+    // Every node is on the canvas with room to spare.
+    for (const point of layout.positions.values()) {
+      expect(point.x).toBeGreaterThan(40);
+      expect(point.x).toBeLessThan(layout.width - 40);
+      expect(point.y).toBeGreaterThan(40);
+      expect(point.y).toBeLessThan(layout.height - 40);
     }
-    // With no lines at all, everything is one ring.
+    // With no lines at all, everyone but the ego is one ring.
     const none = buildGraph({ ...net, edges: [] });
-    const ring = layoutGraph(none.nodes.map((n) => ({ id: n.instance.instance_id, group: n.instance.principal_id })), []);
-    const all = [...ring.positions.values()].map((p) => Math.hypot(p.x - ring.width / 2, p.y - ring.height / 2));
+    const ring = layoutGraph(none.nodes.map((n) => ({ id: n.instance.instance_id, group: n.instance.principal_id })), [], [OWN_A]);
+    const all = [...ring.positions.entries()].filter(([id]) => id !== OWN_A).map(([, p]) => Math.hypot(p.x - ring.width / 2, p.y - ring.height / 2));
     expect(Math.max(...all) - Math.min(...all)).toBeLessThan(2);
   });
 

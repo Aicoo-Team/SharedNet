@@ -118,7 +118,13 @@ export type DecisionAnswer =
   | { outcome: "answered"; answer: string };
 
 /** Two Instances share this many Rooms they are both active in. */
-export type SharedRoomsEdge = { source_instance_id: InstanceId; target_instance_id: InstanceId; shared_rooms: number };
+/**
+ * Two Instances share `shared_rooms` Rooms. `strength` weights each of those
+ * Rooms by its size, 1/(members - 1): a Room of two is a whole connection,
+ * a Room of fifty is a sliver, so a crowded Room does not outweigh a pair
+ * that actually work together.
+ */
+export type SharedRoomsEdge = { source_instance_id: InstanceId; target_instance_id: InstanceId; shared_rooms: number; strength: number };
 
 /**
  * What a Principal can see of the network: its own Agents and Instances, and
@@ -142,12 +148,15 @@ export function sharedRoomsEdges(roomsOfInstances: InstanceId[][]): SharedRoomsE
   const edges = new Map<string, SharedRoomsEdge>();
   for (const instanceIds of roomsOfInstances) {
     const unique = [...new Set(instanceIds)].sort();
+    const share = unique.length > 1 ? 1 / (unique.length - 1) : 0;
     for (let i = 0; i < unique.length; i += 1) {
       for (let j = i + 1; j < unique.length; j += 1) {
         const key = `${unique[i]}|${unique[j]}`;
         const existing = edges.get(key);
-        if (existing) existing.shared_rooms += 1;
-        else edges.set(key, { source_instance_id: unique[i]!, target_instance_id: unique[j]!, shared_rooms: 1 });
+        if (existing) {
+          existing.shared_rooms += 1;
+          existing.strength += share;
+        } else edges.set(key, { source_instance_id: unique[i]!, target_instance_id: unique[j]!, shared_rooms: 1, strength: share });
       }
     }
   }

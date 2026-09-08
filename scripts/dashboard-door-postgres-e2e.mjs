@@ -137,7 +137,7 @@ assert.deepEqual(
 );
 assert.deepEqual(ownerNet.connected_principals.map((p) => [p.id, p.invited_by_principal_id]), [[guest.membership.principal_id, owner.principalId]]);
 assert.deepEqual(ownerNet.edges, [
-  { source_instance_id: [owner.instance.id, guest.membership.instance_id].sort()[0], target_instance_id: [owner.instance.id, guest.membership.instance_id].sort()[1], shared_rooms: 1 },
+  { source_instance_id: [owner.instance.id, guest.membership.instance_id].sort()[0], target_instance_id: [owner.instance.id, guest.membership.instance_id].sort()[1], shared_rooms: 1, strength: 1 },
 ]);
 // The visitor, with no seat left, sees only itself.
 const visitorNet = await repository.networkForPrincipal(visitor.principalId);
