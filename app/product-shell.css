@@ -1743,7 +1743,7 @@ body:has(.product-window) {
 .relationship-principal .relationship-node-mark {
   color: var(--sn-oxford);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
+  font-size: 16px;
   font-weight: 700;
 }
 
@@ -1772,14 +1772,43 @@ body:has(.product-window) {
 }
 
 .graph-stage {
-  min-height: 0;
+  cursor: grab;
+  /* The canvas is positioned inside and lends no height, so the stage takes its own. */
+  height: 100%;
+  min-height: min(72vh, 680px);
   min-width: 0;
-  overflow: auto;
-  padding-left: 16px;
+  overflow: hidden;
+  position: relative;
+  touch-action: none;
+  user-select: none;
+}
+
+.graph-stage[data-dragging="true"] {
+  cursor: grabbing;
 }
 
 .network-canvas {
-  position: relative;
+  position: absolute;
+  left: 0;
+  top: 0;
+  will-change: transform;
+}
+
+.graph-zoom {
+  display: flex;
+  gap: 2px;
+}
+
+.graph-zoom button {
+  background: var(--sn-paper);
+  border: 1px solid var(--sn-line);
+  color: var(--sn-oxford);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  min-width: 28px;
+  padding: 3px 8px;
 }
 
 .relationship-lines {
@@ -1834,13 +1863,13 @@ body:has(.product-window) {
 .relationship-node-mark {
   align-items: center;
   background: var(--sn-paper);
-  border: 2px solid var(--sn-oxford);
+  border: 2.5px solid var(--sn-oxford);
   border-radius: 999px;
   box-sizing: border-box;
   display: flex;
-  height: 34px;
+  height: 52px;
   justify-content: center;
-  width: 34px;
+  width: 52px;
 }
 
 .relationship-node[data-principal="self"] .relationship-node-mark {
@@ -1867,10 +1896,10 @@ body:has(.product-window) {
 
 .relationship-node strong {
   background: color-mix(in srgb, var(--sn-paper) 90%, transparent);
-  font-size: 10px;
+  font-size: 13px;
   font-weight: 600;
   line-height: 1.2;
-  max-width: 140px;
+  max-width: 180px;
   overflow: hidden;
   padding: 1px 4px;
   text-overflow: ellipsis;
@@ -1880,7 +1909,7 @@ body:has(.product-window) {
 .relationship-node code {
   background: color-mix(in srgb, var(--sn-paper) 90%, transparent);
   color: var(--sn-muted);
-  font-size: 9px;
+  font-size: 11px;
   line-height: 1.2;
   padding: 1px 3px;
   white-space: nowrap;
