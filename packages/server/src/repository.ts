@@ -109,6 +109,54 @@ export type RoomOverview = {
   latest_sequence: number;
 };
 
+/** A Decision with who asked resolved through the requester Instance, since that may be another Principal. */
+export type DecisionOverview = { decision: Decision; requested_by_principal_id: PrincipalId };
+
+/** How a human answers a Decision addressed to their Principal. */
+export type DecisionAnswer =
+  | { outcome: "approved" | "denied" }
+  | { outcome: "answered"; answer: string };
+
+/** Two Instances share this many Rooms they are both active in. */
+export type SharedRoomsEdge = { source_instance_id: InstanceId; target_instance_id: InstanceId; shared_rooms: number };
+
+/**
+ * What a Principal can see of the network: its own Agents and Instances, and
+ * every Principal, Agent and Instance that shares a Room with it, drawn
+ * through the active seats of those Rooms. Nothing else is discoverable.
+ */
+export type NetworkView = {
+  principal: Principal;
+  agents: Agent[];
+  instances: Instance[];
+  connected_principals: Principal[];
+  edges: SharedRoomsEdge[];
+};
+
+/**
+ * One edge per pair of Instances active in the same Room; its weight is how
+ * many Rooms they share. Shared by both repositories, so the Network reads
+ * the same whichever one serves it.
+ */
+export function sharedRoomsEdges(roomsOfInstances: InstanceId[][]): SharedRoomsEdge[] {
+  const edges = new Map<string, SharedRoomsEdge>();
+  for (const instanceIds of roomsOfInstances) {
+    const unique = [...new Set(instanceIds)].sort();
+    for (let i = 0; i < unique.length; i += 1) {
+      for (let j = i + 1; j < unique.length; j += 1) {
+        const key = `${unique[i]}|${unique[j]}`;
+        const existing = edges.get(key);
+        if (existing) existing.shared_rooms += 1;
+        else edges.set(key, { source_instance_id: unique[i]!, target_instance_id: unique[j]!, shared_rooms: 1 });
+      }
+    }
+  }
+  return [...edges.values()];
+}
+
+/** An Instance and the Rooms it sits in, for the CLI-login approve page. */
+export type SeatOverview = { instance: Instance; rooms: Array<{ id: RoomId; name: string }> };
+
 /**
  * The Dashboard's door: what a signed-in human's Principal may see and do.
  * Authorization lives here, in the one place the public API's rules also
@@ -132,6 +180,21 @@ export interface PrincipalRepository {
   closeRoom(principalId: PrincipalId, roomId: RoomId): Promise<{ room: Room }>;
   /** Remove one seat from a Room the Principal owns; a seat that already left is returned as it is. */
   removeRoomMember(principalId: PrincipalId, roomId: RoomId, instanceId: InstanceId): Promise<{ membership: RoomMember }>;
+  /** Decisions addressed to the Principal, newest first. */
+  listDecisionsForPrincipal(principalId: PrincipalId): Promise<{ decisions: DecisionOverview[] }>;
+  /**
+   * The human answers a Decision addressed to their Principal. Approving a
+   * request to seat one of their Instances writes the seat, the same way the
+   * Instance's own answer through the API does; the Room must still be open.
+   */
+  resolveDecisionForPrincipal(
+    principalId: PrincipalId,
+    decisionId: DecisionId,
+    answer: DecisionAnswer,
+  ): Promise<{ decision: DecisionOverview; membership: RoomMember | null }>;
+  networkForPrincipal(principalId: PrincipalId): Promise<NetworkView>;
+  /** The named Instances with their Rooms; unknown ids are left out. */
+  seatsOf(instanceIds: InstanceId[]): Promise<{ seats: SeatOverview[] }>;
 }
 
 export interface SharedNetRepository extends PrincipalRepository {

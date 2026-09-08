@@ -1,12 +1,17 @@
 import "server-only";
 
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
-
 import { getDatabase } from "@/packages/db/src/client.ts";
 import { PostgresSharedNetRepository } from "@/packages/server/src/postgres-repository.ts";
-import { RepositoryError, type SharedNetRepository } from "@/packages/server/src/repository.ts";
 import {
+  type DecisionAnswer,
+  type DecisionOverview,
+  RepositoryError,
+  type SharedNetRepository,
+} from "@/packages/server/src/repository.ts";
+import {
+  type Agent,
   type CliLogin,
+  type Instance,
   type Message,
   type Principal,
   type Room,
@@ -14,15 +19,6 @@ import {
   type RoomMember,
   normalizeCliLoginCode,
 } from "@/packages/protocol/src/index.ts";
-import {
-  agents,
-  decisions,
-  instances,
-  principals,
-  roomMembers,
-  rooms,
-} from "@/packages/db/src/schema.ts";
-
 import {
   type CliClaimProjection,
   type CliLoginProjection,
@@ -77,61 +73,16 @@ export class SharedNetApiError extends Error {
   }
 }
 
-function iso(value: Date | string | null): string | null {
-  if (value === null) return null;
-  return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
-}
-
-function requiredIso(value: Date | string): string {
-  return iso(value) as string;
-}
-
 function cursor(sequence: number): RoomCursor {
   return `cursor_${sequence}` as RoomCursor;
 }
 
-/**
- * Presence is a lease, not a flag. An Instance counts as online only while
- * something is actively renewing it through the heartbeat endpoint; the lease
- * is PRESENCE_LEASE_MS wide, so a session that registers and stops calling goes
- * offline shortly after. heartbeat_state separates the two ways an Instance can
- * be offline, because "nothing ever drove this" and "the driver stopped" look
- * identical otherwise.
- */
-function presenceOf(
-  instance: {
-    state: string;
-    leaseExpiresAt: Date | string;
-    lastSeenAt: Date | string;
-    startedAt: Date | string;
-  },
-  now: number,
-): { presence: "online" | "offline"; heartbeat_state: "renewing" | "never_started" | "stopped" } {
-  const ms = (value: Date | string) =>
-    value instanceof Date ? value.getTime() : Date.parse(String(value));
-
-  if (instance.state === "active" && ms(instance.leaseExpiresAt) > now) {
-    return { presence: "online", heartbeat_state: "renewing" };
-  }
-  // lastSeenAt only advances on heartbeat, so an Instance still carrying its
-  // registration timestamp was never driven by anything.
-  const neverRenewed = ms(instance.lastSeenAt) <= ms(instance.startedAt);
+function principalProjection(principal: Principal): PrincipalProjection {
   return {
-    presence: "offline",
-    heartbeat_state: neverRenewed ? "never_started" : "stopped",
-  };
-}
-
-function principalProjection(row: {
-  id: string;
-  displayName: string | null;
-  createdAt: Date | string;
-}): PrincipalProjection {
-  return {
-    created_at: requiredIso(row.createdAt),
-    diagnostic_label: row.displayName ?? "SharedNet Principal",
+    created_at: principal.created_at,
+    diagnostic_label: principal.display_name ?? "SharedNet Principal",
     kind: "human",
-    principal_id: row.id as PrincipalId,
+    principal_id: principal.id as PrincipalId,
     summary: "SharedNet account Principal",
   };
 }
@@ -141,58 +92,83 @@ function principalProjection(row: {
  * an invite join provisioned and nobody has bound yet. The label is the name
  * its seat gave; the summary says who invited it.
  */
-function connectedPrincipalProjection(
-  row: typeof principals.$inferSelect,
-  viewerPrincipalId: string,
-): PrincipalProjection {
-  const anonymous = row.authUserId === null;
-  if (!anonymous) return principalProjection(row);
-  const invitedBy =
-    (row.invitedByPrincipalId as string | null) === viewerPrincipalId
-      ? "invited by you"
-      : row.invitedByPrincipalId
-        ? `invited by ${row.invitedByPrincipalId}`
-        : "invited";
+function connectedPrincipalProjection(principal: Principal, viewerPrincipalId: string): PrincipalProjection {
+  const invitedBy = principal.invited_by_principal_id;
+  if (invitedBy === null) return principalProjection(principal);
   return {
-    created_at: requiredIso(row.createdAt),
-    diagnostic_label: row.displayName ?? "anonymous",
+    created_at: principal.created_at,
+    diagnostic_label: principal.display_name ?? "anonymous",
     kind: "anonymous",
-    principal_id: row.id as PrincipalId,
-    summary: `Anonymous Principal · ${invitedBy} · bind it with sharednet login`,
+    principal_id: principal.id as PrincipalId,
+    summary: `Anonymous Principal · ${(invitedBy as string) === viewerPrincipalId ? "invited by you" : `invited by ${invitedBy}`} · bind it with sharednet login`,
   };
 }
 
 /** An Agent is a named tag over Instances; the projection is its name and id. */
-function agentProjection(row: {
-  id: string;
-  principalId: string;
-  handle: string;
-  displayName: string | null;
-  description: string | null;
-  createdAt: Date | string;
-}): AgentProjection {
+function agentProjection(agent: Agent): AgentProjection {
   return {
-    agent_id: row.id as AgentId,
-    created_at: requiredIso(row.createdAt),
-    diagnostic_label: row.displayName ?? `@${row.handle}`,
+    agent_id: agent.id as AgentId,
+    created_at: agent.created_at,
+    diagnostic_label: agent.display_name ?? `@${agent.handle}`,
     discoverability: false,
-    handle: row.handle,
-    principal_id: row.principalId as PrincipalId,
-    summary: row.description ?? `Tag @${row.handle}`,
+    handle: agent.handle,
+    principal_id: agent.principal_id as PrincipalId,
+    summary: agent.description ?? `Tag @${agent.handle}`,
   };
 }
 
 /**
- * The tag an Instance is currently under. Nothing stores a copy of it beside
- * a message or membership, so every projection resolves it through the
- * Instance at read time and regrouping shows up everywhere at once.
+ * Presence is a lease, not a flag. An Instance counts as online only while
+ * something is actively renewing it; heartbeat_state separates the two ways
+ * an Instance can be offline, because "nothing ever drove this" and "the
+ * driver stopped" look identical otherwise.
  */
-type TagLookup = (instanceId: string | null) => AgentId | null;
+function instanceProjection(instance: Instance, now: number): InstanceProjection {
+  const live = instance.status === "online" && Date.parse(instance.lease_expires_at) > now;
+  const neverRenewed = Date.parse(instance.last_seen_at) <= Date.parse(instance.started_at);
+  return {
+    agent_id: instance.agent_id as AgentId | null,
+    display_name: instance.display_name,
+    ended_at: instance.ended_at,
+    expires_at: instance.token_expires_at,
+    instance_id: instance.id as InstanceId,
+    last_seen_at: instance.last_seen_at,
+    presence: live ? "online" : "offline",
+    heartbeat_state: live ? "renewing" : neverRenewed ? "never_started" : "stopped",
+    principal_id: instance.principal_id as PrincipalId,
+    runtime_type: instance.runtime_kind,
+    runtime_metadata: { cli_version: instance.cli_version, ...instance.runtime_metadata },
+    started_at: instance.started_at,
+    status: instance.status === "ended" || instance.status === "revoked" || instance.status === "expired" ? "ended" : "online",
+    workspace_label: workspaceLabel(instance.runtime_metadata),
+  };
+}
 
-function tagLookup(rows: Array<{ id: string; agentId: string | null }>): TagLookup {
-  const byInstance = new Map(rows.map((row) => [row.id, row.agentId]));
-  return (instanceId) =>
-    (instanceId === null ? null : (byInstance.get(instanceId) ?? null)) as AgentId | null;
+/**
+ * The requester may be another Principal's Instance since the reach
+ * decision, so who asked is read off the Instance, not the Decision's own
+ * Principal, which is the one deciding.
+ */
+function decisionProjection({ decision, requested_by_principal_id }: DecisionOverview): DecisionProjection {
+  return {
+    consequence: null,
+    created_at: decision.created_at,
+    decision_id: decision.id as DecisionId,
+    description: decision.description,
+    requester: {
+      agent_id: decision.requested_by_agent_id as AgentId | null,
+      instance_id: decision.requested_by_instance_id as InstanceId,
+      principal_id: requested_by_principal_id as PrincipalId,
+    },
+    resolved_at: decision.resolved_at,
+    response_mode: decision.mode,
+    response_text: decision.answer,
+    room_id: decision.room_id as RoomId | null,
+    requested_for_instance_id: decision.requested_for_instance_id as InstanceId | null,
+    status: decision.status,
+    target_principal_id: decision.principal_id as PrincipalId,
+    title: decision.title,
+  };
 }
 
 const ROOM_NAME_MAX = 120;
@@ -509,7 +485,7 @@ export class SharedNetServerClient {
     await this.requirePrincipal(authUserId);
     const normalized = normalizeCliLoginCode(code);
     if (normalized === null) throw new SharedNetApiError("login_not_found", 404, "CLI login not found");
-    const found = await this.loginRepository().getCliLoginByCode(normalized);
+    const found = await this.repository().getCliLoginByCode(normalized);
     if (!found) throw new SharedNetApiError("login_not_found", 404, "CLI login not found");
     return this.cliLoginProjection(found.login);
   }
@@ -520,7 +496,7 @@ export class SharedNetServerClient {
     const normalized = normalizeCliLoginCode(code);
     if (normalized === null) throw new SharedNetApiError("login_not_found", 404, "CLI login not found");
     try {
-      const { login } = await this.loginRepository().approveCliLogin({
+      const { login } = await this.repository().approveCliLogin({
         code: normalized,
         principalId: principal.id as never,
       });
@@ -536,170 +512,57 @@ export class SharedNetServerClient {
   /** A claim code for this account, for the join page's Agent command. */
   async createCliClaim(authUserId: string, label: string | null): Promise<CliClaimProjection> {
     const principal = await this.requirePrincipal(authUserId);
-    const { login, claim } = await this.loginRepository().createCliClaim({ principalId: principal.id as never, label });
+    const { login, claim } = await this.repository().createCliClaim({ principalId: principal.id as never, label });
     return { claim, login_id: login.id, expires_at: login.expires_at, principal_id: principal.id as PrincipalId };
   }
 
-  private loginRepository(): PostgresSharedNetRepository {
-    return new PostgresSharedNetRepository(this.database());
-  }
-
   private async cliLoginProjection(login: CliLogin): Promise<CliLoginProjection> {
-    const database = this.database();
-    const seats: CliLoginProjection["seats"] = [];
-    if (login.bind_instance_ids.length > 0) {
-      const rows = await database
-        .select({
-          instanceId: instances.id,
-          name: instances.displayName,
-          runtimeKind: instances.runtimeKind,
-          roomId: roomMembers.roomId,
-          roomName: rooms.name,
-        })
-        .from(instances)
-        .leftJoin(roomMembers, eq(roomMembers.instanceId, instances.id))
-        .leftJoin(rooms, eq(rooms.id, roomMembers.roomId))
-        .where(inArray(instances.id, login.bind_instance_ids as never));
-      const byInstance = new Map<string, CliLoginProjection["seats"][number]>();
-      for (const row of rows) {
-        const seat = byInstance.get(row.instanceId) ?? {
-          instance_id: row.instanceId as InstanceId,
-          name: row.name ?? null,
-          runtime_kind: row.runtimeKind,
-          rooms: [],
-        };
-        if (row.roomId && row.roomName) seat.rooms.push({ room_id: row.roomId as RoomId, name: row.roomName });
-        byInstance.set(row.instanceId, seat);
-      }
-      seats.push(...byInstance.values());
-    }
+    const { seats } = await this.repository().seatsOf(login.bind_instance_ids as never);
     return {
       login_id: login.id,
       state: login.state,
       label: login.label,
       expires_at: login.expires_at,
       approved_at: login.approved_at,
-      seats,
+      seats: seats.map(({ instance, rooms }) => ({
+        instance_id: instance.id as InstanceId,
+        name: instance.display_name,
+        runtime_kind: instance.runtime_kind,
+        rooms: rooms.map((room) => ({ room_id: room.id as RoomId, name: room.name })),
+      })),
     };
   }
 
   async getNetwork(authUserId: string): Promise<NetworkProjection> {
     const principal = await this.requirePrincipal(authUserId);
-    const database = this.database();
+    const view = await this.domain(() => this.repository().networkForPrincipal(principal.id));
     const now = Date.now();
-
-    // The Network is what this Principal can see: its own Agents and Instances,
-    // and every Principal that shares a Room with it, drawn through the
-    // Instances that sit in those Rooms. Nothing else is discoverable.
-    const visibleRoomIds = await this.visibleRoomIds(principal.id);
-    const memberRows =
-      visibleRoomIds.length > 0
-        ? await database.select().from(roomMembers).where(inArray(roomMembers.roomId, visibleRoomIds))
-        : [];
-    const activeMembers = memberRows.filter((member) => member.state === "active");
-    const coMemberInstanceIds = new Set(activeMembers.map((member) => member.instanceId as string));
-    const connectedPrincipalIds = [
-      ...new Set(
-        activeMembers
-          .map((member) => member.principalId as string)
-          .filter((id) => id !== (principal.id as string)),
-      ),
-    ];
-    const visiblePrincipalIds = new Set([principal.id as string, ...connectedPrincipalIds]);
-
-    const [agentRows, allInstanceRows, connectedRows] = await Promise.all([
-      database.select().from(agents).orderBy(asc(agents.createdAt)),
-      database.select().from(instances).orderBy(desc(instances.startedAt)),
-      connectedPrincipalIds.length > 0
-        ? database.select().from(principals).where(inArray(principals.id, connectedPrincipalIds as never))
-        : Promise.resolve([] as (typeof principals.$inferSelect)[]),
-    ]);
-    const visibleAgents = agentRows.filter((agent) => visiblePrincipalIds.has(agent.principalId as string));
-    const instanceRows = allInstanceRows.filter(
-      (instance) =>
-        (instance.principalId as string) === (principal.id as string) ||
-        coMemberInstanceIds.has(instance.id as string),
-    );
-
-    const projectedInstances: InstanceProjection[] = instanceRows.map((instance) => ({
-      agent_id: (instance.agentId ?? null) as AgentId | null,
-      display_name: instance.displayName ?? null,
-      ended_at: iso(instance.endedAt),
-      expires_at: iso(instance.tokenExpiresAt),
-      instance_id: instance.id as InstanceId,
-      last_seen_at: requiredIso(instance.lastSeenAt),
-      ...presenceOf(instance, now),
-      principal_id: instance.principalId as PrincipalId,
-      runtime_type: instance.runtimeKind,
-      runtime_metadata: {
-        cli_version: instance.cliVersion,
-        ...(instance.runtimeMetadata ?? {}),
-      },
-      started_at: requiredIso(instance.startedAt),
-      status: instance.state === "active" ? "online" : "ended",
-      workspace_label: workspaceLabel(instance.runtimeMetadata),
-    }));
-
-    /**
-     * One dot per Instance. A dashed edge joins two Instances for every Room
-     * they are both active in; weight is how many Rooms they share.
-     *
-     * Directed delegation and verification edges are not emitted: nothing in
-     * the schema records either yet. See the TODO in the V1 design spec.
-     */
-    const byRoom = new Map<string, string[]>();
-    for (const member of activeMembers) {
-      byRoom.set(member.roomId, [...(byRoom.get(member.roomId) ?? []), member.instanceId]);
-    }
-    const weights = new Map<string, NetworkEdge>();
-    for (const instanceIds of byRoom.values()) {
-      const unique = [...new Set(instanceIds)].sort();
-      for (let i = 0; i < unique.length; i += 1) {
-        for (let j = i + 1; j < unique.length; j += 1) {
-          const key = `${unique[i]}|${unique[j]}`;
-          const existing = weights.get(key);
-          if (existing) {
-            existing.weight += 1;
-            continue;
-          }
-          weights.set(key, {
-            kind: "room_co_membership",
-            source_id: unique[i] as InstanceId,
-            target_id: unique[j] as InstanceId,
-            weight: 1,
-          });
-        }
-      }
-    }
-
     return {
       // Another account's tags are shown when its Instances share a Room with
       // the caller; that is the only discoverability there is.
-      agents: visibleAgents.map((agent) => ({
+      agents: view.agents.map((agent) => ({
         ...agentProjection(agent),
-        discoverability: (agent.principalId as string) !== (principal.id as string),
+        discoverability: (agent.principal_id as string) !== (principal.id as string),
       })),
-      connected_principals: connectedRows
-        .filter((row) => connectedPrincipalIds.includes(row.id as string))
-        .map((row) => connectedPrincipalProjection(row, principal.id as string)),
-      edges: [...weights.values()],
-      instances: projectedInstances,
-      principal: principalProjection({ id: principal.id, displayName: principal.display_name, createdAt: principal.created_at }),
+      connected_principals: view.connected_principals.map((other) => connectedPrincipalProjection(other, principal.id as string)),
+      // A dashed edge joins two Instances for every Room they are both active
+      // in. Directed delegation and verification edges are not emitted:
+      // nothing in the schema records either yet.
+      edges: view.edges.map((edge) => ({
+        kind: "room_co_membership",
+        source_id: edge.source_instance_id as InstanceId,
+        target_id: edge.target_instance_id as InstanceId,
+        weight: edge.shared_rooms,
+      })),
+      instances: view.instances.map((instance) => instanceProjection(instance, now)),
+      principal: principalProjection(view.principal),
     };
   }
 
   async listDecisions(authUserId: string): Promise<DecisionListResponse> {
     const principal = await this.requirePrincipal(authUserId);
-    const rows = await this.database()
-      .select()
-      .from(decisions)
-      .where(eq(decisions.principalId, principal.id))
-      .orderBy(desc(decisions.createdAt));
-
-    const instanceRows = await this.instanceRows();
-    return {
-      decisions: rows.map((row) => this.decisionProjection(row, instanceRows)),
-    };
+    const { decisions } = await this.domain(() => this.repository().listDecisionsForPrincipal(principal.id));
+    return { decisions: decisions.map(decisionProjection) };
   }
 
   async resolveDecision(
@@ -708,191 +571,14 @@ export class SharedNetServerClient {
     resolution: DecisionResolution,
   ): Promise<DecisionProjection> {
     const principal = await this.requirePrincipal(authUserId);
-    // One transaction: the Decision is locked, moved, and the seat it grants
-    // written together, so "approved but never seated" cannot be left behind.
-    return this.database().transaction(async (tx) => this.resolveDecisionIn(tx, principal.id, decisionId, resolution));
-  }
-
-  private async resolveDecisionIn(
-    database: ReturnType<SharedNetServerClient["database"]>,
-    principalId: string,
-    decisionId: DecisionId,
-    resolution: DecisionResolution,
-  ): Promise<DecisionProjection> {
-    const [existing] = await database
-      .select()
-      .from(decisions)
-      .where(
-        and(
-          eq(decisions.id, decisionId as never),
-          eq(decisions.principalId, principalId as never),
-        ),
-      )
-      .for("update")
-      .limit(1);
-
-    if (!existing) {
-      throw new SharedNetApiError("decision_not_found", 404, "Decision not found");
-    }
-    if (existing.status !== "pending") {
-      throw new SharedNetApiError(
-        "decision_already_resolved",
-        409,
-        "Decision was already resolved",
-      );
-    }
-    if (
-      (existing.mode === "text") !==
-      (resolution.outcome === "answered")
-    ) {
-      throw new SharedNetApiError(
-        "decision_resolution_invalid",
-        422,
-        "Resolution does not match the Decision mode",
-      );
-    }
-
-    const [updated] = await database
-      .update(decisions)
-      .set({
-        status: resolution.outcome,
-        answer: resolution.outcome === "answered" ? resolution.responseText ?? "" : null,
-        resolvedAt: new Date(),
-      })
-      .where(eq(decisions.id, decisionId as never))
-      .returning();
-
-    // The human said yes to a request to seat one of this Principal's private
-    // Instances: the seat is written here, the same way the Instance's own
-    // API answer writes it (decision 2026-09-06 reach, §4).
-    if (resolution.outcome === "approved" && existing.requestedForInstanceId && existing.roomId) {
-      await this.seatAccepted(database, existing.roomId, existing.requestedForInstanceId, existing.requestedByInstanceId);
-    }
-
-    const instanceRows = await database.select().from(instances);
-    return this.decisionProjection(updated, new Map(instanceRows.map((row) => [row.id as string, row])));
-  }
-
-  /** Writes the accepted seat, reviving a left one; a live seat is left alone. */
-  private async seatAccepted(
-    database: ReturnType<SharedNetServerClient["database"]>,
-    roomId: string,
-    instanceId: string,
-    addedBy: string,
-  ): Promise<void> {
-    const memberRows = await database.select().from(roomMembers);
-    const existing = memberRows.find(
-      (row) => (row.roomId as string) === roomId && (row.instanceId as string) === instanceId,
+    const answer: DecisionAnswer =
+      resolution.outcome === "answered"
+        ? { outcome: "answered", answer: resolution.responseText ?? "" }
+        : { outcome: resolution.outcome };
+    const { decision } = await this.domain(() =>
+      this.repository().resolveDecisionForPrincipal(principal.id, decisionId as never, answer),
     );
-    if (existing?.state === "active") return;
-    const now = new Date();
-    if (existing) {
-      await database
-        .update(roomMembers)
-        .set({
-          state: "active",
-          leftAt: null,
-          joinedAt: now,
-          admittedBy: "accepted",
-          inviteId: null,
-          addedByInstanceId: addedBy as never,
-        })
-        .where(and(eq(roomMembers.roomId, roomId as never), eq(roomMembers.instanceId, instanceId as never)))
-        .returning();
-      return;
-    }
-    const instanceRows = await database.select().from(instances);
-    const target = instanceRows.find((row) => (row.id as string) === instanceId);
-    if (!target) throw new SharedNetApiError("instance_not_found", 404, "Instance not found");
-    await database
-      .insert(roomMembers)
-      .values({
-        principalId: target.principalId as never,
-        roomId: roomId as never,
-        instanceId: instanceId as never,
-        state: "active",
-        joinedAt: now,
-        leftAt: null,
-        admittedBy: "accepted",
-        inviteId: null,
-        addedByInstanceId: addedBy as never,
-      })
-      .returning();
-  }
-
-  /** Rooms this Principal has a membership in — the Rooms it can see. */
-  private async memberRoomIds(
-    principalId: string,
-  ): Promise<Array<(typeof roomMembers.$inferSelect)["roomId"]>> {
-    const rows = await this.database()
-      .select({ roomId: roomMembers.roomId, state: roomMembers.state })
-      .from(roomMembers)
-      .where(and(eq(roomMembers.principalId, principalId as never), eq(roomMembers.state, "active")));
-    // The filter is repeated here for the test stub, which ignores `where`.
-    return [...new Set(rows.filter((row) => row.state === "active").map((row) => row.roomId))];
-  }
-
-  /** Rooms this Principal is a member of, plus the ones it scheduled itself. */
-  private async visibleRoomIds(
-    principalId: string,
-  ): Promise<Array<(typeof rooms.$inferSelect)["id"]>> {
-    const [memberIds, ownedRows] = await Promise.all([
-      this.memberRoomIds(principalId),
-      this.database()
-        .select({ id: rooms.id, principalId: rooms.principalId })
-        .from(rooms)
-        .where(eq(rooms.principalId, principalId as never)),
-    ]);
-    const ownedIds = ownedRows
-      .filter((row) => row.principalId === principalId)
-      .map((row) => row.id);
-    return [...new Set([...memberIds, ...ownedIds])];
-  }
-
-  /** Every Instance row by id, for lease-derived member presence. */
-  private async instanceRows(): Promise<Map<string, typeof instances.$inferSelect>> {
-    const rows = await this.database().select().from(instances);
-    return new Map(rows.map((row) => [row.id as string, row]));
-  }
-
-  /** Current tag per Instance of one Principal, resolved once per request. */
-  private async tagsFor(principalId: string): Promise<TagLookup> {
-    const rows = await this.database()
-      .select({ id: instances.id, agentId: instances.agentId })
-      .from(instances)
-      .where(eq(instances.principalId, principalId as never));
-    return tagLookup(rows);
-  }
-
-  /**
-   * The requester may be another Principal's Instance since the reach
-   * decision, so who asked is read off the Instance row, not the Decision's
-   * own Principal, which is the one deciding.
-   */
-  private decisionProjection(
-    row: typeof decisions.$inferSelect,
-    instanceRows: Map<string, typeof instances.$inferSelect>,
-  ): DecisionProjection {
-    const asker = instanceRows.get(row.requestedByInstanceId as string);
-    return {
-      consequence: null,
-      created_at: requiredIso(row.createdAt),
-      decision_id: row.id as DecisionId,
-      description: row.description,
-      requester: {
-        agent_id: (asker?.agentId ?? null) as AgentId | null,
-        instance_id: row.requestedByInstanceId as InstanceId,
-        principal_id: (asker?.principalId ?? row.principalId) as PrincipalId,
-      },
-      resolved_at: iso(row.resolvedAt),
-      response_mode: row.mode,
-      response_text: row.answer,
-      room_id: (row.roomId ?? null) as RoomId | null,
-      requested_for_instance_id: (row.requestedForInstanceId ?? null) as InstanceId | null,
-      status: row.status,
-      target_principal_id: row.principalId as PrincipalId,
-      title: row.title,
-    };
+    return decisionProjection(decision);
   }
 }
 
