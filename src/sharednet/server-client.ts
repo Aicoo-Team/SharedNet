@@ -123,8 +123,11 @@ function agentProjection(agent: Agent): AgentProjection {
  * an Instance can be offline, because "nothing ever drove this" and "the
  * driver stopped" look identical otherwise.
  */
-function instanceProjection(instance: Instance, now: number): InstanceProjection {
-  const live = instance.status === "online" && Date.parse(instance.lease_expires_at) > now;
+function instanceProjection(instance: Instance): InstanceProjection {
+  // The domain already judged the lease against its own clock; judging it
+  // again here against the wall clock would make the answer depend on when
+  // the page was rendered rather than on what the repository knows.
+  const live = instance.status === "online";
   const neverRenewed = Date.parse(instance.last_seen_at) <= Date.parse(instance.started_at);
   return {
     agent_id: instance.agent_id as AgentId | null,
@@ -536,7 +539,6 @@ export class SharedNetServerClient {
   async getNetwork(authUserId: string): Promise<NetworkProjection> {
     const principal = await this.requirePrincipal(authUserId);
     const view = await this.domain(() => this.repository().networkForPrincipal(principal.id));
-    const now = Date.now();
     return {
       // Another account's tags are shown when its Instances share a Room with
       // the caller; that is the only discoverability there is.
@@ -554,7 +556,7 @@ export class SharedNetServerClient {
         target_id: edge.target_instance_id as InstanceId,
         weight: edge.shared_rooms,
       })),
-      instances: view.instances.map((instance) => instanceProjection(instance, now)),
+      instances: view.instances.map(instanceProjection),
       principal: principalProjection(view.principal),
     };
   }
