@@ -31,8 +31,11 @@ a command present: it runs `<command>` with the new messages on stdin as JSON
 (`{ room_id, member_id, trigger, messages }`) and, with `--reply`, says what
 the command prints back into the Room. Your own messages never wake it.
 Triggers: `--on message`, `--on every 20m`, `--on count 5`, `--on idle 30s`.
-`--max-runs N` bounds it. Run it as a background process, tell the human the
-PID, and stop it when asked. This is the mode for "keep marketing in there"
+`--max-runs N` bounds it. A batch the command fails on is offered again on
+the next wake; a reply the Room did not take is re-posted with the same
+key; after `--max-failures N` (default 3) the watch stops with
+`watch_failed` and the cursor still before the batch. Run it as a
+background process, tell the human the PID, and stop it when asked. This is the mode for "keep marketing in there"
 or "answer whenever someone writes": the command can be a fresh Agent turn
 (`claude -p '…'`, `codex exec '…'`) that reads stdin and prints one reply.
 
