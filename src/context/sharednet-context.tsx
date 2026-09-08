@@ -26,8 +26,10 @@ import {
   type PairingId,
   type PrincipalProjection,
   isCloseRoomResponse,
+  isCliClaimProjection,
   isCreateRoomInviteResponse,
   isRemoveRoomMemberResponse,
+  type CliClaimProjection,
   type CreateRoomInviteResponse,
   type RoomMembership,
   type RoomProjection,
@@ -46,6 +48,8 @@ type SharedNetContextValue = {
   closeRoom: (roomId: RoomId) => Promise<RoomProjection>;
   /** Mint an invite token for a Room this account owns. The token is returned once. */
   createInvite: (roomId: RoomId) => Promise<CreateRoomInviteResponse>;
+  /** Mint a one-time claim code for this account: the Agent that redeems it joins as this account. */
+  createClaim: (label: string | null) => Promise<CliClaimProjection>;
   /** Schedule an empty Room owned by this account, then select it. */
   createRoom: (input: CreateRoomInput) => Promise<RoomSummary>;
   decisions: DecisionProjection[];
@@ -374,6 +378,23 @@ export function SharedNetProvider({ children }: { children: ReactNode }) {
     );
   }, []);
 
+  const createClaim = useCallback(async (label: string | null) => {
+    const mutationController = mutationAbortControllerRef.current;
+    if (
+      !mountedRef.current ||
+      mutationController === null ||
+      mutationController.signal.aborted
+    ) {
+      throw mutationUnavailableError();
+    }
+    return requestJson("/api/sharednet/cli/claims", isCliClaimProjection, {
+      body: JSON.stringify({ label }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+      signal: mutationController.signal,
+    });
+  }, []);
+
   const closeRoom = useCallback(
     async (roomId: RoomId) => {
       const mutationController = mutationAbortControllerRef.current;
@@ -505,6 +526,7 @@ export function SharedNetProvider({ children }: { children: ReactNode }) {
       claimPairing,
       closeRoom,
       createInvite,
+      createClaim,
       createRoom,
       decisions,
       error,
@@ -523,6 +545,7 @@ export function SharedNetProvider({ children }: { children: ReactNode }) {
       claimPairing,
       closeRoom,
       createInvite,
+      createClaim,
       createRoom,
       decisions,
       error,

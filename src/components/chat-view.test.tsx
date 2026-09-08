@@ -246,6 +246,7 @@ const networkProjection: NetworkProjection = {
 };
 
 const INVITE_TOKEN = `rit_${"t".repeat(43)}`;
+const CLAIM = `clp_${"c".repeat(43)}`;
 
 function mintedInvite(roomId: string) {
   return {
@@ -266,6 +267,7 @@ function makeState(overrides: Partial<SharedNetState> = {}): SharedNetState {
     claimPairing: vi.fn(async () => undefined),
     closeRoom: vi.fn(async () => ({ ...roomDetail.room, status: "closed" as const })),
     createInvite: vi.fn(async (roomId: RoomId) => mintedInvite(roomId)),
+    createClaim: vi.fn(async () => ({ claim: CLAIM, login_id: "cli_0000000001", expires_at: NOW, principal_id: PRINCIPAL_ID })),
     createRoom: vi.fn(async () => { throw new Error("createRoom not stubbed"); }),
     decisions: [],
     error: null,
@@ -610,6 +612,15 @@ describe("SharedNet Rooms", () => {
       name: "Invite an Agent to Launch review",
     });
     expect(within(dialog).getByText("room_Launch:Sched.1")).toBeVisible();
+    // The dialog opens on "Invite my Agents": one command that joins as this account.
+    const command = within(dialog).getByLabelText("Command for my Agent").textContent ?? "";
+    expect(command).toBe(`npx sharednet join 'ROOM=room_Launch:Sched.1 TOKEN=${INVITE_TOKEN} BASE=${window.location.origin}' --claim ${CLAIM}`);
+    expect(within(dialog).getByRole("button", { name: "Copy command" })).toBeVisible();
+    // "Ask people" is the link and its QR; "Other" is the guest protocol.
+    fireEvent.click(within(dialog).getByRole("tab", { name: "Ask people to invite their Agents" }));
+    expect(within(dialog).getByText(`${window.location.origin}/join/${INVITE_TOKEN}`)).toBeVisible();
+    expect(within(dialog).getByRole("button", { name: "Copy link" })).toBeVisible();
+    fireEvent.click(within(dialog).getByRole("tab", { name: "Other" }));
     const invite = within(dialog).getByLabelText("Local Agent instructions").textContent ?? "";
     expect(state.createInvite).toHaveBeenCalledWith("room_Launch:Sched.1");
     expect(invite).toContain("Join SharedNet Room room_Launch:Sched.1");
@@ -623,6 +634,16 @@ describe("SharedNet Rooms", () => {
     expect(invite).toContain("sharednet login");
     expect(invite.indexOf("npx sharednet join")).toBeLessThan(invite.indexOf("curl -s -X POST"));
     expect(within(dialog).getByRole("button", { name: "Copy invite" })).toBeVisible();
+  });
+
+  it("still hands out a command without a claim when none can be minted, and says why", async () => {
+    const { state } = renderChat({ createClaim: vi.fn(async () => { throw new Error("no claim"); }) });
+    fireEvent.click(screen.getByRole("button", { name: "Invite an Agent" }));
+    const dialog = await screen.findByRole("dialog", { name: `Invite an Agent to ${roomDetail.room.name}` });
+    expect(state.createClaim).toHaveBeenCalled();
+    const command = within(dialog).getByLabelText("Command for my Agent").textContent ?? "";
+    expect(command).toBe(`npx sharednet join 'ROOM=${ROOM_ID} TOKEN=${INVITE_TOKEN} BASE=${window.location.origin}'`);
+    expect(within(dialog).getByText(/could not be minted/)).toBeVisible();
   });
 
   it("closes the Room only after the human confirms", async () => {
@@ -664,6 +685,15 @@ describe("SharedNet Rooms", () => {
     fireEvent.click(within(members).getByRole("button", { name: `Remove ${INSTANCE_ID}` }));
 
     await waitFor(() => expect(state.removeMember).toHaveBeenCalledWith(ROOM_ID, INSTANCE_ID));
+  });
+
+  it("offers neither invite nor close on a Room another account owns, and says whose it is", () => {
+    renderChat({
+      principal: { created_at: EARLIER, diagnostic_label: "Me", kind: "account", principal_id: "p_SomeoneElse" as PrincipalId, summary: "" },
+    });
+    expect(screen.queryByRole("button", { name: "Invite an Agent" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Close Room" })).toBeNull();
+    expect(screen.getByText(`Owned by ${PRINCIPAL_ID} · only the owner invites or closes`)).toBeVisible();
   });
 
   it("offers neither invite, close, nor remove on a closed Room", () => {
@@ -723,13 +753,15 @@ describe("SharedNet Rooms", () => {
     fireEvent.click(screen.getByRole("button", { name: "Invite an Agent to it" }));
     const dialog = await screen.findByRole("dialog", { name: "Invite an Agent to rom_lxw0rfaLIb" });
     expect(state.createInvite).toHaveBeenCalledWith("rom_lxw0rfaLIb");
-    const invite = within(dialog).getByLabelText("Local Agent instructions").textContent ?? "";
-    expect(invite).toContain("Join SharedNet Room rom_lxw0rfaLIb.");
-    expect(invite).toContain(`Link for people: ${window.location.origin}/join/${INVITE_TOKEN}`);
+    fireEvent.click(within(dialog).getByRole("tab", { name: "Ask people to invite their Agents" }));
     expect(within(dialog).getByText(`${window.location.origin}/join/${INVITE_TOKEN}`)).toBeVisible();
     // The same link as a QR code, drawn on the page.
     const qr = await within(dialog).findByLabelText("Join link QR code");
     expect(qr.querySelector("svg")).not.toBeNull();
+    fireEvent.click(within(dialog).getByRole("tab", { name: "Other" }));
+    const invite = within(dialog).getByLabelText("Local Agent instructions").textContent ?? "";
+    expect(invite).toContain("Join SharedNet Room rom_lxw0rfaLIb.");
+    expect(invite).toContain(`Link for people: ${window.location.origin}/join/${INVITE_TOKEN}`);
     // The CLI comes first; the curl route is the fallback.
     expect(invite.indexOf("npx sharednet join 'ROOM=rom_lxw0rfaLIb")).toBeLessThan(invite.indexOf('curl -s -X POST "$BASE/api/v1/rooms/$ROOM/join"'));
     expect(invite).toContain("sharednet login");
@@ -746,6 +778,8 @@ describe("SharedNet Rooms", () => {
     });
     expect(state.createInvite).toHaveBeenCalledWith(ROOM_ID);
     expect(within(dialog).getByText(ROOM_ID)).toBeVisible();
+    expect(within(dialog).getByLabelText("Command for my Agent").textContent).toContain(`ROOM=${ROOM_ID}`);
+    fireEvent.click(within(dialog).getByRole("tab", { name: "Other" }));
     expect(within(dialog).getByLabelText("Local Agent instructions").textContent).toContain(
       `Join SharedNet Room ${ROOM_ID}`,
     );
@@ -829,7 +863,7 @@ describe("SharedNet Rooms", () => {
     fireEvent.click(trigger);
 
     const dialog = await screen.findByRole("dialog", { name: `Invite an Agent to ${roomDetail.room.name}` });
-    const primaryAction = within(dialog).getByRole("button", { name: "Copy invite" });
+    const primaryAction = within(dialog).getByRole("button", { name: "Copy command" });
     await waitFor(() => expect(primaryAction).toHaveFocus());
     expect(dialog.tagName).toBe("DIALOG");
     expect(dialog).toHaveAttribute("open");
@@ -843,7 +877,7 @@ describe("SharedNet Rooms", () => {
     trigger.focus();
     fireEvent.click(trigger);
     const dialog = await screen.findByRole("dialog", { name: `Invite an Agent to ${roomDetail.room.name}` });
-    const primaryAction = within(dialog).getByRole("button", { name: "Copy invite" });
+    const primaryAction = within(dialog).getByRole("button", { name: "Copy command" });
     await waitFor(() => expect(primaryAction).toHaveFocus());
 
     fireEvent.keyDown(primaryAction, { code: "Escape", key: "Escape" });
@@ -857,18 +891,25 @@ describe("SharedNet Rooms", () => {
     renderChat();
     fireEvent.click(screen.getByRole("button", { name: "Invite an Agent" }));
     const dialog = await screen.findByRole("dialog", { name: `Invite an Agent to ${roomDetail.room.name}` });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Copy invite" }));
+    // On "Invite my Agents" the clipboard gets the command with the claim, and a line of what comes next.
+    fireEvent.click(within(dialog).getByRole("button", { name: "Copy command" }));
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
-    expect(String(writeText.mock.calls[0]![0])).toContain(`TOKEN=${INVITE_TOKEN}`);
+    expect(String(writeText.mock.calls[0]![0])).toContain(`TOKEN=${INVITE_TOKEN} BASE=${window.location.origin}' --claim ${CLAIM}`);
+    expect(String(writeText.mock.calls[0]![0])).toContain("npx sharednet wait");
     expect(screen.getByRole("status")).toHaveTextContent("Copied to clipboard.");
+    // On "Ask people" it gets the link alone.
+    fireEvent.click(within(dialog).getByRole("tab", { name: "Ask people to invite their Agents" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Copy link" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2));
+    expect(String(writeText.mock.calls[1]![0])).toBe(`${window.location.origin}/join/${INVITE_TOKEN}`);
     fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 
     writeText.mockRejectedValueOnce(new Error("Clipboard denied"));
     fireEvent.click(screen.getByRole("button", { name: "Invite an Agent" }));
     const again = await screen.findByRole("dialog", { name: `Invite an Agent to ${roomDetail.room.name}` });
-    fireEvent.click(within(again).getByRole("button", { name: "Copy invite" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("Clipboard access failed. Copy the instructions manually.");
+    fireEvent.click(within(again).getByRole("button", { name: "Copy command" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Clipboard access failed. Copy it manually.");
   });
 
   it("does not expose the removed demo workflow or synthetic accounting", () => {
