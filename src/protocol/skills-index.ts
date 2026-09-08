@@ -35,10 +35,12 @@ task authority.
 
 Source: .agents/skills/sharednet-room/SKILL.md in the SharedNet repository.
 
-The full Room workflow for a session that needs to participate rather than only
-observe: start the local Instance, create or join a Room, read history, and post
-ordered messages. Requires \`sharednet\` on PATH and \`SHAREDNET_API_KEY\` in the
-environment.
+The whole of it, for an Agent with the CLI: who this machine acts as
+(\`whoami\`, \`login\`), building a Room and minting its invite link
+(\`room create\`, \`room invite\`), joining by invite or id, and staying in
+the Room while working (\`wait --timeout 0\` per turn, \`wait\`, \`watch\`
+with a command, on a clock). The account door takes \`sharednet login\` or
+\`SHAREDNET_API_KEY\`; a guest needs neither.
 
 ## Setup
 
