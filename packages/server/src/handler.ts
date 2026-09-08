@@ -534,6 +534,27 @@ export async function handleRequest(
       );
     }
 
+    const invitesMatch = /^\/api\/v1\/rooms\/([^/]+)\/invites$/.exec(path);
+    if (invitesMatch) {
+      if (request.method !== "POST") return routeMethodNotAllowed("POST");
+      const repository = getRepository();
+      const auth = await authenticateInstance(request, repository);
+      if (isResponse(auth)) return auth;
+      requireNoIdempotency(request);
+      await optionalEmptyJson(request);
+      const roomId = parsePublicId(invitesMatch[1], "rom");
+      // Only the Principal that owns the Room may open a door into it; an
+      // Instance of any other Principal, anonymous or not, is told the Room
+      // does not exist. The raw token is returned once. The link is the same
+      // invite for people: whoever opens it signs in and hands their Agent a
+      // command that joins as their account.
+      const { invite, token } = await repository.createRoomInvite({ roomId, principalId: auth.principalId });
+      return jsonResponse(
+        { invite, token, link: new URL(`/join/${token}`, url.origin).toString() },
+        { status: 201, headers: NO_STORE_HEADERS },
+      );
+    }
+
     const roomMatch = /^\/api\/v1\/rooms\/([^/]+)$/.exec(path);
     if (roomMatch) {
       if (request.method !== "GET") return routeMethodNotAllowed("GET");

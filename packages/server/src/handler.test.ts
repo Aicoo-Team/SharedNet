@@ -857,6 +857,36 @@ describe("Room invites, guests, and wait", () => {
     expect((await request(store, "/api/v1/cli/claims/redeem", { method: "POST" })).status).toBe(401);
   });
 
+  it("mints an invite for the Room's owner through the API, with the link for people, and for nobody else", async () => {
+    const store = new MemorySharedNetRepository({ devApiKey: DEV_KEY });
+    const { host, room } = await openRoom(store);
+    const mint = (token: string) =>
+      request(store, `/api/v1/rooms/${room.id}/invites`, { method: "POST", headers: instanceHeaders(token) });
+
+    const minted = await mint(host.token);
+    expect(minted.status).toBe(201);
+    const body = await json(minted);
+    expect(body.token).toMatch(/^rit_[A-Za-z0-9_-]{43}$/);
+    expect(body.link).toBe(`http://127.0.0.1:3001/join/${body.token}`);
+    expect(body.invite).toMatchObject({ room_id: room.id, expires_at: null, revoked_at: null, uses: 0 });
+    // The token opens that Room, and only that Room.
+    const described = await request(store, "/api/v1/invites/current", { headers: { authorization: `Bearer ${body.token}` } });
+    expect((await json(described)).room.id).toBe(room.id);
+
+    // A guest seated by that very invite owns nothing: the Room reads as absent to it.
+    const guest = await request(store, `/api/v1/rooms/${room.id}/join`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${body.token}`, "content-type": "application/json" },
+      body: JSON.stringify({ name: "claude-code" }),
+    });
+    expect(guest.status).toBe(200);
+    const refused = await mint((await json(guest)).member_token);
+    expect(refused.status).toBe(404);
+    expect((await json(refused)).error.code).toBe("room_not_found");
+    expect((await request(store, `/api/v1/rooms/${room.id}/invites`, { method: "POST" })).status).toBe(401);
+    expect((await request(store, `/api/v1/rooms/${room.id}/invites`, { headers: instanceHeaders(host.token) })).status).toBe(405);
+  });
+
   it("tells the join page what an invite opens, and only that", async () => {
     let clock = new Date("2026-09-07T12:00:00Z");
     const store = new MemorySharedNetRepository({ devApiKey: DEV_KEY, now: () => clock });

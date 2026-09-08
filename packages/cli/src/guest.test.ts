@@ -763,6 +763,59 @@ describe("sharednet say and wait", () => {
     expect(JSON.parse(await readFile(join(space.project, ".sharednet", "room.json"), "utf8")).last_sequence).toBe(5);
   });
 
+  it("groups an account's seat under a tag with --agent, and refuses the flag for a machine that acts as nobody", async () => {
+    const space = await workspace();
+    const instance = {
+      id: "i_TaggedSeat1", principal_id: "p_AcCoUnT0001", agent_id: "a_ReViEwEr01", runtime_kind: "claude-code", cli_version: "0.1.0",
+      runtime_metadata: {}, reach: "public", status: "online", display_name: null,
+      started_at: "2026-09-08T00:00:00.000Z", last_seen_at: "2026-09-08T00:00:00.000Z", lease_expires_at: "2026-09-08T00:01:00.000Z",
+      token_expires_at: null, ended_at: null, revoked_at: null,
+    };
+    const result = await run(
+      ["join", PASTED_INVITE, "--agent", "Reviewer", "--json"],
+      space,
+      [
+        { status: 201, body: { agent: { id: "a_ReViEwEr01", handle: "reviewer", principal_id: "p_AcCoUnT0001" } } },
+        { status: 201, body: { instance, token: `sni_${"A".repeat(43)}`, heartbeat_after_seconds: 30 } },
+        { status: 200, body: { room: { id: ROOM_ID, name: "Launch review", state: "open" }, membership: { member_id: "i_TaggedSeat1", principal_id: "p_AcCoUnT0001", kind: "instance", admitted_by: "invite", name: null, state: "active" } } },
+        { status: 200, body: { items: [], next_cursor: null, has_more: false } },
+      ],
+      { SHAREDNET_API_KEY: `snk_${"K".repeat(43)}` },
+    );
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+    // The handle is created (or found) first, then the registration names the tag.
+    expect(result.requests.map((request) => `${request.init.method ?? "GET"} ${request.url}`).slice(0, 2)).toEqual([
+      "POST https://sharednet.ai/api/v1/agents",
+      "POST https://sharednet.ai/api/v1/instances",
+    ]);
+    expect(JSON.parse(String(result.requests[0]!.init.body))).toEqual({ handle: "reviewer" });
+    expect(JSON.parse(String(result.requests[1]!.init.body)).agent_id).toBe("a_ReViEwEr01");
+    expect(JSON.parse(result.stdout)).toMatchObject({ as: "account", agent_id: "a_ReViEwEr01", member_id: "i_TaggedSeat1" });
+
+    const nobody = await run(["join", PASTED_INVITE, "--agent", "reviewer", "--json"], await workspace(), []);
+    expect(nobody.exitCode).not.toBe(0);
+    expect(nobody.requests).toHaveLength(0);
+    expect(JSON.parse(nobody.stderr).error.code).toBe("account_required");
+  });
+
+  it("says who this machine acts as and which seat this directory holds, and never a secret", async () => {
+    const nobody = await run(["whoami", "--json"], await workspace(), []);
+    expect(nobody.exitCode).toBe(0);
+    expect(JSON.parse(nobody.stdout)).toMatchObject({ base_url: "https://sharednet.ai", account: null, seat: null });
+    expect(JSON.parse(nobody.stdout).next).toContain("sharednet login");
+
+    const space = await joinedSpace();
+    const seated = await run(["whoami", "--json"], space, []);
+    expect(seated.requests).toHaveLength(0);
+    expect(JSON.parse(seated.stdout)).toMatchObject({
+      account: null,
+      seat: { room_id: ROOM_ID, member_id: MEMBER_ID, last_sequence: 1, credential_present: true },
+    });
+    expect(seated.stdout).not.toContain("sni_");
+    expect(seated.stdout).not.toContain("rit_");
+  });
+
   it("returns after --timeout 0 with an empty page instead of sitting", async () => {
     const space = await joinedSpace();
     const result = await run(["wait", "--timeout", "0", "--json"], space, [

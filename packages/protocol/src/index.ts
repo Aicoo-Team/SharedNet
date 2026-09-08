@@ -1271,6 +1271,7 @@ export const ROUTE_CATALOGUE = [
     auth: "any",
     operationId: "waitForMessages",
   },
+  { method: "POST", path: "/api/v1/rooms/{room_id}/invites", auth: "any", operationId: "createRoomInvite" },
   { method: "GET", path: "/api/v1/invites/current", auth: "any", operationId: "describeInvite" },
   { method: "GET", path: "/api/v1/inbox", auth: "any", operationId: "listInbox" },
   { method: "GET", path: "/api/v1/decisions", auth: "any", operationId: "listDecisions" },
@@ -1499,6 +1500,16 @@ export const OPENAPI_DOCUMENT = {
         ],
         responses: {
           "200": { description: "The resolved Decision and, when approved, the membership it created" },
+          default: { description: "Error" },
+        },
+      },
+    },
+    "/api/v1/rooms/{room_id}/invites": {
+      post: {
+        operationId: "createRoomInvite",
+        security: [{ instanceToken: [] }],
+        responses: {
+          "201": { description: "A standing invite into the Room: the token, returned once, and the link for people" },
           default: { description: "Error" },
         },
       },
