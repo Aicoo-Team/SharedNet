@@ -11,7 +11,7 @@ import type {
   PrincipalProjection,
 } from "@/src/sharednet/contracts";
 
-import { NetworkView, buildGraph, describeInstanceRuntime, findInstance, layoutGraph } from "./network-view";
+import { NetworkView, buildGraph, buildPrincipalGraph, describeInstanceRuntime, findInstance, instancesAround, layoutGraph } from "./network-view";
 
 type SharedNetState = ReturnType<(typeof import("@/src/context/sharednet-context"))["useSharedNet"]>;
 
@@ -91,6 +91,11 @@ function renderNetwork(overrides: Partial<SharedNetState> = {}) {
 }
 
 const node = (id: InstanceId) => screen.getByRole("button", { name: `Inspect Instance ${id}` });
+const principalNode = (id: PrincipalId) => screen.getByRole("button", { name: `Inspect Principal ${id}` });
+/** The page opens on the Principal level; these cases look at the Instance level seen from your own Principal. */
+function openInstances() {
+  fireEvent.click(screen.getByRole("tab", { name: "Instances" }));
+}
 
 describe("SharedNet Network", () => {
   beforeEach(() => vi.clearAllMocks());
@@ -98,6 +103,7 @@ describe("SharedNet Network", () => {
 
   it("draws one node per visible Instance, with no box around a Principal, and marks whose each is", () => {
     renderNetwork();
+    openInstances();
     expect(screen.getAllByRole("button", { name: /^Inspect Instance / })).toHaveLength(4);
     expect(screen.queryByRole("group", { name: /^Principal / })).toBeNull();
     expect(node(OWN_A).dataset.principal).toBe("self");
@@ -111,6 +117,7 @@ describe("SharedNet Network", () => {
 
   it("joins every pair that shares a Room with one line, weighted by how many Rooms they share", () => {
     const { container } = renderNetwork();
+    openInstances();
     const lines = container.querySelectorAll('line[data-edge-kind="room_co_membership"]');
     expect(lines).toHaveLength(6);
     const heavy = Array.from(lines).find((line) => line.getAttribute("data-weight") === "2")!;
@@ -139,8 +146,9 @@ describe("SharedNet Network", () => {
 
   it("lays every Instance out at a finite, distinct, on-canvas position, the same way each time", () => {
     const graph = buildGraph(network());
-    const first = layoutGraph(graph.nodes, graph.edges);
-    const second = layoutGraph(graph.nodes, graph.edges);
+    const asLayout = graph.nodes.map((n) => ({ id: n.instance.instance_id, group: n.instance.principal_id }));
+    const first = layoutGraph(asLayout, graph.edges);
+    const second = layoutGraph(asLayout, graph.edges);
     expect(first.positions.size).toBe(4);
     const seen = new Set<string>();
     for (const [id, point] of first.positions) {
@@ -161,7 +169,7 @@ describe("SharedNet Network", () => {
   it("keeps a large Network on one canvas with room for every node", () => {
     const many: InstanceProjection[] = Array.from({ length: 40 }, (_, i) => instance(`i_many${String(i).padStart(6, "0")}` as InstanceId, OWN_PRINCIPAL_ID, null));
     const graph = buildGraph(network({ instances: many, edges: [], connected_principals: [] }));
-    const layout = layoutGraph(graph.nodes, graph.edges);
+    const layout = layoutGraph(graph.nodes.map((n) => ({ id: n.instance.instance_id, group: n.instance.principal_id })), graph.edges);
     expect(layout.positions.size).toBe(40);
     expect(layout.width).toBeGreaterThan(900);
     const minGap = Math.min(...graph.nodes.flatMap((a, i) => graph.nodes.slice(i + 1).map((b) => Math.hypot(layout.positions.get(a.instance.instance_id)!.x - layout.positions.get(b.instance.instance_id)!.x, layout.positions.get(a.instance.instance_id)!.y - layout.positions.get(b.instance.instance_id)!.y))));
@@ -170,6 +178,7 @@ describe("SharedNet Network", () => {
 
   it("opens the Agent Card for the Instance clicked, ids in order, with its connections and its siblings", () => {
     renderNetwork();
+    openInstances();
     fireEvent.click(node(OWN_A));
     const card = screen.getByRole("region", { name: "Agent Card" });
     const terms = within(card).getAllByRole("term").map((term) => term.textContent);
@@ -188,6 +197,7 @@ describe("SharedNet Network", () => {
 
   it("says None for an untagged Instance and names an anonymous seat's Principal as such", () => {
     renderNetwork();
+    openInstances();
     fireEvent.click(node(GUEST));
     const card = screen.getByRole("region", { name: "Agent Card" });
     expect(within(card).getByText("None · untagged")).toBeVisible();
@@ -198,6 +208,7 @@ describe("SharedNet Network", () => {
 
   it("finds an Instance by id, or by a unique prefix, and opens its card; says so when there is none", () => {
     renderNetwork();
+    openInstances();
     const input = screen.getByRole("searchbox", { name: "Instance ID" });
     fireEvent.change(input, { target: { value: "i_other" } });
     expect(node(OTHER)).toHaveAttribute("aria-pressed", "true");
@@ -213,8 +224,62 @@ describe("SharedNet Network", () => {
     expect(findInstance(buildGraph(network()).nodes, "")).toBeNull();
   });
 
+  it("opens on the Principal level: one node per Principal, sized by its Instances, one line per pair whose Instances share Rooms", () => {
+    const { container } = renderNetwork();
+    expect(screen.getAllByRole("button", { name: /^Inspect Principal / })).toHaveLength(3);
+    expect(screen.queryAllByRole("button", { name: /^Inspect Instance / })).toHaveLength(0);
+    expect(principalNode(OWN_PRINCIPAL_ID)).toHaveTextContent("You");
+    expect(principalNode(OWN_PRINCIPAL_ID)).toHaveTextContent("2");
+    expect(principalNode(GUEST_PRINCIPAL_ID).dataset.principal).toBe("anonymous");
+    expect(screen.getByText("3 Principals · 3 connections")).toBeVisible();
+    // My two Instances each share a Room with the other account's one: weight 2 between the Principals.
+    const lines = container.querySelectorAll('line[data-edge-kind="principal_connection"]');
+    expect(lines).toHaveLength(3);
+    const listed = within(screen.getByRole("list", { name: "Visible relationships" })).getAllByRole("listitem").map((item) => item.textContent);
+    expect(listed).toContain(`principal_connection: source ${OWN_PRINCIPAL_ID}; target ${OTHER_PRINCIPAL_ID}; weight 2`);
+    const folded = buildPrincipalGraph(network(), buildGraph(network()));
+    expect(folded.nodes.map((n) => [n.principal.principal_id, n.instances, n.degree])).toEqual([
+      [OWN_PRINCIPAL_ID, 2, 2],
+      [OTHER_PRINCIPAL_ID, 1, 2],
+      [GUEST_PRINCIPAL_ID, 1, 2],
+    ]);
+  });
+
+  it("opens a Principal's card, and drills down to its Instances and what they connect to, with a way back", () => {
+    renderNetwork();
+    fireEvent.click(principalNode(OTHER_PRINCIPAL_ID));
+    const card = screen.getByRole("region", { name: "Agent Card" });
+    expect(within(card).getByText("Principal Card")).toBeVisible();
+    expect(within(card).getByText(OTHER_PRINCIPAL_ID)).toBeVisible();
+    expect(within(card).getByText("1 · 1 online")).toBeVisible();
+    expect(within(card).getByText("2 Principals across 3 shared Room memberships")).toBeVisible();
+    fireEvent.click(within(card).getByRole("button", { name: "Open its 1 Instance →" }));
+    // The Instance level, seen from that Principal: its seat and everything it touches (here, everyone).
+    expect(screen.getByRole("navigation", { name: "Where you are" })).toHaveTextContent(`${OTHER_PRINCIPAL_ID} · its Instances and what they connect to`);
+    expect(screen.getAllByRole("button", { name: /^Inspect Instance / })).toHaveLength(4);
+    fireEvent.click(screen.getByRole("button", { name: "All Principals" }));
+    expect(screen.getAllByRole("button", { name: /^Inspect Principal / })).toHaveLength(3);
+    // From an Instance, a Principal with no shared Room shows nothing of the others.
+    const lonely = instancesAround(buildGraph(network({ edges: [] })), OTHER_PRINCIPAL_ID);
+    expect(lonely.nodes.map((n) => n.instance.instance_id)).toEqual([OTHER]);
+  });
+
+  it("searches both levels: a p_ id selects a Principal, an i_ id opens the Instance level at that Instance", () => {
+    renderNetwork();
+    const input = screen.getByRole("searchbox", { name: "Instance ID" });
+    fireEvent.change(input, { target: { value: OTHER } });
+    expect(node(OTHER)).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("navigation", { name: "Where you are" })).toHaveTextContent(OTHER_PRINCIPAL_ID);
+    fireEvent.change(input, { target: { value: GUEST_PRINCIPAL_ID } });
+    expect(principalNode(GUEST_PRINCIPAL_ID)).toHaveAttribute("aria-pressed", "true");
+    fireEvent.change(input, { target: { value: "p_nowhere0001" } });
+    fireEvent.submit(screen.getByRole("search", { name: "Find an Instance" }));
+    expect(screen.getByRole("status")).toHaveTextContent("No Principal p_nowhere0001 in your Network");
+  });
+
   it("renders an empty Network without inventing anything, and the loading and unavailable states", () => {
     renderNetwork({ network: network({ instances: [], edges: [], agents: [], connected_principals: [] }) });
+    openInstances();
     expect(screen.queryAllByRole("button", { name: /^Inspect Instance / })).toHaveLength(0);
     expect(screen.getByText(/No Instances yet/)).toBeVisible();
     cleanup();
@@ -228,7 +293,7 @@ describe("SharedNet Network", () => {
   it("keeps last-good Network data visible while marking it stale", () => {
     renderNetwork({ status: "stale" });
     expect(screen.getByRole("status")).toHaveTextContent("SharedNet data may be out of date.");
-    expect(screen.getAllByRole("button", { name: /^Inspect Instance / })).toHaveLength(4);
+    expect(screen.getAllByRole("button", { name: /^Inspect Principal / })).toHaveLength(3);
   });
 
   it("never presents delegation, hosting, readiness, activity, or recruitment claims", () => {

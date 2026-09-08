@@ -1645,6 +1645,11 @@ body:has(.product-window) {
   padding: 12px 16px 10px 0;
 }
 
+.graph-top {
+  display: flex;
+  flex-direction: column;
+}
+
 .graph-toolbar {
   align-items: center;
   display: flex;
@@ -1691,6 +1696,72 @@ body:has(.product-window) {
   font-size: 11px;
   font-weight: 600;
   padding: 5px 10px;
+}
+
+.graph-level {
+  display: flex;
+  gap: 2px;
+}
+
+.graph-level button {
+  background: transparent;
+  border: 1px solid var(--sn-line);
+  color: var(--sn-oxford);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+}
+
+.graph-level button[aria-selected="true"] {
+  background: var(--sn-oxford);
+  border-color: var(--sn-oxford);
+  color: var(--sn-paper);
+}
+
+.graph-crumbs {
+  align-items: center;
+  color: var(--sn-muted);
+  display: flex;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  gap: 8px;
+  padding: 0 0 6px 16px;
+}
+
+.graph-crumbs button {
+  background: transparent;
+  border: 0;
+  color: var(--sn-oxford);
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+  text-decoration: underline;
+}
+
+.relationship-principal .relationship-node-mark {
+  color: var(--sn-oxford);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.relationship-lines line[data-edge-kind="principal_connection"] {
+  stroke-dasharray: none;
+  stroke-opacity: 0.5;
+}
+
+.network-workspace .agent-card .agent-card-drill {
+  background: var(--sn-oxford);
+  border: 0;
+  color: var(--sn-paper);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 8px 10px;
+  text-align: left;
 }
 
 .graph-search-note {
