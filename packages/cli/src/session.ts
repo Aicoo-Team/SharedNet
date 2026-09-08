@@ -1,3 +1,4 @@
+import { createRequire } from "node:module";
 import { hostname, platform } from "node:os";
 
 import { ApiClient, sameOrigin } from "./api-client.ts";
@@ -23,7 +24,17 @@ import {
 
 type Environment = Record<string, string | undefined>;
 
-export const CLI_VERSION = "0.1.0";
+function packageVersion(): string {
+  const manifest = createRequire(import.meta.url)("../package.json") as {
+    version?: unknown;
+  };
+  if (typeof manifest.version !== "string" || manifest.version.length === 0) {
+    throw new Error("The SharedNet CLI package has no version.");
+  }
+  return manifest.version;
+}
+
+export const CLI_VERSION = packageVersion();
 
 export interface AgentShape {
   id: string;

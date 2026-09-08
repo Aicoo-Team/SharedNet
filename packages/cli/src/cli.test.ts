@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -146,6 +146,10 @@ describe("sharednet CLI vertical slice", () => {
     expect(registration).not.toContain("lineage-only");
     expect(registration).not.toContain("snk_never-send-in-json");
     const body = sentBody(result.requests[0]!);
+    const packageManifest = JSON.parse(
+      await readFile(new URL("../package.json", import.meta.url), "utf8"),
+    ) as { version: string };
+    expect(body.cli_version).toBe(packageManifest.version);
     // The session is identified to the server only by its HMAC, never its id.
     expect(body.local_instance_key).toMatch(HEX_64);
     expect(body).not.toHaveProperty("agent_id");
