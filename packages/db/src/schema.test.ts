@@ -31,10 +31,20 @@ describe("hosted Postgres schema", () => {
       "account",
       "verification",
       "apikey",
+      // jwt plugin: signing keys for the tokens the OAuth provider issues.
+      "jwks",
+      // OAuth provider (mcp plugin): clients, the protected resource, grants and tokens.
+      "oauthClient",
+      "oauthResource",
+      "oauthClientResource",
+      "oauthRefreshToken",
+      "oauthAccessToken",
+      "oauthConsent",
+      "oauthClientAssertion",
     ]);
   });
 
-  it("exports exactly the eleven V1 domain tables", () => {
+  it("exports exactly the twelve V1 domain tables", () => {
     expect(Object.keys(databaseSchema)).toEqual([
       "principals",
       "agents",
@@ -47,6 +57,7 @@ describe("hosted Postgres schema", () => {
       "decisions",
       "idempotencyRecords",
       "cliLogins",
+      "instanceCursors",
     ]);
   });
 

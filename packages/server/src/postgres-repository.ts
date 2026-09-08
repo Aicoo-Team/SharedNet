@@ -10,6 +10,7 @@ import {
   apiKey,
   decisions,
   idempotencyRecords,
+  instanceCursors,
   instances,
   messages,
   principals,
@@ -66,7 +67,8 @@ import {
   type SharedNetRepository,
   type StoredHttpResult,
 } from "./repository.ts";
-import { sharedRoomsEdges, type DecisionAnswer, type DecisionOverview, type NetworkView, type RoomOverview, type SeatOverview } from "./repository.ts";
+import { sharedRoomsEdges, type DecisionAnswer, type DecisionOverview, type McpClient, type McpSeat, type NetworkView, type RoomOverview, type SeatOverview } from "./repository.ts";
+import { mcpLocalInstanceKey, runtimeKindForMcp } from "./memory-repository.ts";
 import type {
   AddRoomMembersRequest,
   Admission,
@@ -1205,6 +1207,78 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
   async principalForAccount(authUserId: string): Promise<Principal | null> {
     const [row] = await this.executor().select().from(principals).where(eq(principals.authUserId, authUserId)).limit(1);
     return row ? projectPrincipal(row) : null;
+  }
+
+  async mcpSeat(authUserId: string, client: McpClient): Promise<McpSeat> {
+    return this.inTransaction(async () => {
+      let [principal] = await this.executor().select().from(principals).where(eq(principals.authUserId, authUserId)).limit(1);
+      if (!principal) {
+        await this.executor()
+          .insert(principals)
+          .values({ id: generatePublicId("p"), authUserId, displayName: null, createdAt: this.now() })
+          .onConflictDoNothing({ target: principals.authUserId });
+        [principal] = await this.executor().select().from(principals).where(eq(principals.authUserId, authUserId)).limit(1);
+      }
+      if (!principal) throw new RepositoryError(500, "internal_error", "Principal provisioning failed.");
+      // One key per client per account, named for the client so it reads on the
+      // account's key list and can be revoked there.
+      const keyName = `mcp · ${client.label}`;
+      let [key] = await this.executor()
+        .select({ id: apiKey.id })
+        .from(apiKey)
+        .where(and(eq(apiKey.referenceId, authUserId), eq(apiKey.name, keyName), eq(apiKey.enabled, true)))
+        .limit(1);
+      if (!key) {
+        const raw = generateSecret("snk");
+        const now = this.now();
+        [key] = await this.executor()
+          .insert(apiKey)
+          .values({
+            id: generatePublicId("key"),
+            name: keyName,
+            start: raw.slice(0, 8),
+            prefix: "snk_",
+            referenceId: authUserId,
+            key: await defaultKeyHasher(raw),
+            enabled: true,
+            rateLimitEnabled: false,
+            createdAt: now,
+            updatedAt: now,
+            metadata: JSON.stringify({ source: "mcp", client_id: client.id }),
+          })
+          .returning({ id: apiKey.id });
+        if (!key) throw new RepositoryError(500, "internal_error", "API key creation failed.");
+      }
+      const principalAuth: PrincipalAuth = { kind: "api_key", principalId: principal.id, actorId: key.id as ApiKeyId };
+      const { instance, created } = await this.startInstance(principalAuth, {
+        runtime_kind: runtimeKindForMcp(client),
+        cli_version: "mcp",
+        local_instance_key: mcpLocalInstanceKey(client),
+        runtime_metadata: { connector: client.id, connector_label: client.label, runtime_source: "declared" },
+      });
+      return {
+        principal: projectPrincipal(principal),
+        instance,
+        auth: { kind: "instance", principalId: principal.id, instanceId: instance.id, actorId: instance.id, anonymous: false },
+        created,
+      };
+    });
+  }
+
+  async getCursor(instanceId: InstanceId, roomId: RoomId): Promise<number> {
+    const [row] = await this.executor()
+      .select({ lastSequence: instanceCursors.lastSequence })
+      .from(instanceCursors)
+      .where(and(eq(instanceCursors.instanceId, instanceId), eq(instanceCursors.roomId, roomId)))
+      .limit(1);
+    return row?.lastSequence ?? 0;
+  }
+
+  async setCursor(instanceId: InstanceId, roomId: RoomId, lastSequence: number): Promise<void> {
+    await this.executor()
+      .insert(instanceCursors)
+      .values({ instanceId, roomId, lastSequence, updatedAt: this.now() })
+      .onConflictDoUpdate({ target: [instanceCursors.instanceId, instanceCursors.roomId], set: { lastSequence, updatedAt: this.now() } });
   }
 
   /** A Room the Principal scheduled, or has an active seat in; anything else is absent. */
