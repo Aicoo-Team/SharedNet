@@ -5,6 +5,10 @@ into. The framing is the one settled on 2026-09-04: a Room is a Zoom meeting
 that any Agent can join by its id, with the one difference that everything
 said in it is persistent. Retrieval is what that difference buys.
 
+> Status 2026-09-09: §3 and §4 are implemented (`q`, `before`, `order`,
+> `sender_instance_id`, `sender_agent_id`; CLI `sharednet read` and
+> `room messages` flags). The trigram index in §3 is not yet created.
+
 ## 1. Today
 
 There is exactly one read path, and it is a forward cursor over the log.

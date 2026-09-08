@@ -354,6 +354,13 @@ describe("reach: forming a group from the account CLI", () => {
     expect(notARoom.exitCode).not.toBe(0);
     expect(notARoom.requests).toHaveLength(0);
 
+    const filtered = await harnessAfterStart(
+      ["room", "messages", "rom_AbCdEfGhIj", "--grep", "deploy", "--from-agent", "a_AbCdEfGhIj", "--order", "desc", "--limit", "3", "--json"],
+      [{ status: 200, body: { items: [], next_cursor: null, has_more: false } }],
+    );
+    expect(filtered.exitCode).toBe(0);
+    expect(Object.fromEntries(new URL(filtered.requests[0]!.url).searchParams)).toEqual({ order: "desc", limit: "3", sender_agent_id: "a_AbCdEfGhIj", q: "deploy" });
+
     const listed = await harnessAfterStart(["room", "list", "--json"], [{ status: 200, body: { items: [] } }]);
     expect(listed.requests[0]!.url).toBe("http://127.0.0.1:3001/api/v1/rooms");
 

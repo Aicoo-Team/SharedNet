@@ -908,6 +908,51 @@ describe("Room invites, guests, and wait", () => {
     expect((await register("scenario")).status).toBe(201);
   });
 
+  it("reads a Room's log as filter, order, window: grep, by sender, by tag, newest first, paged backward", async () => {
+    const store = new MemorySharedNetRepository({ devApiKey: DEV_KEY });
+    const { host, room } = await openRoom(store);
+    const other = await startInstance(store);
+    await request(store, `/api/v1/rooms/${room.id}/join`, { method: "POST", headers: instanceHeaders(other.token, { "idempotency-key": "1f7f2c1e-4d6b-4b6e-8f1a-2b3c4d5e6f71" }) });
+    const lines = ["deploy window opens at 14:00", "rollback takes 10 minutes", "Deploy moved to 13:55", "lunch?", "deploy is go"];
+    for (const [i, line] of lines.entries()) {
+      const author = i % 2 === 0 ? host.token : other.token;
+      const posted = await say(store, room.id, author, line, `0f7f2c1e-4d6b-4b6e-8f1a-2b3c4d5e6f${String(80 + i)}`);
+      expect(posted.status).toBe(201);
+    }
+    const read = async (query: string) => {
+      const response = await request(store, `/api/v1/rooms/${room.id}/messages${query}`, { headers: instanceHeaders(host.token) });
+      return { status: response.status, body: await json(response) };
+    };
+    // grep: case-insensitive substring, log order.
+    const grep = await read("?q=deploy");
+    expect(grep.body.items.map((m: any) => m.sequence)).toEqual([1, 3, 5]);
+    // newest first, top k: [-2:].
+    const last = await read("?order=desc&limit=2");
+    expect(last.body.items.map((m: any) => m.sequence)).toEqual([5, 4]);
+    expect(last.body.next_cursor).toBe("4");
+    // and the page before it, continuing backward.
+    const earlier = await read("?before=4&limit=2");
+    expect(earlier.body.items.map((m: any) => m.sequence)).toEqual([3, 2]);
+    expect(earlier.body.has_more).toBe(true);
+    // by sender, and by tag (both untagged here).
+    const byOther = await read(`?sender_instance_id=${other.instance.id}`);
+    expect(byOther.body.items.map((m: any) => m.sequence)).toEqual([2, 4]);
+    const untagged = await read("?sender_agent_id=default&q=deploy");
+    expect(untagged.body.items.map((m: any) => m.sequence)).toEqual([1, 3, 5]);
+    const tagged = await read("?sender_agent_id=a_AbCdEfGhIj");
+    expect(tagged.body.items).toEqual([]);
+    // The default read is unchanged: everything, oldest first, fifty at a time.
+    const plain = await read("");
+    expect(plain.body.items.map((m: any) => m.sequence)).toEqual([1, 2, 3, 4, 5]);
+    // Contradictions and junk are refused, not guessed.
+    expect((await read("?after=1&before=3")).status).toBe(400);
+    expect((await read("?after=1&order=desc")).status).toBe(400);
+    expect((await read("?order=sideways")).status).toBe(400);
+    expect((await read("?q=")).status).toBe(400);
+    expect((await read("?sender_instance_id=nope")).status).toBe(400);
+    expect((await read("?rank=bm25")).status).toBe(400);
+  });
+
   it("tells the join page what an invite opens, and only that", async () => {
     let clock = new Date("2026-09-07T12:00:00Z");
     const store = new MemorySharedNetRepository({ devApiKey: DEV_KEY, now: () => clock });

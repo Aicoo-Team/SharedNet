@@ -25,6 +25,7 @@ import type {
   JoinRoomWithInviteRequest,
   MemberId,
   Message,
+  MessageQuery,
   MessageId,
   Page,
   Principal,
@@ -319,11 +320,8 @@ export interface SharedNetRepository extends PrincipalRepository {
     roomId: RoomId,
     input: { content: string; reply_to_message_id?: MessageId | null },
   ): Promise<{ message: Message }>;
-  listMessages(
-    auth: RoomAuth,
-    roomId: RoomId,
-    input: { after: number; limit: number },
-  ): Promise<Page<Message>>;
+  /** A window of a Room's log: filtered, ordered, cursored. See MessageQuery. */
+  listMessages(auth: RoomAuth, roomId: RoomId, input: MessageQuery): Promise<Page<Message>>;
   /**
    * Every message after the cursor across the Rooms the caller is an active
    * member of, oldest first. A guest sits in one Room; an Instance in many.
