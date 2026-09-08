@@ -26,11 +26,11 @@ describe("SharedNet Skills page", () => {
     );
   });
 
-  it("keeps the CLI-only boundary visible", () => {
+  it("keeps the identity boundary visible", () => {
     render(<SkillsPage />);
 
     expect(
-      screen.getByText("Calling the API with curl instead of the CLI."),
+      screen.getByText("Inventing a Principal, Agent, Instance, or Room id."),
     ).toBeVisible();
     expect(
       screen.getByText("Passing an API key or Instance token on argv or in a prompt."),
