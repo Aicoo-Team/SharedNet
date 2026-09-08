@@ -6,14 +6,17 @@ import { join as joinPath } from "node:path";
 import { ApiClient, resolveBaseUrl, sameOrigin } from "./api-client.ts";
 import { storeAccountCredential } from "./login.ts";
 import { CliError, localError } from "./errors.ts";
+import { computeLocalInstanceKey } from "./instance-computation.ts";
 import { detectRuntime } from "./runtime-detection.ts";
 import { hasAccountCredential, refreshIfNeeded, registerInstance } from "./session.ts";
 import {
+  getOrCreateInstallationSecret,
   getStoragePaths,
-  readProjectRoomState,
+  readProjectRoom,
   readRoomCredential,
   readSessionById,
   readStoredApiCredential,
+  selectProjectSeat,
   writeProjectRoomState,
   writeRoomCredential,
   type ProjectRoomState,
@@ -86,7 +89,7 @@ const INVITE_TOKEN_PATTERN = /^rit_[A-Za-z0-9_-]{43}$/;
 /** The server caps one wait at this; the client loops. */
 const WAIT_MAX_SECONDS = 25;
 
-const VALUE_OPTIONS = new Set(["name", "token", "timeout", "reply-to", "min", "on", "run", "max-runs", "as", "claim", "agent"]);
+const VALUE_OPTIONS = new Set(["name", "token", "timeout", "reply-to", "min", "on", "run", "max-runs", "max-failures", "as", "claim", "agent"]);
 const FLAG_OPTIONS = new Set(["hook", "private", "reply"]);
 
 function parseGuestArguments(args: string[]): ParsedGuestArguments {
@@ -194,6 +197,18 @@ function runtimeReport(env: Environment): { kind: string; version: string | null
     entrypoint: detected.entrypoint,
     source: detected.source,
   };
+}
+
+/**
+ * What ties a seat to the session that took it: the local Instance key, a
+ * digest of this machine's installation secret and the driver's session id.
+ * Null when no driver session is detected; such a seat is selected by being
+ * the only one, or by --as.
+ */
+async function anchorKeyFor(env: Environment, paths: ReturnType<typeof getStoragePaths>): Promise<string | null> {
+  const detected = detectRuntime(env);
+  if (detected.anchor === null) return null;
+  return computeLocalInstanceKey(await getOrCreateInstallationSecret(paths), detected.kind, detected.anchor);
 }
 
 /** A message this seat sent, by the Instance id the server reports or the one the seat file names. */
@@ -319,7 +334,10 @@ async function join(args: string[], dependencies: GuestDependencies): Promise<un
     member_id: memberId,
     last_sequence: highestSequence(payload.history.items, 0),
   };
-  await writeProjectRoomState(dependencies.cwd, state);
+  await writeProjectRoomState(dependencies.cwd, state, {
+    anchorKey: await anchorKeyFor(dependencies.env, paths),
+    joinedAt: credential.joined_at,
+  });
   // The one moment to say it: this seat belongs to nobody yet.
   dependencies.stderr?.(
     `Joined ${payload.room.id} as ${memberId}, an anonymous seat. Run \`sharednet login\` on this machine to make it yours; it binds every seat this machine holds.\n`,
@@ -427,7 +445,10 @@ async function enterAsSeat(
     member_id: payload.membership.member_id,
     last_sequence: highestSequence(history.items, 0),
   };
-  await writeProjectRoomState(dependencies.cwd, state);
+  await writeProjectRoomState(dependencies.cwd, state, {
+    anchorKey: await anchorKeyFor(dependencies.env, paths),
+    joinedAt: dependencies.now().toISOString(),
+  });
   return {
     room: payload.room,
     member_id: payload.membership.member_id,
@@ -492,7 +513,10 @@ async function joinAsAccount(
     member_id: session.instance_id,
     last_sequence: highestSequence(history.items, 0),
   };
-  await writeProjectRoomState(dependencies.cwd, state);
+  await writeProjectRoomState(dependencies.cwd, state, {
+    anchorKey: session.local_instance_key ?? (await anchorKeyFor(dependencies.env, paths)),
+    joinedAt: dependencies.now().toISOString(),
+  });
   return {
     room: payload.room,
     member_id: session.instance_id,
@@ -507,12 +531,20 @@ async function joinAsAccount(
 
 async function currentSeat(
   dependencies: GuestDependencies,
+  explicit?: string,
 ): Promise<{ client: ApiClient; state: ProjectRoomState; credential: StoredRoomCredential }> {
-  const state = await readProjectRoomState(dependencies.cwd);
+  const paths = getStoragePaths(dependencies.env);
+  const chosen = explicit ?? dependencies.env.SHAREDNET_SEAT?.trim() ?? undefined;
+  if (chosen !== undefined && !/^(?:i|mem)_[A-Za-z0-9]+$/.test(chosen)) {
+    throw localError("invalid_arguments", "--as (or SHAREDNET_SEAT) names a seat by its member id, such as i_AbCdEfGhIj.");
+  }
+  const state = await selectProjectSeat(dependencies.cwd, {
+    ...(chosen === undefined ? {} : { explicit: chosen }),
+    anchorKey: await anchorKeyFor(dependencies.env, paths),
+  });
   if (!state) {
     throw localError("not_in_a_room", "This directory is not in a Room. Run: sharednet join <invite>");
   }
-  const paths = getStoragePaths(dependencies.env);
   const credential = await readRoomCredential(paths, state.room_id, state.member_id);
   if (!credential) {
     throw localError(
@@ -546,15 +578,15 @@ async function currentSeat(
  */
 async function say(args: string[], dependencies: GuestDependencies): Promise<unknown> {
   const parsed = parseGuestArguments(args);
-  assertOnlyOptions(parsed, ["reply-to"]);
+  assertOnlyOptions(parsed, ["reply-to", "as"]);
   if (parsed.positionals.length !== 1 || !parsed.positionals[0]!.trim()) {
-    throw localError("invalid_arguments", 'Usage: sharednet say "<message>" [--reply-to <msg_id>]');
+    throw localError("invalid_arguments", 'Usage: sharednet say "<message>" [--reply-to <msg_id>] [--as <member_id>]');
   }
   const replyTo = stringOption(parsed, "reply-to");
   if (replyTo !== undefined && !/^msg_[A-Za-z0-9]{10}$/.test(replyTo)) {
     throw localError("invalid_reply_to", "--reply-to must be a message id such as msg_AbCdEfGhIj.");
   }
-  const { client, state, credential } = await currentSeat(dependencies);
+  const { client, state, credential } = await currentSeat(dependencies, stringOption(parsed, "as"));
   return client.request(
     "POST",
     `/rooms/${encodeURIComponent(state.room_id)}/messages`,
@@ -651,6 +683,8 @@ interface WatchRun {
   run: number;
   trigger: string;
   messages: number;
+  /** ok: handled and the cursor moved; failed: the command failed; reply_failed: the Room did not take the reply. */
+  status: "ok" | "failed" | "reply_failed";
   exit_code: number;
   reply_message_id: string | null;
   last_sequence: number;
@@ -666,18 +700,19 @@ interface WatchRun {
  */
 async function watch(args: string[], dependencies: GuestDependencies): Promise<unknown> {
   const parsed = parseGuestArguments(args);
-  assertOnlyOptions(parsed, ["on", "run", "reply", "max-runs"]);
+  assertOnlyOptions(parsed, ["on", "run", "reply", "max-runs", "max-failures", "as"]);
   const trigger = parseTrigger(parsed);
   const command = stringOption(parsed, "run");
   if (!command || parsed.positionals.length !== 0) {
     throw localError(
       "invalid_arguments",
-      "Usage: sharednet watch --on <message | every 10m | count 5 | idle 30s> --run '<command>' [--reply] [--max-runs <n>]",
+      "Usage: sharednet watch --on <message | every 10m | count 5 | idle 30s> --run '<command>' [--reply] [--max-runs <n>] [--max-failures <n>] [--as <member_id>]",
     );
   }
   const reply = parsed.options.get("reply") === true;
   const maxRuns = parseCount(stringOption(parsed, "max-runs"), "--max-runs");
-  const { client, state, credential } = await currentSeat(dependencies);
+  const maxFailures = parseCount(stringOption(parsed, "max-failures"), "--max-failures") ?? 3;
+  const { client, state, credential } = await currentSeat(dependencies, stringOption(parsed, "as"));
   const sleep = dependencies.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   const exec = dependencies.exec ?? defaultExec;
   const log = dependencies.stderr ?? (() => undefined);
@@ -690,12 +725,32 @@ async function watch(args: string[], dependencies: GuestDependencies): Promise<u
 
   const me = await whoAmI(client, state, credential);
 
+  // Two cursors. `cursor` is where the next poll reads from and always moves
+  // forward, so nothing is fetched twice. `persisted` is what the seat file
+  // says has been handled, and it moves only once a batch has been run and
+  // its reply, if any, is in the Room. A batch the command failed on, or
+  // whose reply could not be posted, stays pending and is offered again on
+  // the next wake, with the same idempotency key for the reply; after
+  // --max-failures such attempts the watch stops and says so, and the seat
+  // file still points before the batch, so a later `wait` sees it.
   let cursor = state.last_sequence;
+  let persisted = state.last_sequence;
   let batch: MessageShape[] = [];
+  let pending: { replyKey: string; reply: string | null; failures: number } | null = null;
   let lastRunAt = dependencies.now().getTime();
   let lastMessageAt: number | null = null;
   const runs: WatchRun[] = [];
   log(`watch: ${triggerLabel} in ${state.room_id} as ${me}, from sequence ${cursor}\n`);
+
+  const stopUnhandled = (): never => {
+    const first = batch[0]?.sequence ?? persisted + 1;
+    const last = batch.at(-1)?.sequence ?? cursor;
+    throw new CliError(
+      "watch_failed",
+      `watch stopped with ${batch.length} message(s) unhandled after ${pending?.failures ?? 0} failed attempt(s), sequences ${first}-${last}. The cursor stays at ${persisted}; \`sharednet wait\` shows them again.`,
+      4,
+    );
+  };
 
   for (;;) {
     const now = dependencies.now().getTime();
@@ -725,45 +780,73 @@ async function watch(args: string[], dependencies: GuestDependencies): Promise<u
       continue;
     }
 
-    const input = `${JSON.stringify({ room_id: state.room_id, member_id: state.member_id, trigger: triggerLabel, messages: batch })}\n`;
-    const result = await exec(command, input, {
-      SHAREDNET_ROOM_ID: state.room_id,
-      SHAREDNET_MEMBER_ID: state.member_id,
-      SHAREDNET_MESSAGE_COUNT: String(batch.length),
-      SHAREDNET_LAST_SEQUENCE: String(cursor),
-    });
-    if (result.stderr) log(result.stderr.endsWith("\n") ? result.stderr : `${result.stderr}\n`);
-    // Handed over: the batch counts as seen even if the command failed.
-    await writeProjectRoomState(dependencies.cwd, { ...state, last_sequence: cursor });
+    pending ??= { replyKey: randomUUID(), reply: null, failures: 0 };
+    let exitCode = 0;
     let replyMessageId: string | null = null;
-    const answer = result.stdout.trim();
-    if (reply && result.exitCode === 0 && answer.length > 0) {
-      const posted = await client.request<{ message?: { id?: string } }>(
-        "POST",
-        `/rooms/${encodeURIComponent(state.room_id)}/messages`,
-        credential.member_token,
-        { content: answer },
-        { "idempotency-key": randomUUID() },
-      );
-      replyMessageId = posted?.message?.id ?? null;
+    let status: WatchRun["status"] = "ok";
+    // A reply the command already produced but the Room never received is
+    // posted first, without running the command again.
+    if (pending.reply === null) {
+      const input = `${JSON.stringify({ room_id: state.room_id, member_id: state.member_id, trigger: triggerLabel, messages: batch })}\n`;
+      const result = await exec(command, input, {
+        SHAREDNET_ROOM_ID: state.room_id,
+        SHAREDNET_MEMBER_ID: state.member_id,
+        SHAREDNET_MESSAGE_COUNT: String(batch.length),
+        SHAREDNET_LAST_SEQUENCE: String(cursor),
+      });
+      if (result.stderr) log(result.stderr.endsWith("\n") ? result.stderr : `${result.stderr}\n`);
+      exitCode = result.exitCode;
+      if (exitCode !== 0) status = "failed";
+      else if (reply && result.stdout.trim().length > 0) pending.reply = result.stdout.trim();
+    }
+    if (status === "ok" && pending.reply !== null) {
+      try {
+        const posted = await client.request<{ message?: { id?: string } }>(
+          "POST",
+          `/rooms/${encodeURIComponent(state.room_id)}/messages`,
+          credential.member_token,
+          { content: pending.reply },
+          { "idempotency-key": pending.replyKey },
+        );
+        replyMessageId = posted?.message?.id ?? null;
+      } catch (error) {
+        status = "reply_failed";
+        log(`watch: reply not posted (${error instanceof CliError ? error.code : "error"}); will retry with the same key\n`);
+      }
+    }
+
+    if (status === "ok") {
+      persisted = cursor;
+      await writeProjectRoomState(dependencies.cwd, { ...state, last_sequence: persisted });
+    } else {
+      pending.failures += 1;
     }
     const record: WatchRun = {
       run: runs.length + 1,
       trigger: triggerLabel,
       messages: batch.length,
-      exit_code: result.exitCode,
+      status,
+      exit_code: exitCode,
       reply_message_id: replyMessageId,
-      last_sequence: cursor,
+      last_sequence: persisted,
     };
     runs.push(record);
     log(
-      `watch: run ${record.run}, ${record.messages} message(s), exit ${record.exit_code}` +
+      `watch: run ${record.run}, ${record.messages} message(s), ${status}` +
+        (status === "failed" ? ` (exit ${exitCode})` : "") +
         (replyMessageId ? `, replied ${replyMessageId}` : "") +
+        (status !== "ok" ? `, ${record.messages} message(s) kept for the next wake` : "") +
         "\n",
     );
-    batch = [];
     lastRunAt = dependencies.now().getTime();
+    if (status === "ok") {
+      batch = [];
+      pending = null;
+    } else if (pending.failures >= maxFailures) {
+      stopUnhandled();
+    }
     if (maxRuns !== null && runs.length >= maxRuns) {
+      if (pending !== null) stopUnhandled();
       return { room_id: state.room_id, trigger: triggerLabel, runs };
     }
   }
@@ -785,14 +868,14 @@ function parseTimeout(value: string | undefined): number | null {
  */
 async function wait(args: string[], dependencies: GuestDependencies): Promise<unknown> {
   const parsed = parseGuestArguments(args);
-  assertOnlyOptions(parsed, ["timeout", "hook", "min"]);
+  assertOnlyOptions(parsed, ["timeout", "hook", "min", "as"]);
   if (parsed.positionals.length !== 0) {
-    throw localError("invalid_arguments", "Usage: sharednet wait [--timeout <seconds>] [--min <count>] [--hook]");
+    throw localError("invalid_arguments", "Usage: sharednet wait [--timeout <seconds>] [--min <count>] [--hook] [--as <member_id>]");
   }
   const hook = parsed.options.get("hook") === true;
   const totalSeconds = hook ? 0 : parseTimeout(stringOption(parsed, "timeout"));
   const minimum = parseCount(stringOption(parsed, "min"), "--min") ?? 1;
-  const { client, state, credential } = await currentSeat(dependencies);
+  const { client, state, credential } = await currentSeat(dependencies, stringOption(parsed, "as"));
   const sleep = dependencies.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   const me = await whoAmI(client, state, credential);
 
@@ -854,19 +937,29 @@ async function whoami(args: string[], dependencies: GuestDependencies): Promise<
       : envKey
         ? { principal_id: null, api_key_id: null, source: "SHAREDNET_API_KEY" as const, credentials_file: null }
         : null;
-  const state = await readProjectRoomState(dependencies.cwd);
-  // The seat this directory holds is reported whatever origin it lives on;
-  // say/wait act on that origin, not on the environment's default.
-  const seat =
-    state
-      ? {
-          base_url: state.base_url,
-          room_id: state.room_id,
-          member_id: state.member_id,
-          last_sequence: state.last_sequence,
-          credential_present: (await readRoomCredential(paths, state.room_id, state.member_id).catch(() => null)) !== null,
-        }
-      : null;
+  const room = await readProjectRoom(dependencies.cwd);
+  const anchorKey = await anchorKeyFor(dependencies.env, paths);
+  const chosen = dependencies.env.SHAREDNET_SEAT?.trim() || undefined;
+  const selected = room
+    ? await selectProjectSeat(dependencies.cwd, { ...(chosen ? { explicit: chosen } : {}), anchorKey }).catch(() => null)
+    : null;
+  // The seats this directory holds, on whatever origin the Room lives, and
+  // which one this session acts as; say/wait act on that origin.
+  const seat = room
+    ? {
+        base_url: room.base_url,
+        room_id: room.room_id,
+        member_id: selected?.member_id ?? null,
+        last_sequence: selected?.last_sequence ?? null,
+        credential_present:
+          selected !== null && (await readRoomCredential(paths, room.room_id, selected.member_id).catch(() => null)) !== null,
+        seats: Object.entries(room.seats).map(([memberId, entry]) => ({
+          member_id: memberId,
+          last_sequence: entry.last_sequence,
+          this_session: entry.anchor_key !== null && entry.anchor_key === anchorKey,
+        })),
+      }
+    : null;
   return {
     base_url: baseUrl,
     account,
@@ -877,7 +970,9 @@ async function whoami(args: string[], dependencies: GuestDependencies): Promise<
         ? "This machine acts as nobody. Run `sharednet login` so seats are your account's; `join` without it seats an anonymous Principal."
         : seat === null
           ? "Logged in. Run `sharednet join <invite>` in a project directory to take a seat."
-          : "Logged in and seated. `say`, `wait`, and `watch` act as this seat.",
+          : seat.member_id === null
+            ? "This directory holds several seats and none is this session's; say which with --as <member_id> or SHAREDNET_SEAT."
+            : "Logged in and seated. `say`, `wait`, and `watch` act as this seat.",
   };
 }
 
