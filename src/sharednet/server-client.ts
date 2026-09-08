@@ -555,6 +555,7 @@ export class SharedNetServerClient {
         source_id: edge.source_instance_id as InstanceId,
         target_id: edge.target_instance_id as InstanceId,
         weight: edge.shared_rooms,
+        strength: Math.round(edge.strength * 1000) / 1000,
       })),
       instances: view.instances.map(instanceProjection),
       principal: principalProjection(view.principal),

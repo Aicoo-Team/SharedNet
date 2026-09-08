@@ -37,13 +37,15 @@ type GraphNode = Readonly<{
   degree: number;
   /** How many Room co-memberships it has in total (edge weights summed). */
   sharedRooms: number;
+  /** The same, each Room weighted by its size: what the layout and the card call weighted connections. */
+  strength: number;
 }>;
 
-type GraphEdge = Readonly<{ source: InstanceId; target: InstanceId; weight: number }>;
+type GraphEdge = Readonly<{ source: InstanceId; target: InstanceId; weight: number; strength: number }>;
 
 /** What the layout needs of a node: an id, and a group it should sit near. */
 type LayoutNode = Readonly<{ id: string; group: string }>;
-type LayoutEdge = Readonly<{ source: string; target: string; weight: number }>;
+type LayoutEdge = Readonly<{ source: string; target: string; strength: number }>;
 
 /** The Principal level: one node per Principal, one line per pair whose Instances share Rooms. */
 type PrincipalNode = Readonly<{
@@ -53,8 +55,9 @@ type PrincipalNode = Readonly<{
   online: number;
   degree: number;
   sharedRooms: number;
+  strength: number;
 }>;
-type PrincipalEdge = Readonly<{ source: PrincipalId; target: PrincipalId; weight: number }>;
+type PrincipalEdge = Readonly<{ source: PrincipalId; target: PrincipalId; weight: number; strength: number }>;
 
 type Level = "principals" | "instances";
 
@@ -87,16 +90,6 @@ function compareIds(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
-/** A small deterministic hash, so the same Network always lands the same way. */
-function hashId(value: string): number {
-  let hash = 2166136261;
-  for (let i = 0; i < value.length; i += 1) {
-    hash ^= value.charCodeAt(i);
-    hash = Math.imul(hash, 16777619) >>> 0;
-  }
-  return hash / 4294967295;
-}
-
 /** The nodes and the edges the projection draws between them, in a stable order. */
 export function buildGraph(network: NetworkProjection): { nodes: GraphNode[]; edges: GraphEdge[] } {
   const agents = new Map(network.agents.map((agent) => [agent.agent_id, agent]));
@@ -114,14 +107,16 @@ export function buildGraph(network: NetworkProjection): { nodes: GraphNode[]; ed
     const key = `${a}|${b}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    edges.push({ source: a, target: b, weight: Math.max(1, Math.floor(edge.weight)) });
+    edges.push({ source: a, target: b, weight: Math.max(1, Math.floor(edge.weight)), strength: Math.max(0, edge.strength) });
   }
   const degree = new Map<InstanceId, number>();
   const shared = new Map<InstanceId, number>();
+  const strength = new Map<InstanceId, number>();
   for (const edge of edges) {
     for (const end of [edge.source, edge.target]) {
       degree.set(end, (degree.get(end) ?? 0) + 1);
       shared.set(end, (shared.get(end) ?? 0) + edge.weight);
+      strength.set(end, (strength.get(end) ?? 0) + edge.strength);
     }
   }
   const nodes = [...network.instances]
@@ -134,6 +129,7 @@ export function buildGraph(network: NetworkProjection): { nodes: GraphNode[]; ed
         own: instance.principal_id === network.principal.principal_id,
         degree: degree.get(instance.instance_id) ?? 0,
         sharedRooms: shared.get(instance.instance_id) ?? 0,
+        strength: strength.get(instance.instance_id) ?? 0,
       }),
     );
   return { nodes, edges };
@@ -150,15 +146,17 @@ export function buildPrincipalGraph(network: NetworkProjection, graph: { nodes: 
     const [source, target] = [a, b].sort(compareIds) as [PrincipalId, PrincipalId];
     const key = `${source}|${target}`;
     const existing = weights.get(key);
-    weights.set(key, existing ? { ...existing, weight: existing.weight + edge.weight } : { source, target, weight: edge.weight });
+    weights.set(key, existing ? { ...existing, weight: existing.weight + edge.weight, strength: existing.strength + edge.strength } : { source, target, weight: edge.weight, strength: edge.strength });
   }
   const edges = [...weights.values()].sort((left, right) => compareIds(`${left.source}|${left.target}`, `${right.source}|${right.target}`));
   const degree = new Map<PrincipalId, number>();
   const shared = new Map<PrincipalId, number>();
+  const strength = new Map<PrincipalId, number>();
   for (const edge of edges) {
     for (const end of [edge.source, edge.target]) {
       degree.set(end, (degree.get(end) ?? 0) + 1);
       shared.set(end, (shared.get(end) ?? 0) + edge.weight);
+      strength.set(end, (strength.get(end) ?? 0) + edge.strength);
     }
   }
   const principals = [network.principal, ...network.connected_principals];
@@ -173,6 +171,7 @@ export function buildPrincipalGraph(network: NetworkProjection, graph: { nodes: 
         online: mine.filter((node) => node.instance.presence === "online").length,
         degree: degree.get(principal.principal_id) ?? 0,
         sharedRooms: shared.get(principal.principal_id) ?? 0,
+        strength: strength.get(principal.principal_id) ?? 0,
       };
     });
   return { nodes, edges };
@@ -198,122 +197,84 @@ export function instancesAround(graph: { nodes: GraphNode[]; edges: GraphEdge[] 
  * the middle so islands stay on the canvas. Deterministic: the same ids
  * start from the same places and settle in the same ones.
  */
+/** Rounded to a tenth, for a card. */
+function weighted(value: number): string {
+  return (Math.round(value * 10) / 10).toFixed(1);
+}
+
+const RING_SPACING = 120;
+const RING_GAP = 170;
+/** A ring holds this many before the tier spills onto the next ring out. */
+const RING_CAPACITY = 28;
+
+/**
+ * An ego layout, drawn to rest in one pass. The Network is always seen from
+ * somewhere: the viewer's Principal, or the Principal drilled into. That
+ * "ego" sits in the middle (one node, or its Instances on a small circle),
+ * and everyone else stands on rings by how strongly they are tied to it:
+ * the strongly tied on the inner ring, the weakly tied on the next, those
+ * with no direct tie on the outer one, each ring in order of strength and
+ * then id. Deterministic, readable at forty nodes and at four hundred, and
+ * a ring is wide enough that its labels do not touch.
+ */
 export function layoutGraph(
   nodes: readonly LayoutNode[],
   edges: readonly LayoutEdge[],
-  availableWidth = 0,
+  ego: readonly string[] = [],
 ): { positions: Map<string, Point>; width: number; height: number } {
-  const count = nodes.length;
-  // The canvas fits the stage it is shown in and grows with the crowd; the
-  // view can be zoomed and panned, so nothing has to fit at once.
-  const wanted = Math.round(170 * Math.sqrt(Math.max(count, 1)) + 240);
-  const width = availableWidth > 0 ? Math.max(MIN_CANVAS, Math.floor(availableWidth)) : Math.round(Math.max(MIN_CANVAS, wanted) * 1.4);
-  const height = Math.max(Math.round(width / 1.6), Math.min(wanted, Math.round((wanted * wanted) / width) + 160), 460);
   const positions = new Map<string, Point>();
-  if (count === 0) return { positions, width, height };
-  // Nodes with no line at all are not thrown to the corners by the
-  // repulsion; they stand on a ring around whatever is connected, in id
-  // order, so they read as "present, unconnected" rather than as noise.
-  const linked = new Set(edges.flatMap((edge) => [edge.source, edge.target]));
-  const connected = nodes.filter((node) => linked.has(node.id));
-  const isolated = nodes.filter((node) => !linked.has(node.id)).sort((left, right) => compareIds(left.id, right.id));
-  const centre = { x: width / 2, y: height / 2 };
-  const outerRadius = Math.min(width, height) / 2 - CANVAS_PADDING;
-  const innerRadius = isolated.length > 0 ? outerRadius * 0.62 : outerRadius;
-  if (connected.length > 0) {
-    for (const [id, point] of simulate(connected, edges, centre, innerRadius)) positions.set(id, point);
-  }
-  isolated.forEach((node, i) => {
-    const angle = -Math.PI / 2 + (i / isolated.length) * Math.PI * 2;
-    const radius = connected.length > 0 ? outerRadius : Math.min(outerRadius, 40 + isolated.length * 14);
-    positions.set(node.id, { x: Math.round(centre.x + Math.cos(angle) * radius), y: Math.round(centre.y + Math.sin(angle) * radius) });
-  });
-  return { positions, width, height };
-}
+  const ids = new Set(nodes.map((node) => node.id));
+  const centreIds = ego.filter((id) => ids.has(id));
+  const centreSet = new Set(centreIds);
+  if (nodes.length === 0) return { positions, width: MIN_CANVAS, height: MIN_CANVAS };
 
-/**
- * A force layout, run to rest before render, inside a circle: nodes repel,
- * shared Rooms pull, a Principal's seats drift together, and gravity keeps
- * everything near the centre. Deterministic: the same ids start from the
- * same places and settle in the same ones.
- */
-function simulate(nodes: readonly LayoutNode[], edges: readonly LayoutEdge[], centre: Point, radius: number): Map<string, Point> {
-  const count = nodes.length;
-  const ids = nodes.map((node) => node.id);
-  const index = new Map(ids.map((id, i) => [id, i]));
-  const x = new Float64Array(count);
-  const y = new Float64Array(count);
-  for (let i = 0; i < count; i += 1) {
-    const angle = (i / count) * Math.PI * 2 + hashId(ids[i]!) * 0.5;
-    const distance = radius * (0.35 + 0.5 * hashId(`${ids[i]}:r`));
-    x[i] = centre.x + Math.cos(angle) * distance;
-    y[i] = centre.y + Math.sin(angle) * distance;
+  // How strongly each outer node is tied to the ego.
+  const pull = new Map<string, number>();
+  for (const edge of edges) {
+    if (centreSet.has(edge.source) && !centreSet.has(edge.target)) pull.set(edge.target, (pull.get(edge.target) ?? 0) + edge.strength);
+    if (centreSet.has(edge.target) && !centreSet.has(edge.source)) pull.set(edge.source, (pull.get(edge.source) ?? 0) + edge.strength);
   }
-  const area = Math.PI * radius * radius;
-  // Rest length between linked nodes: room for two marks and their labels.
-  const k = Math.max(170, Math.sqrt(area / Math.max(count, 2)) * 0.9);
-  const springs = edges
-    .filter((edge) => index.has(edge.source) && index.has(edge.target))
-    .map((edge) => ({ a: index.get(edge.source)!, b: index.get(edge.target)!, strength: 1 + Math.min(edge.weight, 4) * 0.25 }));
-  const byGroup = new Map<string, number[]>();
-  nodes.forEach((node, i) => byGroup.set(node.group, [...(byGroup.get(node.group) ?? []), i]));
-  for (const members of byGroup.values()) {
-    for (let a = 0; a < members.length; a += 1) for (let b = a + 1; b < members.length; b += 1) springs.push({ a: members[a]!, b: members[b]!, strength: 0.2 });
+  const outer = nodes.filter((node) => !centreSet.has(node.id));
+  const strongest = Math.max(0, ...outer.map((node) => pull.get(node.id) ?? 0));
+  const tier = (id: string): number => {
+    const value = pull.get(id) ?? 0;
+    if (value <= 0) return 2;
+    return value >= strongest * 0.5 ? 0 : 1;
+  };
+  const rings: LayoutNode[][] = [[], [], []];
+  for (const node of outer) rings[tier(node.id)]!.push(node);
+  for (const ring of rings) ring.sort((left, right) => (pull.get(right.id) ?? 0) - (pull.get(left.id) ?? 0) || compareIds(left.id, right.id));
+
+  // The ego: one node in the middle, or its Instances on a small circle.
+  const innerRadius = centreIds.length <= 1 ? 0 : Math.max(48, (centreIds.length * RING_SPACING) / (2 * Math.PI));
+  let radius = innerRadius;
+  const placed: Array<{ ring: LayoutNode[]; radius: number; offset: number }> = [];
+  rings.forEach((tierNodes, index) => {
+    // A crowded tier spills over several rings rather than one enormous one.
+    for (let from = 0; from < tierNodes.length; from += RING_CAPACITY) {
+      const ring = tierNodes.slice(from, from + RING_CAPACITY);
+      radius = Math.max(radius + RING_GAP, (ring.length * RING_SPACING) / (2 * Math.PI));
+      placed.push({ ring, radius, offset: index * 0.35 + (from / RING_CAPACITY) * 0.11 });
+    }
+  });
+  const extent = (placed.at(-1)?.radius ?? innerRadius) + RING_GAP * 0.6;
+  const side = Math.max(MIN_CANVAS, Math.round(extent * 2));
+  const centre = { x: side / 2, y: side / 2 };
+  [...centreIds].sort(compareIds).forEach((id, i) => {
+    if (centreIds.length === 1) {
+      positions.set(id, { x: Math.round(centre.x), y: Math.round(centre.y) });
+      return;
+    }
+    const angle = -Math.PI / 2 + (i / centreIds.length) * Math.PI * 2;
+    positions.set(id, { x: Math.round(centre.x + Math.cos(angle) * innerRadius), y: Math.round(centre.y + Math.sin(angle) * innerRadius) });
+  });
+  for (const { ring, radius: r, offset } of placed) {
+    ring.forEach((node, i) => {
+      const angle = -Math.PI / 2 + offset + (i / ring.length) * Math.PI * 2;
+      positions.set(node.id, { x: Math.round(centre.x + Math.cos(angle) * r), y: Math.round(centre.y + Math.sin(angle) * r) });
+    });
   }
-  let temperature = radius / 4;
-  const dx = new Float64Array(count);
-  const dy = new Float64Array(count);
-  for (let step = 0; step < 300; step += 1) {
-    dx.fill(0);
-    dy.fill(0);
-    for (let i = 0; i < count; i += 1) {
-      for (let j = i + 1; j < count; j += 1) {
-        let ddx = x[i]! - x[j]!;
-        let ddy = y[i]! - y[j]!;
-        let distance = Math.hypot(ddx, ddy);
-        if (distance < 0.01) {
-          ddx = hashId(`${ids[i]}${ids[j]}`) - 0.5;
-          ddy = hashId(`${ids[j]}${ids[i]}`) - 0.5;
-          distance = 0.01;
-        }
-        const repulsion = (k * k) / distance;
-        dx[i]! += (ddx / distance) * repulsion;
-        dy[i]! += (ddy / distance) * repulsion;
-        dx[j]! -= (ddx / distance) * repulsion;
-        dy[j]! -= (ddy / distance) * repulsion;
-      }
-    }
-    for (const spring of springs) {
-      const ddx = x[spring.a]! - x[spring.b]!;
-      const ddy = y[spring.a]! - y[spring.b]!;
-      const distance = Math.max(Math.hypot(ddx, ddy), 0.01);
-      const attraction = ((distance * distance) / k) * spring.strength;
-      dx[spring.a]! -= (ddx / distance) * attraction;
-      dy[spring.a]! -= (ddy / distance) * attraction;
-      dx[spring.b]! += (ddx / distance) * attraction;
-      dy[spring.b]! += (ddy / distance) * attraction;
-    }
-    for (let i = 0; i < count; i += 1) {
-      dx[i]! += (centre.x - x[i]!) * 0.03;
-      dy[i]! += (centre.y - y[i]!) * 0.03;
-      const length = Math.max(Math.hypot(dx[i]!, dy[i]!), 0.01);
-      const capped = Math.min(length, temperature);
-      let nx = x[i]! + (dx[i]! / length) * capped;
-      let ny = y[i]! + (dy[i]! / length) * capped;
-      // Stay inside the circle the layout was given.
-      const away = Math.hypot(nx - centre.x, ny - centre.y);
-      if (away > radius) {
-        nx = centre.x + ((nx - centre.x) / away) * radius;
-        ny = centre.y + ((ny - centre.y) / away) * radius;
-      }
-      x[i] = nx;
-      y[i] = ny;
-    }
-    temperature *= 0.985;
-  }
-  const positions = new Map<string, Point>();
-  for (let i = 0; i < count; i += 1) positions.set(ids[i]!, { x: Math.round(x[i]!), y: Math.round(y[i]!) });
-  return positions;
+  return { positions, width: side, height: side };
 }
 
 /** The Instance a search names: an exact id, or the one id that starts with what was typed. */
@@ -388,6 +349,10 @@ function InstanceCard({
           <dt>Connections</dt>
           <dd>{`${node.degree} Instance${node.degree === 1 ? "" : "s"} across ${node.sharedRooms} shared Room membership${node.sharedRooms === 1 ? "" : "s"}`}</dd>
         </div>
+        <div>
+          <dt>Weighted</dt>
+          <dd>{`${weighted(node.strength)} · each Room counts 1/(members − 1)`}</dd>
+        </div>
       </dl>
       {node.principal && !node.own ? <p className="agent-card-note">{node.principal.summary}</p> : null}
       {siblings.length > 0 ? (
@@ -436,6 +401,10 @@ function PrincipalCard({ node, onClose, onOpen }: { node: PrincipalNode; onClose
           <dt>Connections</dt>
           <dd>{`${node.degree} Principal${node.degree === 1 ? "" : "s"} across ${node.sharedRooms} shared Room membership${node.sharedRooms === 1 ? "" : "s"}`}</dd>
         </div>
+        <div>
+          <dt>Weighted</dt>
+          <dd>{`${weighted(node.strength)} · each Room counts 1/(members − 1)`}</dd>
+        </div>
       </dl>
       {!node.own ? <p className="agent-card-note">{principal.summary}</p> : null}
       <button className="agent-card-drill" onClick={onOpen} type="button">
@@ -455,6 +424,8 @@ export function NetworkView() {
   const { network, status } = useSharedNet();
   const [level, setLevel] = useState<Level>("principals");
   const [focus, setFocus] = useState<PrincipalId | null>(null);
+  // Instances level: the ego's own Instances and what they touch, or everyone.
+  const [everyone, setEveryone] = useState(false);
   const [selectedPrincipalId, setSelectedPrincipalId] = useState<PrincipalId | null>(null);
   const [selectedId, setSelectedId] = useState<InstanceId | null>(null);
   const [cardOpen, setCardOpen] = useState(true);
@@ -486,13 +457,21 @@ export function NetworkView() {
   const principalGraph = useMemo(() => (network ? buildPrincipalGraph(network, whole) : { nodes: [], edges: [] }), [network, whole]);
   // The Instance level is always seen from one Principal: the one drilled into, or your own.
   const focusPrincipal = focus ?? network?.principal.principal_id ?? null;
-  const graph = useMemo(() => (focusPrincipal ? instancesAround(whole, focusPrincipal) : whole), [whole, focusPrincipal]);
+  const graph = useMemo(() => (focusPrincipal && !everyone ? instancesAround(whole, focusPrincipal) : whole), [whole, focusPrincipal, everyone]);
   const layout = useMemo(
     () =>
       level === "principals"
-        ? layoutGraph(principalGraph.nodes.map((node) => ({ id: node.principal.principal_id, group: node.principal.principal_id })), principalGraph.edges)
-        : layoutGraph(graph.nodes.map((node) => ({ id: node.instance.instance_id, group: node.instance.principal_id })), graph.edges),
-    [level, principalGraph, graph],
+        ? layoutGraph(
+            principalGraph.nodes.map((node) => ({ id: node.principal.principal_id, group: node.principal.principal_id })),
+            principalGraph.edges,
+            network ? [network.principal.principal_id] : [],
+          )
+        : layoutGraph(
+            graph.nodes.map((node) => ({ id: node.instance.instance_id, group: node.instance.principal_id })),
+            graph.edges,
+            graph.nodes.filter((node) => node.instance.principal_id === focusPrincipal).map((node) => node.instance.instance_id),
+          ),
+    [level, principalGraph, graph, network, focusPrincipal],
   );
   function zoomBy(factor: number) {
     const stage = stageRef.current;
@@ -599,6 +578,15 @@ export function NetworkView() {
   const highlighted = new Set<InstanceId>(
     selected ? [selected.instance.instance_id, ...graph.edges.flatMap((edge) => (edge.source === selected.instance.instance_id ? [edge.target] : edge.target === selected.instance.instance_id ? [edge.source] : []))] : [],
   );
+  // Lines are drawn from the ego outward always; a line between two outer
+  // nodes only when one of them is selected. Otherwise a crowded Room, which
+  // ties every pair, is a hairball.
+  const egoInstances = new Set(graph.nodes.filter((node) => node.instance.principal_id === focusPrincipal).map((node) => node.instance.instance_id));
+  const instanceEdgeShown = (edge: GraphEdge) =>
+    egoInstances.has(edge.source) || egoInstances.has(edge.target) || (selected !== null && (edge.source === selected.instance.instance_id || edge.target === selected.instance.instance_id));
+  const egoPrincipal = network.principal.principal_id;
+  const principalEdgeShown = (edge: PrincipalEdge) =>
+    edge.source === egoPrincipal || edge.target === egoPrincipal || (selectedPrincipal !== null && (edge.source === selectedPrincipal.principal.principal_id || edge.target === selectedPrincipal.principal.principal_id));
 
   return (
     <div className="network-surface">
@@ -679,7 +667,15 @@ export function NetworkView() {
                 All Principals
               </button>
               <span aria-hidden="true">›</span>
-              <span>{`${focusPrincipal === network.principal.principal_id ? "your" : ""} ${focusPrincipal} · its Instances and what they connect to`.trim()}</span>
+              <span>
+                {everyone
+                  ? `everyone · every Instance in your Network, seen from ${focusPrincipal === network.principal.principal_id ? "you" : focusPrincipal}`
+                  : `${focusPrincipal === network.principal.principal_id ? "your" : ""} ${focusPrincipal} · its Instances and what they connect to`.trim()}
+              </span>
+              <span aria-hidden="true">·</span>
+              <button aria-pressed={everyone} onClick={() => setEveryone((current) => !current)} type="button">
+                {everyone ? "Only what this Principal touches" : "Everyone"}
+              </button>
             </nav>
           ) : null}
           {searchNote ? (
@@ -730,14 +726,14 @@ export function NetworkView() {
             >
               <svg aria-hidden="true" className="relationship-lines" height={layout.height} viewBox={`0 0 ${layout.width} ${layout.height}`} width={layout.width}>
                 {level === "principals"
-                  ? principalGraph.edges.map((edge) => {
+                  ? principalGraph.edges.filter(principalEdgeShown).map((edge) => {
                       const from = layout.positions.get(edge.source);
                       const to = layout.positions.get(edge.target);
                       if (!from || !to) return null;
                       const lit = selectedPrincipal !== null && (edge.source === selectedPrincipal.principal.principal_id || edge.target === selectedPrincipal.principal.principal_id);
-                      return <line data-edge-kind="principal_connection" data-lit={lit ? "true" : undefined} data-weight={edge.weight} key={`${edge.source}|${edge.target}`} strokeWidth={1 + Math.min(edge.weight, 6) * 0.6} x1={from.x} x2={to.x} y1={from.y} y2={to.y} />;
+                      return <line data-edge-kind="principal_connection" data-lit={lit ? "true" : undefined} data-strength={edge.strength.toFixed(3)} data-weight={edge.weight} key={`${edge.source}|${edge.target}`} strokeOpacity={0.25 + Math.min(edge.strength, 2) * 0.35} strokeWidth={1 + Math.min(edge.strength, 3) * 1.2} x1={from.x} x2={to.x} y1={from.y} y2={to.y} />;
                     })
-                  : graph.edges.map((edge) => {
+                  : graph.edges.filter(instanceEdgeShown).map((edge) => {
                   const from = layout.positions.get(edge.source);
                   const to = layout.positions.get(edge.target);
                   if (!from || !to) return null;
@@ -746,9 +742,11 @@ export function NetworkView() {
                     <line
                       data-edge-kind="room_co_membership"
                       data-lit={lit ? "true" : undefined}
+                      data-strength={edge.strength.toFixed(3)}
                       data-weight={edge.weight}
                       key={`${edge.source}|${edge.target}`}
-                      strokeWidth={1 + Math.min(edge.weight, 4) * 0.75}
+                      strokeOpacity={0.25 + Math.min(edge.strength, 2) * 0.35}
+                      strokeWidth={1 + Math.min(edge.strength, 3) * 1.2}
                       x1={from.x}
                       x2={to.x}
                       y1={from.y}
@@ -761,10 +759,10 @@ export function NetworkView() {
               <ol aria-label="Visible relationships" className="sr-only">
                 {level === "principals"
                   ? principalGraph.edges.map((edge) => (
-                      <li key={`${edge.source}|${edge.target}`}>{`principal_connection: source ${edge.source}; target ${edge.target}; weight ${edge.weight}`}</li>
+                      <li key={`${edge.source}|${edge.target}`}>{`principal_connection: source ${edge.source}; target ${edge.target}; weight ${edge.weight}; strength ${edge.strength.toFixed(3)}`}</li>
                     ))
                   : graph.edges.map((edge) => (
-                      <li key={`${edge.source}|${edge.target}`}>{`room_co_membership: source ${edge.source}; target ${edge.target}; weight ${edge.weight}`}</li>
+                      <li key={`${edge.source}|${edge.target}`}>{`room_co_membership: source ${edge.source}; target ${edge.target}; weight ${edge.weight}; strength ${edge.strength.toFixed(3)}`}</li>
                     ))}
               </ol>
 
@@ -847,7 +845,7 @@ export function NetworkView() {
             </span>
             <span>
               <i className="legend-room" aria-hidden="true" />
-              {level === "principals" ? "line · Rooms their Instances share, thicker for more" : "line · shared Rooms, thicker for more"}
+              line · shared Rooms weighted by Room size, thicker for stronger; lines between others show when one is selected
             </span>
           </footer>
         </section>

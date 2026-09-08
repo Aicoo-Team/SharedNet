@@ -208,7 +208,10 @@ export type NetworkEdge = {
   kind: "room_co_membership" | "delegation" | "verification";
   source_id: InstanceId;
   target_id: InstanceId;
+  /** How many Rooms the two share. */
   weight: number;
+  /** The same, each Room weighted by 1/(members - 1): a crowded Room counts for little. */
+  strength: number;
 };
 
 export type NetworkProjection = {
@@ -750,8 +753,11 @@ export function isDecisionProjection(
 
 function isNetworkEdge(value: unknown): value is NetworkEdge {
   return (
-    hasExactKeys(value, ["kind", "source_id", "target_id", "weight"]) &&
+    hasExactKeys(value, ["kind", "source_id", "target_id", "weight", "strength"]) &&
     isPositiveInteger(value.weight) &&
+    typeof value.strength === "number" &&
+    Number.isFinite(value.strength) &&
+    value.strength >= 0 &&
     (value.kind === "room_co_membership" ||
       value.kind === "delegation" ||
       value.kind === "verification") &&
