@@ -89,7 +89,7 @@ const INVITE_TOKEN_PATTERN = /^rit_[A-Za-z0-9_-]{43}$/;
 /** The server caps one wait at this; the client loops. */
 const WAIT_MAX_SECONDS = 25;
 
-const VALUE_OPTIONS = new Set(["name", "token", "timeout", "reply-to", "min", "on", "run", "max-runs", "max-failures", "as", "claim", "agent"]);
+const VALUE_OPTIONS = new Set(["name", "token", "timeout", "reply-to", "min", "on", "run", "max-runs", "max-failures", "as", "claim", "agent", "after", "before", "limit", "order", "last", "from-instance", "from-agent", "grep"]);
 const FLAG_OPTIONS = new Set(["hook", "private", "reply"]);
 
 function parseGuestArguments(args: string[]): ParsedGuestArguments {
@@ -922,6 +922,82 @@ async function wait(args: string[], dependencies: GuestDependencies): Promise<un
   return page;
 }
 
+/** The read flags, as a query string: filter, order, window. `--last K` is newest-first, K of them. */
+export function messageQueryFrom(options: Map<string, string | true>): URLSearchParams {
+  const value = (name: string): string | undefined => {
+    const raw = options.get(name);
+    return typeof raw === "string" ? raw : undefined;
+  };
+  const parameters = new URLSearchParams();
+  const last = value("last");
+  const after = value("after");
+  const before = value("before");
+  const limit = value("limit");
+  const order = value("order");
+  for (const [name, raw] of [["after", after], ["before", before], ["limit", limit], ["last", last]] as const) {
+    if (raw !== undefined && !/^\d+$/.test(raw)) throw localError("invalid_arguments", `--${name} takes a whole number.`);
+  }
+  if (last !== undefined && (after !== undefined || before !== undefined || limit !== undefined || order !== undefined)) {
+    throw localError("invalid_arguments", "--last stands alone; use --order desc --limit K to combine.");
+  }
+  if (limit !== undefined && (Number(limit) < 1 || Number(limit) > 100)) throw localError("invalid_limit", "--limit must be an integer from 1 to 100.");
+  if (last !== undefined && (Number(last) < 1 || Number(last) > 100)) throw localError("invalid_limit", "--last must be an integer from 1 to 100.");
+  if (order !== undefined && order !== "asc" && order !== "desc") throw localError("invalid_arguments", "--order is asc or desc.");
+  if (after !== undefined) parameters.set("after", after);
+  if (before !== undefined) parameters.set("before", before);
+  if (limit !== undefined) parameters.set("limit", limit);
+  if (order !== undefined) parameters.set("order", order);
+  if (last !== undefined) {
+    parameters.set("order", "desc");
+    parameters.set("limit", last);
+  }
+  const fromInstance = value("from-instance");
+  if (fromInstance !== undefined) {
+    if (!/^i_[0-9A-Za-z]{10}$/.test(fromInstance)) throw localError("invalid_arguments", "--from-instance takes an Instance id such as i_AbCdEfGhIj.");
+    parameters.set("sender_instance_id", fromInstance);
+  }
+  const fromAgent = value("from-agent");
+  if (fromAgent !== undefined) {
+    if (fromAgent !== "default" && !/^a_[0-9A-Za-z]{10}$/.test(fromAgent)) throw localError("invalid_arguments", "--from-agent takes an Agent id such as a_AbCdEfGhIj, or default.");
+    parameters.set("sender_agent_id", fromAgent);
+  }
+  const grep = value("grep");
+  if (grep !== undefined) {
+    if (grep.length === 0 || [...grep].length > 256) throw localError("invalid_arguments", "--grep takes 1 to 256 characters.");
+    parameters.set("q", grep);
+  }
+  return parameters;
+}
+
+export const READ_OPTIONS = ["after", "before", "limit", "order", "last", "from-instance", "from-agent", "grep"] as const;
+
+/**
+ * `sharednet read`: a window of this Room's log. Filter (grep, sender, tag),
+ * order, window; the cursor is untouched, so reading is never "seeing".
+ */
+async function read(args: string[], dependencies: GuestDependencies): Promise<unknown> {
+  const parsed = parseGuestArguments(args);
+  assertOnlyOptions(parsed, [...READ_OPTIONS, "as"]);
+  if (parsed.positionals.length !== 0) {
+    throw localError(
+      "invalid_arguments",
+      "Usage: sharednet read [--grep TEXT] [--from-instance i_…] [--from-agent a_…|default] [--last K | --after N | --before N] [--limit K] [--order asc|desc]",
+    );
+  }
+  const query = messageQueryFrom(parsed.options);
+  const { client, state, credential } = await currentSeat(dependencies, stringOption(parsed, "as"));
+  const page = await client.request<PageShape>(
+    "GET",
+    `/rooms/${encodeURIComponent(state.room_id)}/messages${query.size ? `?${query.toString()}` : ""}`,
+    credential.member_token,
+  );
+  // --last K is asked newest-first and shown oldest-first, the way a person reads a tail.
+  if (parsed.options.has("last") && Array.isArray(page?.items)) {
+    return { ...page, items: [...page.items].reverse() };
+  }
+  return page;
+}
+
 /**
  * `sharednet whoami`: who this machine acts as, and which seat this
  * directory holds, from the files alone. Ids only; never a key or a token.
@@ -1055,6 +1131,7 @@ export type GuestVerb =
   | "whoami"
   | "join"
   | "say"
+  | "read"
   | "wait"
   | "watch"
   | "add"
@@ -1069,6 +1146,7 @@ export function isGuestVerb(value: string | undefined): value is GuestVerb {
     value === "whoami" ||
     value === "join" ||
     value === "say" ||
+    value === "read" ||
     value === "wait" ||
     value === "watch" ||
     value === "add" ||
@@ -1088,6 +1166,7 @@ export async function runGuestVerb(
   if (verb === "whoami") return whoami(args, dependencies);
   if (verb === "join") return join(args, dependencies);
   if (verb === "say") return say(args, dependencies);
+  if (verb === "read") return read(args, dependencies);
   if (verb === "watch") return watch(args, dependencies);
   if (verb === "add") return add(args, dependencies);
   if (verb === "rooms") return rooms(args, dependencies);

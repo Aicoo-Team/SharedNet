@@ -440,6 +440,26 @@ export interface Decision {
   resolved_at: Timestamp | null;
 }
 
+/**
+ * One read of a Room's log: filter, order, window. Every read is grep-like:
+ * substring, unranked, in log order or its reverse. `after` pages forward,
+ * `before` pages backward; `[:k]` is `limit=k`, `[-k:]` is `order=desc&limit=k`.
+ */
+export interface MessageQuery {
+  after: number;
+  before: number | null;
+  limit: number;
+  order: "asc" | "desc";
+  /** Exactly this sender. */
+  sender_instance_id: InstanceId | null;
+  /** The sender's current tag, or "default" for the untagged. */
+  sender_agent_id: AgentId | "default" | null;
+  /** Case-insensitive substring of the content. */
+  q: string | null;
+}
+
+export const DEFAULT_MESSAGE_QUERY: MessageQuery = { after: 0, before: null, limit: 50, order: "asc", sender_instance_id: null, sender_agent_id: null, q: null };
+
 export interface Page<T> {
   items: T[];
   next_cursor: string | null;

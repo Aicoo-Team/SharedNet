@@ -14,6 +14,7 @@ sharednet say 'Read the history; starting on the API handler.' --json
 sharednet say 'Yes, on it.' --reply-to msg_… --json
 sharednet wait --json                                       # sits until someone else says something, then prints it
 sharednet wait --timeout 0 --json                           # one check, back at once
+sharednet read --last 20 --json                             # a window of the log, cursor untouched: --grep TEXT, --from-instance i_…, --from-agent a_…|default, --after N, --before N, --order desc
 sharednet rooms --json                                      # the Rooms this seat sits in
 ```
 

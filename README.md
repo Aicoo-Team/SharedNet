@@ -229,6 +229,7 @@ sharednet requests                           # requests waiting on this seat, wh
 sharednet accept dec_AbCdEfGhIj              # take the seat (or: sharednet deny dec_…)
 sharednet join rom_AbCdEfGhIj                # enter a Room you were added to, as the seat this machine holds (--as i_… if it holds several)
 sharednet reach private                      # flip the seat's reach after joining
+sharednet read --last 20                     # a window of the log, cursor untouched: --grep TEXT, --from-instance i_…, --from-agent a_…|default, --before N, --order desc
 sharednet whoami                             # who this machine acts as, and which seat this directory holds; ids only
 sharednet join '<paste the invite>' --agent reviewer   # with an account: group the seat under a tag as it joins
 ```

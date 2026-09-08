@@ -8,7 +8,9 @@ import {
   type InboxPosition,
   DISCOVERY_DOCUMENT,
   ERROR_STATUS,
+  DEFAULT_MESSAGE_QUERY,
   MIN_CLI_VERSION,
+  type MessageQuery,
   OPENAPI_DOCUMENT,
   compareVersions,
   isVersionString,
@@ -232,26 +234,54 @@ function routeMethodNotAllowed(allow: string): Response {
   return errorResponse("method_not_allowed", { allow });
 }
 
-function parseMessageQuery(
-  url: URL,
-  allowed: readonly string[] = ["after", "limit"],
-): { after: number; limit: number } {
+const MESSAGE_QUERY_KEYS = ["after", "before", "limit", "order", "sender_instance_id", "sender_agent_id", "q"] as const;
+
+/** Filter, order, window. Unknown keys are refused; filters compose with AND. */
+function parseMessageQuery(url: URL, allowed: readonly string[] = MESSAGE_QUERY_KEYS): MessageQuery {
   for (const key of url.searchParams.keys()) {
     if (!allowed.includes(key)) {
       throw new ProtocolRequestError("invalid_request");
     }
   }
   const afterValue = url.searchParams.get("after");
+  const beforeValue = url.searchParams.get("before");
   const limitValue = url.searchParams.get("limit");
+  const orderValue = url.searchParams.get("order");
   const after = afterValue === null ? 0 : Number(afterValue);
+  const before = beforeValue === null ? null : Number(beforeValue);
   const limit = limitValue === null ? 50 : Number(limitValue);
   if (!Number.isSafeInteger(after) || after < 0) {
+    throw new ProtocolRequestError("invalid_cursor");
+  }
+  if (before !== null && (!Number.isSafeInteger(before) || before < 1)) {
     throw new ProtocolRequestError("invalid_cursor");
   }
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
     throw new ProtocolRequestError("invalid_request");
   }
-  return { after, limit };
+  if (orderValue !== null && orderValue !== "asc" && orderValue !== "desc") {
+    throw new ProtocolRequestError("invalid_request");
+  }
+  // `before` pages backward and implies desc; `after` with `before` or with desc is contradictory.
+  const order: MessageQuery["order"] = orderValue === "desc" || (orderValue === null && before !== null) ? "desc" : "asc";
+  if (before !== null && afterValue !== null) throw new ProtocolRequestError("invalid_request");
+  if (before !== null && order === "asc") throw new ProtocolRequestError("invalid_request");
+  if (afterValue !== null && order === "desc") throw new ProtocolRequestError("invalid_request");
+  const senderInstance = url.searchParams.get("sender_instance_id");
+  const senderAgent = url.searchParams.get("sender_agent_id");
+  const q = url.searchParams.get("q");
+  if (q !== null && (q.length === 0 || [...q].length > 256 || /[\p{Cc}]/u.test(q))) {
+    throw new ProtocolRequestError("invalid_request");
+  }
+  return {
+    after,
+    before,
+    limit,
+    order,
+    sender_instance_id: senderInstance === null ? null : parsePublicId(senderInstance, "i"),
+    sender_agent_id: senderAgent === null ? null : senderAgent === "default" ? "default" : parsePublicId(senderAgent, "a"),
+    q,
+  };
 }
 
 /** The inbox cursor is opaque: absent means the beginning, malformed is an error. */
@@ -302,6 +332,7 @@ async function waitForMessages(
   const deadline = Date.now() + query.timeoutMs;
   for (;;) {
     const page = await repository.listMessages(auth, roomId, {
+      ...DEFAULT_MESSAGE_QUERY,
       after: query.after,
       limit: query.limit,
     });
