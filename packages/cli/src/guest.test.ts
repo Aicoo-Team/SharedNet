@@ -27,7 +27,7 @@ const PASTED_INVITE = [
   `Join SharedNet Room ${ROOM_ID} ("Launch review") as a guest.`,
   `ROOM=${ROOM_ID}`,
   `TOKEN=${INVITE_TOKEN}`,
-  "BASE=https://sharednet.ai",
+  "BASE=https://www.sharednet.ai",
   "",
   '1. Join, and read what was said so far. Keep member_token from the response and note the highest sequence in history.items:',
   `   curl -s -X POST "$BASE/api/v1/rooms/$ROOM/join" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{"name":"<your name, e.g. claude-code>"}'`,
@@ -142,7 +142,7 @@ describe("sharednet join", () => {
     expect(result.requests).toHaveLength(1);
     const [request] = result.requests;
     // The invite's BASE says where the Room lives; the invite token is the credential.
-    expect(request!.url).toBe(`https://sharednet.ai/api/v1/rooms/${ROOM_ID}/join`);
+    expect(request!.url).toBe(`https://www.sharednet.ai/api/v1/rooms/${ROOM_ID}/join`);
     expect(request!.init.method).toBe("POST");
     expect(header(request!, "authorization")).toBe(`Bearer ${INVITE_TOKEN}`);
     // The driver that is running names the seat and is reported as detected; its session id stays local.
@@ -177,7 +177,7 @@ describe("sharednet join", () => {
     const state = await readFile(join(space.project, ".sharednet", "room.json"), "utf8");
     expect(JSON.parse(state)).toEqual({
       schema_version: 1,
-      base_url: "https://sharednet.ai",
+      base_url: "https://www.sharednet.ai",
       room_id: ROOM_ID,
       member_id: MEMBER_ID,
       last_sequence: 2,
@@ -253,9 +253,9 @@ describe("sharednet join", () => {
     ]);
     expect(result.exitCode).toBe(0);
     // The claim goes first, as the bearer, and nothing else; then the account door as usual.
-    expect(result.requests[0]!.url).toBe("https://sharednet.ai/api/v1/cli/claims/redeem");
+    expect(result.requests[0]!.url).toBe("https://www.sharednet.ai/api/v1/cli/claims/redeem");
     expect(header(result.requests[0]!, "authorization")).toBe(`Bearer ${CLAIM}`);
-    expect(result.requests[1]!.url).toBe("https://sharednet.ai/api/v1/instances");
+    expect(result.requests[1]!.url).toBe("https://www.sharednet.ai/api/v1/instances");
     expect(header(result.requests[1]!, "authorization")).toBe(`Bearer ${KEY}`);
     expect(JSON.parse(result.stdout)).toMatchObject({ as: "account", principal_id: "p_ClAiMeD001", member_id: "i_ClaimedSeat" });
     expect(result.stderr).toContain("Claimed");
@@ -306,9 +306,9 @@ describe("sharednet join", () => {
     expect(result.stderr).toBe("");
     expect(result.exitCode).toBe(0);
     expect(result.requests.map((request) => `${request.init.method ?? "GET"} ${request.url}`)).toEqual([
-      "POST https://sharednet.ai/api/v1/instances",
-      `POST https://sharednet.ai/api/v1/rooms/${ROOM_ID}/join`,
-      `GET https://sharednet.ai/api/v1/rooms/${ROOM_ID}/messages?after=0&limit=100`,
+      "POST https://www.sharednet.ai/api/v1/instances",
+      `POST https://www.sharednet.ai/api/v1/rooms/${ROOM_ID}/join`,
+      `GET https://www.sharednet.ai/api/v1/rooms/${ROOM_ID}/messages?after=0&limit=100`,
     ]);
     expect(header(result.requests[0]!, "authorization")).toBe(`Bearer snk_${"K".repeat(43)}`);
     expect(header(result.requests[1]!, "authorization")).toBe(`Bearer sni_${"A".repeat(43)}`);
@@ -394,7 +394,7 @@ describe("sharednet say and wait", () => {
     expect(result.stderr).not.toMatch(/sni_|rit_|snk_/);
     expect(result.exitCode).toBe(0);
     const [request] = result.requests;
-    expect(request!.url).toBe(`https://sharednet.ai/api/v1/rooms/${ROOM_ID}/messages`);
+    expect(request!.url).toBe(`https://www.sharednet.ai/api/v1/rooms/${ROOM_ID}/messages`);
     expect(header(request!, "authorization")).toBe(`Bearer ${MEMBER_TOKEN}`);
     expect(JSON.parse(String(request!.init.body))).toEqual({ content: "Build is green." });
     expect(JSON.parse(result.stdout).message.sequence).toBe(2);
@@ -433,7 +433,7 @@ describe("sharednet say and wait", () => {
       { status: 200, body: { admissions: [{ instance_id: "i_AbCdEfGhIj", status: "member", decision_id: null }, { instance_id: "i_KlMnOpQrSt", status: "pending", decision_id: "dec_AbCdEfGhIj" }] } },
     ]);
     expect(added.exitCode).toBe(0);
-    expect(added.requests[0]!.url).toBe(`https://sharednet.ai/api/v1/rooms/${ROOM_ID}/members`);
+    expect(added.requests[0]!.url).toBe(`https://www.sharednet.ai/api/v1/rooms/${ROOM_ID}/members`);
     expect(header(added.requests[0]!, "authorization")).toBe(`Bearer ${MEMBER_TOKEN}`);
     expect(JSON.parse(String(added.requests[0]!.init.body))).toEqual({ with: ["i_AbCdEfGhIj", "i_KlMnOpQrSt"] });
     expect(JSON.parse(added.stdout).admissions[1].status).toBe("pending");
@@ -444,7 +444,7 @@ describe("sharednet say and wait", () => {
 
     const listed = await run(["rooms", "--json"], space, [{ status: 200, body: { items: [{ id: ROOM_ID }] } }]);
     expect(listed.exitCode).toBe(0);
-    expect(listed.requests[0]!.url).toBe("https://sharednet.ai/api/v1/rooms");
+    expect(listed.requests[0]!.url).toBe("https://www.sharednet.ai/api/v1/rooms");
     expect(listed.requests[0]!.init.method ?? "GET").toBe("GET");
   });
 
@@ -454,13 +454,13 @@ describe("sharednet say and wait", () => {
       { status: 200, body: { decisions: [{ id: "dec_AbCdEfGhIj", status: "pending", room_id: "rom_KlMnOpQrSt" }] } },
     ]);
     expect(pending.exitCode).toBe(0);
-    expect(pending.requests[0]!.url).toBe("https://sharednet.ai/api/v1/decisions?status=pending");
+    expect(pending.requests[0]!.url).toBe("https://www.sharednet.ai/api/v1/decisions?status=pending");
 
     const accepted = await run(["accept", "dec_AbCdEfGhIj", "--json"], space, [
       { status: 200, body: { decision: { id: "dec_AbCdEfGhIj", status: "approved" }, membership: { room_id: "rom_KlMnOpQrSt", admitted_by: "accepted" } } },
     ]);
     expect(accepted.exitCode).toBe(0);
-    expect(accepted.requests[0]!.url).toBe("https://sharednet.ai/api/v1/decisions/dec_AbCdEfGhIj/resolve");
+    expect(accepted.requests[0]!.url).toBe("https://www.sharednet.ai/api/v1/decisions/dec_AbCdEfGhIj/resolve");
     expect(JSON.parse(String(accepted.requests[0]!.init.body))).toEqual({ resolution: "approved" });
 
     const denied = await run(["deny", "dec_AbCdEfGhIj", "--json"], space, [
@@ -484,10 +484,10 @@ describe("sharednet say and wait", () => {
     expect(entered.stderr).toBe("");
     expect(entered.exitCode).toBe(0);
     // No invite: the seat's own token joins by Room id, idempotently.
-    expect(entered.requests[0]!.url).toBe(`https://sharednet.ai/api/v1/rooms/${OTHER_ROOM}/join`);
+    expect(entered.requests[0]!.url).toBe(`https://www.sharednet.ai/api/v1/rooms/${OTHER_ROOM}/join`);
     expect(header(entered.requests[0]!, "authorization")).toBe(`Bearer ${MEMBER_TOKEN}`);
     expect(header(entered.requests[0]!, "idempotency-key")).toMatch(/^[0-9a-f-]{36}$/);
-    expect(entered.requests[1]!.url).toBe(`https://sharednet.ai/api/v1/rooms/${OTHER_ROOM}/messages?after=0&limit=100`);
+    expect(entered.requests[1]!.url).toBe(`https://www.sharednet.ai/api/v1/rooms/${OTHER_ROOM}/messages?after=0&limit=100`);
     const output = JSON.parse(entered.stdout);
     expect(output).toMatchObject({ member_id: MEMBER_ID, as: "seat", admitted_by: "added", last_sequence: 2 });
     const state = JSON.parse(await readFile(join(elsewhere.project, ".sharednet", "room.json"), "utf8"));
@@ -497,7 +497,7 @@ describe("sharednet say and wait", () => {
       { status: 201, body: { message: message(3, "hello from the other room") } },
     ]);
     expect(said.exitCode).toBe(0);
-    expect(said.requests[0]!.url).toBe(`https://sharednet.ai/api/v1/rooms/${OTHER_ROOM}/messages`);
+    expect(said.requests[0]!.url).toBe(`https://www.sharednet.ai/api/v1/rooms/${OTHER_ROOM}/messages`);
 
     // A second seat on the machine makes the choice explicit.
     const secondProject = join(space.root, "second");
@@ -519,7 +519,7 @@ describe("sharednet say and wait", () => {
       { status: 200, body: { instance: { id: MEMBER_ID, reach: "private" } } },
     ]);
     expect(flipped.exitCode).toBe(0);
-    expect(flipped.requests[0]!.url).toBe("https://sharednet.ai/api/v1/instances/current");
+    expect(flipped.requests[0]!.url).toBe("https://www.sharednet.ai/api/v1/instances/current");
     expect(flipped.requests[0]!.init.method).toBe("PATCH");
     expect(JSON.parse(String(flipped.requests[0]!.init.body))).toEqual({ reach: "private" });
     const bad = await run(["reach", "secret", "--json"], space, []);
@@ -566,7 +566,7 @@ describe("sharednet say and wait", () => {
       expect((calls[0]!.input as any).messages.map((item: any) => item.sequence)).toEqual([3]);
       expect(calls[0]!.env).toMatchObject({ SHAREDNET_ROOM_ID: ROOM_ID, SHAREDNET_MEMBER_ID: MEMBER_ID, SHAREDNET_MESSAGE_COUNT: "1", SHAREDNET_LAST_SEQUENCE: "4" });
       const reply = result.requests.at(-1)!;
-      expect(reply.url).toBe(`https://sharednet.ai/api/v1/rooms/${ROOM_ID}/messages`);
+      expect(reply.url).toBe(`https://www.sharednet.ai/api/v1/rooms/${ROOM_ID}/messages`);
       expect(JSON.parse(String(reply.init.body))).toEqual({ content: "On it." });
       const summary = JSON.parse(result.stdout);
       expect(summary.runs).toEqual([
@@ -734,8 +734,8 @@ describe("sharednet say and wait", () => {
     expect(result.stderr).toBe("");
     expect(result.exitCode).toBe(0);
     expect(result.requests.map((request) => request.url)).toEqual([
-      `https://sharednet.ai/api/v1/rooms/${ROOM_ID}/wait?after=1&timeout=25`,
-      `https://sharednet.ai/api/v1/rooms/${ROOM_ID}/wait?after=1&timeout=25`,
+      `https://www.sharednet.ai/api/v1/rooms/${ROOM_ID}/wait?after=1&timeout=25`,
+      `https://www.sharednet.ai/api/v1/rooms/${ROOM_ID}/wait?after=1&timeout=25`,
     ]);
     expect(header(result.requests[1]!, "authorization")).toBe(`Bearer ${MEMBER_TOKEN}`);
     expect(JSON.parse(result.stdout).items.map((item: { sequence: number }) => item.sequence)).toEqual([2, 3]);
@@ -763,6 +763,43 @@ describe("sharednet say and wait", () => {
     expect(JSON.parse(await readFile(join(space.project, ".sharednet", "room.json"), "utf8")).last_sequence).toBe(5);
   });
 
+  it("treats the apex and www hosts as one SharedNet: a login under either matches an invite from the other", async () => {
+    const space = await workspace();
+    const { getStoragePaths, writeStoredApiCredential } = await import("./storage.ts");
+    // A credential an older CLI wrote under the apex host.
+    await writeStoredApiCredential(getStoragePaths(space.env), {
+      schema_version: 1, base_url: "https://sharednet.ai", principal_id: "p_AcCoUnT0001", api_key_id: "key_AbCdEfGhIj",
+      api_key: `snk_${"K".repeat(43)}`, installation_secret: Buffer.alloc(32, 7).toString("base64url"), created_at: "2026-09-08T00:00:00.000Z", expires_at: null,
+    });
+    const instance = {
+      id: "i_AccountSeat1", principal_id: "p_AcCoUnT0001", agent_id: null, runtime_kind: "claude-code", cli_version: "0.1.0",
+      runtime_metadata: {}, reach: "public", status: "online", display_name: null,
+      started_at: "2026-09-08T00:00:00.000Z", last_seen_at: "2026-09-08T00:00:00.000Z", lease_expires_at: "2026-09-08T00:01:00.000Z",
+      token_expires_at: null, ended_at: null, revoked_at: null,
+    };
+    // The invite names www; the machine must still join as the account, and every request must go to www directly.
+    const result = await run(
+      ["join", PASTED_INVITE, "--json"],
+      space,
+      [
+        { status: 201, body: { instance, token: `sni_${"A".repeat(43)}`, heartbeat_after_seconds: 30 } },
+        { status: 200, body: { room: { id: ROOM_ID, name: "Launch review", state: "open" }, membership: { member_id: "i_AccountSeat1", principal_id: "p_AcCoUnT0001", kind: "instance", admitted_by: "invite", name: null, state: "active" } } },
+        { status: 200, body: { items: [], next_cursor: null, has_more: false } },
+      ],
+    );
+    expect(result.stderr).toBe("");
+    expect(JSON.parse(result.stdout)).toMatchObject({ as: "account", principal_id: "p_AcCoUnT0001" });
+    expect(result.requests.every((request) => request.url.startsWith("https://www.sharednet.ai/"))).toBe(true);
+
+    // whoami reports the seat this directory holds, and the account, on the one origin.
+    const who = await run(["whoami", "--json"], space, []);
+    expect(JSON.parse(who.stdout)).toMatchObject({
+      base_url: "https://www.sharednet.ai",
+      account: { principal_id: "p_AcCoUnT0001" },
+      seat: { room_id: ROOM_ID, member_id: "i_AccountSeat1", base_url: "https://www.sharednet.ai" },
+    });
+  });
+
   it("groups an account's seat under a tag with --agent, and refuses the flag for a machine that acts as nobody", async () => {
     const space = await workspace();
     const instance = {
@@ -786,8 +823,8 @@ describe("sharednet say and wait", () => {
     expect(result.exitCode).toBe(0);
     // The handle is created (or found) first, then the registration names the tag.
     expect(result.requests.map((request) => `${request.init.method ?? "GET"} ${request.url}`).slice(0, 2)).toEqual([
-      "POST https://sharednet.ai/api/v1/agents",
-      "POST https://sharednet.ai/api/v1/instances",
+      "POST https://www.sharednet.ai/api/v1/agents",
+      "POST https://www.sharednet.ai/api/v1/instances",
     ]);
     expect(JSON.parse(String(result.requests[0]!.init.body))).toEqual({ handle: "reviewer" });
     expect(JSON.parse(String(result.requests[1]!.init.body)).agent_id).toBe("a_ReViEwEr01");
@@ -802,7 +839,7 @@ describe("sharednet say and wait", () => {
   it("says who this machine acts as and which seat this directory holds, and never a secret", async () => {
     const nobody = await run(["whoami", "--json"], await workspace(), []);
     expect(nobody.exitCode).toBe(0);
-    expect(JSON.parse(nobody.stdout)).toMatchObject({ base_url: "https://sharednet.ai", account: null, seat: null });
+    expect(JSON.parse(nobody.stdout)).toMatchObject({ base_url: "https://www.sharednet.ai", account: null, seat: null });
     expect(JSON.parse(nobody.stdout).next).toContain("sharednet login");
 
     const space = await joinedSpace();

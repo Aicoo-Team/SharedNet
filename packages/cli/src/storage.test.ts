@@ -38,7 +38,7 @@ describe("secure local state", () => {
 
     await writeSession(paths, {
       schema_version: 1,
-      base_url: "https://sharednet.ai",
+      base_url: "https://www.sharednet.ai",
       principal_id: "p_demo",
       agent_id: "a_default",
       instance_id: "i_one",
