@@ -59,7 +59,8 @@ type PrincipalNode = Readonly<{
 }>;
 type PrincipalEdge = Readonly<{ source: PrincipalId; target: PrincipalId; weight: number; strength: number }>;
 
-type Level = "principals" | "instances";
+/** mine: your own sessions and how they connect; principals: who you are tied to; instances: one Principal's seats and what they touch. */
+type Level = "mine" | "principals" | "instances";
 
 const CANVAS_PADDING = 56;
 const MIN_CANVAS = 560;
@@ -277,6 +278,25 @@ export function layoutGraph(
   return { positions, width: side, height: side };
 }
 
+/**
+ * Your own sessions, on one ring in the order given (tag, then id, so the
+ * sessions of one Agent sit together), every line among them drawn. A small
+ * graph read as a chord diagram, which is what "how do my sessions connect"
+ * asks for.
+ */
+export function layoutRing(ids: readonly string[]): { positions: Map<string, Point>; width: number; height: number } {
+  const positions = new Map<string, Point>();
+  if (ids.length === 0) return { positions, width: MIN_CANVAS, height: MIN_CANVAS };
+  const radius = ids.length === 1 ? 0 : Math.max(140, (ids.length * RING_SPACING) / (2 * Math.PI));
+  const side = Math.max(MIN_CANVAS, Math.round((radius + RING_GAP * 0.6) * 2));
+  const centre = { x: side / 2, y: side / 2 };
+  ids.forEach((id, i) => {
+    const angle = -Math.PI / 2 + (i / ids.length) * Math.PI * 2;
+    positions.set(id, { x: Math.round(centre.x + Math.cos(angle) * radius), y: Math.round(centre.y + Math.sin(angle) * radius) });
+  });
+  return { positions, width: side, height: side };
+}
+
 /** The Instance a search names: an exact id, or the one id that starts with what was typed. */
 export function findInstance(nodes: GraphNode[], query: string): GraphNode | null {
   const needle = query.trim();
@@ -457,10 +477,26 @@ export function NetworkView() {
   const principalGraph = useMemo(() => (network ? buildPrincipalGraph(network, whole) : { nodes: [], edges: [] }), [network, whole]);
   // The Instance level is always seen from one Principal: the one drilled into, or your own.
   const focusPrincipal = focus ?? network?.principal.principal_id ?? null;
-  const graph = useMemo(() => (focusPrincipal && !everyone ? instancesAround(whole, focusPrincipal) : whole), [whole, focusPrincipal, everyone]);
+  // Mine: your own Instances and the lines among them, in tag order.
+  const mine = useMemo(() => {
+    if (!network) return { nodes: [], edges: [] };
+    const own = new Set(whole.nodes.filter((node) => node.instance.principal_id === network.principal.principal_id).map((node) => node.instance.instance_id));
+    return {
+      nodes: whole.nodes
+        .filter((node) => own.has(node.instance.instance_id))
+        .sort((left, right) => compareIds(left.instance.agent_id ?? "~", right.instance.agent_id ?? "~") || compareIds(left.instance.instance_id, right.instance.instance_id)),
+      edges: whole.edges.filter((edge) => own.has(edge.source) && own.has(edge.target)),
+    };
+  }, [whole, network]);
+  const graph = useMemo(
+    () => (level === "mine" ? mine : focusPrincipal && !everyone ? instancesAround(whole, focusPrincipal) : whole),
+    [level, mine, whole, focusPrincipal, everyone],
+  );
   const layout = useMemo(
     () =>
-      level === "principals"
+      level === "mine"
+        ? layoutRing(graph.nodes.map((node) => node.instance.instance_id))
+        : level === "principals"
         ? layoutGraph(
             principalGraph.nodes.map((node) => ({ id: node.principal.principal_id, group: node.principal.principal_id })),
             principalGraph.edges,
@@ -506,7 +542,7 @@ export function NetworkView() {
     if (!point) return;
     setView((current) => ({ ...current, tx: stage.clientWidth / 2 - point.x * current.scale, ty: stage.clientHeight / 2 - point.y * current.scale }));
   }, [selectedId, selectedPrincipalId, level, layout]);
-  const selected = level === "instances" ? (graph.nodes.find((node) => node.instance.instance_id === selectedId) ?? null) : null;
+  const selected = level !== "principals" ? (graph.nodes.find((node) => node.instance.instance_id === selectedId) ?? null) : null;
   const selectedPrincipal = level === "principals" ? (principalGraph.nodes.find((node) => node.principal.principal_id === selectedPrincipalId) ?? null) : null;
 
   function select(id: InstanceId) {
@@ -583,7 +619,10 @@ export function NetworkView() {
   // ties every pair, is a hairball.
   const egoInstances = new Set(graph.nodes.filter((node) => node.instance.principal_id === focusPrincipal).map((node) => node.instance.instance_id));
   const instanceEdgeShown = (edge: GraphEdge) =>
-    egoInstances.has(edge.source) || egoInstances.has(edge.target) || (selected !== null && (edge.source === selected.instance.instance_id || edge.target === selected.instance.instance_id));
+    level === "mine" ||
+    egoInstances.has(edge.source) ||
+    egoInstances.has(edge.target) ||
+    (selected !== null && (edge.source === selected.instance.instance_id || edge.target === selected.instance.instance_id));
   const egoPrincipal = network.principal.principal_id;
   const principalEdgeShown = (edge: PrincipalEdge) =>
     edge.source === egoPrincipal || edge.target === egoPrincipal || (selectedPrincipal !== null && (edge.source === selectedPrincipal.principal.principal_id || edge.target === selectedPrincipal.principal.principal_id));
@@ -637,6 +676,9 @@ export function NetworkView() {
               <button type="submit">Find</button>
             </form>
             <div className="graph-level" role="tablist" aria-label="Level">
+              <button aria-selected={level === "mine"} onClick={() => setLevel("mine")} role="tab" type="button">
+                Mine
+              </button>
               <button aria-selected={level === "principals"} onClick={() => setLevel("principals")} role="tab" type="button">
                 Principals
               </button>
@@ -658,7 +700,9 @@ export function NetworkView() {
             <p>
               {level === "principals"
                 ? `${principalGraph.nodes.length} Principal${principalGraph.nodes.length === 1 ? "" : "s"} · ${principalGraph.edges.length} connection${principalGraph.edges.length === 1 ? "" : "s"}`
-                : `${graph.nodes.length} Instance${graph.nodes.length === 1 ? "" : "s"} · ${graph.edges.length} connection${graph.edges.length === 1 ? "" : "s"}`}
+                : level === "mine"
+                  ? `${graph.nodes.length} of your session${graph.nodes.length === 1 ? "" : "s"} · ${graph.edges.length} connection${graph.edges.length === 1 ? "" : "s"} among them`
+                  : `${graph.nodes.length} Instance${graph.nodes.length === 1 ? "" : "s"} · ${graph.edges.length} connection${graph.edges.length === 1 ? "" : "s"}`}
             </p>
           </header>
           {level === "instances" ? (
@@ -826,7 +870,7 @@ export function NetworkView() {
                 );
               })}
 
-              {level === "instances" && graph.nodes.length === 0 ? <p className="principal-empty">No Instances yet. Register one with the CLI, or take a seat in a Room.</p> : null}
+              {level !== "principals" && graph.nodes.length === 0 ? <p className="principal-empty">No Instances yet. Register one with the CLI, or take a seat in a Room.</p> : null}
             </div>
           </div>
 

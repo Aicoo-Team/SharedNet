@@ -11,7 +11,7 @@ import type {
   PrincipalProjection,
 } from "@/src/sharednet/contracts";
 
-import { NetworkView, buildGraph, buildPrincipalGraph, describeInstanceRuntime, findInstance, instancesAround, layoutGraph } from "./network-view";
+import { NetworkView, buildGraph, buildPrincipalGraph, describeInstanceRuntime, findInstance, instancesAround, layoutGraph, layoutRing } from "./network-view";
 
 type SharedNetState = ReturnType<(typeof import("@/src/context/sharednet-context"))["useSharedNet"]>;
 
@@ -274,6 +274,27 @@ describe("SharedNet Network", () => {
     // From an Instance, a Principal with no shared Room shows nothing of the others.
     const lonely = instancesAround(buildGraph(network({ edges: [] })), OTHER_PRINCIPAL_ID);
     expect(lonely.nodes.map((n) => n.instance.instance_id)).toEqual([OTHER]);
+  });
+
+  it("has a Mine level: only your own sessions, on one ring in tag order, with every line among them drawn", () => {
+    const { container } = renderNetwork();
+    fireEvent.click(screen.getByRole("tab", { name: "Mine" }));
+    expect(screen.getAllByRole("button", { name: /^Inspect Instance / }).map((b) => b.dataset.instanceId)).toEqual([OWN_A, OWN_B]);
+    expect(screen.queryByRole("button", { name: `Inspect Instance ${OTHER}` })).toBeNull();
+    expect(screen.getByText("2 of your sessions · 1 connection among them")).toBeVisible();
+    const lines = container.querySelectorAll('line[data-edge-kind="room_co_membership"]');
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.getAttribute("data-weight")).toBe("2");
+    // Nobody is in the middle: two sessions face each other on a ring.
+    const canvas = container.querySelector<HTMLElement>(".network-canvas")!;
+    const mid = parseFloat(canvas.style.width) / 2;
+    const a = node(OWN_A);
+    expect(Number(a.dataset.layoutY)).toBeLessThan(mid);
+    expect(Number(node(OWN_B).dataset.layoutY)).toBeGreaterThan(mid);
+    fireEvent.click(a);
+    expect(within(screen.getByRole("region", { name: "Agent Card" })).getByText(OWN_A)).toBeVisible();
+    // The ring order puts one Agent's sessions together.
+    expect(layoutRing(["i_b", "i_a", "i_c"]).positions.size).toBe(3);
   });
 
   it("shows everyone on the Instances level on request, still seen from the same Principal", () => {
