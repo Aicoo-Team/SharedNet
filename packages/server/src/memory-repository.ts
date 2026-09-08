@@ -38,6 +38,7 @@ import {
   type RoomMember,
   type StartInstanceRequest,
 } from "../../protocol/src/index.ts";
+import type { RoomOverview } from "./repository.ts";
 import type {
   AddRoomMembersRequest,
   Admission,
@@ -134,6 +135,8 @@ export type MemoryRepositoryOptions = {
   devApiKey?: string;
   /** Each key seeds its own Principal, for exercising cross-Principal paths. */
   devApiKeys?: string[];
+  /** Accounts with a Principal each, the way the Dashboard sees them; a key per account when given. */
+  accounts?: Array<{ authUserId: string; apiKey?: string; displayName?: string }>;
   now?: () => Date;
 };
 
@@ -190,6 +193,8 @@ export class MemorySharedNetRepository implements SharedNetRepository {
   private readonly cliLogins = new Map<CliLoginId, CliLoginRecord>();
   /** Anonymous Principals that were bound into an account's Principal. */
   private readonly mergedPrincipals = new Map<PrincipalId, PrincipalId>();
+  /** The Principal each signed-in account owns. */
+  private readonly principalsByAccount = new Map<string, PrincipalId>();
   private readonly idempotencyInFlight = new Map<
     string,
     { fingerprint: string; result: Promise<IdempotencyResult> }
@@ -220,6 +225,135 @@ export class MemorySharedNetRepository implements SharedNetRepository {
       this.principals.set(principal.id, principal);
       this.apiKeysByDigest.set(apiKeyRecord.digest, apiKeyRecord);
     }
+    for (const account of options.accounts ?? []) {
+      const principal: Principal = {
+        id: generatePublicId("p"),
+        display_name: account.displayName ?? null,
+        default_reach: "public",
+        created_at: this.timestamp(),
+        invited_by_principal_id: null,
+      };
+      this.principals.set(principal.id, principal);
+      this.principalsByAccount.set(account.authUserId, principal.id);
+      if (account.apiKey) {
+        const digest = digestSecret(account.apiKey);
+        this.apiKeysByDigest.set(digest, { id: generatePublicId("key"), principalId: principal.id, digest, revokedAt: null });
+      }
+    }
+  }
+
+  // ---- The Dashboard's door: Principal-scoped, the same rules as the API. ----
+
+  async principalForAccount(authUserId: string): Promise<Principal | null> {
+    const id = this.principalsByAccount.get(authUserId);
+    const principal = id ? this.principals.get(id) : undefined;
+    return principal ? { ...principal } : null;
+  }
+
+  /** A Room the Principal scheduled, or has an active seat in; anything else is absent. */
+  private roomVisibleTo(principalId: PrincipalId, roomId: RoomId): RoomRecord {
+    const room = this.rooms.get(roomId);
+    const seated =
+      room !== undefined &&
+      [...this.memberships.values()].some(
+        (membership) =>
+          membership.room_id === room.id &&
+          membership.state === "active" &&
+          this.instances.get(membership.instance_id)?.principal_id === principalId,
+      );
+    if (!room || (room.principal_id !== principalId && !seated)) {
+      throw new RepositoryError(404, "room_not_found", "Room was not found.");
+    }
+    return room;
+  }
+
+  private ownedRoom(principalId: PrincipalId, roomId: RoomId): RoomRecord {
+    const room = this.rooms.get(roomId);
+    if (!room || room.principal_id !== principalId) {
+      throw new RepositoryError(404, "room_not_found", "Room was not found.");
+    }
+    return room;
+  }
+
+  async listRoomsForPrincipal(principalId: PrincipalId): Promise<{ items: RoomOverview[] }> {
+    const items = [...this.rooms.values()]
+      .filter((room) => {
+        try {
+          this.roomVisibleTo(principalId, room.id);
+          return true;
+        } catch {
+          return false;
+        }
+      })
+      .sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id))
+      .map((room) => ({
+        room: this.projectRoom(room),
+        active_member_count: [...this.memberships.values()].filter(
+          (membership) => membership.room_id === room.id && membership.state === "active",
+        ).length,
+        latest_sequence: room.nextSequence - 1,
+      }));
+    return { items };
+  }
+
+  async getRoomForPrincipal(
+    principalId: PrincipalId,
+    roomId: RoomId,
+  ): Promise<{ room: Room; memberships: RoomMember[]; messages: Message[]; latest_sequence: number }> {
+    const room = this.roomVisibleTo(principalId, roomId);
+    const memberships = [...this.memberships.values()]
+      .filter((membership) => membership.room_id === room.id)
+      .sort((a, b) => a.joined_at.localeCompare(b.joined_at))
+      .map((membership) => this.projectMembership(membership));
+    const messages = (this.messages.get(room.id) ?? []).map((record) => this.projectMessage(record));
+    return { room: this.projectRoom(room), memberships, messages, latest_sequence: room.nextSequence - 1 };
+  }
+
+  async scheduleRoom(
+    principalId: PrincipalId,
+    input: { name: string; description: string | null },
+  ): Promise<{ room: Room }> {
+    if (!this.principals.has(principalId)) {
+      throw new RepositoryError(404, "principal_not_found", "Principal was not found.");
+    }
+    const room: RoomRecord = {
+      id: generatePublicId("rom"),
+      principal_id: principalId,
+      name: input.name,
+      description: input.description,
+      state: "open",
+      creator_instance_id: null,
+      created_at: this.timestamp(),
+      closed_at: null,
+      nextSequence: 1,
+    };
+    this.rooms.set(room.id, room);
+    this.messages.set(room.id, []);
+    return { room: this.projectRoom(room) };
+  }
+
+  async closeRoom(principalId: PrincipalId, roomId: RoomId): Promise<{ room: Room }> {
+    const room = this.ownedRoom(principalId, roomId);
+    if (room.state !== "closed") {
+      room.state = "closed";
+      room.closed_at = this.timestamp();
+    }
+    return { room: this.projectRoom(room) };
+  }
+
+  async removeRoomMember(
+    principalId: PrincipalId,
+    roomId: RoomId,
+    instanceId: InstanceId,
+  ): Promise<{ membership: RoomMember }> {
+    const room = this.ownedRoom(principalId, roomId);
+    const membership = this.memberships.get(membershipKey(room.id, instanceId));
+    if (!membership) throw new RepositoryError(404, "member_not_found", "Member was not found.");
+    if (membership.state === "active") {
+      membership.state = "left";
+      membership.left_at = this.timestamp();
+    }
+    return { membership: this.projectMembership(membership) };
   }
 
   async authenticateApiKey(token: string): Promise<PrincipalAuth | null> {

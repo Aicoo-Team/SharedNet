@@ -2,7 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { timingSafeEqual } from "node:crypto";
 
 import { defaultKeyHasher } from "@better-auth/api-key";
-import { and, asc, count, desc, eq, gt, inArray, lte, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, inArray, lte, or, sql } from "drizzle-orm";
 
 import {
   cliLogins,
@@ -65,6 +65,7 @@ import {
   type SharedNetRepository,
   type StoredHttpResult,
 } from "./repository.ts";
+import type { RoomOverview } from "./repository.ts";
 import type {
   AddRoomMembersRequest,
   Admission,
@@ -1152,6 +1153,11 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
   ): Promise<{ room: Room; memberships: RoomMember[] }> {
     const room = await this.roomById(roomId);
     await this.requireMembership(auth, room.id);
+    return { room: await this.projectRoomRow(room), memberships: await this.membershipsOf(room.id) };
+  }
+
+  /** Every seat of a Room, joined to its Instance and Principal, oldest first. */
+  private async membershipsOf(roomId: RoomId, onlyInstanceId?: InstanceId): Promise<RoomMember[]> {
     const now = this.now();
     const rows = await this.executor()
       .select({
@@ -1168,27 +1174,172 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
       .from(roomMembers)
       .innerJoin(instances, eq(instances.id, roomMembers.instanceId))
       .innerJoin(principals, eq(principals.id, roomMembers.principalId))
-      .where(eq(roomMembers.roomId, room.id))
+      .where(
+        onlyInstanceId
+          ? and(eq(roomMembers.roomId, roomId), eq(roomMembers.instanceId, onlyInstanceId))
+          : eq(roomMembers.roomId, roomId),
+      )
       .orderBy(asc(roomMembers.joinedAt));
+    return rows.map((row) =>
+      projectMembership(
+        row.member,
+        {
+          agentId: row.agentId,
+          lastSeenAt: row.lastSeenAt,
+          displayName: row.displayName,
+          principalAuthUserId: row.principalAuthUserId,
+          runtimeKind: row.runtimeKind,
+          cliVersion: row.cliVersion,
+          runtimeMetadata: row.runtimeMetadata,
+          invitedByPrincipalId: row.invitedByPrincipalId,
+        },
+        now,
+      ),
+    );
+  }
+
+  // ---- The Dashboard's door: Principal-scoped, the same rules as the API. ----
+
+  async principalForAccount(authUserId: string): Promise<Principal | null> {
+    const [row] = await this.executor().select().from(principals).where(eq(principals.authUserId, authUserId)).limit(1);
+    return row ? projectPrincipal(row) : null;
+  }
+
+  /** A Room the Principal scheduled, or has an active seat in; anything else is absent. */
+  private async roomVisibleTo(principalId: PrincipalId, roomId: RoomId): Promise<RoomRow> {
+    const [room] = await this.executor().select().from(rooms).where(eq(rooms.id, roomId)).limit(1);
+    if (room && room.principalId === principalId) return room;
+    const [seat] = room
+      ? await this.executor()
+          .select({ instanceId: roomMembers.instanceId })
+          .from(roomMembers)
+          .where(and(eq(roomMembers.roomId, room.id), eq(roomMembers.principalId, principalId), eq(roomMembers.state, "active")))
+          .limit(1)
+      : [];
+    if (!room || !seat) throw new RepositoryError(404, "room_not_found", "Room was not found.");
+    return room;
+  }
+
+  private async ownedRoom(principalId: PrincipalId, roomId: RoomId): Promise<RoomRow> {
+    const [room] = await this.executor().select().from(rooms).where(eq(rooms.id, roomId)).limit(1);
+    if (!room || room.principalId !== principalId) {
+      throw new RepositoryError(404, "room_not_found", "Room was not found.");
+    }
+    return room;
+  }
+
+  async listRoomsForPrincipal(principalId: PrincipalId): Promise<{ items: RoomOverview[] }> {
+    const seated = this.executor()
+      .select({ roomId: roomMembers.roomId })
+      .from(roomMembers)
+      .where(and(eq(roomMembers.principalId, principalId), eq(roomMembers.state, "active")));
+    const roomRows = await this.executor()
+      .select()
+      .from(rooms)
+      .where(or(eq(rooms.principalId, principalId), inArray(rooms.id, seated)))
+      .orderBy(desc(rooms.createdAt), desc(rooms.id));
+    if (roomRows.length === 0) return { items: [] };
+    const counts = await this.executor()
+      .select({ roomId: roomMembers.roomId, active: count() })
+      .from(roomMembers)
+      .where(and(inArray(roomMembers.roomId, roomRows.map((room) => room.id)), eq(roomMembers.state, "active")))
+      .groupBy(roomMembers.roomId);
+    const activeByRoom = new Map(counts.map((row) => [row.roomId as string, Number(row.active)]));
+    const items: RoomOverview[] = [];
+    for (const room of roomRows) {
+      items.push({
+        room: await this.projectRoomRow(room),
+        active_member_count: activeByRoom.get(room.id as string) ?? 0,
+        latest_sequence: room.nextSequence - 1,
+      });
+    }
+    return { items };
+  }
+
+  async getRoomForPrincipal(
+    principalId: PrincipalId,
+    roomId: RoomId,
+  ): Promise<{ room: Room; memberships: RoomMember[]; messages: Message[]; latest_sequence: number }> {
+    const room = await this.roomVisibleTo(principalId, roomId);
+    const rows = await this.executor()
+      .select({
+        message: messages,
+        agentId: instances.agentId,
+        displayName: instances.displayName,
+        principalAuthUserId: principals.authUserId,
+      })
+      .from(messages)
+      .innerJoin(instances, eq(instances.id, messages.senderInstanceId))
+      .innerJoin(principals, eq(principals.id, messages.senderPrincipalId))
+      .where(eq(messages.roomId, room.id))
+      .orderBy(asc(messages.sequence));
     return {
       room: await this.projectRoomRow(room),
-      memberships: rows.map((row) =>
-        projectMembership(
-          row.member,
-          {
-            agentId: row.agentId,
-            lastSeenAt: row.lastSeenAt,
-            displayName: row.displayName,
-            principalAuthUserId: row.principalAuthUserId,
-            runtimeKind: row.runtimeKind,
-            cliVersion: row.cliVersion,
-            runtimeMetadata: row.runtimeMetadata,
-            invitedByPrincipalId: row.invitedByPrincipalId,
-          },
-          now,
-        ),
+      memberships: await this.membershipsOf(room.id),
+      messages: rows.map((row) =>
+        projectMessage(row.message, row.agentId ?? null, { displayName: row.displayName, principalAuthUserId: row.principalAuthUserId }),
       ),
+      latest_sequence: room.nextSequence - 1,
     };
+  }
+
+  async scheduleRoom(
+    principalId: PrincipalId,
+    input: { name: string; description: string | null },
+  ): Promise<{ room: Room }> {
+    const [owner] = await this.executor().select({ id: principals.id }).from(principals).where(eq(principals.id, principalId)).limit(1);
+    if (!owner) throw new RepositoryError(404, "principal_not_found", "Principal was not found.");
+    const [room] = await this.executor()
+      .insert(rooms)
+      .values({
+        id: generatePublicId("rom"),
+        principalId,
+        name: input.name,
+        description: input.description,
+        state: "open",
+        creatorInstanceId: null,
+        nextSequence: 1,
+        createdAt: this.now(),
+        closedAt: null,
+      })
+      .returning();
+    if (!room) throw new RepositoryError(500, "internal_error", "Room creation failed.");
+    return { room: projectRoom(room, null) };
+  }
+
+  async closeRoom(principalId: PrincipalId, roomId: RoomId): Promise<{ room: Room }> {
+    const room = await this.ownedRoom(principalId, roomId);
+    if (room.state === "closed") return { room: await this.projectRoomRow(room) };
+    const [closed] = await this.executor()
+      .update(rooms)
+      .set({ state: "closed", closedAt: this.now() })
+      .where(eq(rooms.id, room.id))
+      .returning();
+    if (!closed) throw new RepositoryError(500, "internal_error", "Room close failed.");
+    return { room: await this.projectRoomRow(closed) };
+  }
+
+  async removeRoomMember(
+    principalId: PrincipalId,
+    roomId: RoomId,
+    instanceId: InstanceId,
+  ): Promise<{ membership: RoomMember }> {
+    const room = await this.ownedRoom(principalId, roomId);
+    const [member] = await this.executor()
+      .select({ state: roomMembers.state })
+      .from(roomMembers)
+      .where(and(eq(roomMembers.roomId, room.id), eq(roomMembers.instanceId, instanceId)))
+      .limit(1);
+    if (!member) throw new RepositoryError(404, "member_not_found", "Member was not found.");
+    if (member.state === "active") {
+      await this.executor()
+        .update(roomMembers)
+        .set({ state: "left", leftAt: this.now() })
+        .where(and(eq(roomMembers.roomId, room.id), eq(roomMembers.instanceId, instanceId)));
+    }
+    const [membership] = await this.membershipsOf(room.id, instanceId);
+    if (!membership) throw new RepositoryError(404, "member_not_found", "Member was not found.");
+    return { membership };
   }
 
   async postMessage(
