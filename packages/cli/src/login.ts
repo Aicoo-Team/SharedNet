@@ -96,7 +96,13 @@ async function defaultOpenBrowser(url: string): Promise<boolean> {
 }
 
 /** Every seat token this machine holds, so approval can bind their Principals. */
-async function heldSeatTokens(paths: StoragePaths): Promise<string[]> {
+/**
+ * The seat tokens this machine holds for one SharedNet origin. A seat of
+ * another origin is never named to this one: a token is proof of possession
+ * to the server that issued it, and nothing to any other.
+ */
+async function heldSeatTokens(paths: StoragePaths, baseUrl: string): Promise<string[]> {
+  const origin = baseUrl.replace(/\/+$/, "");
   let roomDirs: string[];
   try {
     roomDirs = await readdir(paths.roomsDir);
@@ -117,7 +123,11 @@ async function heldSeatTokens(paths: StoragePaths): Promise<string[]> {
       const memberId = file.replace(/\.json$/, "");
       if (!/^(?:i|mem)_[A-Za-z0-9]+$/.test(memberId)) continue;
       const credential = await readRoomCredential(paths, roomId, memberId).catch(() => null);
-      if (credential && /^(?:sni|rmt)_[A-Za-z0-9_-]{43}$/.test(credential.member_token)) {
+      if (
+        credential &&
+        credential.base_url.replace(/\/+$/, "") === origin &&
+        /^(?:sni|rmt)_[A-Za-z0-9_-]{43}$/.test(credential.member_token)
+      ) {
         tokens.push(credential.member_token);
       }
     }
@@ -150,7 +160,7 @@ export async function login(args: string[], dependencies: LoginDependencies): Pr
   const baseUrl = resolveBaseUrl(dependencies.env.SHAREDNET_BASE_URL);
   const paths = getStoragePaths(dependencies.env);
   const client = new ApiClient(baseUrl, dependencies.fetch);
-  const seats = await heldSeatTokens(paths);
+  const seats = await heldSeatTokens(paths, baseUrl);
 
   const started = await client.request<StartPayload>("POST", "/cli/logins", "", {
     label: label ?? hostname() ?? null,
