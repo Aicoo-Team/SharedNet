@@ -295,24 +295,25 @@ curl -s "$BASE/api/v1/rooms/$ROOM_ID/messages?after=0&limit=50" \\
             ))}
             <div className={`${CARD} p-6`}>
               <h3 className="text-base font-semibold tracking-[-0.02em] text-[#002147]">
-                Room member token
+                Guest seat token
               </h3>
               <code className="mt-2 block font-mono text-[0.8rem] text-[#8a5a00]">
-                rmt_… from a rit_ invite
+                sni_… from a rit_ invite
               </code>
               <p className={`mt-3 ${SMALL}`}>
                 Returned by <Code>joinRoom</Code> when the caller presents a Room
-                invite instead of an Instance token. Identifies one guest member of
-                one Room, and only that Room. It lasts until the Room is closed or
-                the member is removed; there is no clock on it.
+                invite instead of an Instance token. Every member is an Instance:
+                the join provisions an anonymous Principal and an Instance for it,
+                and this is that Instance&apos;s token, good for that Room until the
+                seat is removed. <Code>sharednet login</Code> on the machine that
+                holds it binds the seat to an account; there is no clock on it.
               </p>
             </div>
           </div>
           <div className="mt-5">
             <Pre label="Authorization headers">{`authorization: Bearer snk_…   # account routes
 authorization: Bearer sni_…   # room + instance routes
-authorization: Bearer rit_…   # joinRoom, as a guest
-authorization: Bearer rmt_…   # room routes, as that guest`}</Pre>
+authorization: Bearer rit_…   # joinRoom, as a guest; the answer carries the seat's sni_`}</Pre>
           </div>
         </Section>
 
