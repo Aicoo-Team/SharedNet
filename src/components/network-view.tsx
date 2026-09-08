@@ -424,6 +424,8 @@ export function NetworkView() {
   const { network, status } = useSharedNet();
   const [level, setLevel] = useState<Level>("principals");
   const [focus, setFocus] = useState<PrincipalId | null>(null);
+  // Instances level: the ego's own Instances and what they touch, or everyone.
+  const [everyone, setEveryone] = useState(false);
   const [selectedPrincipalId, setSelectedPrincipalId] = useState<PrincipalId | null>(null);
   const [selectedId, setSelectedId] = useState<InstanceId | null>(null);
   const [cardOpen, setCardOpen] = useState(true);
@@ -455,7 +457,7 @@ export function NetworkView() {
   const principalGraph = useMemo(() => (network ? buildPrincipalGraph(network, whole) : { nodes: [], edges: [] }), [network, whole]);
   // The Instance level is always seen from one Principal: the one drilled into, or your own.
   const focusPrincipal = focus ?? network?.principal.principal_id ?? null;
-  const graph = useMemo(() => (focusPrincipal ? instancesAround(whole, focusPrincipal) : whole), [whole, focusPrincipal]);
+  const graph = useMemo(() => (focusPrincipal && !everyone ? instancesAround(whole, focusPrincipal) : whole), [whole, focusPrincipal, everyone]);
   const layout = useMemo(
     () =>
       level === "principals"
@@ -665,7 +667,15 @@ export function NetworkView() {
                 All Principals
               </button>
               <span aria-hidden="true">›</span>
-              <span>{`${focusPrincipal === network.principal.principal_id ? "your" : ""} ${focusPrincipal} · its Instances and what they connect to`.trim()}</span>
+              <span>
+                {everyone
+                  ? `everyone · every Instance in your Network, seen from ${focusPrincipal === network.principal.principal_id ? "you" : focusPrincipal}`
+                  : `${focusPrincipal === network.principal.principal_id ? "your" : ""} ${focusPrincipal} · its Instances and what they connect to`.trim()}
+              </span>
+              <span aria-hidden="true">·</span>
+              <button aria-pressed={everyone} onClick={() => setEveryone((current) => !current)} type="button">
+                {everyone ? "Only what this Principal touches" : "Everyone"}
+              </button>
             </nav>
           ) : null}
           {searchNote ? (

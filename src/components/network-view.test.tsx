@@ -276,6 +276,27 @@ describe("SharedNet Network", () => {
     expect(lonely.nodes.map((n) => n.instance.instance_id)).toEqual([OTHER]);
   });
 
+  it("shows everyone on the Instances level on request, still seen from the same Principal", () => {
+    // A stranger's Instance with no line to anyone: absent from the view around a Principal, present for everyone.
+    const net = network();
+    const stranger = instance("i_strangerZz" as InstanceId, "p_strangerZz" as PrincipalId, null);
+    renderNetwork({ network: { ...net, instances: [...net.instances, stranger], connected_principals: [...net.connected_principals, principal("p_strangerZz" as PrincipalId, "Stranger")] } });
+    openInstances();
+    expect(screen.queryByRole("button", { name: `Inspect Instance ${stranger.instance_id}` })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Everyone" }));
+    expect(screen.getByRole("button", { name: `Inspect Instance ${stranger.instance_id}` })).toBeVisible();
+    expect(screen.getByRole("navigation", { name: "Where you are" })).toHaveTextContent("everyone · every Instance in your Network, seen from you");
+    // My own Instances stay in the middle; the stranger stands on the outermost ring.
+    const centre = (el: HTMLElement) => ({ x: Number(el.dataset.layoutX), y: Number(el.dataset.layoutY) });
+    const mine = centre(node(OWN_A));
+    const far = centre(screen.getByRole("button", { name: `Inspect Instance ${stranger.instance_id}` }));
+    const canvas = document.querySelector<HTMLElement>(".network-canvas")!;
+    const mid = { x: parseFloat(canvas.style.width) / 2, y: parseFloat(canvas.style.height) / 2 };
+    expect(Math.hypot(mine.x - mid.x, mine.y - mid.y)).toBeLessThan(Math.hypot(far.x - mid.x, far.y - mid.y));
+    fireEvent.click(screen.getByRole("button", { name: "Only what this Principal touches" }));
+    expect(screen.queryByRole("button", { name: `Inspect Instance ${stranger.instance_id}` })).toBeNull();
+  });
+
   it("searches both levels: a p_ id selects a Principal, an i_ id opens the Instance level at that Instance", () => {
     renderNetwork();
     const input = screen.getByRole("searchbox", { name: "Instance ID" });
