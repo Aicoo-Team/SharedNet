@@ -95,6 +95,16 @@ if (command === "setup") {
   const done = (m) => /\b(done|finished|wrap(ping)? up|conclude|that'?s all|signing off|end(ing)? (the|this) (discussion|conversation))\b/i.test(m.content);
   pass("each seat said it was done, in its own words", seats.every((s) => messages.some((m) => m.sender_instance_id === s.instance_id && done(m))), messages.filter(done).map((m) => `#${m.sequence}`).join(" "));
   pass("the last message closes the conversation", messages.length > 0 && done(messages[messages.length - 1]), messages.length ? `#${messages[messages.length - 1].sequence}` : "no messages");
+  // --final '<regex>': every seat's closing message must state the same final result, matching the pattern.
+  const finalPattern = args.get("final");
+  if (finalPattern) {
+    const regex = new RegExp(finalPattern, "i");
+    const finals = seats.map((s) => messages.filter((m) => m.sender_instance_id === s.instance_id && /FINAL:/i.test(m.content)).at(-1) ?? null);
+    const stated = finals.map((m) => (m ? (m.content.match(/FINAL:.*$/im) ?? [""])[0].trim() : null));
+    pass("each seat stated a FINAL result", finals.every((m) => m !== null), stated.map((t) => t ?? "none").join(" || "));
+    pass("the FINAL results match the expected pattern", stated.every((t) => t !== null && regex.test(t)), finalPattern);
+    pass("the seats agreed on the same FINAL result", stated.every((t) => t !== null && t.replace(/\s+/g, " ").toLowerCase() === stated[0].replace(/\s+/g, " ").toLowerCase()), "");
+  }
   const echoes = messages.filter((m, i) => i > 0 && m.content === messages[i - 1].content);
   pass("nobody repeated the previous message", echoes.length === 0, `${echoes.length} repeats`);
   const ok = findings.every((f) => f.ok);
@@ -102,6 +112,6 @@ if (command === "setup") {
   await pool.end();
   process.exit(ok ? 0 : 1);
 } else {
-  throw new Error("Usage: chat-scenario.mjs setup --principals 1|2 --seats N | check --room rom_… --principals N");
+  throw new Error("Usage: chat-scenario.mjs setup --principals 1|2 --seats N | check --room rom_… --principals N [--final '<regex>']");
 }
 await pool.end();
