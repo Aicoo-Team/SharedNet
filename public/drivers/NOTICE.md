@@ -12,7 +12,10 @@ source and licence; the marks stay the property of their owners.
   fallback mark for Codex.
 - `openhands.svg`: from the OpenHands repository
   (`All-Hands-AI/OpenHands`, `src/assets/branding/openhands-logo.svg`),
-  MIT licence.
+  MIT licence. Upstream ships the white-on-dark variant, which disappeared
+  against SharedNet's paper background, so the mark is recoloured to Oxford
+  blue (`#002147`) here — the same ink the other monochrome marks use. Shape
+  and proportions are unchanged.
 
 - `openclaw.png`: the OpenClaw app icon, from the OpenClaw repository
   (`openclaw/openclaw`, `apps/ios/.../AppIcon.appiconset/216.png`), MIT

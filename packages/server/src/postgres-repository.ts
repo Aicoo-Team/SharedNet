@@ -65,7 +65,7 @@ import {
   type SharedNetRepository,
   type StoredHttpResult,
 } from "./repository.ts";
-import type { RoomOverview } from "./repository.ts";
+import { sharedRoomsEdges, type DecisionAnswer, type DecisionOverview, type NetworkView, type RoomOverview, type SeatOverview } from "./repository.ts";
 import type {
   AddRoomMembersRequest,
   Admission,
@@ -1281,6 +1281,155 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
       ),
       latest_sequence: room.nextSequence - 1,
     };
+  }
+
+  async listDecisionsForPrincipal(principalId: PrincipalId): Promise<{ decisions: DecisionOverview[] }> {
+    const rows = await this.executor()
+      .select({ decision: decisions, askerPrincipalId: instances.principalId, askerAgentId: instances.agentId })
+      .from(decisions)
+      .leftJoin(instances, eq(instances.id, decisions.requestedByInstanceId))
+      .where(eq(decisions.principalId, principalId))
+      .orderBy(desc(decisions.createdAt), desc(decisions.id));
+    return {
+      decisions: rows.map((row) => ({
+        decision: projectDecision(row.decision, row.askerAgentId ?? null),
+        requested_by_principal_id: row.askerPrincipalId ?? row.decision.principalId,
+      })),
+    };
+  }
+
+  async resolveDecisionForPrincipal(
+    principalId: PrincipalId,
+    decisionId: DecisionId,
+    answer: DecisionAnswer,
+  ): Promise<{ decision: DecisionOverview; membership: RoomMember | null }> {
+    // One transaction: the Decision is locked, moved, and the seat it grants
+    // written together, so "approved but never seated" cannot be left behind.
+    return this.inTransaction(async () => {
+      const [decision] = await this.executor()
+        .select()
+        .from(decisions)
+        .where(and(eq(decisions.id, decisionId), eq(decisions.principalId, principalId)))
+        .for("update")
+        .limit(1);
+      if (!decision) {
+        throw new RepositoryError(404, "decision_not_found", "Decision was not found.");
+      }
+      if (decision.status !== "pending") {
+        throw new RepositoryError(409, "decision_already_resolved", "Decision was already resolved.");
+      }
+      if ((decision.mode === "text") !== (answer.outcome === "answered")) {
+        throw new RepositoryError(422, "decision_resolution_invalid", "Resolution does not match the Decision mode.");
+      }
+      let membership: RoomMember | null = null;
+      if (answer.outcome === "approved" && decision.requestedForInstanceId && decision.roomId) {
+        const room = await this.roomById(decision.roomId);
+        if (room.state === "closed") {
+          throw new RepositoryError(409, "room_closed", "Room is closed.");
+        }
+        const [target] = await this.executor()
+          .select()
+          .from(instances)
+          .where(eq(instances.id, decision.requestedForInstanceId))
+          .limit(1);
+        if (!target) throw new RepositoryError(404, "instance_not_found", "Instance was not found.");
+        await this.seat(room.id, target, "accepted", decision.requestedByInstanceId);
+        [membership = null] = await this.membershipsOf(room.id, target.id);
+      }
+      const [updated] = await this.executor()
+        .update(decisions)
+        .set({
+          status: answer.outcome,
+          answer: answer.outcome === "answered" ? answer.answer : null,
+          resolvedAt: this.now(),
+        })
+        .where(eq(decisions.id, decision.id))
+        .returning();
+      if (!updated) throw new RepositoryError(500, "internal_error", "Decision update failed.");
+      const [asker] = await this.executor()
+        .select({ principalId: instances.principalId, agentId: instances.agentId })
+        .from(instances)
+        .where(eq(instances.id, updated.requestedByInstanceId))
+        .limit(1);
+      return {
+        decision: {
+          decision: projectDecision(updated, asker?.agentId ?? null),
+          requested_by_principal_id: asker?.principalId ?? updated.principalId,
+        },
+        membership,
+      };
+    });
+  }
+
+  async networkForPrincipal(principalId: PrincipalId): Promise<NetworkView> {
+    const [principalRow] = await this.executor().select().from(principals).where(eq(principals.id, principalId)).limit(1);
+    if (!principalRow) throw new RepositoryError(404, "principal_not_found", "Principal was not found.");
+    const now = this.now();
+    // The Rooms this Principal scheduled or holds an active seat in.
+    const seated = this.executor()
+      .select({ roomId: roomMembers.roomId })
+      .from(roomMembers)
+      .where(and(eq(roomMembers.principalId, principalId), eq(roomMembers.state, "active")));
+    const visibleRooms = this.executor()
+      .select({ id: rooms.id })
+      .from(rooms)
+      .where(or(eq(rooms.principalId, principalId), inArray(rooms.id, seated)));
+    // Every active seat in those Rooms, with the Instance behind it.
+    const seats = await this.executor()
+      .select({ roomId: roomMembers.roomId, instanceId: roomMembers.instanceId, principalId: instances.principalId })
+      .from(roomMembers)
+      .innerJoin(instances, eq(instances.id, roomMembers.instanceId))
+      .where(and(inArray(roomMembers.roomId, visibleRooms), eq(roomMembers.state, "active")));
+    const coMemberIds = [...new Set(seats.map((seat) => seat.instanceId))];
+    const connectedIds = [...new Set(seats.map((seat) => seat.principalId).filter((id) => id !== principalId))];
+    const visiblePrincipalIds = [principalId, ...connectedIds];
+    const [agentRows, instanceRows, connectedRows] = await Promise.all([
+      this.executor()
+        .select()
+        .from(agents)
+        .where(inArray(agents.principalId, visiblePrincipalIds))
+        .orderBy(asc(agents.createdAt), asc(agents.id)),
+      this.executor()
+        .select()
+        .from(instances)
+        .where(
+          coMemberIds.length > 0
+            ? or(eq(instances.principalId, principalId), inArray(instances.id, coMemberIds))
+            : eq(instances.principalId, principalId),
+        )
+        .orderBy(desc(instances.startedAt), desc(instances.id)),
+      connectedIds.length > 0
+        ? this.executor().select().from(principals).where(inArray(principals.id, connectedIds))
+        : Promise.resolve([] as (typeof principals.$inferSelect)[]),
+    ]);
+    const byRoom = new Map<RoomId, InstanceId[]>();
+    for (const seat of seats) byRoom.set(seat.roomId, [...(byRoom.get(seat.roomId) ?? []), seat.instanceId]);
+    return {
+      principal: projectPrincipal(principalRow),
+      agents: agentRows.map(projectAgent),
+      instances: instanceRows.map((row) => projectInstance(row, now)),
+      connected_principals: connectedRows.map(projectPrincipal),
+      edges: sharedRoomsEdges([...byRoom.values()]),
+    };
+  }
+
+  async seatsOf(instanceIds: InstanceId[]): Promise<{ seats: SeatOverview[] }> {
+    if (instanceIds.length === 0) return { seats: [] };
+    const now = this.now();
+    const rows = await this.executor()
+      .select({ instance: instances, roomId: roomMembers.roomId, roomName: rooms.name })
+      .from(instances)
+      .leftJoin(roomMembers, eq(roomMembers.instanceId, instances.id))
+      .leftJoin(rooms, eq(rooms.id, roomMembers.roomId))
+      .where(inArray(instances.id, instanceIds))
+      .orderBy(asc(instances.startedAt), asc(instances.id));
+    const byInstance = new Map<InstanceId, SeatOverview>();
+    for (const row of rows) {
+      const seat = byInstance.get(row.instance.id) ?? { instance: projectInstance(row.instance, now), rooms: [] };
+      if (row.roomId && row.roomName !== null) seat.rooms.push({ id: row.roomId, name: row.roomName });
+      byInstance.set(row.instance.id, seat);
+    }
+    return { seats: [...byInstance.values()] };
   }
 
   async scheduleRoom(

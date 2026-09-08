@@ -53,11 +53,13 @@ async function account(label) {
   assert.ok(principalAuth, "key authenticates");
   const started = await repository.startInstance(principalAuth, { runtime_kind: "codex", cli_version: "0.1.0", runtime_metadata: { workspace: "/w" } });
   const auth = await repository.authenticateInstance(started.token);
-  return { userId, principalId: principalAuth.principalId, auth, instance: started.instance };
+  return { userId, principalId: principalAuth.principalId, auth, instance: started.instance, key };
 }
 
 const owner = await account("owner");
 const visitor = await account("visitor");
+const ownerKey = owner.key;
+const visitorKey = visitor.key;
 
 // The owner's Instance opens a Room and speaks; the visitor's Instance joins by Room id.
 const { room } = await repository.createRoom(owner.auth, { name: "Door rehearsal", description: "pg" });
@@ -120,6 +122,67 @@ await assert.rejects(repository.postMessage(owner.auth, room.id, { content: "lat
 await assert.rejects(repository.getRoomForPrincipal(visitor.principalId, "rom_nowhere001"), { code: "room_not_found" });
 await assert.rejects(repository.getRoomForPrincipal(visitor.principalId, scheduled.room.id), { code: "room_not_found" });
 await assert.rejects(repository.scheduleRoom("p_nowhere0001", { name: "x", description: null }), { code: "principal_not_found" });
+
+// ---- Network: what each Principal can see. ----
+const seatOfOwner2 = await repository.startInstance(await repository.authenticateApiKey(ownerKey), {
+  runtime_kind: "claude-code",
+  cli_version: "0.1.0",
+});
+const ownerNet = await repository.networkForPrincipal(owner.principalId);
+assert.equal(ownerNet.principal.id, owner.principalId);
+// Own Instances plus every co-member of a visible Room (the visitor left, the guest stayed).
+assert.deepEqual(
+  ownerNet.instances.map((i) => i.id).sort(),
+  [owner.instance.id, seatOfOwner2.instance.id, guest.membership.instance_id].sort(),
+);
+assert.deepEqual(ownerNet.connected_principals.map((p) => [p.id, p.invited_by_principal_id]), [[guest.membership.principal_id, owner.principalId]]);
+assert.deepEqual(ownerNet.edges, [
+  { source_instance_id: [owner.instance.id, guest.membership.instance_id].sort()[0], target_instance_id: [owner.instance.id, guest.membership.instance_id].sort()[1], shared_rooms: 1 },
+]);
+// The visitor, with no seat left, sees only itself.
+const visitorNet = await repository.networkForPrincipal(visitor.principalId);
+assert.deepEqual(visitorNet.instances.map((i) => i.id), [visitor.instance.id]);
+assert.deepEqual(visitorNet.connected_principals, []);
+assert.deepEqual(visitorNet.edges, []);
+await assert.rejects(repository.networkForPrincipal("p_nowhere0001"), { code: "principal_not_found" });
+
+// ---- Decisions: a private Instance asked for, answered by its human. ----
+const privateSeat = await repository.startInstance(await repository.authenticateApiKey(visitorKey), {
+  runtime_kind: "codex",
+  cli_version: "0.1.0",
+  reach: "private",
+});
+const { room: second } = await repository.createRoom(owner.auth, { name: "Second", with: [privateSeat.instance.id] });
+const { admissions } = await repository.addRoomMembers(owner.auth, second.id, { with: [privateSeat.instance.id] });
+assert.equal(admissions[0].status, "pending");
+const decisionId = admissions[0].decision_id;
+const pending = await repository.listDecisionsForPrincipal(visitor.principalId);
+assert.deepEqual(pending.decisions.map((d) => [d.decision.id, d.decision.status, d.requested_by_principal_id, d.decision.requested_for_instance_id]), [
+  [decisionId, "pending", owner.principalId, privateSeat.instance.id],
+]);
+assert.deepEqual((await repository.listDecisionsForPrincipal(owner.principalId)).decisions, []);
+await assert.rejects(repository.resolveDecisionForPrincipal(owner.principalId, decisionId, { outcome: "approved" }), { code: "decision_not_found", status: 404 });
+await assert.rejects(repository.resolveDecisionForPrincipal(visitor.principalId, decisionId, { outcome: "answered", answer: "x" }), { code: "decision_resolution_invalid", status: 422 });
+const approved = await repository.resolveDecisionForPrincipal(visitor.principalId, decisionId, { outcome: "approved" });
+assert.equal(approved.decision.decision.status, "approved");
+assert.ok(approved.decision.decision.resolved_at);
+assert.deepEqual([approved.membership.instance_id, approved.membership.admitted_by, approved.membership.added_by_instance_id, approved.membership.state], [privateSeat.instance.id, "accepted", owner.instance.id, "active"]);
+await assert.rejects(repository.resolveDecisionForPrincipal(visitor.principalId, decisionId, { outcome: "denied" }), { code: "decision_already_resolved", status: 409 });
+// The seat is real: the visitor's account now sees the second Room.
+assert.deepEqual((await repository.listRoomsForPrincipal(visitor.principalId)).items.map((i) => i.room.id), [second.id]);
+// A request approved after its Room closed writes no seat, and stays pending.
+const third = await repository.createRoom(owner.auth, { name: "Third", with: [privateSeat.instance.id] });
+const thirdDecision = third.admissions[0].decision_id;
+await repository.closeRoom(owner.principalId, third.room.id);
+await assert.rejects(repository.resolveDecisionForPrincipal(visitor.principalId, thirdDecision, { outcome: "approved" }), { code: "room_closed", status: 409 });
+assert.equal((await repository.listDecisionsForPrincipal(visitor.principalId)).decisions.find((d) => d.decision.id === thirdDecision).decision.status, "pending");
+
+// ---- Seats of a CLI login: the approve page. ----
+const { seats } = await repository.seatsOf([guest.membership.instance_id, privateSeat.instance.id, "i_nowhere0001"]);
+assert.deepEqual(seats.map((s) => [s.instance.id, s.rooms.map((r) => r.id)]), [
+  [guest.membership.instance_id, [room.id]],
+  [privateSeat.instance.id, [second.id]],
+]);
 
 // Revoking an invite still goes through the same door.
 const revoked = await repository.revokeRoomInvite({ inviteId: invite.id, principalId: owner.principalId });

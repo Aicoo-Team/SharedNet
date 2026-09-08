@@ -38,7 +38,7 @@ import {
   type RoomMember,
   type StartInstanceRequest,
 } from "../../protocol/src/index.ts";
-import type { RoomOverview } from "./repository.ts";
+import { sharedRoomsEdges, type DecisionAnswer, type DecisionOverview, type NetworkView, type RoomOverview, type SeatOverview } from "./repository.ts";
 import type {
   AddRoomMembersRequest,
   Admission,
@@ -354,6 +354,110 @@ export class MemorySharedNetRepository implements SharedNetRepository {
       membership.left_at = this.timestamp();
     }
     return { membership: this.projectMembership(membership) };
+  }
+
+  async listDecisionsForPrincipal(principalId: PrincipalId): Promise<{ decisions: DecisionOverview[] }> {
+    const decisions = [...this.decisions.values()]
+      .filter((decision) => decision.principal_id === principalId)
+      .sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id))
+      .map((decision) => this.decisionOverview(decision));
+    return { decisions };
+  }
+
+  async resolveDecisionForPrincipal(
+    principalId: PrincipalId,
+    decisionId: DecisionId,
+    answer: DecisionAnswer,
+  ): Promise<{ decision: DecisionOverview; membership: RoomMember | null }> {
+    const decision = this.decisions.get(decisionId);
+    if (!decision || decision.principal_id !== principalId) {
+      throw new RepositoryError(404, "decision_not_found", "Decision was not found.");
+    }
+    if (decision.status !== "pending") {
+      throw new RepositoryError(409, "decision_already_resolved", "Decision was already resolved.");
+    }
+    if ((decision.mode === "text") !== (answer.outcome === "answered")) {
+      throw new RepositoryError(422, "decision_resolution_invalid", "Resolution does not match the Decision mode.");
+    }
+    let membership: MembershipRecord | null = null;
+    if (answer.outcome === "approved" && decision.requested_for_instance_id && decision.room_id) {
+      const room = this.rooms.get(decision.room_id);
+      if (!room || room.state === "closed") {
+        throw new RepositoryError(409, "room_closed", "Room is closed.");
+      }
+      membership = this.seat(room, decision.requested_for_instance_id, "accepted", decision.requested_by_instance_id);
+    }
+    decision.status = answer.outcome;
+    decision.answer = answer.outcome === "answered" ? answer.answer : null;
+    decision.resolved_at = this.timestamp();
+    return {
+      decision: this.decisionOverview(decision),
+      membership: membership ? this.projectMembership(membership) : null,
+    };
+  }
+
+  private decisionOverview(record: DecisionRecord): DecisionOverview {
+    const asker = this.instances.get(record.requested_by_instance_id);
+    return { decision: this.projectDecision(record), requested_by_principal_id: asker?.principal_id ?? record.principal_id };
+  }
+
+  async networkForPrincipal(principalId: PrincipalId): Promise<NetworkView> {
+    const principal = this.principals.get(principalId);
+    if (!principal) throw new RepositoryError(404, "principal_not_found", "Principal was not found.");
+    const visibleRoomIds = new Set(
+      [...this.rooms.values()]
+        .filter((room) => room.principal_id === principalId)
+        .map((room) => room.id),
+    );
+    for (const membership of this.memberships.values()) {
+      if (membership.state === "active" && this.instances.get(membership.instance_id)?.principal_id === principalId) {
+        visibleRoomIds.add(membership.room_id);
+      }
+    }
+    const seats = [...this.memberships.values()].filter(
+      (membership) => membership.state === "active" && visibleRoomIds.has(membership.room_id),
+    );
+    const coMemberIds = new Set(seats.map((seat) => seat.instance_id));
+    const connectedIds = new Set<PrincipalId>();
+    for (const seat of seats) {
+      const owner = this.instances.get(seat.instance_id)?.principal_id;
+      if (owner && owner !== principalId) connectedIds.add(owner);
+    }
+    const visiblePrincipalIds = new Set([principalId, ...connectedIds]);
+    const agents = [...this.agents.values()]
+      .filter((agent) => visiblePrincipalIds.has(agent.principal_id))
+      .sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
+    const instances = [...this.instances.values()]
+      .filter((instance) => instance.principal_id === principalId || coMemberIds.has(instance.id))
+      .sort((a, b) => b.started_at.localeCompare(a.started_at) || b.id.localeCompare(a.id))
+      .map((instance) => this.projectInstance(instance));
+    const byRoom = new Map<RoomId, InstanceId[]>();
+    for (const seat of seats) byRoom.set(seat.room_id, [...(byRoom.get(seat.room_id) ?? []), seat.instance_id]);
+    return {
+      principal: { ...principal },
+      agents,
+      instances,
+      connected_principals: [...connectedIds]
+        .map((id) => this.principals.get(id))
+        .filter((candidate): candidate is Principal => candidate !== undefined)
+        .map((candidate) => ({ ...candidate })),
+      edges: sharedRoomsEdges([...byRoom.values()]),
+    };
+  }
+
+  async seatsOf(instanceIds: InstanceId[]): Promise<{ seats: SeatOverview[] }> {
+    const seats: SeatOverview[] = [];
+    for (const id of instanceIds) {
+      const instance = this.instances.get(id);
+      if (!instance) continue;
+      const rooms = [...this.memberships.values()]
+        .filter((membership) => membership.instance_id === id)
+        .map((membership) => this.rooms.get(membership.room_id))
+        .filter((room): room is RoomRecord => room !== undefined)
+        .map((room) => ({ id: room.id, name: room.name }));
+      seats.push({ instance: this.projectInstance(instance), rooms });
+    }
+    return { seats };
   }
 
   async authenticateApiKey(token: string): Promise<PrincipalAuth | null> {
