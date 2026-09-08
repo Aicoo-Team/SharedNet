@@ -1,6 +1,3 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -14,149 +11,75 @@ import type {
   PrincipalProjection,
 } from "@/src/sharednet/contracts";
 
-import { NetworkView, describeInstanceRuntime } from "./network-view";
+import { NetworkView, buildGraph, describeInstanceRuntime, findInstance, layoutGraph } from "./network-view";
 
-type SharedNetState = ReturnType<
-  (typeof import("@/src/context/sharednet-context"))["useSharedNet"]
->;
+type SharedNetState = ReturnType<(typeof import("@/src/context/sharednet-context"))["useSharedNet"]>;
 
-const contextMocks = vi.hoisted(() => ({
-  useSharedNet: vi.fn(),
-}));
+const contextMocks = vi.hoisted(() => ({ useSharedNet: vi.fn() }));
 
-vi.mock("@/src/context/sharednet-context", () => ({
-  useSharedNet: contextMocks.useSharedNet,
-}));
+vi.mock("@/src/context/sharednet-context", () => ({ useSharedNet: contextMocks.useSharedNet }));
 
 const NOW = "2026-09-03T05:12:00+00:00";
 const OWN_PRINCIPAL_ID = "p_LKTYW3LByD" as PrincipalId;
-const CONNECTED_PRINCIPAL_ID = "p_RkiSMcCIZl" as PrincipalId;
-const SECOND_CONNECTED_PRINCIPAL_ID = "p_FP7b48IvOT" as PrincipalId;
-const UNKNOWN_PRINCIPAL_ID = "p_1DxfhWuuZc" as PrincipalId;
+const OTHER_PRINCIPAL_ID = "p_RkiSMcCIZl" as PrincipalId;
+const GUEST_PRINCIPAL_ID = "p_anonGuest01" as PrincipalId;
 const OWN_AGENT_ID = "a_Wdn8m8sB8q" as AgentId;
-const SECOND_OWN_AGENT_ID = "a_USg2hJVzyZ" as AgentId;
-const CONNECTED_AGENT_ID = "a_MnlsrBKS5T" as AgentId;
-const PRIVATE_AGENT_ID = "a_qdAc5s3QBa" as AgentId;
-const UNKNOWN_AGENT_ID = "a_1hEuF7ZrWP" as AgentId;
-const FIRST_INSTANCE_ID = "i_xNr0mlza8I" as InstanceId;
-const SECOND_INSTANCE_ID = "i_F9wNA7geV0" as InstanceId;
-const ORPHAN_INSTANCE_ID = "i_IVuD2vNMyr" as InstanceId;
-const OTHER_INSTANCE_ID = "i_lrfdChtuKj" as InstanceId;
-const OWN_INSTANCE_ID = "i_Wdn8m8sB8q" as InstanceId;
-const CONNECTED_INSTANCE_ID = "i_MnlsrBKS5T" as InstanceId;
-const PRIVATE_INSTANCE_ID = "i_qdAc5s3QBa" as InstanceId;
-const UNKNOWN_INSTANCE_ID = "i_1hEuF7ZrWP" as InstanceId;
-const PRODUCT_SHELL_CSS = readFileSync(
-  resolve(process.cwd(), "app/product-shell.css"),
-  "utf8",
-);
+const OTHER_AGENT_ID = "a_MnlsrBKS5T" as AgentId;
+const OWN_A = "i_ownAaaaaaa" as InstanceId;
+const OWN_B = "i_ownBbbbbbb" as InstanceId;
+const OTHER = "i_otherCcccc" as InstanceId;
+const GUEST = "i_guestDdddd" as InstanceId;
 
-function makePrincipal(
-  principal_id: PrincipalId,
-  diagnostic_label: string,
-): PrincipalProjection {
+function principal(id: PrincipalId, label: string, kind: "human" | "anonymous" = "human"): PrincipalProjection {
+  return { created_at: NOW, diagnostic_label: label, kind, principal_id: id, summary: kind === "anonymous" ? "Anonymous Principal · invited by you · bind it with sharednet login" : `${label} account` };
+}
+
+function agent(id: AgentId, principalId: PrincipalId, label: string): AgentProjection {
+  return { agent_id: id, created_at: NOW, diagnostic_label: label, discoverability: principalId !== OWN_PRINCIPAL_ID, handle: label.toLowerCase(), principal_id: principalId, summary: `Tag @${label.toLowerCase()}` };
+}
+
+function instance(id: InstanceId, principalId: PrincipalId, agentId: AgentId | null, overrides: Partial<InstanceProjection> = {}): InstanceProjection {
   return {
-    created_at: NOW,
-    diagnostic_label,
-    kind: "human",
-    principal_id,
-    summary: `${diagnostic_label} account`,
+    agent_id: agentId, display_name: null, ended_at: null, expires_at: null, instance_id: id, last_seen_at: NOW,
+    heartbeat_state: "renewing", runtime_metadata: { cli_version: "0.1.2" }, presence: "online", principal_id: principalId,
+    runtime_type: "claude-code", started_at: NOW, status: "online", workspace_label: null, ...overrides,
   };
 }
 
-function makeAgent(
-  agent_id: AgentId,
-  principal_id: PrincipalId,
-  overrides: Partial<AgentProjection> = {},
-): AgentProjection {
+/** Two of my Instances, one of another account, one anonymous guest; all four sat in one Room, and my two also in a second. */
+function network(overrides: Partial<NetworkProjection> = {}): NetworkProjection {
+  const ids = [OWN_A, OWN_B, OTHER, GUEST];
+  const edges: NetworkProjection["edges"] = [];
+  for (let i = 0; i < ids.length; i += 1) for (let j = i + 1; j < ids.length; j += 1) edges.push({ kind: "room_co_membership", source_id: ids[i]!, target_id: ids[j]!, weight: 1 });
+  edges[0] = { ...edges[0]!, weight: 2 };
   return {
-    agent_id,
-    created_at: NOW,
-    diagnostic_label: `Agent ${agent_id.slice(-4)}`,
-    discoverability: true,
-    handle: `agent-${agent_id.slice(-4).toLowerCase()}`,
-    principal_id,
-    summary: "Coordinates exact backend work.",
-    ...overrides,
-  };
-}
-
-function makeInstance(
-  instance_id: InstanceId,
-  agent_id: AgentId,
-  principal_id: PrincipalId,
-  overrides: Partial<InstanceProjection> = {},
-): InstanceProjection {
-  return {
-    agent_id,
-    display_name: null,
-    ended_at: null,
-    expires_at: "2026-09-03T06:12:00+00:00",
-    instance_id,
-    last_seen_at: NOW,
-    heartbeat_state: "stopped",
-    runtime_metadata: {},
-    presence: "offline",
-    principal_id,
-    runtime_type: "desktop",
-    started_at: "2026-09-03T04:12:00+00:00",
-    status: "online",
-    workspace_label: null,
-    ...overrides,
-  };
-}
-
-const ownPrincipal = makePrincipal(OWN_PRINCIPAL_ID, "Northstar");
-const connectedPrincipal = makePrincipal(
-  CONNECTED_PRINCIPAL_ID,
-  "Atlantic partner",
-);
-
-/** Nodes are Instances, so a fixture Agent needs one to be drawn at all. */
-function instanceIdFor(agentId: AgentId): InstanceId {
-  return `i_${String(agentId).slice(2)}` as InstanceId;
-}
-
-function makeNetwork(
-  overrides: Partial<NetworkProjection> = {},
-): NetworkProjection {
-  const agents = overrides.agents ?? [makeAgent(OWN_AGENT_ID, OWN_PRINCIPAL_ID)];
-  return {
-    agents,
-    connected_principals: [connectedPrincipal],
-    edges: [],
-    instances: agents.map((agent) =>
-      makeInstance(
-        instanceIdFor(agent.agent_id),
-        agent.agent_id,
-        agent.principal_id,
-      ),
-    ),
-    principal: ownPrincipal,
+    agents: [agent(OWN_AGENT_ID, OWN_PRINCIPAL_ID, "Reviewer"), agent(OTHER_AGENT_ID, OTHER_PRINCIPAL_ID, "Planner")],
+    connected_principals: [principal(OTHER_PRINCIPAL_ID, "Atlantic partner"), principal(GUEST_PRINCIPAL_ID, "claude-code", "anonymous")],
+    edges,
+    instances: [
+      instance(OWN_A, OWN_PRINCIPAL_ID, OWN_AGENT_ID),
+      instance(OWN_B, OWN_PRINCIPAL_ID, OWN_AGENT_ID, { presence: "offline", heartbeat_state: "stopped", runtime_type: "codex" }),
+      instance(OTHER, OTHER_PRINCIPAL_ID, OTHER_AGENT_ID),
+      instance(GUEST, GUEST_PRINCIPAL_ID, null, { display_name: "claude-code", runtime_metadata: { cli_version: "invite", driver_version: "1.0.0", runtime_source: "detected" } }),
+    ],
+    principal: principal(OWN_PRINCIPAL_ID, "Northstar"),
     ...overrides,
   };
 }
 
 function makeState(overrides: Partial<SharedNetState> = {}): SharedNetState {
-  const network = overrides.network === undefined ? makeNetwork() : overrides.network;
+  const net = overrides.network === undefined ? network() : overrides.network;
   return {
     claimPairing: vi.fn(async () => undefined),
     closeRoom: vi.fn(async () => { throw new Error("closeRoom not stubbed"); }),
     createInvite: vi.fn(async () => { throw new Error("createInvite not stubbed"); }),
     createClaim: vi.fn(async () => { throw new Error("createClaim not stubbed"); }),
     createRoom: vi.fn(async () => { throw new Error("createRoom not stubbed"); }),
-    decisions: [],
-    error: null,
-    network,
-    principal: network?.principal ?? null,
+    decisions: [], error: null, network: net, principal: net?.principal ?? null,
     refresh: vi.fn(async () => undefined),
     removeMember: vi.fn(async () => { throw new Error("removeMember not stubbed"); }),
     resolveDecision: vi.fn(async () => undefined),
-    rooms: [],
-    selectRoom: vi.fn(),
-    selectedRoom: null,
-    selectedRoomId: null,
-    status: "ready",
+    rooms: [], selectRoom: vi.fn(), selectedRoom: null, selectedRoomId: null, status: "ready",
     ...overrides,
   };
 }
@@ -167,552 +90,157 @@ function renderNetwork(overrides: Partial<SharedNetState> = {}) {
   return { state, ...render(<NetworkView />) };
 }
 
-function inspectButton(id: InstanceId) {
-  return screen.getByRole("button", { name: `Inspect Instance ${id}` });
-}
-
-function principalGroup(principalId: PrincipalId) {
-  return screen.getByRole("group", { name: `Principal ${principalId}` });
-}
-
-function layoutByAgent(container: HTMLElement) {
-  return Object.fromEntries(
-    Array.from(
-      container.querySelectorAll<HTMLElement>("[data-agent-id][data-layout-x][data-layout-y]"),
-    ).map((node) => [
-      node.dataset.agentId!,
-      `${node.dataset.layoutX},${node.dataset.layoutY}`,
-    ]),
-  );
-}
+const node = (id: InstanceId) => screen.getByRole("button", { name: `Inspect Instance ${id}` });
 
 describe("SharedNet Network", () => {
   beforeEach(() => vi.clearAllMocks());
   afterEach(() => cleanup());
 
-  it("uses arbitrary backend IDs and applies exact intra/cross visibility rules", () => {
-    const ownHiddenProfile = makeAgent(OWN_AGENT_ID, OWN_PRINCIPAL_ID, {
-      diagnostic_label: "Private local worker",
-      discoverability: false,
-    });
-    const connectedPublic = makeAgent(
-      CONNECTED_AGENT_ID,
-      CONNECTED_PRINCIPAL_ID,
-      { diagnostic_label: "Discoverable reviewer" },
-    );
-    const connectedPrivate = makeAgent(
-      PRIVATE_AGENT_ID,
-      CONNECTED_PRINCIPAL_ID,
-      { diagnostic_label: "Private external worker", discoverability: false },
-    );
-    const unconnectedPublic = makeAgent(
-      UNKNOWN_AGENT_ID,
-      UNKNOWN_PRINCIPAL_ID,
-      { diagnostic_label: "Unconnected worker" },
-    );
-    const network = makeNetwork({
-      agents: [
-        connectedPrivate,
-        unconnectedPublic,
-        connectedPublic,
-        ownHiddenProfile,
-      ],
-    });
-
-    renderNetwork({
-      network,
-      principal: makePrincipal(UNKNOWN_PRINCIPAL_ID, "Unrelated context Principal"),
-    });
-
-    expect(screen.getByRole("button", { name: "Intra-Principal" })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
-    expect(principalGroup(OWN_PRINCIPAL_ID)).toBeVisible();
-    expect(inspectButton(OWN_INSTANCE_ID)).toBeVisible();
-    expect(screen.queryByRole("group", { name: `Principal ${CONNECTED_PRINCIPAL_ID}` })).toBeNull();
-    expect(screen.queryByRole("button", { name: `Inspect Instance ${CONNECTED_INSTANCE_ID}` })).toBeNull();
-
-    fireEvent.click(screen.getByRole("button", { name: "Cross-Principal" }));
-
-    expect(principalGroup(OWN_PRINCIPAL_ID)).toBeVisible();
-    expect(principalGroup(CONNECTED_PRINCIPAL_ID)).toBeVisible();
-    expect(inspectButton(OWN_INSTANCE_ID)).toBeVisible();
-    expect(inspectButton(CONNECTED_INSTANCE_ID)).toBeVisible();
-    expect(screen.queryByRole("button", { name: `Inspect Instance ${PRIVATE_INSTANCE_ID}` })).toBeNull();
-    expect(screen.queryByRole("button", { name: `Inspect Instance ${UNKNOWN_INSTANCE_ID}` })).toBeNull();
-    expect(screen.queryByText("Unrelated context Principal")).toBeNull();
+  it("draws one node per visible Instance, with no box around a Principal, and marks whose each is", () => {
+    renderNetwork();
+    expect(screen.getAllByRole("button", { name: /^Inspect Instance / })).toHaveLength(4);
+    expect(screen.queryByRole("group", { name: /^Principal / })).toBeNull();
+    expect(node(OWN_A).dataset.principal).toBe("self");
+    expect(node(OTHER).dataset.principal).toBe("external");
+    expect(node(GUEST).dataset.principal).toBe("anonymous");
+    // A guest seat is named by the name it gave; an untagged own seat says so; a tagged one carries its tag.
+    expect(node(GUEST)).toHaveTextContent("claude-code");
+    expect(node(OWN_A)).toHaveTextContent("Reviewer");
+    expect(screen.getByText("4 Instances · 6 connections")).toBeVisible();
   });
 
-  it("draws an anonymous Principal's seat in the cross scope, named, with its driver and who invited it", () => {
-    const ANON_PRINCIPAL_ID = "p_AnOnYmOuS1" as PrincipalId;
-    const ANON_INSTANCE_ID = "i_AnOnSeAt01" as InstanceId;
-    const anonymousPrincipal: PrincipalProjection = {
-      created_at: NOW,
-      diagnostic_label: "claude-code",
-      kind: "anonymous",
-      principal_id: ANON_PRINCIPAL_ID,
-      summary: "Anonymous Principal · invited by you · bind it with sharednet login",
-    };
-    const network = makeNetwork({
-      connected_principals: [anonymousPrincipal],
-      instances: [
-        makeInstance(instanceIdFor(OWN_AGENT_ID), OWN_AGENT_ID, OWN_PRINCIPAL_ID),
-        makeInstance(ANON_INSTANCE_ID, null as unknown as AgentId, ANON_PRINCIPAL_ID, {
-          agent_id: null,
-          display_name: "claude-code",
-          runtime_metadata: { cli_version: "0.1.0", driver_version: "0.3.260", entrypoint: "claude-desktop", runtime_source: "detected" },
-          runtime_type: "claude-code",
-          presence: "online",
-          heartbeat_state: "renewing",
-        }),
-      ],
-      edges: [
-        { kind: "room_co_membership", source_id: instanceIdFor(OWN_AGENT_ID), target_id: ANON_INSTANCE_ID, weight: 1 },
-      ],
-    });
-
-    renderNetwork({ network });
-    expect(screen.queryByRole("group", { name: `Principal ${ANON_PRINCIPAL_ID}` })).toBeNull();
-
-    fireEvent.click(screen.getByRole("button", { name: "Cross-Principal" }));
-
-    const group = principalGroup(ANON_PRINCIPAL_ID);
-    expect(group).toHaveAttribute("data-principal", "external");
-    expect(within(group).getByText("Anonymous Principal")).toBeVisible();
-    expect(within(group).getByText(/invited by you/)).toBeVisible();
-    const seat = inspectButton(ANON_INSTANCE_ID);
-    expect(seat).toBeVisible();
-    expect(within(seat).getByText("claude-code", { selector: "strong" })).toBeVisible();
-    expect(within(seat).getByText("claude-code", { selector: "[data-runtime-kind]" })).toBeVisible();
-    fireEvent.click(seat);
-    const card = screen.getByRole("region", { name: "Agent Card" });
-    expect(within(card).getByRole("heading", { level: 2 })).toHaveTextContent("claude-code");
-    expect(within(card).getByText(ANON_PRINCIPAL_ID)).toBeVisible();
-    expect(within(card).getByText("None · untagged")).toBeVisible();
-    expect(within(card).getByText(ANON_INSTANCE_ID)).toBeVisible();
-    expect(within(card).getByText("Runtime · claude-code 0.3.260 · claude-desktop · detected")).toBeVisible();
-    expect(screen.getByRole("list", { name: "Visible relationships" })).toHaveTextContent(
-      `room_co_membership: source ${instanceIdFor(OWN_AGENT_ID)}; target ${ANON_INSTANCE_ID}`,
-    );
-  });
-
-  it("groups each visible Agent beneath its exact Principal identity", () => {
-    const ownAgent = makeAgent(OWN_AGENT_ID, OWN_PRINCIPAL_ID);
-    const connectedAgent = makeAgent(
-      CONNECTED_AGENT_ID,
-      CONNECTED_PRINCIPAL_ID,
-    );
-    renderNetwork({ network: makeNetwork({ agents: [connectedAgent, ownAgent] }) });
-
-    fireEvent.click(screen.getByRole("button", { name: "Cross-Principal" }));
-
-    const ownGroup = principalGroup(OWN_PRINCIPAL_ID);
-    const externalGroup = principalGroup(CONNECTED_PRINCIPAL_ID);
-    expect(within(ownGroup).getByText("Northstar")).toBeVisible();
-    expect(within(ownGroup).getByText(OWN_PRINCIPAL_ID)).toBeVisible();
-    expect(within(ownGroup).getByRole("button", { name: `Inspect Instance ${OWN_INSTANCE_ID}` })).toBeVisible();
-    expect(within(ownGroup).queryByRole("button", { name: `Inspect Instance ${CONNECTED_INSTANCE_ID}` })).toBeNull();
-    expect(within(externalGroup).getByText("Atlantic partner")).toBeVisible();
-    expect(within(externalGroup).getByText(CONNECTED_PRINCIPAL_ID)).toBeVisible();
-    expect(within(externalGroup).getByRole("button", { name: `Inspect Instance ${CONNECTED_INSTANCE_ID}` })).toBeVisible();
-  });
-
-  it("opens an Agent card listing exactly that Agent's Instances", () => {
-    const selectedAgent = makeAgent(SECOND_OWN_AGENT_ID, OWN_PRINCIPAL_ID, {
-      diagnostic_label: "Evidence analyst",
-      handle: "research-lead",
-    });
-    const otherAgent = makeAgent(OWN_AGENT_ID, OWN_PRINCIPAL_ID);
-    const firstInstance = makeInstance(
-      FIRST_INSTANCE_ID,
-      SECOND_OWN_AGENT_ID,
-      OWN_PRINCIPAL_ID,
-      { presence: "online", heartbeat_state: "renewing" },
-    );
-    const secondInstance = makeInstance(
-      SECOND_INSTANCE_ID,
-      SECOND_OWN_AGENT_ID,
-      OWN_PRINCIPAL_ID,
-    );
-    const otherInstance = makeInstance(
-      OTHER_INSTANCE_ID,
-      OWN_AGENT_ID,
-      OWN_PRINCIPAL_ID,
-    );
-    renderNetwork({
-      network: makeNetwork({
-        agents: [otherAgent, selectedAgent],
-        instances: [otherInstance, secondInstance, firstInstance],
-      }),
-    });
-
-    fireEvent.click(inspectButton(FIRST_INSTANCE_ID));
-
-    const card = screen.getByRole("region", { name: "Agent Card" });
-    expect(within(card).getByText(OWN_PRINCIPAL_ID)).toBeVisible();
-    expect(within(card).getByText(SECOND_OWN_AGENT_ID)).toBeVisible();
-    // The tag is the Agent id itself; the card names no separate handle.
-    expect(within(card).queryByText("@research-lead")).toBeNull();
-
-    // exactly this Agent's Instances, and no others
-    expect(within(card).getByText(FIRST_INSTANCE_ID)).toBeVisible();
-    expect(within(card).getByText(SECOND_INSTANCE_ID)).toBeVisible();
-    expect(within(card).queryByText(OTHER_INSTANCE_ID)).toBeNull();
-  });
-
-  it("derives presence only from exact descendants and draws no dot for an empty tag", () => {
-    const onlineAgent = makeAgent(OWN_AGENT_ID, OWN_PRINCIPAL_ID, {
-      diagnostic_label: "Online verifier",
-    });
-    const runtimeOnlyAgent = makeAgent(SECOND_OWN_AGENT_ID, OWN_PRINCIPAL_ID, {
-      diagnostic_label: "Runtime-only worker",
-    });
-    const templateAgentId = "a_d2hNWU0Bml" as AgentId;
-    const templateAgent = makeAgent(templateAgentId, OWN_PRINCIPAL_ID, {
-      diagnostic_label: "Empty tag",
-    });
-    const matchingOnlineInstance = makeInstance(
-      FIRST_INSTANCE_ID,
-      OWN_AGENT_ID,
-      OWN_PRINCIPAL_ID,
-      { presence: "online", heartbeat_state: "renewing" },
-    );
-    const unjoinedOnlineInstance = makeInstance(
-      ORPHAN_INSTANCE_ID,
-      SECOND_OWN_AGENT_ID,
-      OWN_PRINCIPAL_ID,
-      { presence: "online", heartbeat_state: "renewing" },
-    );
-    renderNetwork({
-      network: makeNetwork({
-        agents: [templateAgent, runtimeOnlyAgent, onlineAgent],
-        instances: [unjoinedOnlineInstance, matchingOnlineInstance],
-      }),
-    });
-
-    expect(within(inspectButton(FIRST_INSTANCE_ID)).getByText("online")).toBeVisible();
-    expect(within(inspectButton(ORPHAN_INSTANCE_ID)).getByText("online")).toBeVisible();
-    // An Agent with no Instances draws no dot at all.
-    expect(
-      screen.queryByRole("button", { name: `Inspect Instance ${templateAgentId}` }),
-    ).toBeNull();
-  });
-
-  it("draws one dashed line per shared Room between two Instances", () => {
-    const ownAgent = makeAgent(OWN_AGENT_ID, OWN_PRINCIPAL_ID);
-    const first = makeInstance(FIRST_INSTANCE_ID, OWN_AGENT_ID, OWN_PRINCIPAL_ID);
-    const second = makeInstance(SECOND_INSTANCE_ID, OWN_AGENT_ID, OWN_PRINCIPAL_ID);
-    renderNetwork({
-      network: makeNetwork({
-        agents: [ownAgent],
-        instances: [first, second],
-        edges: [
-          {
-            kind: "room_co_membership",
-            source_id: FIRST_INSTANCE_ID,
-            target_id: SECOND_INSTANCE_ID,
-            weight: 3,
-          },
-        ],
-      }),
-    });
-
-    const graph = screen.getByRole("region", { name: "Relationship graph" });
-    expect(
-      graph.querySelectorAll(
-        `[data-edge-kind="room_co_membership"][data-edge-source="${FIRST_INSTANCE_ID}"][data-edge-target="${SECOND_INSTANCE_ID}"]`,
-      ),
-    ).toHaveLength(3);
-    const relationships = within(graph).getByRole("list", {
-      name: "Visible relationships",
-    });
-    expect(within(relationships).getAllByRole("listitem")).toHaveLength(1);
-    expect(relationships).toHaveTextContent(
-      `room_co_membership: source ${FIRST_INSTANCE_ID}; target ${SECOND_INSTANCE_ID}; weight 3`,
-    );
-  });
-
-  it("bounds huge room-edge multiplicity while reporting the exact backend weight", () => {
-    const hugeWeight = 1_000;
-    renderNetwork({
-      network: makeNetwork({
-        agents: [
-          makeAgent(OWN_AGENT_ID, OWN_PRINCIPAL_ID),
-          makeAgent(CONNECTED_AGENT_ID, CONNECTED_PRINCIPAL_ID),
-        ],
-        edges: [
-          {
-            kind: "room_co_membership",
-            source_id: OWN_INSTANCE_ID,
-            target_id: CONNECTED_INSTANCE_ID,
-            weight: hugeWeight,
-          },
-        ],
-      }),
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: "Cross-Principal" }));
-    const graph = screen.getByRole("region", { name: "Relationship graph" });
-    const lines = graph.querySelectorAll(
-      `[data-edge-kind="room_co_membership"][data-edge-source="${OWN_INSTANCE_ID}"][data-edge-target="${CONNECTED_INSTANCE_ID}"]`,
-    );
-    expect(lines).toHaveLength(8);
-    for (const line of lines) {
-      expect(line).toHaveAttribute("data-edge-weight", String(hugeWeight));
+  it("joins every pair that shares a Room with one line, weighted by how many Rooms they share", () => {
+    const { container } = renderNetwork();
+    const lines = container.querySelectorAll('line[data-edge-kind="room_co_membership"]');
+    expect(lines).toHaveLength(6);
+    const heavy = Array.from(lines).find((line) => line.getAttribute("data-weight") === "2")!;
+    expect(Number(heavy.getAttribute("stroke-width"))).toBeGreaterThan(Number(Array.from(lines).find((line) => line.getAttribute("data-weight") === "1")!.getAttribute("stroke-width")));
+    const listed = within(screen.getByRole("list", { name: "Visible relationships" })).getAllByRole("listitem").map((item) => item.textContent);
+    expect(listed).toContain(`room_co_membership: source ${OWN_A}; target ${OWN_B}; weight 2`);
+    // Every line ends on a drawn node.
+    const positions = new Map(Array.from(container.querySelectorAll<HTMLElement>("[data-instance-id]")).map((n) => [`${n.dataset.layoutX},${n.dataset.layoutY}`, n.dataset.instanceId]));
+    for (const line of Array.from(lines)) {
+      expect(positions.has(`${line.getAttribute("x1")},${line.getAttribute("y1")}`)).toBe(true);
+      expect(positions.has(`${line.getAttribute("x2")},${line.getAttribute("y2")}`)).toBe(true);
     }
-    expect(
-      within(graph).getByRole("list", { name: "Visible relationships" }),
-    ).toHaveTextContent(
-      `room_co_membership: source ${OWN_INSTANCE_ID}; target ${CONNECTED_INSTANCE_ID}; weight ${hugeWeight}`,
-    );
   });
 
-  it("omits backend edges when either exact endpoint is absent from the scope", () => {
-    const ownAgent = makeAgent(OWN_AGENT_ID, OWN_PRINCIPAL_ID);
-    const visibleAgent = makeAgent(
-      CONNECTED_AGENT_ID,
-      CONNECTED_PRINCIPAL_ID,
-    );
-    const hiddenAgent = makeAgent(PRIVATE_AGENT_ID, CONNECTED_PRINCIPAL_ID, {
-      discoverability: false,
-    });
-    renderNetwork({
-      network: makeNetwork({
-        agents: [ownAgent, visibleAgent, hiddenAgent],
-        edges: [
-          {
-            kind: "room_co_membership",
-            source_id: OWN_INSTANCE_ID,
-            target_id: CONNECTED_INSTANCE_ID,
-            weight: 1,
-          },
-          {
-            kind: "room_co_membership",
-            source_id: OWN_INSTANCE_ID,
-            target_id: PRIVATE_INSTANCE_ID,
-            weight: 2,
-          },
-          {
-            kind: "room_co_membership",
-            source_id: OWN_INSTANCE_ID,
-            target_id: UNKNOWN_INSTANCE_ID,
-            weight: 4,
-          },
-        ],
-      }),
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: "Cross-Principal" }));
-    const graph = screen.getByRole("region", { name: "Relationship graph" });
-    expect(graph.querySelectorAll('[data-edge-kind="room_co_membership"]')).toHaveLength(1);
-    expect(graph.querySelector('[data-edge-target="' + PRIVATE_INSTANCE_ID + '"]')).toBeNull();
-    expect(graph.querySelector('[data-edge-target="' + UNKNOWN_AGENT_ID + '"]')).toBeNull();
-    expect(graph.querySelector('[data-edge-target="' + UNKNOWN_PRINCIPAL_ID + '"]')).toBeNull();
-    const relationships = within(graph).getByRole("list", {
-      name: "Visible relationships",
-    });
-    expect(within(relationships).getAllByRole("listitem")).toHaveLength(1);
-    expect(relationships).toHaveTextContent(
-      `room_co_membership: source ${OWN_INSTANCE_ID}; target ${CONNECTED_INSTANCE_ID}; weight 1`,
-    );
-    expect(relationships).not.toHaveTextContent(PRIVATE_AGENT_ID);
-    expect(relationships).not.toHaveTextContent(UNKNOWN_AGENT_ID);
-    expect(relationships).not.toHaveTextContent(UNKNOWN_PRINCIPAL_ID);
-  });
-
-  it("lays out one arbitrary Agent at finite coordinates", () => {
-    const { container } = renderNetwork();
-    const node = container.querySelector<HTMLElement>(`[data-agent-id="${OWN_AGENT_ID}"]`);
-
-    expect(node).not.toBeNull();
-    expect(Number.isFinite(Number(node!.dataset.layoutX))).toBe(true);
-    expect(Number.isFinite(Number(node!.dataset.layoutY))).toBe(true);
-    expect(node!.getAttribute("style")).not.toContain("NaN");
-  });
-
-  it("uses one unscaled pixel canvas for the SVG and positioned HTML nodes", () => {
-    const { container } = renderNetwork();
-    const canvas = container.querySelector<HTMLElement>(".network-canvas");
-    const svg = container.querySelector<SVGElement>(".relationship-lines");
-
-    expect(canvas).not.toBeNull();
-    expect(svg).not.toBeNull();
-    const canvasWidth = Number.parseFloat(canvas!.style.width);
-    const canvasHeight = Number.parseFloat(canvas!.style.height);
-    expect(svg).toHaveAttribute("width", String(canvasWidth));
-    expect(svg).toHaveAttribute("height", String(canvasHeight));
-    expect(svg).toHaveAttribute(
-      "viewBox",
-      `0 0 ${canvasWidth} ${canvasHeight}`,
-    );
-
-    const canvasRule = PRODUCT_SHELL_CSS.match(
-      /\.network-canvas\s*\{([^}]*)\}/,
-    )?.[1];
-    const svgRule = PRODUCT_SHELL_CSS.match(
-      /\.relationship-lines\s*\{([^}]*)\}/,
-    )?.[1];
-    expect(canvasRule).not.toMatch(/min-(?:width|height):\s*100%/);
-    expect(svgRule).not.toMatch(/(?:width|height):\s*100%/);
-  });
-
-  it("sorts opaque IDs into deterministic non-overlapping coordinates for many Agents", () => {
-    const thirdOwnAgentId = "a_sMaPxgLQhO" as AgentId;
-    const secondExternalAgentId = "a_u8i1FruyXe" as AgentId;
-    const secondConnectedPrincipal = makePrincipal(
-      SECOND_CONNECTED_PRINCIPAL_ID,
-      "Pacific partner",
-    );
-    const agents = [
-      makeAgent(CONNECTED_AGENT_ID, CONNECTED_PRINCIPAL_ID),
-      makeAgent(SECOND_OWN_AGENT_ID, OWN_PRINCIPAL_ID),
-      makeAgent(secondExternalAgentId, SECOND_CONNECTED_PRINCIPAL_ID),
-      makeAgent(OWN_AGENT_ID, OWN_PRINCIPAL_ID),
-      makeAgent(thirdOwnAgentId, OWN_PRINCIPAL_ID),
+  it("drops an edge whose endpoint is not a visible Instance, and never draws an edge twice", () => {
+    const net = network();
+    net.edges = [
+      ...net.edges,
+      { kind: "room_co_membership", source_id: OWN_B, target_id: OWN_A, weight: 5 },
+      { kind: "room_co_membership", source_id: OWN_A, target_id: "i_nobody00001" as InstanceId, weight: 1 },
     ];
-    const network = makeNetwork({
-      agents,
-      connected_principals: [secondConnectedPrincipal, connectedPrincipal],
-    });
-    const { container, rerender } = renderNetwork({ network });
-    fireEvent.click(screen.getByRole("button", { name: "Cross-Principal" }));
-    const firstLayout = layoutByAgent(container);
+    const graph = buildGraph(net);
+    expect(graph.edges).toHaveLength(6);
+    expect(graph.edges.find((edge) => edge.source === OWN_A && edge.target === OWN_B)?.weight).toBe(2);
+  });
 
-    expect(Object.keys(firstLayout)).toHaveLength(agents.length);
-    expect(new Set(Object.values(firstLayout)).size).toBe(agents.length);
-    for (const coordinates of Object.values(firstLayout)) {
-      const [x, y] = coordinates.split(",").map(Number);
-      expect(Number.isFinite(x)).toBe(true);
-      expect(Number.isFinite(y)).toBe(true);
+  it("lays every Instance out at a finite, distinct, on-canvas position, the same way each time", () => {
+    const graph = buildGraph(network());
+    const first = layoutGraph(graph.nodes, graph.edges);
+    const second = layoutGraph(graph.nodes, graph.edges);
+    expect(first.positions.size).toBe(4);
+    const seen = new Set<string>();
+    for (const [id, point] of first.positions) {
+      expect(Number.isFinite(point.x) && Number.isFinite(point.y)).toBe(true);
+      expect(point.x).toBeGreaterThan(0);
+      expect(point.x).toBeLessThan(first.width);
+      expect(point.y).toBeGreaterThan(0);
+      expect(point.y).toBeLessThan(first.height);
+      expect(seen.has(`${point.x},${point.y}`)).toBe(false);
+      seen.add(`${point.x},${point.y}`);
+      expect(second.positions.get(id)).toEqual(point);
     }
-
-    contextMocks.useSharedNet.mockReturnValue(
-      makeState({
-        network: {
-          ...network,
-          agents: [...agents].reverse(),
-          connected_principals: [...network.connected_principals].reverse(),
-        },
-      }),
-    );
-    rerender(<NetworkView />);
-
-    expect(layoutByAgent(container)).toEqual(firstLayout);
+    // Instances that share Rooms sit closer than a stranger sits to them.
+    const d = (a: InstanceId, b: InstanceId) => Math.hypot(first.positions.get(a)!.x - first.positions.get(b)!.x, first.positions.get(a)!.y - first.positions.get(b)!.y);
+    expect(d(OWN_A, OWN_B)).toBeLessThan(first.width);
   });
 
-  it("renders a finite empty graph with the own Principal and no fabricated Agent", () => {
-    const { container } = renderNetwork({ network: makeNetwork({ agents: [] }) });
-
-    expect(principalGroup(OWN_PRINCIPAL_ID)).toBeVisible();
-    expect(screen.getByText("No Instances for this Principal.")).toBeVisible();
-    expect(screen.queryByRole("button", { name: /Inspect Instance/ })).toBeNull();
-    const canvas = container.querySelector<HTMLElement>(".network-canvas");
-    expect(canvas).not.toBeNull();
-    expect(Number.isFinite(Number.parseFloat(canvas!.style.width))).toBe(true);
-    expect(Number.isFinite(Number.parseFloat(canvas!.style.height))).toBe(true);
-    expect(canvas!.getAttribute("style")).not.toContain("NaN");
+  it("keeps a large Network on one canvas with room for every node", () => {
+    const many: InstanceProjection[] = Array.from({ length: 40 }, (_, i) => instance(`i_many${String(i).padStart(6, "0")}` as InstanceId, OWN_PRINCIPAL_ID, null));
+    const graph = buildGraph(network({ instances: many, edges: [], connected_principals: [] }));
+    const layout = layoutGraph(graph.nodes, graph.edges);
+    expect(layout.positions.size).toBe(40);
+    expect(layout.width).toBeGreaterThan(900);
+    const minGap = Math.min(...graph.nodes.flatMap((a, i) => graph.nodes.slice(i + 1).map((b) => Math.hypot(layout.positions.get(a.instance.instance_id)!.x - layout.positions.get(b.instance.instance_id)!.x, layout.positions.get(a.instance.instance_id)!.y - layout.positions.get(b.instance.instance_id)!.y))));
+    expect(minGap).toBeGreaterThan(20);
   });
 
-  it("reports loading and unavailable states without displaying a graph", () => {
-    const { rerender } = renderNetwork({ network: null, status: "loading" });
+  it("opens the Agent Card for the Instance clicked, ids in order, with its connections and its siblings", () => {
+    renderNetwork();
+    fireEvent.click(node(OWN_A));
+    const card = screen.getByRole("region", { name: "Agent Card" });
+    const terms = within(card).getAllByRole("term").map((term) => term.textContent);
+    expect(terms.slice(0, 3)).toEqual(["Principal ID", "Agent ID", "Instance ID"]);
+    expect(within(card).getByText(`${OWN_PRINCIPAL_ID} · you`)).toBeVisible();
+    expect(within(card).getByText(OWN_AGENT_ID)).toBeVisible();
+    expect(within(card).getByText(OWN_A)).toBeVisible();
+    expect(within(card).getByText("3 Instances across 4 shared Room memberships")).toBeVisible();
+    // The sibling under the same tag is one click away.
+    fireEvent.click(within(card).getByRole("button", { name: OWN_B }));
+    expect(within(screen.getByRole("region", { name: "Agent Card" })).getByText(OWN_B)).toBeVisible();
+    expect(node(OWN_B)).toHaveAttribute("aria-pressed", "true");
+    // Selecting dims what the selection is not connected to; here everything is.
+    expect(node(OTHER).dataset.lit).toBe("true");
+  });
 
+  it("says None for an untagged Instance and names an anonymous seat's Principal as such", () => {
+    renderNetwork();
+    fireEvent.click(node(GUEST));
+    const card = screen.getByRole("region", { name: "Agent Card" });
+    expect(within(card).getByText("None · untagged")).toBeVisible();
+    expect(within(card).getByText(`${GUEST_PRINCIPAL_ID} · anonymous`)).toBeVisible();
+    expect(within(card).getByText(/bind it with sharednet login/)).toBeVisible();
+    expect(within(card).getByText("claude-code 1.0.0 · detected")).toBeVisible();
+  });
+
+  it("finds an Instance by id, or by a unique prefix, and opens its card; says so when there is none", () => {
+    renderNetwork();
+    const input = screen.getByRole("searchbox", { name: "Instance ID" });
+    fireEvent.change(input, { target: { value: "i_other" } });
+    expect(node(OTHER)).toHaveAttribute("aria-pressed", "true");
+    expect(within(screen.getByRole("region", { name: "Agent Card" })).getByText(OTHER)).toBeVisible();
+    fireEvent.change(input, { target: { value: "i_own" } });
+    // Two matches: nothing changes until the id is unambiguous.
+    expect(node(OTHER)).toHaveAttribute("aria-pressed", "true");
+    fireEvent.change(input, { target: { value: OWN_B } });
+    expect(node(OWN_B)).toHaveAttribute("aria-pressed", "true");
+    fireEvent.change(input, { target: { value: "i_nowhere0001" } });
+    fireEvent.submit(screen.getByRole("search", { name: "Find an Instance" }));
+    expect(screen.getByRole("status")).toHaveTextContent("No Instance i_nowhere0001 in your Network");
+    expect(findInstance(buildGraph(network()).nodes, "")).toBeNull();
+  });
+
+  it("renders an empty Network without inventing anything, and the loading and unavailable states", () => {
+    renderNetwork({ network: network({ instances: [], edges: [], agents: [], connected_principals: [] }) });
+    expect(screen.queryAllByRole("button", { name: /^Inspect Instance / })).toHaveLength(0);
+    expect(screen.getByText(/No Instances yet/)).toBeVisible();
+    cleanup();
+    renderNetwork({ network: null, status: "loading" });
     expect(screen.getByRole("status")).toHaveTextContent("Loading Network…");
-    expect(screen.queryByRole("region", { name: "Relationship graph" })).toBeNull();
-
-    contextMocks.useSharedNet.mockReturnValue(
-      makeState({
-        error: "SharedNet data is unavailable.",
-        network: null,
-        status: "stale",
-      }),
-    );
-    rerender(<NetworkView />);
-
+    cleanup();
+    renderNetwork({ network: null, status: "stale" });
     expect(screen.getByRole("alert")).toHaveTextContent("Network unavailable.");
-    expect(screen.queryByRole("region", { name: "Relationship graph" })).toBeNull();
   });
 
   it("keeps last-good Network data visible while marking it stale", () => {
-    renderNetwork({
-      error: "SharedNet data may be out of date.",
-      network: makeNetwork(),
-      status: "stale",
-    });
-
-    const freshness = screen.getByRole("status");
-    expect(freshness).toHaveTextContent("SharedNet data may be out of date.");
-    expect(freshness).not.toHaveTextContent("Network data may be out of date.");
-    expect(screen.getByRole("region", { name: "Relationship graph" })).toBeVisible();
-    expect(inspectButton(OWN_INSTANCE_ID)).toBeVisible();
+    renderNetwork({ status: "stale" });
+    expect(screen.getByRole("status")).toHaveTextContent("SharedNet data may be out of date.");
+    expect(screen.getAllByRole("button", { name: /^Inspect Instance / })).toHaveLength(4);
   });
 
   it("never presents delegation, hosting, readiness, activity, or recruitment claims", () => {
-    const network = makeNetwork({
-      agents: [
-        makeAgent(OWN_AGENT_ID, OWN_PRINCIPAL_ID),
-        makeAgent(CONNECTED_AGENT_ID, CONNECTED_PRINCIPAL_ID),
-      ],
-      edges: [
-        {
-          kind: "room_co_membership",
-          source_id: OWN_INSTANCE_ID,
-          target_id: CONNECTED_INSTANCE_ID,
-          weight: 2,
-        },
-      ],
-    });
-    const { container } = renderNetwork({ network });
-    fireEvent.click(screen.getByRole("button", { name: "Cross-Principal" }));
-
-    expect(container.textContent).not.toMatch(
-      /delegation|hosted|ready|active work|recruitable|recruitment/i,
-    );
-    expect(container.querySelector('[data-edge-kind="delegation"]')).toBeNull();
-  });
-
-  it("renders untagged Instances under a synthetic default header without inventing a tag", () => {
-    const untagged = makeInstance(OWN_INSTANCE_ID, OWN_AGENT_ID, OWN_PRINCIPAL_ID, {
-      agent_id: null,
-      presence: "online",
-      heartbeat_state: "renewing",
-    });
-    const network = makeNetwork({ agents: [], instances: [untagged] });
-    renderNetwork({ network });
-
-    const node = inspectButton(OWN_INSTANCE_ID);
-    expect(node).toBeVisible();
-    expect(within(node).getByText("Untagged")).toBeVisible();
-    expect(node.dataset.agentId).toBe(`default:${OWN_PRINCIPAL_ID}`);
-    // The group is a rendering device: the projection still carries no Agent.
-    expect(network.agents).toEqual([]);
-
-    fireEvent.click(node);
-    const card = screen.getByRole("region", { name: "Agent Card" });
-    expect(within(card).getByRole("heading", { level: 2 })).toHaveTextContent("Untagged");
-    // No Agent row exists, so the card says so instead of showing the sentinel id.
-    expect(within(card).getByText("None · untagged")).toBeVisible();
-    expect(within(card).queryByText(`default:${OWN_PRINCIPAL_ID}`)).toBeNull();
-    expect(within(card).getByText(OWN_INSTANCE_ID)).toBeVisible();
-    expect(within(card).getByText(/^Runtime · .+ · not reported$/)).toBeVisible();
+    renderNetwork();
+    for (const banned of [/delegat/i, /hosting/i, /ready to/i, /activity/i, /recruit/i, /verification/i]) {
+      expect(screen.queryByText(banned)).toBeNull();
+    }
   });
 
   it("describes an Instance's driver from its runtime report, and never shows the invite placeholder as a version", () => {
-    const detected = makeInstance(OWN_INSTANCE_ID, OWN_AGENT_ID, OWN_PRINCIPAL_ID, {
-      runtime_type: "claude-code",
-      runtime_metadata: { cli_version: "0.1.0", driver_version: "0.3.260", entrypoint: "claude-desktop", runtime_source: "detected" },
-    });
-    expect(describeInstanceRuntime(detected)).toBe("claude-code 0.3.260 · claude-desktop · detected");
-    const declared = makeInstance(OWN_INSTANCE_ID, OWN_AGENT_ID, OWN_PRINCIPAL_ID, {
-      runtime_type: "codex",
-      runtime_metadata: { cli_version: "0.1.0", runtime_source: "declared" },
-    });
-    expect(describeInstanceRuntime(declared)).toBe("codex 0.1.0 · self-declared");
-    const converted = makeInstance(OWN_INSTANCE_ID, OWN_AGENT_ID, OWN_PRINCIPAL_ID, {
-      runtime_type: "custom",
-      runtime_metadata: { cli_version: "invite" },
-    });
-    expect(describeInstanceRuntime(converted)).toBe("custom · not reported");
+    expect(describeInstanceRuntime(instance(OWN_A, OWN_PRINCIPAL_ID, null, { runtime_type: "codex", runtime_metadata: { cli_version: "0.1.2", runtime_source: "detected", entrypoint: "cli" } }))).toBe("codex 0.1.2 · cli · detected");
+    expect(describeInstanceRuntime(instance(OWN_A, OWN_PRINCIPAL_ID, null, { runtime_type: "claude-code", runtime_metadata: { cli_version: "invite" } }))).toBe("claude-code · not reported");
+    expect(describeInstanceRuntime(instance(OWN_A, OWN_PRINCIPAL_ID, null, { runtime_type: "custom", runtime_metadata: { cli_version: "invite", driver_version: "2.0", runtime_source: "declared" } }))).toBe("custom 2.0 · self-declared");
   });
-
 });

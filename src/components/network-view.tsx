@@ -1,9 +1,10 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { useSharedNet } from "@/src/context/sharednet-context";
 
+import { DriverMark } from "./driver-mark";
 import { SplitHandle, useSplitWidth } from "./split-handle";
 import type {
   AgentId,
@@ -16,92 +17,33 @@ import type {
   PrincipalProjection,
 } from "@/src/sharednet/contracts";
 
-type RelationshipScope = "intra" | "cross";
+/**
+ * The Network is a graph of Instances. Every Instance the Principal can see
+ * is a node: its own, and every seat that shares a Room with one of them.
+ * Two Instances are joined by one line for every Room they are both active
+ * in, drawn once and weighted; a Room with five seats draws ten lines. No
+ * boxes: a Principal is a fact about a node, shown on it and in its card,
+ * not a fence around it.
+ */
 
 type Point = Readonly<{ x: number; y: number }>;
 
-type AgentTree = Readonly<{
-  agent: AgentProjection;
-  instances: InstanceProjection[];
-  presence: "online" | "offline";
-}>;
-
-type VisiblePrincipal = Readonly<{
-  agents: AgentTree[];
+type GraphNode = Readonly<{
+  instance: InstanceProjection;
+  agent: AgentProjection | null;
+  principal: PrincipalProjection | null;
   own: boolean;
-  principal: PrincipalProjection;
+  /** How many Instances this one shares at least one Room with. */
+  degree: number;
+  /** How many Room co-memberships it has in total (edge weights summed). */
+  sharedRooms: number;
 }>;
 
-type PrincipalPosition = Point &
-  Readonly<{
-    height: number;
-    left: number;
-    width: number;
-  }>;
+type GraphEdge = Readonly<{ source: InstanceId; target: InstanceId; weight: number }>;
 
-/**
- * The graph draws one dot per Instance. An Instance is the only thing that
- * actually holds a credential, joins a Room, and sends a message, so it is the
- * only node an edge can meaningfully connect.
- */
-type NetworkLayout = Readonly<{
-  height: number;
-  instancePositions: Map<InstanceId, Point>;
-  principalPositions: Map<PrincipalId, PrincipalPosition>;
-  width: number;
-}>;
+const CANVAS_PADDING = 56;
+const MIN_CANVAS = 560;
 
-const MIN_CANVAS_WIDTH = 760;
-const MIN_CANVAS_HEIGHT = 500;
-const CANVAS_PADDING = 24;
-const PRINCIPAL_GROUP_WIDTH = 208;
-const PRINCIPAL_GROUP_GAP = 28;
-const PRINCIPAL_GROUP_TOP = 18;
-const PRINCIPAL_Y = 55;
-const AGENT_START_Y = 148;
-const INSTANCE_SPREAD = 46;
-const AGENT_GAP = 88;
-const MAX_VISIBLE_ROOM_EDGE_LINES = 8;
-
-function compareOpaqueIds(left: string, right: string) {
-  if (left < right) return -1;
-  if (left > right) return 1;
-  return 0;
-}
-
-function agentTree(agent: AgentProjection, instances: InstanceProjection[]): AgentTree {
-  const sorted = [...instances].sort((left, right) =>
-    compareOpaqueIds(left.instance_id, right.instance_id),
-  );
-  return {
-    agent,
-    instances: sorted,
-    presence: sorted.some((instance) => instance.presence === "online")
-      ? "online"
-      : "offline",
-  };
-}
-
-function joinAgentDescendants(
-  agent: AgentProjection,
-  network: NetworkProjection,
-): AgentTree {
-  return agentTree(
-    agent,
-    network.instances.filter(
-      (instance) =>
-        instance.principal_id === agent.principal_id &&
-        instance.agent_id === agent.agent_id,
-    ),
-  );
-}
-
-/**
- * Untagged Instances are the normal case, not an error state. They render
- * under a synthetic "default" header so every Instance sits under exactly one
- * header and the graph has a single rendering path — but no row exists for it,
- * which is why the id is a UI-local sentinel rather than a real tag id.
- */
 export function untaggedGroupId(principalId: PrincipalId): AgentId {
   return `default:${principalId}` as AgentId;
 }
@@ -111,205 +53,6 @@ export function isUntaggedGroupId(agentId: AgentId): boolean {
   return agentId.startsWith("default:");
 }
 
-function untaggedGroup(
-  principal: PrincipalProjection,
-  network: NetworkProjection,
-): AgentTree | null {
-  const instances = network.instances.filter(
-    (instance) =>
-      instance.principal_id === principal.principal_id && instance.agent_id === null,
-  );
-  if (instances.length === 0) return null;
-  // An anonymous Principal has no tags at all; its seats are what it is.
-  const anonymous = principal.kind === "anonymous";
-  return agentTree(
-    {
-      agent_id: untaggedGroupId(principal.principal_id),
-      created_at: "",
-      diagnostic_label: anonymous ? principal.diagnostic_label : "Untagged",
-      discoverability: false,
-      handle: anonymous ? "seats" : "default",
-      principal_id: principal.principal_id,
-      summary: anonymous
-        ? "Seats joined by invite; bind them with sharednet login."
-        : "Instances that have not been tagged.",
-    },
-    instances,
-  );
-}
-
-function visibleNetwork(
-  network: NetworkProjection,
-  scope: RelationshipScope,
-): VisiblePrincipal[] {
-  const principalCandidates =
-    scope === "cross"
-      ? [network.principal, ...network.connected_principals]
-      : [network.principal];
-  const principalById = new Map<PrincipalId, PrincipalProjection>();
-  for (const principal of principalCandidates) {
-    if (!principalById.has(principal.principal_id)) {
-      principalById.set(principal.principal_id, principal);
-    }
-  }
-  const principals = [...principalById.values()].sort((left, right) =>
-    compareOpaqueIds(left.principal_id, right.principal_id),
-  );
-  const visiblePrincipalIds = new Set(principals.map(({ principal_id }) => principal_id));
-  const agents = network.agents
-    .filter((agent) => {
-      if (!visiblePrincipalIds.has(agent.principal_id)) return false;
-      if (agent.principal_id === network.principal.principal_id) return true;
-      return scope === "cross" && agent.discoverability;
-    })
-    .sort((left, right) => {
-      const principalOrder = compareOpaqueIds(
-        left.principal_id,
-        right.principal_id,
-      );
-      return principalOrder || compareOpaqueIds(left.agent_id, right.agent_id);
-    });
-
-  return principals.map((principal) => {
-    const own = principal.principal_id === network.principal.principal_id;
-    const tagged = agents
-      .filter((agent) => agent.principal_id === principal.principal_id)
-      .map((agent) => joinAgentDescendants(agent, network));
-    // Own untagged sessions are always shown. Another Principal's untagged
-    // Instances appear only when the server included them, which it does for
-    // the seats that share a Room with the caller; nothing else is discoverable.
-    const untagged = untaggedGroup(principal, network);
-    return {
-      agents: untagged ? [...tagged, untagged] : tagged,
-      own,
-      principal,
-    };
-  });
-}
-
-function createNetworkLayout(principals: VisiblePrincipal[]): NetworkLayout {
-  const maxAgentCount = Math.max(
-    0,
-    ...principals.map((principal) => principal.agents.length),
-  );
-  const contentWidth =
-    principals.length === 0
-      ? 0
-      : principals.length * PRINCIPAL_GROUP_WIDTH +
-        (principals.length - 1) * PRINCIPAL_GROUP_GAP;
-  const width = Math.max(
-    MIN_CANVAS_WIDTH,
-    contentWidth + CANVAS_PADDING * 2,
-  );
-  const height = Math.max(
-    MIN_CANVAS_HEIGHT,
-    AGENT_START_Y + Math.max(0, maxAgentCount - 1) * AGENT_GAP + 86,
-  );
-  const firstGroupLeft = (width - contentWidth) / 2;
-  const instancePositions = new Map<InstanceId, Point>();
-  const principalPositions = new Map<PrincipalId, PrincipalPosition>();
-
-  principals.forEach((principal, principalIndex) => {
-    const left =
-      firstGroupLeft +
-      principalIndex * (PRINCIPAL_GROUP_WIDTH + PRINCIPAL_GROUP_GAP);
-    const x = left + PRINCIPAL_GROUP_WIDTH / 2;
-    principalPositions.set(principal.principal.principal_id, {
-      height: height - PRINCIPAL_GROUP_TOP * 2,
-      left,
-      width: PRINCIPAL_GROUP_WIDTH,
-      x,
-      y: PRINCIPAL_Y,
-    });
-    // Instances of one Agent fan out horizontally from that Agent's row so a
-    // dot always sits under the Agent it belongs to.
-    let row = 0;
-    principal.agents.forEach(({ instances }) => {
-      instances.forEach((instance, index) => {
-        const spread = (index - (instances.length - 1) / 2) * INSTANCE_SPREAD;
-        instancePositions.set(instance.instance_id, {
-          x: x + spread,
-          y: AGENT_START_Y + row * AGENT_GAP,
-        });
-      });
-      row += 1;
-    });
-  });
-
-  return { height, instancePositions, principalPositions, width };
-}
-
-function lineCoordinates(
-  source: Point,
-  target: Point,
-  index: number,
-  total: number,
-) {
-  const dx = target.x - source.x;
-  const dy = target.y - source.y;
-  const length = Math.hypot(dx, dy) || 1;
-  const offset = (index - (total - 1) / 2) * 4;
-  const offsetX = (-dy / length) * offset;
-  const offsetY = (dx / length) * offset;
-
-  return {
-    x1: source.x + offsetX,
-    x2: target.x + offsetX,
-    y1: source.y + offsetY,
-    y2: target.y + offsetY,
-  };
-}
-
-function visibleNetworkEdges(
-  edges: NetworkEdge[],
-  layout: NetworkLayout,
-): NetworkEdge[] {
-  return edges.filter(
-    (edge) =>
-      edge.source_id !== edge.target_id &&
-      layout.instancePositions.has(edge.source_id) &&
-      layout.instancePositions.has(edge.target_id),
-  );
-}
-
-function visibleEdgeLines(
-  edges: NetworkEdge[],
-  layout: NetworkLayout,
-) {
-  return edges.flatMap((edge, edgeIndex) => {
-    const source = layout.instancePositions.get(edge.source_id);
-    const target = layout.instancePositions.get(edge.target_id);
-    if (!source || !target) return [];
-
-    // Shared-Room edges are undirected and drawn as one dashed line per Room,
-    // up to a cap. Delegation and verification are directed and drawn once;
-    // neither is emitted yet — nothing records them. See the design spec TODO.
-    const visibleLineCount =
-      edge.kind === "room_co_membership"
-        ? Math.min(edge.weight, MAX_VISIBLE_ROOM_EDGE_LINES)
-        : 1;
-
-    return Array.from({ length: visibleLineCount }, (_, weightIndex) => (
-      <line
-        {...lineCoordinates(source, target, weightIndex, visibleLineCount)}
-        data-edge-kind={edge.kind}
-        data-edge-source={edge.source_id}
-        data-edge-target={edge.target_id}
-        data-edge-weight={edge.weight}
-        key={`${edge.kind}:${edge.source_id}:${edge.target_id}:${edgeIndex}:${weightIndex}`}
-        markerEnd={edge.kind === "room_co_membership" ? undefined : "url(#edge-arrow)"}
-      />
-    ));
-  });
-}
-
-
-/**
- * The driver behind an Instance, the way the Room member card says it:
- * "claude-code 0.3.260 · claude-desktop · detected". The metadata keys come
- * from the CLI's runtime report; cli_version "invite" is the placeholder an
- * invite join wrote before driver detection existed, not a version.
- */
 export function describeInstanceRuntime(instance: InstanceProjection): string {
   const metadata = instance.runtime_metadata;
   const cliVersion = metadata.cli_version && metadata.cli_version !== "invite" ? metadata.cli_version : undefined;
@@ -323,15 +66,178 @@ export function describeInstanceRuntime(instance: InstanceProjection): string {
   ].join(" · ");
 }
 
-function AgentCard({
-  agentTree,
-  onClose,
-}: {
-  agentTree: AgentTree;
-  onClose: () => void;
-}) {
-  const { agent, instances } = agentTree;
+function compareIds(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
 
+/** A small deterministic hash, so the same Network always lands the same way. */
+function hashId(value: string): number {
+  let hash = 2166136261;
+  for (let i = 0; i < value.length; i += 1) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  return hash / 4294967295;
+}
+
+/** The nodes and the edges the projection draws between them, in a stable order. */
+export function buildGraph(network: NetworkProjection): { nodes: GraphNode[]; edges: GraphEdge[] } {
+  const agents = new Map(network.agents.map((agent) => [agent.agent_id, agent]));
+  const principals = new Map<PrincipalId, PrincipalProjection>([
+    [network.principal.principal_id, network.principal],
+    ...network.connected_principals.map((principal): [PrincipalId, PrincipalProjection] => [principal.principal_id, principal]),
+  ]);
+  const known = new Set(network.instances.map((instance) => instance.instance_id));
+  const edges: GraphEdge[] = [];
+  const seen = new Set<string>();
+  for (const edge of network.edges) {
+    if (edge.kind !== "room_co_membership") continue;
+    if (!known.has(edge.source_id) || !known.has(edge.target_id) || edge.source_id === edge.target_id) continue;
+    const [a, b] = [edge.source_id, edge.target_id].sort(compareIds) as [InstanceId, InstanceId];
+    const key = `${a}|${b}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    edges.push({ source: a, target: b, weight: Math.max(1, Math.floor(edge.weight)) });
+  }
+  const degree = new Map<InstanceId, number>();
+  const shared = new Map<InstanceId, number>();
+  for (const edge of edges) {
+    for (const end of [edge.source, edge.target]) {
+      degree.set(end, (degree.get(end) ?? 0) + 1);
+      shared.set(end, (shared.get(end) ?? 0) + edge.weight);
+    }
+  }
+  const nodes = [...network.instances]
+    .sort((left, right) => compareIds(left.instance_id, right.instance_id))
+    .map(
+      (instance): GraphNode => ({
+        instance,
+        agent: instance.agent_id ? (agents.get(instance.agent_id) ?? null) : null,
+        principal: principals.get(instance.principal_id) ?? null,
+        own: instance.principal_id === network.principal.principal_id,
+        degree: degree.get(instance.instance_id) ?? 0,
+        sharedRooms: shared.get(instance.instance_id) ?? 0,
+      }),
+    );
+  return { nodes, edges };
+}
+
+/**
+ * A force layout, run to rest before render: nodes repel, shared Rooms pull,
+ * Instances of one Principal drift together, and everything is drawn toward
+ * the middle so islands stay on the canvas. Deterministic: the same ids
+ * start from the same places and settle in the same ones.
+ */
+export function layoutGraph(
+  nodes: GraphNode[],
+  edges: GraphEdge[],
+  availableWidth = 0,
+): { positions: Map<InstanceId, Point>; width: number; height: number } {
+  const count = nodes.length;
+  // The canvas fits the stage it is shown in and grows downward with the
+  // crowd, so a Network never hides nodes off to the right.
+  const wanted = Math.round(150 * Math.sqrt(Math.max(count, 1)) + 200);
+  const width = availableWidth > 0 ? Math.max(MIN_CANVAS, Math.floor(availableWidth)) : Math.round(Math.max(MIN_CANVAS, wanted) * 1.4);
+  const height = Math.max(Math.round(width / 1.6), Math.min(wanted, Math.round((wanted * wanted) / width) + 120), 420);
+  const positions = new Map<InstanceId, Point>();
+  if (count === 0) return { positions, width, height };
+  const ids = nodes.map((node) => node.instance.instance_id);
+  const index = new Map(ids.map((id, i) => [id, i]));
+  const x = new Float64Array(count);
+  const y = new Float64Array(count);
+  for (let i = 0; i < count; i += 1) {
+    const angle = (i / count) * Math.PI * 2 + hashId(ids[i]!) * 0.5;
+    const radius = (Math.min(width, height) / 2 - CANVAS_PADDING) * (0.55 + 0.4 * hashId(`${ids[i]}:r`));
+    x[i] = width / 2 + Math.cos(angle) * radius;
+    y[i] = height / 2 + Math.sin(angle) * radius;
+  }
+  const area = width * height;
+  const k = Math.sqrt(area / count) * 0.55;
+  const springs = [
+    ...edges.map((edge) => ({ a: index.get(edge.source)!, b: index.get(edge.target)!, strength: 1 + Math.min(edge.weight, 4) * 0.25 })),
+  ];
+  // Same Principal: a weak spring, so a Principal's seats read as a cluster.
+  const byPrincipal = new Map<PrincipalId, number[]>();
+  nodes.forEach((node, i) => byPrincipal.set(node.instance.principal_id, [...(byPrincipal.get(node.instance.principal_id) ?? []), i]));
+  for (const members of byPrincipal.values()) {
+    for (let a = 0; a < members.length; a += 1) for (let b = a + 1; b < members.length; b += 1) springs.push({ a: members[a]!, b: members[b]!, strength: 0.2 });
+  }
+  let temperature = Math.min(width, height) / 8;
+  const iterations = 300;
+  const dx = new Float64Array(count);
+  const dy = new Float64Array(count);
+  for (let step = 0; step < iterations; step += 1) {
+    dx.fill(0);
+    dy.fill(0);
+    for (let i = 0; i < count; i += 1) {
+      for (let j = i + 1; j < count; j += 1) {
+        let ddx = x[i]! - x[j]!;
+        let ddy = y[i]! - y[j]!;
+        let distance = Math.hypot(ddx, ddy);
+        if (distance < 0.01) {
+          ddx = hashId(`${ids[i]}${ids[j]}`) - 0.5;
+          ddy = hashId(`${ids[j]}${ids[i]}`) - 0.5;
+          distance = 0.01;
+        }
+        const repulsion = (k * k) / distance;
+        dx[i]! += (ddx / distance) * repulsion;
+        dy[i]! += (ddy / distance) * repulsion;
+        dx[j]! -= (ddx / distance) * repulsion;
+        dy[j]! -= (ddy / distance) * repulsion;
+      }
+    }
+    for (const spring of springs) {
+      const ddx = x[spring.a]! - x[spring.b]!;
+      const ddy = y[spring.a]! - y[spring.b]!;
+      const distance = Math.max(Math.hypot(ddx, ddy), 0.01);
+      const attraction = ((distance * distance) / k) * spring.strength;
+      dx[spring.a]! -= (ddx / distance) * attraction;
+      dy[spring.a]! -= (ddy / distance) * attraction;
+      dx[spring.b]! += (ddx / distance) * attraction;
+      dy[spring.b]! += (ddy / distance) * attraction;
+    }
+    for (let i = 0; i < count; i += 1) {
+      // Gravity toward the middle keeps disconnected Instances in view.
+      dx[i]! += (width / 2 - x[i]!) * 0.02;
+      dy[i]! += (height / 2 - y[i]!) * 0.02;
+      const length = Math.max(Math.hypot(dx[i]!, dy[i]!), 0.01);
+      const capped = Math.min(length, temperature);
+      x[i] = Math.min(width - CANVAS_PADDING, Math.max(CANVAS_PADDING, x[i]! + (dx[i]! / length) * capped));
+      y[i] = Math.min(height - CANVAS_PADDING, Math.max(CANVAS_PADDING, y[i]! + (dy[i]! / length) * capped));
+    }
+    temperature *= 0.985;
+  }
+  for (let i = 0; i < count; i += 1) positions.set(ids[i]!, { x: Math.round(x[i]!), y: Math.round(y[i]!) });
+  return { positions, width, height };
+}
+
+/** The Instance a search names: an exact id, or the one id that starts with what was typed. */
+export function findInstance(nodes: GraphNode[], query: string): GraphNode | null {
+  const needle = query.trim();
+  if (needle.length === 0) return null;
+  const exact = nodes.find((node) => node.instance.instance_id === needle);
+  if (exact) return exact;
+  const prefix = nodes.filter((node) => node.instance.instance_id.startsWith(needle));
+  return prefix.length === 1 ? prefix[0]! : null;
+}
+
+function agentLabel(node: GraphNode): string {
+  if (node.agent) return node.agent.diagnostic_label;
+  return node.principal?.kind === "anonymous" ? (node.instance.display_name ?? node.principal.diagnostic_label) : "Untagged";
+}
+
+function InstanceCard({
+  node,
+  siblings,
+  onClose,
+  onSelect,
+}: {
+  node: GraphNode;
+  siblings: GraphNode[];
+  onClose: () => void;
+  onSelect: (id: InstanceId) => void;
+}) {
+  const { instance } = node;
   return (
     <aside aria-label="Agent Card" className="agent-card" role="region">
       <header>
@@ -340,121 +246,111 @@ function AgentCard({
           ×
         </button>
       </header>
-      <h2>{agent.diagnostic_label}</h2>
+      <h2>
+        <DriverMark kind={instance.runtime_type} size={18} /> {instance.display_name ?? agentLabel(node)}
+      </h2>
       <dl className="agent-card-facts">
         <div>
           <dt>Principal ID</dt>
-          <dd>{agent.principal_id}</dd>
+          <dd>
+            {instance.principal_id}
+            {node.own ? " · you" : node.principal?.kind === "anonymous" ? " · anonymous" : ""}
+          </dd>
         </div>
         <div>
           <dt>Agent ID</dt>
-          <dd>{isUntaggedGroupId(agent.agent_id) ? "None · untagged" : agent.agent_id}</dd>
+          <dd>{instance.agent_id ?? "None · untagged"}</dd>
+        </div>
+        <div>
+          <dt>Instance ID</dt>
+          <dd>{instance.instance_id}</dd>
+        </div>
+        <div>
+          <dt>Presence</dt>
+          <dd>
+            {instance.presence === "online"
+              ? "Online · heartbeat renewing"
+              : instance.heartbeat_state === "never_started"
+                ? "Offline · no heartbeat ever received"
+                : "Offline · heartbeat stopped"}
+          </dd>
+        </div>
+        <div>
+          <dt>Runtime</dt>
+          <dd>{describeInstanceRuntime(instance)}</dd>
+        </div>
+        <div>
+          <dt>Connections</dt>
+          <dd>{`${node.degree} Instance${node.degree === 1 ? "" : "s"} across ${node.sharedRooms} shared Room membership${node.sharedRooms === 1 ? "" : "s"}`}</dd>
         </div>
       </dl>
-
-      <section aria-label="Registered Instances" className="agent-descendants">
-        <h3>Instances</h3>
-        {instances.length === 0 ? (
-          <p>No Instances registered.</p>
-        ) : (
+      {node.principal && !node.own ? <p className="agent-card-note">{node.principal.summary}</p> : null}
+      {siblings.length > 0 ? (
+        <section aria-label="Same Agent" className="agent-descendants">
+          <h3>{node.agent ? `Other Instances of ${node.agent.diagnostic_label}` : "Other Instances of this Principal"}</h3>
           <ol className="instance-list">
-            {instances.map((instance) => (
-              <li key={instance.instance_id}>
-                <span>Instance ID</span>
-                <code>{instance.instance_id}</code>
-                <small>
-                  {instance.presence === "online"
-                    ? "Online · heartbeat renewing"
-                    : instance.heartbeat_state === "never_started"
-                      ? "Offline · no heartbeat ever received"
-                      : "Offline · heartbeat stopped"}
-                </small>
-                <small>Runtime · {describeInstanceRuntime(instance)}</small>
+            {siblings.map((sibling) => (
+              <li key={sibling.instance.instance_id}>
+                <button onClick={() => onSelect(sibling.instance.instance_id)} type="button">
+                  <code>{sibling.instance.instance_id}</code>
+                </button>
+                <small>{sibling.instance.presence}</small>
               </li>
             ))}
           </ol>
-        )}
-      </section>
+        </section>
+      ) : null}
     </aside>
-  );
-}
-
-/**
- * One dot per Instance. The label carries the Agent it belongs to, because an
- * Instance id alone says nothing about whose session it is, but the node's
- * identity — and every edge endpoint — is the Instance.
- */
-function InstanceNode({
-  agent,
-  instance,
-  own,
-  position,
-  principalLeft,
-  selected,
-  onInspect,
-}: {
-  agent: AgentProjection;
-  instance: InstanceProjection;
-  own: boolean;
-  position: Point;
-  principalLeft: number;
-  selected: boolean;
-  onInspect: () => void;
-}) {
-  return (
-    <button
-      aria-label={`Inspect Instance ${instance.instance_id}`}
-      aria-pressed={selected}
-      className="relationship-node"
-      data-agent-id={agent.agent_id}
-      data-instance-id={instance.instance_id}
-      data-layout-x={position.x}
-      data-layout-y={position.y}
-      data-presence={instance.presence}
-      data-principal={own ? "self" : "external"}
-      onClick={onInspect}
-      style={{
-        left: `${position.x - principalLeft}px`,
-        top: `${position.y - PRINCIPAL_GROUP_TOP}px`,
-      }}
-      type="button"
-    >
-      <span aria-hidden="true" className="relationship-node-mark" />
-      <strong>{instance.display_name ?? agent.diagnostic_label}</strong>
-      <code>{instance.instance_id}</code>
-      <small>
-        <span>{instance.presence}</span>
-        <span data-runtime-kind={instance.runtime_type}>{instance.runtime_type}</span>
-      </small>
-    </button>
   );
 }
 
 export function NetworkView() {
   const cardSplit = useSplitWidth({
-    defaultWidth: 224,
-    maxWidth: 400,
-    minWidth: 180,
+    defaultWidth: 240,
+    maxWidth: 420,
+    minWidth: 200,
     storageKey: "sharednet.network.card-width",
   });
   const { network, status } = useSharedNet();
-  const [scope, setScope] = useState<RelationshipScope>("intra");
-  const [selectedAgentId, setSelectedAgentId] = useState<AgentId | null>(null);
+  const [selectedId, setSelectedId] = useState<InstanceId | null>(null);
   const [cardOpen, setCardOpen] = useState(true);
-  const principals = useMemo(
-    () => (network ? visibleNetwork(network, scope) : []),
-    [network, scope],
-  );
-  const layout = useMemo(() => createNetworkLayout(principals), [principals]);
-  const visibleEdges = useMemo(
-    () => (network ? visibleNetworkEdges(network.edges, layout) : []),
-    [layout, network],
-  );
-  const agentTrees = principals.flatMap((principal) => principal.agents);
-  const selectedAgent =
-    agentTrees.find(({ agent }) => agent.agent_id === selectedAgentId) ??
-    agentTrees[0] ??
-    null;
+  const [query, setQuery] = useState("");
+  const [searchNote, setSearchNote] = useState<string | null>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
+  const [stageWidth, setStageWidth] = useState(0);
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(([entry]) => setStageWidth(Math.floor(entry?.contentRect.width ?? 0)));
+    observer.observe(stage);
+    return () => observer.disconnect();
+  }, [network]);
+  const graph = useMemo(() => (network ? buildGraph(network) : { nodes: [], edges: [] }), [network]);
+  const layout = useMemo(() => layoutGraph(graph.nodes, graph.edges, stageWidth), [graph, stageWidth]);
+  useEffect(() => {
+    if (!selectedId || !stageRef.current) return;
+    const element = stageRef.current.querySelector<HTMLElement>(`[data-instance-id="${selectedId}"]`);
+    if (element && typeof element.scrollIntoView === "function") element.scrollIntoView({ block: "center", inline: "center" });
+  }, [selectedId, layout]);
+  const selected = graph.nodes.find((node) => node.instance.instance_id === selectedId) ?? null;
+
+  function select(id: InstanceId) {
+    setSelectedId(id);
+    setCardOpen(true);
+  }
+
+  function search(value: string, submitted: boolean) {
+    setQuery(value);
+    const found = findInstance(graph.nodes, value);
+    if (found) {
+      select(found.instance.instance_id);
+      setSearchNote(null);
+    } else if (submitted && value.trim().length > 0) {
+      setSearchNote(`No Instance ${value.trim()} in your Network. It is visible here only if it is yours or shares a Room with one of yours.`);
+    } else {
+      setSearchNote(null);
+    }
+  }
 
   if (network === null) {
     return status === "loading" ? (
@@ -468,176 +364,152 @@ export function NetworkView() {
     );
   }
 
+  const siblings = selected
+    ? graph.nodes.filter(
+        (node) =>
+          node.instance.instance_id !== selected.instance.instance_id &&
+          node.instance.principal_id === selected.instance.principal_id &&
+          node.instance.agent_id === selected.instance.agent_id,
+      )
+    : [];
+  const highlighted = new Set<InstanceId>(
+    selected ? [selected.instance.instance_id, ...graph.edges.flatMap((edge) => (edge.source === selected.instance.instance_id ? [edge.target] : edge.target === selected.instance.instance_id ? [edge.source] : []))] : [],
+  );
+
   return (
     <div className="network-surface">
       {status !== "ready" ? (
         <p className="network-freshness" role="status">
-          {status === "loading"
-            ? "Refreshing SharedNet…"
-            : "SharedNet data may be out of date."}
+          {status === "loading" ? "Refreshing SharedNet…" : "SharedNet data may be out of date."}
         </p>
       ) : null}
 
-      <div
-        className="network-workspace"
-        data-card-state={selectedAgent ? (cardOpen ? "open" : "closed") : "empty"}
-        style={cardSplit.style}
-      >
-        {selectedAgent && cardOpen ? (
+      <div className="network-workspace" data-card-state={selected ? (cardOpen ? "open" : "closed") : "empty"} style={cardSplit.style}>
+        {selected && cardOpen ? (
           <>
-            <AgentCard
-              agentTree={selectedAgent}
-              onClose={() => setCardOpen(false)}
-            />
+            <InstanceCard node={selected} onClose={() => setCardOpen(false)} onSelect={select} siblings={siblings} />
             <SplitHandle label="Resize Agent Card" split={cardSplit} />
           </>
-        ) : selectedAgent ? (
-          <button
-            aria-label="Open Agent Card"
-            className="agent-card-open"
-            onClick={() => setCardOpen(true)}
-            type="button"
-          >
+        ) : selected ? (
+          <button aria-label="Open Agent Card" className="agent-card-open" onClick={() => setCardOpen(true)} type="button">
             Agent Card →
           </button>
         ) : null}
 
         <section aria-label="Relationship graph" className="relationship-graph">
           <header className="graph-toolbar">
-            <div className="scope-switcher">
-              <button
-                aria-pressed={scope === "intra"}
-                onClick={() => setScope("intra")}
-                type="button"
-              >
-                Intra-Principal
-              </button>
-              <button
-                aria-pressed={scope === "cross"}
-                onClick={() => setScope("cross")}
-                type="button"
-              >
-                Cross-Principal
-              </button>
-            </div>
+            <form
+              aria-label="Find an Instance"
+              className="graph-search"
+              onSubmit={(event) => {
+                event.preventDefault();
+                search(query, true);
+              }}
+              role="search"
+            >
+              <input
+                aria-label="Instance ID"
+                autoComplete="off"
+                onChange={(event) => search(event.target.value, false)}
+                placeholder="Find an Instance: i_…"
+                spellCheck={false}
+                type="search"
+                value={query}
+              />
+              <button type="submit">Find</button>
+            </form>
             <p>
-              {scope === "intra"
-                ? "Own Principal and Agents"
-                : "Connected Principal groups"}
+              {`${graph.nodes.length} Instance${graph.nodes.length === 1 ? "" : "s"} · ${graph.edges.length} connection${graph.edges.length === 1 ? "" : "s"}`}
             </p>
           </header>
+          {searchNote ? (
+            <p className="graph-search-note" role="status">
+              {searchNote}
+            </p>
+          ) : null}
 
-          <div className="graph-stage">
-            <div
-              className="network-canvas"
-              style={{ height: `${layout.height}px`, width: `${layout.width}px` }}
-            >
-              <svg
-                aria-hidden="true"
-                className="relationship-lines"
-                height={layout.height}
-                viewBox={`0 0 ${layout.width} ${layout.height}`}
-                width={layout.width}
-              >
-                {visibleEdgeLines(visibleEdges, layout)}
+          <div className="graph-stage" ref={stageRef}>
+            <div className="network-canvas" style={{ height: `${layout.height}px`, width: `${layout.width}px` }}>
+              <svg aria-hidden="true" className="relationship-lines" height={layout.height} viewBox={`0 0 ${layout.width} ${layout.height}`} width={layout.width}>
+                {graph.edges.map((edge) => {
+                  const from = layout.positions.get(edge.source);
+                  const to = layout.positions.get(edge.target);
+                  if (!from || !to) return null;
+                  const lit = selected !== null && (edge.source === selected.instance.instance_id || edge.target === selected.instance.instance_id);
+                  return (
+                    <line
+                      data-edge-kind="room_co_membership"
+                      data-lit={lit ? "true" : undefined}
+                      data-weight={edge.weight}
+                      key={`${edge.source}|${edge.target}`}
+                      strokeWidth={1 + Math.min(edge.weight, 4) * 0.75}
+                      x1={from.x}
+                      x2={to.x}
+                      y1={from.y}
+                      y2={to.y}
+                    />
+                  );
+                })}
               </svg>
 
               <ol aria-label="Visible relationships" className="sr-only">
-                {visibleEdges.map((edge, index) => (
-                  <li
-                    key={`${edge.kind}:${edge.source_id}:${edge.target_id}:${index}`}
-                  >
-                    {edge.kind}: source {edge.source_id}; target {edge.target_id};
-                    weight {edge.weight}
+                {graph.edges.map((edge) => (
+                  <li key={`${edge.source}|${edge.target}`}>
+                    {`room_co_membership: source ${edge.source}; target ${edge.target}; weight ${edge.weight}`}
                   </li>
                 ))}
               </ol>
 
-              {principals.map((principal) => {
-                const principalId = principal.principal.principal_id;
-                const position = layout.principalPositions.get(principalId);
+              {graph.nodes.map((node) => {
+                const position = layout.positions.get(node.instance.instance_id);
                 if (!position) return null;
-
+                const id = node.instance.instance_id;
                 return (
-                  <section
-                    aria-label={`Principal ${principalId}`}
-                    className="principal-group"
+                  <button
+                    aria-label={`Inspect Instance ${id}`}
+                    aria-pressed={selected?.instance.instance_id === id}
+                    className="relationship-node"
+                    data-agent-id={node.instance.agent_id ?? untaggedGroupId(node.instance.principal_id)}
+                    data-instance-id={id}
                     data-layout-x={position.x}
                     data-layout-y={position.y}
-                    data-principal={principal.own ? "self" : "external"}
-                    key={principalId}
-                    role="group"
-                    style={{
-                      height: `${position.height}px`,
-                      left: `${position.left}px`,
-                      top: `${PRINCIPAL_GROUP_TOP}px`,
-                      width: `${position.width}px`,
-                    }}
+                    data-lit={selected === null || highlighted.has(id) ? "true" : "false"}
+                    data-presence={node.instance.presence}
+                    data-principal={node.own ? "self" : node.principal?.kind === "anonymous" ? "anonymous" : "external"}
+                    key={id}
+                    onClick={() => select(id)}
+                    style={{ left: `${position.x}px`, top: `${position.y}px` }}
+                    type="button"
                   >
-                    <header
-                      className="principal-identity"
-                      data-principal-kind={principal.principal.kind}
-                    >
-                      <p>
-                        {principal.own
-                          ? "Own Principal"
-                          : principal.principal.kind === "anonymous"
-                            ? "Anonymous Principal"
-                            : "Connected Principal"}
-                      </p>
-                      <h2>{principal.principal.diagnostic_label}</h2>
-                      <code>{principalId}</code>
-                      {!principal.own ? (
-                        <small title={principal.principal.summary}>{principal.principal.summary}</small>
-                      ) : null}
-                    </header>
-
-                    {principal.agents.flatMap((agentTree) =>
-                      agentTree.instances.map((instance) => {
-                        const nodePosition = layout.instancePositions.get(
-                          instance.instance_id,
-                        );
-                        if (!nodePosition) return null;
-                        const agentId = agentTree.agent.agent_id;
-                        return (
-                          <InstanceNode
-                            agent={agentTree.agent}
-                            instance={instance}
-                            key={instance.instance_id}
-                            onInspect={() => {
-                              setSelectedAgentId(agentId);
-                              setCardOpen(true);
-                            }}
-                            own={principal.own}
-                            position={nodePosition}
-                            principalLeft={position.left}
-                            selected={selectedAgent?.agent.agent_id === agentId}
-                          />
-                        );
-                      }),
-                    )}
-
-                    {principal.agents.length === 0 ? (
-                      <p className="principal-empty">
-                        {principal.own
-                          ? "No Instances for this Principal."
-                          : "No discoverable Agents."}
-                      </p>
-                    ) : null}
-                  </section>
+                    <span aria-hidden="true" className="relationship-node-mark">
+                      <DriverMark kind={node.instance.runtime_type} size={16} />
+                    </span>
+                    <strong>{node.instance.display_name ?? agentLabel(node)}</strong>
+                    <code>{id}</code>
+                  </button>
                 );
               })}
+
+              {graph.nodes.length === 0 ? <p className="principal-empty">No Instances yet. Register one with the CLI, or take a seat in a Room.</p> : null}
             </div>
           </div>
 
           <footer className="graph-legend" aria-label="Relationship legend">
             <span>
-              <i className="legend-room" aria-hidden="true" />
-              dotted · shared rooms × weight
+              <i className="legend-self" aria-hidden="true" />
+              filled · your Principal
             </span>
             <span>
-              <i className="legend-principal" aria-hidden="true" />
-              solid · Principal connection
+              <i className="legend-external" aria-hidden="true" />
+              outlined · another Principal
+            </span>
+            <span>
+              <i className="legend-anonymous" aria-hidden="true" />
+              dashed · anonymous seat
+            </span>
+            <span>
+              <i className="legend-room" aria-hidden="true" />
+              line · shared Rooms, thicker for more
             </span>
           </footer>
         </section>
