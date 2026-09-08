@@ -4,6 +4,11 @@
 -- supplies over the existing login. The jwt plugin holds the signing keys.
 -- Expand-only: new tables in sharednet_auth, and one cursor table in
 -- sharednet for seats that have no local file to keep a cursor in.
+-- Better Auth 1.7.3 no longer writes `account.issuer`, so a sign-up fails
+-- against the NOT NULL this column carried since 0000. Existing rows keep
+-- their value; new ones do not have one.
+ALTER TABLE "sharednet_auth"."account" ALTER COLUMN "issuer" DROP NOT NULL;
+--> statement-breakpoint
 CREATE TABLE "sharednet_auth"."jwks" (
 	"id" text PRIMARY KEY NOT NULL,
 	"public_key" text NOT NULL,

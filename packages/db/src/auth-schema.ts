@@ -58,14 +58,19 @@ export const authSession = sharednetAuthSchema.table(
   ],
 );
 
-/** Better Auth 1.7.2 core `account` model. */
+/**
+ * Better Auth core `account` model. `issuer` was part of it up to 1.7.2 and
+ * left the model in 1.7.3, so the column stays for the rows that carry one
+ * and is nullable for the rows Better Auth writes now; uniqueness of a
+ * provider account is the library's own affair, as its generated schema shows.
+ */
 export const authAccount = sharednetAuthSchema.table(
   "account",
   {
     id: text("id").primaryKey(),
     accountId: text("account_id").notNull(),
     providerId: text("provider_id").notNull(),
-    issuer: text("issuer").notNull(),
+    issuer: text("issuer"),
     userId: text("user_id")
       .notNull()
       .references(() => authUser.id, { onDelete: "cascade" }),
