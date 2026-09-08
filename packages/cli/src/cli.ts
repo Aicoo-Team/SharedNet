@@ -284,7 +284,7 @@ async function roomCommand(
         invite: minted.invite,
         link: minted.link,
         for_agents: `ROOM=${roomId} TOKEN=${minted.token} BASE=${baseUrl}`,
-        command: `npx sharednet join 'ROOM=${roomId} TOKEN=${minted.token} BASE=${baseUrl}'`,
+        command: `npx -y sharednet@latest join 'ROOM=${roomId} TOKEN=${minted.token} BASE=${baseUrl}'`,
       };
     });
   }

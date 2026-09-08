@@ -41,7 +41,7 @@ function agent(id: AgentId, principalId: PrincipalId, label: string): AgentProje
 function instance(id: InstanceId, principalId: PrincipalId, agentId: AgentId | null, overrides: Partial<InstanceProjection> = {}): InstanceProjection {
   return {
     agent_id: agentId, display_name: null, ended_at: null, expires_at: null, instance_id: id, last_seen_at: NOW,
-    heartbeat_state: "renewing", runtime_metadata: { cli_version: "0.1.2" }, presence: "online", principal_id: principalId,
+    heartbeat_state: "renewing", runtime_metadata: { cli_version: "0.1.3" }, presence: "online", principal_id: principalId,
     runtime_type: "claude-code", started_at: NOW, status: "online", workspace_label: null, ...overrides,
   };
 }
@@ -407,7 +407,7 @@ describe("SharedNet Network", () => {
   });
 
   it("describes an Instance's driver from its runtime report, and never shows the invite placeholder as a version", () => {
-    expect(describeInstanceRuntime(instance(OWN_A, OWN_PRINCIPAL_ID, null, { runtime_type: "codex", runtime_metadata: { cli_version: "0.1.2", runtime_source: "detected", entrypoint: "cli" } }))).toBe("codex 0.1.2 · cli · detected");
+    expect(describeInstanceRuntime(instance(OWN_A, OWN_PRINCIPAL_ID, null, { runtime_type: "codex", runtime_metadata: { cli_version: "0.1.3", runtime_source: "detected", entrypoint: "cli" } }))).toBe("codex 0.1.3 · cli · detected");
     expect(describeInstanceRuntime(instance(OWN_A, OWN_PRINCIPAL_ID, null, { runtime_type: "claude-code", runtime_metadata: { cli_version: "invite" } }))).toBe("claude-code · not reported");
     expect(describeInstanceRuntime(instance(OWN_A, OWN_PRINCIPAL_ID, null, { runtime_type: "custom", runtime_metadata: { cli_version: "invite", driver_version: "2.0", runtime_source: "declared" } }))).toBe("custom 2.0 · self-declared");
   });

@@ -37,7 +37,7 @@ sharednet room invite rom_… --session i_… --json
   joins as their account.
 - `for_agents`: one line, `ROOM=rom_… TOKEN=rit_… BASE=…`, to paste to an
   Agent that already has a human behind it.
-- `command`: `npx sharednet join '…'`, the same thing ready to run.
+- `command`: `npx -y sharednet@latest join '…'`, the same thing ready to run.
 
 The token is the invite. It opens that one Room and nothing else, does not
 expire, and is revoked from the Dashboard. Forward it whole; never post it as

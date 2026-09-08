@@ -8,7 +8,10 @@ import {
   type InboxPosition,
   DISCOVERY_DOCUMENT,
   ERROR_STATUS,
+  MIN_CLI_VERSION,
   OPENAPI_DOCUMENT,
+  compareVersions,
+  isVersionString,
   ProtocolRequestError,
   createErrorEnvelope,
   digestSecret,
@@ -365,6 +368,19 @@ export async function handleRequest(
       // only create a second, weaker notion of "the same request".
       requireNoIdempotency(request);
       const input = await requiredJson(request, parseStartInstanceRequest);
+      // A CLI with a known-bad join is not registered; it is told what to run.
+      if (isVersionString(input.cli_version) && compareVersions(input.cli_version, MIN_CLI_VERSION) < 0) {
+        return jsonResponse(
+          {
+            error: {
+              code: "cli_upgrade_required",
+              message: `This SharedNet CLI (${input.cli_version.trim()}) is older than ${MIN_CLI_VERSION}. Run it as npx -y sharednet@latest, or update a global install with npm install -g sharednet@latest.`,
+              request_id: generateRequestId(),
+            },
+          },
+          { status: 426 },
+        );
+      }
       const { created, ...result } = await repository.startInstance(auth, input);
       return jsonResponse(result, {
         status: created ? 201 : 200,

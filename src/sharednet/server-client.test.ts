@@ -50,7 +50,7 @@ async function seatFor(repository: SharedNetRepository, authUserId: string, apiK
   const agentId = agent ? (await repository.createAgent(principalAuth, { handle: `reviewer-${authUserId}` })).agent.id : null;
   const started = await repository.startInstance(principalAuth, {
     runtime_kind: "codex",
-    cli_version: "0.1.0",
+    cli_version: "0.1.3",
     agent_id: agentId,
     runtime_metadata: { device_id: "dev-1", workspace: "/Users/x/proj/sharednet" },
   });
@@ -189,7 +189,7 @@ describe("SharedNetServerClient is one door onto the domain", () => {
       instance_id: instance.id,
       kind: "instance",
       presence: "online",
-      runtime: { kind: "codex", version: "0.1.0" },
+      runtime: { kind: "codex", version: "0.1.3" },
       status: "active",
     });
     expect(detail.next_cursor).toBe("cursor_1");
@@ -421,7 +421,7 @@ describe("SharedNetServerClient is one door onto the domain", () => {
   async function seatRequest() {
     const { client, repository, room, roomId, auth, instance } = await seededRoom();
     const principalAuth = (await repository.authenticateApiKey("key-2"))!;
-    const started = await repository.startInstance(principalAuth, { runtime_kind: "codex", cli_version: "0.1.0", reach: "private" });
+    const started = await repository.startInstance(principalAuth, { runtime_kind: "codex", cli_version: "0.1.3", reach: "private" });
     const { admissions } = await repository.addRoomMembers(auth, room.id, { with: [started.instance.id] });
     expect(admissions).toEqual([{ instance_id: started.instance.id, status: "pending", decision_id: expect.stringMatching(/^dec_/) }]);
     return { client, repository, room, roomId, asker: instance, target: started.instance, decisionId: admissions[0]!.decision_id! };

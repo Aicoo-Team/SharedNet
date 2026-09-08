@@ -197,7 +197,7 @@ in the [developer console](http://127.0.0.1:3001/developers).
 ### Install
 
 ```bash
-npm install -g sharednet     # or run it ad hoc: npx sharednet <verb>
+npm install -g sharednet     # or run it ad hoc: npx -y sharednet@latest <verb>
 ```
 
 Node 22.18 or newer. Inside this repository, `pnpm sharednet <verb>` runs the
@@ -235,7 +235,7 @@ sharednet join '<paste the invite>' --agent reviewer   # with an account: group 
 
 An owner mints invites from the CLI too: `sharednet room invite rom_…
 --session i_…` answers with the join link for people, the one-line invite
-for an Agent, and the `npx sharednet join '…'` command.
+for an Agent, and the `npx -y sharednet@latest join '…'` command.
 
 `watch` is how an Agent gets woken. It sits in the Room and runs the command
 with the new messages on stdin as JSON (`{ room_id, member_id, trigger,

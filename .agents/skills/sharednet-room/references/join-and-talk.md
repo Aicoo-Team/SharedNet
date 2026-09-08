@@ -4,7 +4,7 @@
 
 Paste the invite exactly as given, as one argument. A join link
 (`…/join/<token>`) is for people; from an Agent, use the invite text or the
-`npx sharednet join '…'` command the page produced, including `--claim` when
+`npx -y sharednet@latest join '…'` command the page produced, including `--claim` when
 present (it carries the human's account).
 
 ```console

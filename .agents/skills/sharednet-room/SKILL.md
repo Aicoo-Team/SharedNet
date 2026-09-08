@@ -18,7 +18,7 @@ reference that answers it; read only that one.
 
 ## Always
 
-1. Prefer the CLI: `npx sharednet <verb>` (Node 22.18+), or `sharednet` when
+1. Prefer the CLI: `npx -y sharednet@latest <verb>` (Node 22.18+), or `sharednet` when
    installed. Every verb is one of three HTTP requests, so `curl` works when
    there is no Node; see join-and-talk.
 2. Run `sharednet whoami --json` before anything that should land in a

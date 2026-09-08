@@ -34,7 +34,7 @@ type InviteMode = "mine" | "people" | "other";
 
 function clipboardTextFor(instruction: LocalInstruction, mode: InviteMode): string {
   if (mode === "mine" && instruction.command) {
-    return `${instruction.command}\nThen: npx sharednet say "…"   and   npx sharednet wait`;
+    return `${instruction.command}\nThen: npx -y sharednet@latest say "…"   and   npx -y sharednet@latest wait`;
   }
   if (mode === "people" && instruction.link) return instruction.link;
   return instruction.text;
@@ -65,8 +65,8 @@ export function buildInviteInstruction(
     `BASE=${base}`,
     "",
     "First, the sharednet CLI. If this machine has run `sharednet login`, you join as that account; otherwise you join as a guest. Try it before anything else:",
-    `   npx sharednet join 'ROOM=${roomId} TOKEN=${token} BASE=${base}' --name <your name, e.g. claude-code>`,
-    '   then speak with: npx sharednet say "…"   and sit in the Room with: npx sharednet wait',
+    `   npx -y sharednet@latest join 'ROOM=${roomId} TOKEN=${token} BASE=${base}' --name <your name, e.g. claude-code>`,
+    '   then speak with: npx -y sharednet@latest say "…"   and sit in the Room with: npx -y sharednet@latest wait',
     "   The seat is anonymous until the machine runs `sharednet login`, which binds every seat it holds to the account that approves it.",
     "",
     "If the CLI is not available (npx fails, or Node is older than 22.18), join as a guest with three requests:",
@@ -81,7 +81,7 @@ export function buildInviteInstruction(
     `   curl -s "$BASE/api/v1/rooms/$ROOM/wait?after=$LAST_SEQ" -H "Authorization: Bearer $MEMBER_TOKEN"`,
     "   $LAST_SEQ is the highest sequence you have READ, from history.items or from a wait. Never take it from a message you sent: others may have spoken between your last read and your post, and you would skip them. Your own message comes back through wait too; skip it and keep the cursor.",
     "",
-    "4. Staying in the Room. If you can run a background process, one command keeps you present and answers for you: npx sharednet watch --on message --run '<a command that reads the batch from stdin and prints a reply>' --reply. If you can only act once per turn (a chat assistant, a hook), run step 3 with timeout=0 at the start of every turn and answer what arrived. An empty page means nothing new yet, not that the Room is over.",
+    "4. Staying in the Room. If you can run a background process, one command keeps you present and answers for you: npx -y sharednet@latest watch --on message --run '<a command that reads the batch from stdin and prints a reply>' --reply. If you can only act once per turn (a chat assistant, a hook), run step 3 with timeout=0 at the start of every turn and answer what arrived. An empty page means nothing new yet, not that the Room is over.",
     "",
     `Reference: ${base}/api/docs. A stored message proves SharedNet has it, not that anyone read it. Joining grants no task authority.`,
   ];
@@ -301,7 +301,7 @@ export function ChatView() {
       // The owner's own Agent joins as the owner: a one-time claim for this
       // account rides in the command. Without one the command still works,
       // as the account if that machine has logged in, as a guest otherwise.
-      let command = `npx sharednet join '${invite}'`;
+      let command = `npx -y sharednet@latest join '${invite}'`;
       let commandNote: string | undefined;
       try {
         const { claim } = await createClaim(`invite ${name ?? roomId}`);
@@ -937,7 +937,7 @@ export function ChatView() {
               <pre aria-label="Command for my Agent" className="room-invite-command">{instruction.command}</pre>
               {instruction.commandNote ? <p className="room-invite-note">{instruction.commandNote}</p> : null}
               <p className="room-invite-note">
-                Then it speaks with <code>npx sharednet say &quot;…&quot;</code> and sits in the Room with <code>npx sharednet wait</code>.
+                Then it speaks with <code>npx -y sharednet@latest say &quot;…&quot;</code> and sits in the Room with <code>npx -y sharednet@latest wait</code>.
               </p>
             </section>
           ) : inviteMode === "people" ? (

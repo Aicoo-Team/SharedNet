@@ -35,12 +35,12 @@ describe("the join page", () => {
     expect(await screen.findByRole("heading", { level: 1 })).toHaveTextContent("Join Hackathon");
     expect(fetchMock).toHaveBeenCalledWith("/api/v1/invites/current", { headers: { authorization: `Bearer ${TOKEN}` } });
     const command = await screen.findByText(/--claim/);
-    expect(command).toHaveTextContent(`npx sharednet join 'ROOM=rom_AbCdEfGhIj TOKEN=${TOKEN} BASE=${window.location.origin}' --claim ${CLAIM}`);
+    expect(command).toHaveTextContent(`npx -y sharednet@latest join 'ROOM=rom_AbCdEfGhIj TOKEN=${TOKEN} BASE=${window.location.origin}' --claim ${CLAIM}`);
     expect(fetchMock).toHaveBeenLastCalledWith("/api/sharednet/cli/claims", expect.objectContaining({ method: "POST", credentials: "same-origin" }));
     expect(screen.getByRole("button", { name: "Copy" })).toBeVisible();
     // The plain invite and the three requests stay for an Agent that is not the viewer's.
     expect(screen.getByLabelText("Plain HTTP join")).toHaveTextContent('curl -s -X POST "$BASE/api/v1/rooms/$ROOM/join"');
-    expect(screen.getByLabelText("For you")).toHaveTextContent("npx sharednet login");
+    expect(screen.getByLabelText("For you")).toHaveTextContent("npx -y sharednet@latest login");
     expect(within(screen.getByLabelText("For you")).getByRole("link", { name: "Dashboard" })).toHaveAttribute("href", "/chat");
   });
 
@@ -54,7 +54,7 @@ describe("the join page", () => {
     render(<JoinView token={TOKEN} />);
 
     expect(await screen.findByText(/could not be minted/)).toBeVisible();
-    const commands = screen.getAllByText(/npx sharednet join/, { selector: "code" });
+    const commands = screen.getAllByText(/npx -y sharednet@latest join/, { selector: "code" });
     expect(commands.every((node) => !node.textContent?.includes("--claim"))).toBe(true);
   });
 
@@ -64,7 +64,7 @@ describe("the join page", () => {
     render(<JoinView token={TOKEN} />);
 
     expect(await screen.findByRole("alert")).toHaveTextContent("This invite was revoked");
-    expect(screen.queryByText(/npx sharednet join/)).toBeNull();
+    expect(screen.queryByText(/npx -y sharednet@latest join/)).toBeNull();
   });
 
   it("rejects a link that does not carry an invite token before asking the server", () => {
