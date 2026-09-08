@@ -123,6 +123,15 @@ await assert.rejects(repository.getRoomForPrincipal(visitor.principalId, "rom_no
 await assert.rejects(repository.getRoomForPrincipal(visitor.principalId, scheduled.room.id), { code: "room_not_found" });
 await assert.rejects(repository.scheduleRoom("p_nowhere0001", { name: "x", description: null }), { code: "principal_not_found" });
 
+// ---- Reads are filter, order, window, on real SQL. ----
+const readLog = (input) => repository.listMessages(owner.auth, room.id, { after: 0, before: null, limit: 50, order: "asc", sender_instance_id: null, sender_agent_id: null, q: null, ...input });
+assert.deepEqual((await readLog({ q: "SECOND" })).items.map((m) => m.sequence), [2], "grep is a case-insensitive substring");
+assert.deepEqual((await readLog({ q: "%" })).items, [], "LIKE metacharacters are literal");
+assert.deepEqual((await readLog({ order: "desc", limit: 2 })).items.map((m) => m.sequence), [3, 2], "newest first, top k");
+assert.deepEqual((await readLog({ before: 3, limit: 5, order: "desc" })).items.map((m) => m.sequence), [2, 1], "paged backward");
+assert.deepEqual((await readLog({ sender_instance_id: guest.membership.instance_id })).items.map((m) => m.sequence), [3], "by sender");
+assert.deepEqual((await readLog({ sender_agent_id: "default", q: "first" })).items.map((m) => m.sequence), [1], "by tag, untagged, with grep");
+
 // ---- Network: what each Principal can see. ----
 const seatOfOwner2 = await repository.startInstance(await repository.authenticateApiKey(ownerKey), {
   runtime_kind: "claude-code",

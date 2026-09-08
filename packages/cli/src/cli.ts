@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { ApiClient, resolveBaseUrl } from "./api-client.ts";
 import { CliError, asCliError, localError } from "./errors.ts";
-import { isGuestVerb, runGuestVerb, type CommandRunner } from "./guest.ts";
+import { READ_OPTIONS, isGuestVerb, messageQueryFrom, runGuestVerb, type CommandRunner } from "./guest.ts";
 import { login } from "./login.ts";
 import { refreshIfNeeded, registerInstance, selectSession } from "./session.ts";
 import { deleteSession, getStoragePaths, type StoragePaths, type StoredSession } from "./storage.ts";
@@ -49,6 +49,14 @@ interface ParsedArguments {
 }
 
 const optionValueNames = new Set([
+  "after",
+  "before",
+  "limit",
+  "order",
+  "last",
+  "from-instance",
+  "from-agent",
+  "grep",
   "agent",
   "runtime",
   "name",
@@ -338,18 +346,9 @@ async function roomCommand(
 
   if (action === "messages") {
     assertPositionals(parsed, 1);
-    assertOnlyOptions(parsed, ["after", "limit"]);
+    assertOnlyOptions(parsed, [...READ_OPTIONS]);
     const roomId = parsed.positionals[0]!;
-    const parameters = new URLSearchParams();
-    const after = option(parsed, "after");
-    const limit = option(parsed, "limit");
-    if (after !== undefined) parameters.set("after", after);
-    if (limit !== undefined) {
-      if (!/^\d+$/.test(limit) || Number(limit) < 1 || Number(limit) > 100) {
-        throw localError("invalid_limit", "--limit must be an integer from 1 to 100.");
-      }
-      parameters.set("limit", limit);
-    }
+    const parameters = messageQueryFrom(parsed.options);
     const query = parameters.size ? `?${parameters.toString()}` : "";
     return withSelectedSession(globals, dependencies, (client, session) =>
       client.request(
@@ -427,7 +426,7 @@ async function execute(
   }
   throw localError(
     "unknown_command",
-    "Use login, whoami, join/say/wait/watch/add/rooms/requests/accept/deny/reach, or session start/status, room create/list/invite/add/join/post/messages, and decision list/approve/deny.",
+    "Use login, whoami, join/say/read/wait/watch/add/rooms/requests/accept/deny/reach, or session start/status, room create/list/invite/add/join/post/messages, and decision list/approve/deny.",
   );
 }
 

@@ -2,7 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { timingSafeEqual } from "node:crypto";
 
 import { defaultKeyHasher } from "@better-auth/api-key";
-import { and, asc, count, desc, eq, gt, inArray, lte, or, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, ilike, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
 
 import {
   cliLogins,
@@ -28,6 +28,7 @@ import {
   type JoinRoomRequest,
   encodeInboxCursor,
   type InboxPosition,
+  DEFAULT_MESSAGE_QUERY,
   digestSecret,
   generatePublicId,
   generateSecret,
@@ -76,6 +77,7 @@ import type {
   DecisionStatus,
   ResolveDecisionRequest,
   UpdateInstanceRequest,
+  MessageQuery,
 } from "../../protocol/src/index.ts";
 
 type Transaction = Parameters<Parameters<SharedNetDatabase["transaction"]>[0]>[0];
@@ -1555,11 +1557,7 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
     });
   }
 
-  async listMessages(
-    auth: RoomAuth,
-    roomId: RoomId,
-    input: { after: number; limit: number },
-  ): Promise<Page<Message>> {
+  async listMessages(auth: RoomAuth, roomId: RoomId, input: MessageQuery): Promise<Page<Message>> {
     const room = await this.roomById(roomId);
     await this.requireMembership(auth, room.id);
     return this.pageMessages(room.id, input);
@@ -1612,8 +1610,21 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
 
   private async pageMessages(
     roomId: RoomId,
-    input: { after: number; limit: number },
+    partial: Partial<MessageQuery> & { after: number; limit: number },
   ): Promise<Page<Message>> {
+    const input: MessageQuery = { ...DEFAULT_MESSAGE_QUERY, ...partial };
+    const clauses = [
+      eq(messages.roomId, roomId),
+      input.before === null ? gt(messages.sequence, input.after) : lt(messages.sequence, input.before),
+      ...(input.sender_instance_id === null ? [] : [eq(messages.senderInstanceId, input.sender_instance_id)]),
+      ...(input.sender_agent_id === null
+        ? []
+        : input.sender_agent_id === "default"
+          ? [isNull(instances.agentId)]
+          : [eq(instances.agentId, input.sender_agent_id)]),
+      // grep, not search: a case-insensitive substring, with LIKE's own metacharacters escaped.
+      ...(input.q === null ? [] : [ilike(messages.content, `%${input.q.replace(/[\\%_]/g, (char) => `\\${char}`)}%`)]),
+    ];
     const rows = await this.executor()
       .select({
         message: messages,
@@ -1624,8 +1635,8 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
       .from(messages)
       .innerJoin(instances, eq(instances.id, messages.senderInstanceId))
       .innerJoin(principals, eq(principals.id, messages.senderPrincipalId))
-      .where(and(eq(messages.roomId, roomId), gt(messages.sequence, input.after)))
-      .orderBy(asc(messages.sequence))
+      .where(and(...clauses))
+      .orderBy(input.order === "asc" ? asc(messages.sequence) : desc(messages.sequence))
       .limit(input.limit + 1);
     const hasMore = rows.length > input.limit;
     const items = rows.slice(0, input.limit).map((row) =>
@@ -1634,14 +1645,10 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
         principalAuthUserId: row.principalAuthUserId,
       }),
     );
+    const resumeFrom = input.before ?? (input.after > 0 ? input.after : null);
     return {
       items,
-      next_cursor:
-        items.length > 0
-          ? String(items[items.length - 1]!.sequence)
-          : input.after > 0
-            ? String(input.after)
-            : null,
+      next_cursor: items.length > 0 ? String(items[items.length - 1]!.sequence) : resumeFrom === null ? null : String(resumeFrom),
       has_more: hasMore,
     };
   }

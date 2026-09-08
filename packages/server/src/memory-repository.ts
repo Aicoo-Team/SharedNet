@@ -13,6 +13,7 @@ import {
   type AdmittedBy,
   encodeInboxCursor,
   type InboxPosition,
+  DEFAULT_MESSAGE_QUERY,
   digestSecret,
   generatePublicId,
   generateSecret,
@@ -49,6 +50,7 @@ import type {
   DecisionStatus,
   ResolveDecisionRequest,
   UpdateInstanceRequest,
+  MessageQuery,
 } from "../../protocol/src/index.ts";
 import {
   MAX_AGENTS_PER_PRINCIPAL,
@@ -1073,11 +1075,7 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     return { message: this.projectMessage(message) };
   }
 
-  async listMessages(
-    auth: RoomAuth,
-    roomId: RoomId,
-    input: { after: number; limit: number },
-  ): Promise<Page<Message>> {
+  async listMessages(auth: RoomAuth, roomId: RoomId, input: MessageQuery): Promise<Page<Message>> {
     const room = this.roomById(roomId);
     this.requireMembership(auth, room.id);
     return this.pageMessages(room.id, input);
@@ -1108,15 +1106,24 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     };
   }
 
-  private pageMessages(roomId: RoomId, input: { after: number; limit: number }): Page<Message> {
-    const matching = (this.messages.get(roomId) ?? []).filter(
-      (message) => message.sequence > input.after,
-    );
+  private pageMessages(roomId: RoomId, partial: Partial<MessageQuery> & { after: number; limit: number }): Page<Message> {
+    const input: MessageQuery = { ...DEFAULT_MESSAGE_QUERY, ...partial };
+    const needle = input.q === null ? null : input.q.toLowerCase();
+    const matching = (this.messages.get(roomId) ?? [])
+      .filter((message) => (input.before === null ? message.sequence > input.after : message.sequence < input.before))
+      .filter((message) => input.sender_instance_id === null || message.sender_instance_id === input.sender_instance_id)
+      .filter((message) => {
+        if (input.sender_agent_id === null) return true;
+        const tag = this.tagOf(message.sender_instance_id);
+        return input.sender_agent_id === "default" ? tag === null : tag === input.sender_agent_id;
+      })
+      .filter((message) => needle === null || message.content.toLowerCase().includes(needle))
+      .sort((left, right) => (input.order === "asc" ? left.sequence - right.sequence : right.sequence - left.sequence));
     const items = matching.slice(0, input.limit).map((message) => this.projectMessage(message));
+    const resumeFrom = input.before ?? (input.after > 0 ? input.after : null);
     return {
       items,
-      next_cursor:
-        items.length > 0 ? String(items[items.length - 1]!.sequence) : input.after > 0 ? String(input.after) : null,
+      next_cursor: items.length > 0 ? String(items[items.length - 1]!.sequence) : resumeFrom === null ? null : String(resumeFrom),
       has_more: matching.length > items.length,
     };
   }

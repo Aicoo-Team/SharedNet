@@ -993,6 +993,28 @@ describe("sharednet say and wait", () => {
     expect(await cursorOf(space)).toBe(2);
   });
 
+  it("reads the Room as filter, order, window without touching the cursor: grep, sender, tag, last K oldest-first", async () => {
+    const space = await joinedSpace();
+    const page2 = { status: 200, body: { items: [message(5, "deploy is go"), message(3, "Deploy moved")], next_cursor: "3", has_more: false } };
+    const last = await run(["read", "--last", "2", "--grep", "deploy", "--json"], space, [page2]);
+    expect(last.exitCode).toBe(0);
+    const url = new URL(last.requests[0]!.url);
+    expect(url.pathname).toBe(`/api/v1/rooms/${ROOM_ID}/messages`);
+    expect(Object.fromEntries(url.searchParams)).toEqual({ order: "desc", limit: "2", q: "deploy" });
+    // Asked newest-first, shown oldest-first, and the cursor stays where it was.
+    expect(JSON.parse(last.stdout).items.map((item: any) => item.sequence)).toEqual([3, 5]);
+    expect(await cursorOf(space)).toBe(1);
+
+    const who = await run(["read", "--from-instance", "i_HostAbcdef", "--from-agent", "default", "--after", "10", "--limit", "5", "--json"], space, [page([])]);
+    expect(Object.fromEntries(new URL(who.requests[0]!.url).searchParams)).toEqual({ after: "10", limit: "5", sender_instance_id: "i_HostAbcdef", sender_agent_id: "default" });
+
+    const clash = await run(["read", "--last", "3", "--after", "2", "--json"], space, []);
+    expect(clash.exitCode).not.toBe(0);
+    expect(clash.requests).toHaveLength(0);
+    const badTag = await run(["read", "--from-agent", "reviewer", "--json"], space, []);
+    expect(JSON.parse(badTag.stderr).error.code).toBe("invalid_arguments");
+  });
+
   it("says who this machine acts as and which seat this directory holds, and never a secret", async () => {
     const nobody = await run(["whoami", "--json"], await workspace(), []);
     expect(nobody.exitCode).toBe(0);
