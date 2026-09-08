@@ -1,4 +1,4 @@
-import { requireAuthUserId } from "@/src/sharednet/current-account";
+import { requireWebMutation } from "@/src/sharednet/current-account";
 import { parseRoomId } from "@/src/sharednet/contracts";
 import { getSharedNetServerClient } from "@/src/sharednet/server-client";
 
@@ -36,7 +36,7 @@ export function POST(
   { params }: InviteRouteContext,
 ): Promise<Response> {
   return sharedNetResponse(async () => {
-    const authUserId = await requireAuthUserId(request.headers);
+    const authUserId = await requireWebMutation(request);
     const { roomId: untrustedRoomId } = await params;
     const roomId = parseRoomId(untrustedRoomId);
     if (roomId === null) throw invalidRouteIdentifier();

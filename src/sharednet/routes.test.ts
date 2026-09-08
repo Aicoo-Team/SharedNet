@@ -19,6 +19,7 @@ const { authGetSession, sharedNetClient } = vi.hoisted(() => ({
 vi.mock("server-only", () => ({}));
 vi.mock("../../lib/auth", () => ({
   getAuth: () => ({ api: { getSession: authGetSession } }),
+  resolveTrustedOrigins: () => [],
 }));
 vi.mock("./server-client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./server-client")>();
@@ -68,6 +69,8 @@ function request(
   const headers = new Headers({
     "content-type": "application/json",
     cookie: "better-auth.session_token=test",
+    // What a browser sends from our own page on every non-safe request.
+    origin: "http://localhost",
   });
   return new Request(`http://localhost${path}`, {
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -86,6 +89,7 @@ function rawRequest(
     headers: {
       "content-type": "application/json",
       cookie: "better-auth.session_token=test",
+      origin: "http://localhost",
     },
     method,
   });
@@ -96,6 +100,42 @@ function expectNoBackendCall(): void {
     expect(method).not.toHaveBeenCalled();
   }
 }
+
+describe("the Web mutation boundary on the Dashboard routes", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    authGetSession.mockResolvedValue({ user: { id: AUTH_USER_ID } });
+  });
+
+  it("refuses a mutation that names another page, before the session is read and before any backend call", async () => {
+    const foreign = new Request("http://localhost/api/sharednet/rooms", {
+      body: JSON.stringify({ name: "Not ours" }),
+      headers: { "content-type": "application/json", cookie: "better-auth.session_token=test", origin: "https://evil.example" },
+      method: "POST",
+    });
+    const response = await scheduleRoom(foreign);
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ error: { code: "forbidden_origin" } });
+    expect(authGetSession).not.toHaveBeenCalled();
+    expectNoBackendCall();
+  });
+
+  it("refuses a mutation with no Origin at all, the shape of a forged form post or a script outside a browser", async () => {
+    const bare = new Request("http://localhost/api/sharednet/bootstrap", {
+      headers: { cookie: "better-auth.session_token=test" },
+      method: "POST",
+    });
+    const response = await bootstrapAccount(bare);
+    expect(response.status).toBe(403);
+    expectNoBackendCall();
+  });
+
+  it("leaves reads unguarded by origin: a GET with no Origin still answers", async () => {
+    sharedNetClient.listRooms.mockResolvedValue({ rooms: [] });
+    const response = await listRooms(new Request("http://localhost/api/sharednet/rooms", { headers: { cookie: "better-auth.session_token=test" } }));
+    expect(response.status).toBe(200);
+  });
+});
 
 describe("authenticated SharedNet Dashboard routes", () => {
   beforeEach(() => {

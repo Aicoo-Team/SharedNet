@@ -1,4 +1,4 @@
-import { requireAuthUserId } from "@/src/sharednet/current-account";
+import { requireWebMutation } from "@/src/sharednet/current-account";
 import { getSharedNetServerClient } from "@/src/sharednet/server-client";
 
 import { invalidRequest, sharedNetResponse } from "../../route-response";
@@ -10,7 +10,7 @@ import { invalidRequest, sharedNetResponse } from "../../route-response";
  */
 export function POST(request: Request): Promise<Response> {
   return sharedNetResponse(async () => {
-    const authUserId = await requireAuthUserId(request.headers);
+    const authUserId = await requireWebMutation(request);
     const body: unknown = await request.json().catch(() => ({}));
     const label = typeof body === "object" && body !== null && "label" in body ? (body as { label: unknown }).label : null;
     if (label !== null && (typeof label !== "string" || label.length > 120)) throw invalidRequest();

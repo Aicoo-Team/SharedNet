@@ -1,4 +1,4 @@
-import { requireAuthUserId } from "@/src/sharednet/current-account";
+import { requireAuthUserId, requireWebMutation } from "@/src/sharednet/current-account";
 import {
   type CreateRoomInput,
   getSharedNetServerClient,
@@ -41,7 +41,7 @@ export function GET(request: Request): Promise<Response> {
 
 export function POST(request: Request): Promise<Response> {
   return sharedNetResponse(async () => {
-    const authUserId = await requireAuthUserId(request.headers);
+    const authUserId = await requireWebMutation(request);
     const input = await createRoomInput(request);
     return getSharedNetServerClient().createRoom(authUserId, input);
   });
