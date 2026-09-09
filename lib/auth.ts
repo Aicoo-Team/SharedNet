@@ -30,6 +30,8 @@ import {
   generatePublicId,
   generateSecret,
 } from "../packages/protocol/src/index.ts";
+import { sendEmail } from "../src/auth/email.ts";
+import { buildVerificationEmail, withCallback } from "../src/auth/verification-email.ts";
 
 const POSTGRES_ENVIRONMENT_NAMES = [
   "DATABASE_URL",
@@ -179,6 +181,26 @@ export function createSharedNetAuth({
       : undefined,
     emailAndPassword: {
       enabled: true,
+    },
+    // An address is proven, not blocked on: a person can use SharedNet at
+    // once and the mail catches up with them. Nothing here can fail a
+    // sign-up, because a mail provider having a bad minute must not cost
+    // somebody their account.
+    emailVerification: {
+      sendOnSignUp: true,
+      autoSignInAfterVerification: true,
+      expiresIn: 60 * 60 * 24,
+      sendVerificationEmail: async ({ user, url }) => {
+        const message = buildVerificationEmail({
+          name: user.name,
+          email: user.email,
+          url: withCallback(url, `${baseURL.replace(/\/+$/, "")}/chat?verified=1`),
+        });
+        const outcome = await sendEmail(message);
+        if (!outcome.sent && outcome.reason !== "not_configured") {
+          console.error(`SharedNet could not send the verification email to ${user.email}: ${outcome.reason}${outcome.detail ? ` (${outcome.detail})` : ""}`);
+        }
+      },
     },
     hooks: {
       before: createAuthMiddleware(async (context) => {

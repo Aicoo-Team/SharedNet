@@ -7,6 +7,7 @@ import { AppShell } from "./app-shell";
 
 const navigationState = vi.hoisted(() => ({ pathname: "/chat", replace: vi.fn() }));
 const authClient = vi.hoisted(() => ({
+  sendVerificationEmail: vi.fn(),
   signOut: vi.fn(),
   useSession: vi.fn(),
 }));
@@ -81,12 +82,13 @@ function dashboardFetch(input: RequestInfo | URL): Promise<Response> {
   return Promise.reject(new Error(`Unexpected Dashboard request: ${path}`));
 }
 
-function signedInSession(userId = "user_xisen") {
+function signedInSession(userId = "user_xisen", emailVerified = true) {
   return {
     data: {
       session: { id: `session_${userId}`, userId },
       user: {
         email: "xisen.demo@sharednet.local",
+        emailVerified,
         id: userId,
         image: null,
         name: "Xisen",
@@ -288,6 +290,36 @@ describe("SharedNet application shell", () => {
       }),
     );
     expect(await screen.findByText(`ready:${SECOND_PRINCIPAL_ID}`)).toBeVisible();
+  });
+
+  it("asks an unproven address to be confirmed, sends the link again on request, and withholds nothing meanwhile", async () => {
+    authClient.useSession.mockReturnValue(signedInSession("user_xisen", false));
+    authClient.sendVerificationEmail.mockResolvedValue({ data: {}, error: null });
+    render(
+      <AppShell>
+        <p>The Rooms page</p>
+      </AppShell>,
+    );
+
+    expect(screen.getByText(/Confirm xisen.demo@sharednet.local to finish setting up/)).toBeVisible();
+    // The product is there all the same: nothing waits on the mail.
+    expect(screen.getByRole("navigation", { name: "Primary surfaces" })).toBeVisible();
+    expect(screen.getByText("The Rooms page")).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Send the link again" }));
+    await waitFor(() => expect(authClient.sendVerificationEmail).toHaveBeenCalledWith({ email: "xisen.demo@sharednet.local", callbackURL: "/chat?verified=1" }));
+    expect(await screen.findByText(/Sent. Open the link in xisen.demo@sharednet.local/)).toBeVisible();
+  });
+
+  it("says nothing about email once the address is proven", () => {
+    authClient.useSession.mockReturnValue(signedInSession());
+    render(
+      <AppShell>
+        <p>The Rooms page</p>
+      </AppShell>,
+    );
+    expect(screen.queryByText(/Confirm/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Send the link again" })).toBeNull();
   });
 
   it("leaves the public protocol outside the authenticated product frame", () => {

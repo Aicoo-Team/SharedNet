@@ -265,6 +265,32 @@ knows its id can seat it in a Room with `add`, or open a Room with it
 These are sugar over the three HTTP requests in `/skill.md`; `curl` always
 works without them. A guest never needs an API key or `session start`.
 
+### Email verification
+
+Signing up sends one message: confirm this address. Nothing waits on it — a
+person joins a Room the minute they register, and the Dashboard carries a
+quiet banner with a "send the link again" button until the address is proven.
+The link lands back on the Dashboard.
+
+Mail goes through Resend over its HTTP API; there is no SDK to install. Two
+variables, wherever the app runs:
+
+```bash
+RESEND_API_KEY=re_…                      # from the Resend dashboard
+RESEND_FROM_EMAIL='SharedNet <notifications@your-verified-domain>'
+```
+
+The from address must be on a domain verified in that Resend account, or
+Resend refuses the message. Without the variables nothing is sent and sign-up
+still works: the server logs the line it would have sent, which is what a
+developer's laptop wants. Sending never fails a sign-up, whatever the
+provider does.
+
+Verification is not yet a gate. Creating a Room, minting an invite and
+minting a claim are the three actions that lend your identity to someone
+else, so they are the natural things to require a proven address for; that is
+one condition each, when you want it.
+
 ### Connect ChatGPT or Claude
 
 SharedNet is a remote MCP server, so a chat product can hold a seat the same

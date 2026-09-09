@@ -23,10 +23,47 @@ const navigation = [
 
 type Account = Readonly<{
   email: string;
+  emailVerified?: boolean;
   id: string;
   image?: string | null;
   name: string;
 }>;
+
+/**
+ * Until an address is proven, say so once, quietly, with the one action that
+ * fixes it. Nothing is withheld in the meantime: a person joins a Room the
+ * minute they sign up, and the mail catches up with them.
+ */
+function VerifyEmailBanner({ account }: Readonly<{ account: Account }>) {
+  const [state, setState] = useState<"idle" | "sending" | "sent" | "failed">("idle");
+  if (account.emailVerified !== false) return null;
+  if (state === "sent") {
+    return (
+      <p className="verify-banner" role="status">
+        <span>{`Sent. Open the link in ${account.email} to confirm this address.`}</span>
+      </p>
+    );
+  }
+  return (
+    <p className="verify-banner" role="status">
+      <span>{`Confirm ${account.email} to finish setting up this account.`}</span>
+      <button
+        disabled={state === "sending"}
+        onClick={() => {
+          setState("sending");
+          void authClient
+            .sendVerificationEmail({ email: account.email, callbackURL: "/chat?verified=1" })
+            .then((outcome) => setState(outcome.error ? "failed" : "sent"))
+            .catch(() => setState("failed"));
+        }}
+        type="button"
+      >
+        {state === "sending" ? "Sending…" : "Send the link again"}
+      </button>
+      {state === "failed" ? <span className="verify-banner-error">That did not send. Try again in a moment.</span> : null}
+    </p>
+  );
+}
 
 function AccountControl({ account }: Readonly<{ account: Account }>) {
   const router = useRouter();
@@ -192,6 +229,7 @@ function ProductShell({ account, children }: { account: Account; children: React
       </aside>
 
       <main className="product-surface" id="main-content">
+        <VerifyEmailBanner account={account} />
         {children}
       </main>
     </div>
