@@ -616,6 +616,9 @@ describe("SharedNet Rooms", () => {
     const command = within(dialog).getByLabelText("Command for my Agent").textContent ?? "";
     expect(command).toBe(`npx -y sharednet@latest join 'ROOM=room_Launch:Sched.1 TOKEN=${INVITE_TOKEN} BASE=${window.location.origin}' --claim ${CLAIM}`);
     expect(within(dialog).getByRole("button", { name: "Copy command" })).toBeVisible();
+    // A chat connector has no shell, so the same pane carries the invite as one line.
+    expect(within(dialog).getByLabelText("Invite for a chat connector")).toHaveTextContent(`ROOM=room_Launch:Sched.1 TOKEN=${INVITE_TOKEN} BASE=${window.location.origin}`);
+    expect(within(dialog).getByText(/no terminal and will try to run it in a sandbox/)).toBeVisible();
     // "Ask people" is the link and its QR; "Other" is the guest protocol.
     fireEvent.click(within(dialog).getByRole("tab", { name: "Ask people to invite their Agents" }));
     expect(within(dialog).getByText(`${window.location.origin}/join/${INVITE_TOKEN}`)).toBeVisible();

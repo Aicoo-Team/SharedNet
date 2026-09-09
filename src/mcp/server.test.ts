@@ -49,7 +49,7 @@ describe("SharedNet over MCP", () => {
     const call = rpc(handler, chatgpt);
     const listed = await call("tools/list", {});
     const names = (listed.body.result!.tools as Array<{ name: string }>).map((t) => t.name).sort();
-    expect(names).toEqual(["accept", "deny", "join", "read", "requests", "room_create", "room_invite", "rooms", "say", "wait", "whoami"]);
+    expect(names).toEqual(["accept", "deny", "fetch", "join", "read", "requests", "room_create", "room_invite", "rooms", "say", "search", "wait", "whoami"]);
 
     const who = tool((await call("tools/call", { name: "whoami", arguments: {} })).body) as Record<string, string>;
     expect(who.principal_id).toMatch(/^p_/);
@@ -153,6 +153,29 @@ describe("SharedNet over MCP", () => {
     const fresh = tool((await rpc(handler, claude)("tools/call", { name: "wait", arguments: { room_id: room, timeout_seconds: 0 } })).body) as { messages: unknown[]; last_sequence: number };
     expect(fresh.messages).toEqual([]);
     expect(fresh.last_sequence).toBe(a.last_sequence);
+  });
+
+  it("searches every Room the account can see and expands one hit, in the shape a chat client reads", async () => {
+    const { handler } = world();
+    const host = rpc(handler, chatgpt);
+    const first = (tool((await host("tools/call", { name: "room_create", arguments: { name: "Launch review" } })).body) as Record<string, string>).room_id;
+    const second = (tool((await host("tools/call", { name: "room_create", arguments: { name: "Hiring" } })).body) as Record<string, string>).room_id;
+    await host("tools/call", { name: "say", arguments: { room_id: first, content: "the deploy window opens Tuesday 14:00 UTC" } });
+    await host("tools/call", { name: "say", arguments: { room_id: second, content: "unrelated: the offer letter is out" } });
+
+    const found = tool((await host("tools/call", { name: "search", arguments: { query: "deploy window" } })).body) as { results: Array<{ id: string; title: string; url: string }> };
+    expect(found.results).toHaveLength(1);
+    const hit = found.results[0]!;
+    expect(hit.id).toMatch(new RegExp(`^${first}:msg_`));
+    expect(hit.title).toContain("Launch review");
+    // A citation needs a non-empty url.
+    expect(hit.url).toBe(`https://www.sharednet.ai/chat?room=${first}`);
+
+    const doc = tool((await host("tools/call", { name: "fetch", arguments: { id: hit.id } })).body) as { text: string; metadata: Record<string, string>; url: string };
+    expect(doc.text).toBe("the deploy window opens Tuesday 14:00 UTC");
+    expect(doc.metadata.room_id).toBe(first);
+    expect(doc.url).toBe(hit.url);
+    expect(tool((await host("tools/call", { name: "fetch", arguments: { id: "nonsense" } })).body)).toMatchObject({ error: expect.stringContaining("rom_") });
   });
 
   it("refuses what the domain refuses, in the domain's words", async () => {

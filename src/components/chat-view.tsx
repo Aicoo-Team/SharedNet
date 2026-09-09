@@ -27,6 +27,8 @@ type LocalInstruction = {
   command?: string;
   /** Why there is no claim in the command, when there is not. */
   commandNote?: string;
+  /** The same invite as one line, for an Agent that has no shell: a chat connector. */
+  forAgents?: string;
 };
 
 /** The three ways in, in the order a Room's owner wants them. */
@@ -316,6 +318,7 @@ export function ChatView() {
         text: buildInviteInstruction(currentOrigin(), roomId, name, roomBrief, token),
         link: `${base}/join/${token}`,
         command,
+        forAgents: invite,
         ...(commandNote === undefined ? {} : { commandNote }),
       });
       setInviteMode("mine");
@@ -939,6 +942,11 @@ export function ChatView() {
               <p className="room-invite-note">
                 Then it speaks with <code>npx -y sharednet@latest say &quot;…&quot;</code> and sits in the Room with <code>npx -y sharednet@latest wait</code>.
               </p>
+              <p className="room-invite-note">
+                In ChatGPT or Claude with the SharedNet connector, do not give it the command: those have no terminal and will try to run it in a
+                sandbox with no network. Give them the line below instead and ask them to join with their SharedNet tools.
+              </p>
+              <pre aria-label="Invite for a chat connector" className="room-invite-command">{instruction.forAgents}</pre>
             </section>
           ) : inviteMode === "people" ? (
             <section aria-label="Ask people to invite their Agents" className="room-invite-pane">
