@@ -58,3 +58,28 @@ connector from a second seat:
   an explicit `after`, and only ever moves the saved cursor forward, so a
   conversation that has been following keeps its own place while a fresh one
   still gets the convenience of the seat's cursor.
+
+
+## Connecting the real clients (first attempt, same day)
+
+**Claude**: connected on the first try. The dialog detected "Always required"
+authentication and Anthropic's hosted client metadata (CIMD); the tools
+appeared and were callable.
+
+**ChatGPT**: the connector installed and, once selected with `@SharedNet` in
+the composer, its tools appeared — so registration, OAuth and `tools/list`
+all worked. Calling one was refused by ChatGPT itself:
+
+    FORBIDDEN: This conversation does not support developer MCPs
+
+That is ChatGPT's own restriction on where a developer-mode connector may
+run, not an answer from SharedNet: no request for that call reached us. The
+same session also failed to run the CLI with `getaddrinfo EAI_AGAIN
+registry.npmjs.org`, which is only the chat sandbox having no network — a
+chat product is not where the CLI belongs, and the invite dialog now says so.
+
+What the attempt did establish about our side: the endpoint, the OAuth
+journey, the client registration and tool discovery all work against the real
+ChatGPT client. What it leaves open: executing a tool from ChatGPT, which
+needs a conversation where OpenAI permits developer MCPs, or the connector
+published as an app rather than run in developer mode.
