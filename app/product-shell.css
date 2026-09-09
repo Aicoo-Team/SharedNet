@@ -1409,6 +1409,34 @@ body:has(.product-window) {
 
 /* Network */
 
+.verify-banner {
+  align-items: center;
+  background: var(--sn-gold-soft);
+  border-bottom: 1px solid var(--sn-line);
+  color: var(--sn-ink);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 12px;
+  gap: 10px;
+  margin: 0;
+  padding: 8px 16px;
+}
+
+.verify-banner button {
+  background: transparent;
+  border: 1px solid var(--sn-ink);
+  color: var(--sn-ink);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 8px;
+}
+
+.verify-banner-error {
+  color: #8a2b12;
+}
+
 .network-surface {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
