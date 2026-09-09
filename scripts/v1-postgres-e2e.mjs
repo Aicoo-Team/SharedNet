@@ -685,6 +685,108 @@ try {
   });
   await assertStatus(consumedPoll, 410, "login-poll-consumed");
 
+  // --- One invite, many of the owner's own sessions. The command the Web
+  //     hands out carries a one-time claim; the owner pastes it into several
+  //     windows at once. The first spends the claim and leaves the account key
+  //     on the machine; the rest must still get seats of their own, in the same
+  //     working directory, rather than failing or speaking as each other. ---
+  {
+    const host = starts[0].instance.principal_id;
+    const { claim } = await repository.createCliClaim({ principalId: host, label: "e2e many sessions" });
+    assert.match(claim, /^clp_[A-Za-z0-9_-]{43}$/);
+    const inviteText = `ROOM=${roomId} TOKEN=${inviteToken} BASE=${apiBaseUrl}`;
+    // One machine, one working directory, several driver sessions: exactly what
+    // pasting the same command into several windows looks like.
+    const machine = await mkdtemp(join(tmpdir(), "sharednet-many-sessions-"));
+    const workspace = await mkdtemp(join(machine, "workspace-"));
+    const runSession = (sessionName, args, home = machine) =>
+      new Promise((resolveRun, rejectRun) => {
+        const child = spawn(process.execPath, [join(root, "packages/cli/src/main.ts"), ...args], {
+          cwd: workspace,
+          env: {
+            ...withoutDriverMarkers(process.env),
+            CLAUDECODE: "1",
+            CLAUDE_SESSION_ID: sessionName,
+            SHAREDNET_BASE_URL: apiBaseUrl,
+            XDG_CONFIG_HOME: join(home, "config"),
+            XDG_STATE_HOME: join(home, "state"),
+          },
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        let stdout = "";
+        let stderr = "";
+        child.stdout.setEncoding("utf8");
+        child.stderr.setEncoding("utf8");
+        child.stdout.on("data", (chunk) => { stdout += chunk; });
+        child.stderr.on("data", (chunk) => { stderr += chunk; });
+        child.once("error", rejectRun);
+        child.once("exit", (code) => {
+          assert.equal(
+            /snk_[A-Za-z0-9_-]{43}|sni_[A-Za-z0-9_-]{43}|clp_[A-Za-z0-9_-]{43}/.test(stderr),
+            false,
+            "a secret reached the CLI's own output",
+          );
+          resolveRun({ code, stdout, stderr });
+        });
+      });
+
+    const first = await runSession("many-sessions-1", ["join", inviteText, "--claim", claim, "--json"]);
+    assert.equal(first.code, 0, `first session:\n${first.stderr}`);
+    const firstJoin = JSON.parse(first.stdout);
+    assert.equal(firstJoin.as, "account");
+    assert.equal(firstJoin.principal_id, host, "the claim made this machine the owner's");
+
+    // The same command again, from a second session in the same directory. The
+    // claim is spent, and that is not a failure.
+    const second = await runSession("many-sessions-2", ["join", inviteText, "--claim", claim, "--json"]);
+    assert.equal(second.code, 0, `second session:\n${second.stderr}`);
+    const secondJoin = JSON.parse(second.stdout);
+    assert.equal(secondJoin.as, "account");
+    assert.equal(secondJoin.principal_id, host);
+    assert.match(second.stderr, /already used/);
+    assert.notEqual(
+      secondJoin.member_id,
+      firstJoin.member_id,
+      "two sessions on one invite are two seats, never one shared Instance",
+    );
+    assert.match(second.stderr, new RegExp(`--as ${secondJoin.member_id}`), "the join says how to address its own seat");
+
+    // Both seats are in the Room, under the owner's Principal, and the working
+    // directory remembers both rather than one overwriting the other.
+    const seats = await database.query(
+      "SELECT instance_id FROM sharednet.room_member WHERE room_id = $1 AND instance_id = ANY($2::text[])",
+      [roomId, [firstJoin.member_id, secondJoin.member_id]],
+    );
+    assert.equal(seats.rowCount, 2, "both seats are members of the Room");
+    const projectRoom = JSON.parse(await readFile(join(workspace, ".sharednet/room.json"), "utf8"));
+    assert.deepEqual(
+      Object.keys(projectRoom.seats).sort(),
+      [firstJoin.member_id, secondJoin.member_id].sort(),
+    );
+
+    // And each session speaks as itself: the second says something, the first
+    // hears it as another member's message.
+    const said = await runSession("many-sessions-2", ["say", "Second session here.", "--json"]);
+    assert.equal(said.code, 0, `say:\n${said.stderr}`);
+    assert.equal(JSON.parse(said.stdout).message.sender_instance_id, secondJoin.member_id);
+    const heard = await runSession("many-sessions-1", ["wait", "--timeout", "0", "--json"]);
+    assert.equal(heard.code, 0, `wait:\n${heard.stderr}`);
+    const heardBody = JSON.parse(heard.stdout);
+    const last = heardBody.items.at(-1);
+    assert.equal(last?.content, "Second session here.");
+    assert.equal(last?.sender?.member_id, secondJoin.member_id);
+
+    // A machine with no account is the one real failure: a spent claim there
+    // must say so instead of quietly joining as nobody.
+    const strangerHome = await mkdtemp(join(tmpdir(), "sharednet-no-account-"));
+    const stranger = await runSession("stranger", ["join", inviteText, "--claim", claim, "--json"], strangerHome);
+    assert.notEqual(stranger.code, 0, "a spent claim on a machine with no account is refused");
+    assert.match(stranger.stderr, /claim_spent|already used/);
+
+    await rm(machine, { recursive: true, force: true });
+    await rm(strangerHome, { recursive: true, force: true });
+  }
+
   await invitePool.end();
 
   const counts = await database.query(`
@@ -700,10 +802,11 @@ try {
     agents: 0, // there is no default Agent; a fresh Instance is untagged
     
     // Four Codex sessions, plus the guest seat bound into this account by the
-    // login above, plus the Instance the minted key registered.
-    instances: 6,
+    // login above, plus the Instance the minted key registered, plus the two
+    // seats the one invite gave two of the owner's own sessions.
+    instances: 8,
     rooms: 1,
-    messages: 6, // four Instances, one guest, one host reply during the guest's wait
+    messages: 7, // four Instances, one guest, one host reply during the guest's wait, one from the second session
   });
 
   const deleteKeyResponse = await authRequest(
