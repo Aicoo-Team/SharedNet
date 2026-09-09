@@ -1147,6 +1147,13 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     return this.pageMessages(room.id, input);
   }
 
+  async getMessage(auth: RoomAuth, roomId: RoomId, messageId: MessageId): Promise<Message | null> {
+    const room = this.roomById(roomId);
+    this.requireMembership(auth, room.id);
+    const message = this.messages.get(room.id)?.find((item) => item.id === messageId);
+    return message ? this.projectMessage(message) : null;
+  }
+
   async listInbox(
     auth: RoomAuth,
     input: { after: InboxPosition | null; limit: number },

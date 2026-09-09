@@ -619,6 +619,42 @@ try {
     room_id: formedBody.room.id,
   });
 
+  // --- Exact retrieval: an old message stays fetchable, scoped to its Room
+  //     and the caller's current membership, over the real SQL repository. ---
+  const retrievalGuestAuth = await repository.authenticateInstance(guestToken);
+  assert.ok(retrievalGuestAuth);
+  const retrievalHostSession = JSON.parse(
+    await readFile(join(sandbox, "state", "sharednet", "sessions", `${instanceIds[0]}.json`), "utf8"),
+  );
+  const retrievalHostAuth = await repository.authenticateInstance(retrievalHostSession.instance_token);
+  assert.ok(retrievalHostAuth);
+  const { room: retrievalRoom } = await repository.createRoom(retrievalGuestAuth, { name: "Historical retrieval" });
+  const { message: originalMessage } = await repository.postMessage(retrievalGuestAuth, retrievalRoom.id, { content: "the original launch decision" });
+  for (let i = 0; i < 101; i += 1) {
+    await repository.postMessage(retrievalGuestAuth, retrievalRoom.id, { content: `later chatter ${i}` });
+  }
+  const fetchedMessage = await repository.getMessage(retrievalGuestAuth, retrievalRoom.id, originalMessage.id);
+  assert.equal(fetchedMessage.content, "the original launch decision", "fetch is independent of history length");
+  assert.equal(fetchedMessage.sequence, 1);
+  assert.equal(fetchedMessage.sender.name, "claude-code");
+  assert.equal(await repository.getMessage(retrievalGuestAuth, roomId, originalMessage.id), null, "a message cannot be fetched under another Room id");
+  assert.equal(await repository.getMessage(retrievalGuestAuth, retrievalRoom.id, "msg_AbCdEfGhIj"), null, "an unknown message is absent");
+  await assert.rejects(
+    repository.getMessage(retrievalGuestAuth, "rom_AbCdEfGhIj", originalMessage.id),
+    { code: "room_not_found" },
+  );
+  await assert.rejects(
+    repository.getMessage(retrievalHostAuth, retrievalRoom.id, originalMessage.id),
+    { code: "room_membership_required" },
+    "knowing a message id does not grant a non-member access",
+  );
+  await repository.removeRoomMember(retrievalGuestAuth.principalId, retrievalRoom.id, retrievalGuestAuth.instanceId);
+  await assert.rejects(
+    repository.getMessage(retrievalGuestAuth, retrievalRoom.id, originalMessage.id),
+    { code: "room_membership_required" },
+    "a removed member immediately loses message access",
+  );
+
   // --- sharednet login: a code approved in the Web hands the CLI a key, and
   //     binds the anonymous seat this machine holds to the approving account. ---
   const loginStart = await fetch(`${apiBaseUrl}/api/v1/cli/logins`, {

@@ -5,6 +5,7 @@ import {
   buildLlmsIndex,
   buildRoomJoinSkill,
   JOIN_REQUEST,
+  READ_REQUEST,
   SEND_REQUEST,
   WAIT_REQUEST,
 } from "./registration-contract";
@@ -12,6 +13,7 @@ import { GET as getLlmsIndex } from "@/app/llms.txt/route";
 import { GET as getLlmsFullText } from "@/app/llms-full.txt/route";
 import { GET as getRegistrationSkill } from "@/app/protocol/skill.md/route";
 import { GET as getRoomJoinSkill } from "@/app/skill.md/route";
+import { messageQueryFrom } from "../../packages/cli/src/guest";
 
 describe("SharedNet Room protocol artifacts", () => {
   const origin = "https://sharednet.ai";
@@ -43,11 +45,11 @@ describe("SharedNet Room protocol artifacts", () => {
     expect(await compatibilityResponse.text()).toBe(skill);
   });
 
-  it("is exactly three requests, in the order join, send, wait", () => {
+  it("keeps join, send, and wait together and adds a separate history request", () => {
     const skill = buildRoomJoinSkill(origin);
     const blocks = bashBlocks(skill);
 
-    expect(blocks).toEqual([JOIN_REQUEST, SEND_REQUEST, WAIT_REQUEST]);
+    expect(blocks).toEqual([JOIN_REQUEST, SEND_REQUEST, WAIT_REQUEST, READ_REQUEST]);
     expect(JOIN_REQUEST).toContain('"$BASE/api/v1/rooms/$ROOM/join"');
     expect(JOIN_REQUEST).toContain("Authorization: Bearer $TOKEN");
     expect(SEND_REQUEST).toContain('"$BASE/api/v1/rooms/$ROOM/messages"');
@@ -57,6 +59,30 @@ describe("SharedNet Room protocol artifacts", () => {
     for (const block of blocks) {
       expect(block).not.toContain("Idempotency-Key");
       expect(block).not.toContain("snk_");
+    }
+  });
+
+  it("publishes a URL-encoded history lookup equivalent to the CLI's filtered latest window", async () => {
+    const expectedQuery = messageQueryFrom(new Map([
+      ["grep", "deployment"],
+      ["last", "10"],
+      ["from-agent", "default"],
+    ]));
+    for (const [path, get] of [
+      ["/skill.md", getRoomJoinSkill],
+      ["/llms-full.txt", getLlmsFullText],
+    ] as const) {
+      const response = get(new Request(`${origin}${path}`));
+      const blocks = bashBlocks(await response.text());
+      const lookup = blocks.find((block) => block.startsWith("curl -sG "));
+      expect(lookup, path).toBeDefined();
+      expect(lookup).toContain('"$BASE/api/v1/rooms/$ROOM/messages"');
+      expect(lookup).toContain('Authorization: Bearer $MEMBER_TOKEN');
+      const query = new URLSearchParams(
+        [...lookup!.matchAll(/--data-urlencode "([^=]+)=([^"]+)"/g)]
+          .map((match) => [match[1]!, match[2]!]),
+      );
+      expect(Object.fromEntries(query)).toEqual(Object.fromEntries(expectedQuery));
     }
   });
 
@@ -113,7 +139,7 @@ describe("SharedNet Room protocol artifacts", () => {
     }
     expect(fullText).toContain("Only digests of tokens are stored");
     expect(fullText).toContain("online within a\nminute, away within ten, offline after that");
-    expect(bashBlocks(fullText)).toEqual([JOIN_REQUEST, SEND_REQUEST, WAIT_REQUEST]);
+    expect(bashBlocks(fullText)).toEqual([JOIN_REQUEST, SEND_REQUEST, WAIT_REQUEST, READ_REQUEST]);
     for (const retired of ["authorization_required", "sharednet local run", "Typed Delegation"]) {
       expect(fullText, retired).not.toContain(retired);
     }

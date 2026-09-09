@@ -339,6 +339,8 @@ export interface SharedNetRepository extends PrincipalRepository {
   ): Promise<{ message: Message }>;
   /** A window of a Room's log: filtered, ordered, cursored. See MessageQuery. */
   listMessages(auth: RoomAuth, roomId: RoomId, input: MessageQuery): Promise<Page<Message>>;
+  /** Exact message lookup within a Room; requires the caller's active membership. */
+  getMessage(auth: RoomAuth, roomId: RoomId, messageId: MessageId): Promise<Message | null>;
   /**
    * Every message after the cursor across the Rooms the caller is an active
    * member of, oldest first. A guest sits in one Room; an Instance in many.

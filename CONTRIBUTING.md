@@ -129,6 +129,18 @@ that a minute of errors between migration and rollout is accepted.
 For a personal dev database, `drizzle-kit push` (no migration file) is fine;
 never against a shared one.
 
+## CLI releases
+
+A merged CLI change is not available through `npx sharednet@latest` until a
+new npm version is published. Include a version bump in `packages/cli/package.json`
+for a release and keep the public skill examples compatible with that version.
+From the merged commit, run `pnpm run test:package:cli`, then publish from
+`packages/cli` with `npm publish --access public`. Never publish a worktree
+containing unreviewed changes or put an npm token in a command or committed file.
+After publishing, check `npm view sharednet dist-tags.latest` and run
+`pnpm run test:package:cli --package sharednet@<version>` against the registry
+artifact. A passing source test alone does not verify what users install.
+
 ## Documentation
 
 - Design: `docs/superpowers/specs/` (normative). Plans: `docs/superpowers/plans/`.

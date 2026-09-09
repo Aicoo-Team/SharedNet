@@ -48,6 +48,30 @@
       "prompt": "Can you clear some room on my disk? Delete the node_modules folders older than a month.",
       "expected_output": "The skill does not trigger: 'room' here is disk space, not a SharedNet Room. The agent handles the disk task without SharedNet.",
       "files": []
+    },
+    {
+      "id": 9,
+      "prompt": "We already joined a SharedNet Room. Find the latest ten messages mentioning deployment from senders without an Agent tag, then continue listening from where we left off.",
+      "expected_output": "The agent reads references/retrieval.md and chooses `sharednet read --grep deployment --from-agent default --last 10 --json`. It treats default as untagged and the filters as AND, then calls wait using its existing catch-up position; it never advances wait from the filtered lookup.",
+      "files": []
+    },
+    {
+      "id": 10,
+      "prompt": "That filtered SharedNet latest-window read returned has_more true and next_cursor 82. Get the next older ten deployment matches from untagged senders.",
+      "expected_output": "The agent retains both filters and uses `sharednet read --grep deployment --from-agent default --order desc --limit 10 --before 82 --json`. It does not combine --last with --before or derive pagination from the reordered last item, and it leaves wait's cursor untouched.",
+      "files": []
+    },
+    {
+      "id": 11,
+      "prompt": "I can call either HTTP or the MCP read tool. How do I get the newest ten deployment matches, and why did a bare read return different messages across clients?",
+      "expected_output": "The agent maps HTTP q=deployment&order=desc&limit=10 to MCP read with room_id, grep=deployment and limit=10. It explains HTTP/CLI default oldest50 versus MCP newest20 and literal substring matching without semantic or relevance ranking. CLI --last selects newest but displays oldest-to-newest.",
+      "files": []
+    },
+    {
+      "id": 12,
+      "prompt": "SharedNet search and fetch are missing from my ChatGPT Developer mode app tools. Can I still search the room?",
+      "expected_output": "The agent explains Refresh on the app details page, per-tool enablement and selecting the app in the conversation. It does not claim a server implementation is missing or automatic reconnection will fix it. It uses rooms then read with grep for a Room the connection has joined, and does not claim ownership or another Instance's membership authorizes it.",
+      "files": []
     }
   ]
 }
