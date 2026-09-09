@@ -5,22 +5,31 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { createSharedNetDevServer } from "../packages/server/src/dev-server.ts";
+import { MemorySharedNetRepository } from "../packages/server/src/memory-repository.ts";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const cliRoot = join(repoRoot, "packages", "cli");
 const scratch = await mkdtemp(join(tmpdir(), "sharednet-cli-package-"));
+// The same rehearsal checks a local build before release and the registry
+// artifact afterward: pnpm run test:package:cli --package sharednet@<version>.
+const args = process.argv.slice(2);
+assert(args.length === 0 || (args.length === 2 && args[0] === "--package"), "usage: cli-package-smoke.mjs [--package <package-spec>]");
+const packageSpec = args[1];
 const npmEnv = {
   ...process.env,
   NPM_CONFIG_AUDIT: "false",
   NPM_CONFIG_FUND: "false",
   NPM_CONFIG_USERCONFIG: join(scratch, "empty-npmrc"),
+  NPM_CONFIG_CACHE: join(scratch, "npm-cache"),
 };
+let server;
 
 try {
   const packed = await execFileAsync(
     "npm",
-    ["pack", "--json", "--pack-destination", scratch],
+    ["pack", ...(packageSpec ? [packageSpec] : []), "--json", "--pack-destination", scratch],
     { cwd: cliRoot, env: npmEnv },
   );
   const manifest = JSON.parse(packed.stdout);
@@ -112,13 +121,57 @@ try {
   assert.notEqual(joinError.code, "invalid_arguments", "installed CLI must accept the join page's command shape");
   assert.equal(joinError.code, "service_unavailable", "the only thing wrong with the rehearsal command is the dead server");
 
+  // Exercise the installed artifact against the real HTTP handler. A package
+  // that predates retrieval must fail here even if the source tree is current.
+  const repository = new MemorySharedNetRepository();
+  const owner = await repository.mcpSeat("package-smoke-owner", { id: "package-smoke", label: "Package smoke" });
+  const { room } = await repository.createRoom(owner.auth, { name: "Package retrieval" });
+  const { token: invite } = await repository.createRoomInvite({ roomId: room.id, principalId: owner.principal.id });
+  server = createSharedNetDevServer(repository);
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const isolatedEnv = {
+    ...Object.fromEntries(Object.entries(npmEnv).filter(([key]) => !/^(SHAREDNET|CLAUDE|CLAUDECODE|ANTHROPIC|CODEX|OPENCODE|OPENHANDS|GEMINI_CLI|CURSOR)/.test(key))),
+    SHAREDNET_BASE_URL: baseUrl,
+    CODEX_SESSION_ID: "package-smoke-reader",
+    XDG_CONFIG_HOME: join(scratch, "retrieval-config"),
+    XDG_STATE_HOME: join(scratch, "retrieval-state"),
+  };
+  const runInstalled = async (command) => {
+    const output = await execFileAsync(process.execPath, ["--no-experimental-strip-types", installedBin, ...command, "--json"], {
+      cwd: consumerRoot,
+      env: isolatedEnv,
+    });
+    assert(!/sni_[A-Za-z0-9_-]{43}/.test(output.stdout + output.stderr), "installed CLI must not expose its member credential");
+    return JSON.parse(output.stdout);
+  };
+  await runInstalled(["join", `ROOM=${room.id} TOKEN=${invite} BASE=${baseUrl}`]);
+  for (const content of ["cache owner: Ada", "release: tomorrow", "cache owner: Mira", "colour: blue"]) {
+    await repository.postMessage(owner.auth, room.id, { content });
+  }
+  const latest = await runInstalled(["read", "--grep", "CACHE OWNER", "--from-instance", owner.instance.id, "--from-agent", "default", "--last", "2"]);
+  assert.deepEqual(latest.items.map((message) => [message.sequence, message.content]), [[1, "cache owner: Ada"], [3, "cache owner: Mira"]], "latest matching messages must be selected then printed in log order");
+  const earlier = await runInstalled(["read", "--grep", "cache owner", "--before", "3", "--order", "desc", "--limit", "1"]);
+  assert.deepEqual(earlier.items.map((message) => message.sequence), [1], "before must page backward exclusively");
+  const after = await runInstalled(["read", "--after", "2", "--limit", "10"]);
+  assert.deepEqual(after.items.map((message) => message.sequence), [3, 4], "after must page forward exclusively");
+  const unread = await runInstalled(["wait", "--timeout", "0"]);
+  assert.deepEqual(unread.items.map((message) => message.sequence), [1, 2, 3, 4], "history lookups must not consume the wait cursor");
+
   process.stdout.write(
     "CLI package smoke passed (" +
       manifest[0].filename +
       ", " +
       packageFiles.size +
-      " files).\n",
+      " files; installed retrieval and wait verified over HTTP).\n",
   );
 } finally {
+  if (server) {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  }
   await rm(scratch, { recursive: true, force: true });
 }

@@ -1637,6 +1637,29 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
     return this.pageMessages(room.id, input);
   }
 
+  async getMessage(auth: RoomAuth, roomId: RoomId, messageId: MessageId): Promise<Message | null> {
+    const room = await this.roomById(roomId);
+    await this.requireMembership(auth, room.id);
+    const [row] = await this.executor()
+      .select({
+        message: messages,
+        agentId: instances.agentId,
+        displayName: instances.displayName,
+        principalAuthUserId: principals.authUserId,
+      })
+      .from(messages)
+      .innerJoin(instances, eq(instances.id, messages.senderInstanceId))
+      .innerJoin(principals, eq(principals.id, messages.senderPrincipalId))
+      .where(and(eq(messages.roomId, room.id), eq(messages.id, messageId)))
+      .limit(1);
+    return row
+      ? projectMessage(row.message, row.agentId ?? null, {
+          displayName: row.displayName,
+          principalAuthUserId: row.principalAuthUserId,
+        })
+      : null;
+  }
+
   async listInbox(
     auth: RoomAuth,
     input: { after: InboxPosition | null; limit: number },

@@ -3,6 +3,7 @@
 import { createMcpHandler } from "@modelcontextprotocol/server";
 import { describe, expect, it } from "vitest";
 
+import type { InstanceId, PrincipalId, RoomId } from "@/packages/protocol/src/index.ts";
 import { MemorySharedNetRepository } from "@/packages/server/src/memory-repository.ts";
 import { runtimeKindForMcp } from "@/packages/server/src/memory-repository.ts";
 import { createSharedNetMcpServer, mcpClientFrom, parseInviteText } from "./server";
@@ -131,6 +132,23 @@ describe("SharedNet over MCP", () => {
     expect(waited.messages.map((m) => m.sequence)).toEqual([1, 2, 3]);
   });
 
+  it("returns a read cursor that retrieves the next older matches without repeating them", async () => {
+    const { handler } = world();
+    const host = rpc(handler, chatgpt);
+    const room = (tool((await host("tools/call", { name: "room_create", arguments: { name: "Paged decisions" } })).body) as Record<string, string>).room_id;
+    for (const content of ["decision one", "chatter", "decision two", "more chatter", "decision three"]) {
+      await host("tools/call", { name: "say", arguments: { room_id: room, content } });
+    }
+
+    type ReadPage = { messages: Array<{ sequence: number }>; next_cursor: string | null; has_more: boolean; wait_cursor: number };
+    const first = tool((await host("tools/call", { name: "read", arguments: { room_id: room, grep: "decision", limit: 2 } })).body) as ReadPage;
+    expect(first.messages.map((message) => message.sequence)).toEqual([5, 3]);
+    expect(first).toMatchObject({ next_cursor: "3", has_more: true, wait_cursor: 0 });
+    const next = tool((await host("tools/call", { name: "read", arguments: { room_id: room, grep: "decision", limit: 2, before: Number(first.next_cursor) } })).body) as ReadPage;
+    expect(next.messages.map((message) => message.sequence)).toEqual([1]);
+    expect(next).toMatchObject({ next_cursor: "1", has_more: false, wait_cursor: 0 });
+  });
+
   it("keeps two conversations of one connector independent when each passes its own place", async () => {
     const { handler } = world();
     const host = rpc(handler, chatgpt);
@@ -176,6 +194,53 @@ describe("SharedNet over MCP", () => {
     expect(doc.metadata.room_id).toBe(first);
     expect(doc.url).toBe(hit.url);
     expect(tool((await host("tools/call", { name: "fetch", arguments: { id: "nonsense" } })).body)).toMatchObject({ error: expect.stringContaining("rom_") });
+  });
+
+  it("expands a search hit even after more than a hundred newer messages", async () => {
+    const { handler } = world();
+    const host = rpc(handler, chatgpt);
+    const room = (tool((await host("tools/call", { name: "room_create", arguments: { name: "Long history" } })).body) as Record<string, string>).room_id;
+    await host("tools/call", { name: "say", arguments: { room_id: room, content: "the original launch decision" } });
+    for (let i = 0; i < 101; i += 1) {
+      await host("tools/call", { name: "say", arguments: { room_id: room, content: `later chatter ${i}` } });
+    }
+
+    const found = tool((await host("tools/call", { name: "search", arguments: { query: "original launch decision" } })).body) as { results: Array<{ id: string }> };
+    expect(found.results).toHaveLength(1);
+    const doc = tool((await host("tools/call", { name: "fetch", arguments: { id: found.results[0]!.id } })).body);
+    expect(doc).toMatchObject({ text: "the original launch decision", metadata: { room_id: room, sequence: "1" } });
+  });
+
+  it("only fetches a message from the Room named in the result id", async () => {
+    const { handler } = world();
+    const host = rpc(handler, chatgpt);
+    const first = (tool((await host("tools/call", { name: "room_create", arguments: { name: "First" } })).body) as Record<string, string>).room_id;
+    const second = (tool((await host("tools/call", { name: "room_create", arguments: { name: "Second" } })).body) as Record<string, string>).room_id;
+    const said = tool((await host("tools/call", { name: "say", arguments: { room_id: first, content: "only in the first Room" } })).body) as Record<string, string>;
+
+    expect(tool((await host("tools/call", { name: "fetch", arguments: { id: `${second}:${said.message_id}` } })).body)).toMatchObject({ error: expect.stringContaining("No message") });
+    expect(tool((await host("tools/call", { name: "fetch", arguments: { id: `${first}:msg_AbCdEfGhIj` } })).body)).toMatchObject({ error: expect.stringContaining("No message") });
+    expect(tool((await host("tools/call", { name: "fetch", arguments: { id: `rom_AbCdEfGhIj:${said.message_id}` } })).body)).toMatchObject({ error: expect.stringContaining("room_not_found") });
+  });
+
+  it("requires the fetching Instance to hold an active seat, including after removal", async () => {
+    const { handler, repository } = world();
+    const host = rpc(handler, chatgpt);
+    const guest = rpc(handler, claude);
+    const sibling = rpc(handler, { ...chatgpt, client: claude.client });
+    const owner = tool((await host("tools/call", { name: "whoami", arguments: {} })).body) as { principal_id: PrincipalId };
+    const room = (tool((await host("tools/call", { name: "room_create", arguments: { name: "Members only" } })).body) as { room_id: RoomId }).room_id;
+    const said = tool((await host("tools/call", { name: "say", arguments: { room_id: room, content: "private launch decision" } })).body) as Record<string, string>;
+    const id = `${room}:${said.message_id}`;
+
+    for (const caller of [guest, sibling]) {
+      expect(tool((await caller("tools/call", { name: "fetch", arguments: { id } })).body)).toMatchObject({ error: expect.stringContaining("room_membership_required") });
+    }
+    const invite = tool((await host("tools/call", { name: "room_invite", arguments: { room_id: room } })).body) as Record<string, string>;
+    const joined = tool((await guest("tools/call", { name: "join", arguments: { invite: invite.for_agents } })).body) as { member_id: InstanceId };
+    expect(tool((await guest("tools/call", { name: "fetch", arguments: { id } })).body)).toMatchObject({ text: "private launch decision" });
+    await repository.removeRoomMember(owner.principal_id, room, joined.member_id);
+    expect(tool((await guest("tools/call", { name: "fetch", arguments: { id } })).body)).toMatchObject({ error: expect.stringContaining("room_membership_required") });
   });
 
   it("refuses what the domain refuses, in the domain's words", async () => {

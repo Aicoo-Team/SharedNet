@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 
 import { RepositoryError, type McpClient, type SharedNetRepository } from "@/packages/server/src/repository.ts";
-import { DEFAULT_MESSAGE_QUERY, type InstanceId, type Message, type RitSecret, type RoomId } from "@/packages/protocol/src/index.ts";
+import { DEFAULT_MESSAGE_QUERY, type InstanceId, type Message, type MessageId, type RitSecret, type RoomId } from "@/packages/protocol/src/index.ts";
 
 /**
  * SharedNet over MCP. A chat product (ChatGPT, Claude) that connected on a
@@ -246,6 +246,7 @@ export function createSharedNetMcpServer(subject: McpSubject, deps: SharedNetMcp
           },
           messages: page.items.map(brief),
           has_more: page.has_more,
+          next_cursor: page.next_cursor,
           wait_cursor: await repository.getCursor(s.instance.id, roomId),
         });
       } catch (error) {
@@ -408,8 +409,7 @@ export function createSharedNetMcpServer(subject: McpSubject, deps: SharedNetMcp
         }
         const s = await seat();
         const roomId = roomPart as RoomId;
-        const page = await repository.listMessages(s.auth, roomId, { ...DEFAULT_MESSAGE_QUERY, order: "desc", limit: 100 });
-        const message = page.items.find((item) => item.id === messagePart);
+        const message = await repository.getMessage(s.auth, roomId, messagePart as MessageId);
         if (!message) return failure(new Error(`No message ${messagePart} in ${roomPart} within reach.`));
         return result({
           id,

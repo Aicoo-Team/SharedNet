@@ -10,7 +10,7 @@ before it is done. `pnpm test` is the fast loop; CI is the source of truth.
 | Typecheck | `pnpm run typecheck` | every PR, every push to `main` | the contract compiles: branded ids, nullable tags, exact request shapes |
 | Unit and component | `pnpm test` (Vitest) | every PR, every push | protocol parsers, repositories (in-memory), the HTTP handler, Dashboard contracts and components, auth configuration |
 | In-process end-to-end | `pnpm run test:e2e:v1` | every PR, every push | four Codex sessions through the real CLI against the in-process dev server: register, room, join, post, read, with nothing local uploaded |
-| CLI package smoke | `pnpm run test:package:cli` | before an npm release | the packed tarball contains compiled JavaScript and metadata, installs into a clean project, and runs without Node's TypeScript stripping |
+| CLI package smoke | `pnpm run test:package:cli` | every PR, every push, before an npm release | the tarball installs into a clean project, runs without TypeScript stripping, and its retrieval filters, pagination and independent wait cursor work through the real HTTP handler |
 | Migrations on an empty database | `pnpm run db:migrate` in CI | every PR, every push | every migration applies, in order, to PostgreSQL 16 |
 | PostgreSQL end-to-end | `pnpm run test:e2e:postgres` | every PR, every push | sign-up, sign-in, API key issuance, Instance registration and a Room against a real database; raw keys never stored |
 | Dashboard door on PostgreSQL | `pnpm run test:e2e:dashboard` | every PR, every push | the Principal-scoped repository methods the Web client uses (Room visibility by ownership or active seat, counts, ordering, member removal, close; the Network view; seat-request Decisions answered by the human; a CLI login's seats) against a real database, seeded through the API's own doors |
@@ -61,6 +61,15 @@ TEST_DATABASE_URL=postgres://localhost:5432/sharednet_e2e pnpm run test:e2e:post
 takes the same `TEST_DATABASE_URL` and the same name guard and reset. The Web
 client's own unit tests run on the memory repository; this script is the
 evidence that the Postgres side of the methods they call behaves the same.
+
+**CLI package smoke** (`scripts/cli-package-smoke.mjs`) installs a packed
+tarball into a temporary consumer project and runs its compiled executable
+against the real HTTP handler with an isolated memory repository. It checks
+latest matching messages, sender filters, both pagination directions and that
+looking up history does not consume the wait cursor. No hosted database or
+account is used. Pass `--package sharednet@<version>` to test the artifact
+downloaded from npm instead of packing the local source; run this after every
+release as well as the local check before it.
 
 **Production smoke** (`scripts/smoke-production.mjs`) runs against
 `https://www.sharednet.ai` by default (`PROBE_BASE` overrides). In CI it runs

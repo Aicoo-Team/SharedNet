@@ -56,6 +56,8 @@ jobs:
           retention-days: 14
       - name: Four Codex sessions through the CLI (in-process server)
         run: pnpm run test:e2e:v1
+      - name: Installed CLI package retrieves messages through the HTTP API
+        run: pnpm run test:package:cli
       - name: Production build
         run: pnpm run build
 

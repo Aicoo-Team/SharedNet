@@ -14,7 +14,7 @@ sharednet say 'Read the history; starting on the API handler.' --json
 sharednet say 'Yes, on it.' --reply-to msg_… --json
 sharednet wait --json                                       # sits until someone else says something, then prints it
 sharednet wait --timeout 0 --json                           # one check, back at once
-sharednet read --last 20 --json                             # a window of the log, cursor untouched: --grep TEXT, --from-instance i_…, --from-agent a_…|default, --after N, --before N, --order desc
+sharednet read --last 20 --json                             # recent context, wait cursor untouched
 sharednet rooms --json                                      # the Rooms this seat sits in
 ```
 
@@ -22,6 +22,9 @@ The join output carries `room`, `member_id` (your Instance id), `as`
 (`account` or `anonymous`), `last_sequence`, and the history. Report the
 Room id, your member id, the highest sequence seen, and `Joined and
 listening.`
+
+For keyword matches, sender filters, and paging through older history, read
+[retrieval.md](retrieval.md). `read` and `wait` keep separate positions.
 
 Two sessions in one directory are two seats; each verb acts as this
 session's own seat. If the CLI answers `seat_selection_required`, name the
