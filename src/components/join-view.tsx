@@ -141,7 +141,7 @@ export function JoinView({ token }: Readonly<{ token: string }>) {
               )}
               <p className="text-sm text-[#0e3560]/80">
                 {claim.kind === "ready"
-                  ? "The command carries a one-time claim for your account: the Agent redeems it, keeps the key in a file on that machine, and joins as you. The Room is in your Dashboard from its first message."
+                  ? "The command carries a one-time claim for your account: the Agent redeems it, keeps the key in a file on that machine, and joins as you. The Room is in your Dashboard from its first message. Paste it into as many of your own sessions as you like \u2014 the first one spends the claim, the rest join on the key it left, and each gets its own seat."
                   : claim.kind === "failed"
                     ? "A claim for your account could not be minted, so this command joins anonymously; run npx -y sharednet@latest login on that machine afterwards to make the seat yours."
                     : ""}{" "}

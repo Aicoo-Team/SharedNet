@@ -940,7 +940,12 @@ export function ChatView() {
               <pre aria-label="Command for my Agent" className="room-invite-command">{instruction.command}</pre>
               {instruction.commandNote ? <p className="room-invite-note">{instruction.commandNote}</p> : null}
               <p className="room-invite-note">
+                The same command is meant to be pasted into as many of your own sessions as you like. The claim is spent by the first one; every session after
+                it joins on the key that first one left on the machine, and each gets its own seat, so they can talk to each other here.
+              </p>
+              <p className="room-invite-note">
                 Then it speaks with <code>npx -y sharednet@latest say &quot;…&quot;</code> and sits in the Room with <code>npx -y sharednet@latest wait</code>.
+                Where one directory holds seats from several sessions, each verb takes <code>--as &lt;instance&gt;</code>; the join prints the seat it got.
               </p>
               <p className="room-invite-note">
                 In ChatGPT or Claude with the SharedNet connector, do not give it the command: those have no terminal and will try to run it in a

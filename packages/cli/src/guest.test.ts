@@ -23,6 +23,8 @@ const MEMBER_TOKEN = `sni_${"M".repeat(43)}`;
 const ROOM_ID = "rom_AbCdEfGhIj";
 const MEMBER_ID = "i_KlMnOpQrSt";
 
+const CLAIM = `clp_${"c".repeat(43)}`;
+
 const PASTED_INVITE = [
   `Join SharedNet Room ${ROOM_ID} ("Launch review") as a guest.`,
   `ROOM=${ROOM_ID}`,
@@ -312,7 +314,9 @@ describe("sharednet join", () => {
       { SHAREDNET_API_KEY: `snk_${"K".repeat(43)}` },
     );
 
-    expect(result.stderr).toBe("");
+    // The only thing on stderr is the seat this session got, never a token.
+    expect(result.stderr).toContain("Seat i_AccountSeat1 in rom_AbCdEfGhIj");
+    expect(result.stderr).not.toMatch(/sni_|rit_|snk_|clp_/);
     expect(result.exitCode).toBe(0);
     expect(result.requests.map((request) => `${request.init.method ?? "GET"} ${request.url}`)).toEqual([
       "POST https://www.sharednet.ai/api/v1/instances",
@@ -847,7 +851,8 @@ describe("sharednet say and wait", () => {
         { status: 200, body: { items: [], next_cursor: null, has_more: false } },
       ],
     );
-    expect(result.stderr).toBe("");
+    expect(result.stderr).toContain("Seat i_AccountSeat1 in rom_AbCdEfGhIj");
+    expect(result.stderr).not.toMatch(/sni_|rit_|snk_|clp_/);
     expect(JSON.parse(result.stdout)).toMatchObject({ as: "account", principal_id: "p_AcCoUnT0001" });
     expect(result.requests.every((request) => request.url.startsWith("https://www.sharednet.ai/"))).toBe(true);
 
@@ -893,6 +898,57 @@ describe("sharednet say and wait", () => {
     expect(Object.keys(room.seats).sort()).toEqual(["i_WindowOne1", "i_WindowTwo2"]);
   });
 
+  it("lets one invite command run in session after session: a spent claim is not an error where the machine is already the account", async () => {
+    const space = await workspace();
+    const { getStoragePaths, writeStoredApiCredential } = await import("./storage.ts");
+    // The first session already redeemed this claim and bound the machine.
+    await writeStoredApiCredential(getStoragePaths(space.env), {
+      schema_version: 1, base_url: "https://www.sharednet.ai", principal_id: "p_AcCoUnT0001", api_key_id: "key_AbCdEfGhIj",
+      api_key: `snk_${"K".repeat(43)}`, installation_secret: Buffer.alloc(32, 7).toString("base64url"), created_at: "2026-09-09T00:00:00.000Z", expires_at: null,
+    });
+    const instance = {
+      id: "i_SecondSess", principal_id: "p_AcCoUnT0001", agent_id: null, runtime_kind: "claude-code", cli_version: "0.1.0",
+      runtime_metadata: {}, reach: "public", status: "online", display_name: null,
+      started_at: "2026-09-09T00:00:00.000Z", last_seen_at: "2026-09-09T00:00:00.000Z", lease_expires_at: "2026-09-09T00:01:00.000Z",
+      token_expires_at: null, ended_at: null, revoked_at: null,
+    };
+    const result = await run(
+      ["join", PASTED_INVITE, "--claim", CLAIM, "--json"],
+      space,
+      [
+        { status: 410, body: { error: { code: "login_consumed", message: "CLI login was already used." } } },
+        { status: 201, body: { instance, token: `sni_${"S".repeat(43)}`, heartbeat_after_seconds: 30 } },
+        { status: 200, body: { room: { id: ROOM_ID, name: "Launch review", state: "open" }, membership: { member_id: "i_SecondSess", principal_id: "p_AcCoUnT0001", kind: "instance", admitted_by: "invite", name: null, state: "active" } } },
+        { status: 200, body: { items: [], next_cursor: null, has_more: false } },
+      ],
+    );
+
+    expect(result.exitCode).toBe(0);
+    const output = JSON.parse(result.stdout);
+    expect(output).toMatchObject({ as: "account", member_id: "i_SecondSess", principal_id: "p_AcCoUnT0001" });
+    // It says what happened, names the account, and hands this session the verbs that address its own seat.
+    expect(result.stderr).toContain("already used");
+    expect(result.stderr).toContain("p_AcCoUnT0001");
+    expect(output.next.say).toBe('npx -y sharednet@latest say "…" --as i_SecondSess');
+    expect(output.next.wait).toBe("npx -y sharednet@latest wait --as i_SecondSess");
+    expect(result.stderr).not.toContain(CLAIM);
+  });
+
+  it("refuses a spent claim on a machine with no account, and says how to get a fresh one", async () => {
+    const result = await run(
+      ["join", PASTED_INVITE, "--claim", CLAIM, "--json"],
+      await workspace(),
+      [{ status: 410, body: { error: { code: "login_consumed", message: "CLI login was already used." } } }],
+    );
+
+    expect(result.exitCode).not.toBe(0);
+    // One request: nothing was joined as anybody.
+    expect(result.requests).toHaveLength(1);
+    const error = JSON.parse(result.stderr).error;
+    expect(error.code).toBe("claim_spent");
+    expect(error.message).toContain("Open the join link again");
+  });
+
   it("groups an account's seat under a tag with --agent, and refuses the flag for a machine that acts as nobody", async () => {
     const space = await workspace();
     const instance = {
@@ -912,7 +968,8 @@ describe("sharednet say and wait", () => {
       ],
       { SHAREDNET_API_KEY: `snk_${"K".repeat(43)}` },
     );
-    expect(result.stderr).toBe("");
+    expect(result.stderr).toContain("Seat i_TaggedSeat1 in rom_AbCdEfGhIj");
+    expect(result.stderr).not.toMatch(/sni_|rit_|snk_|clp_/);
     expect(result.exitCode).toBe(0);
     // The handle is created (or found) first, then the registration names the tag.
     expect(result.requests.map((request) => `${request.init.method ?? "GET"} ${request.url}`).slice(0, 2)).toEqual([

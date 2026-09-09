@@ -280,15 +280,40 @@ async function join(args: string[], dependencies: GuestDependencies): Promise<un
     if (!/^clp_[A-Za-z0-9_-]{43}$/.test(claim)) {
       throw localError("invalid_claim", "--claim takes the code from the join page, which starts with clp_.");
     }
-    const redeemed = await client.request<{ state: string; principal: { id: string }; api_key: string; api_key_id: string }>(
-      "POST",
-      "/cli/claims/redeem",
-      claim,
-      {},
-    );
-    if (redeemed?.state !== "approved" || !redeemed.api_key || !redeemed.principal?.id) throw invalidServerResponse();
-    await storeAccountCredential(paths, baseUrl, redeemed, dependencies.now());
-    dependencies.stderr?.(`Claimed: this machine now acts as ${redeemed.principal.id}. The key is in ${paths.credentialsFile}.\n`);
+    // A claim binds a machine to an account, and the first session to run the
+    // command does that binding. Handing the same command to a second session
+    // is the ordinary thing to do — several windows, one invite — so a claim
+    // that is already spent is not an error on a machine that is already the
+    // account. It is only an error where there is no account to fall back to.
+    const alreadyAnAccount = await hasAccountCredential(dependencies.env, paths, baseUrl);
+    try {
+      const redeemed = await client.request<{ state: string; principal: { id: string }; api_key: string; api_key_id: string }>(
+        "POST",
+        "/cli/claims/redeem",
+        claim,
+        {},
+      );
+      if (redeemed?.state !== "approved" || !redeemed.api_key || !redeemed.principal?.id) throw invalidServerResponse();
+      await storeAccountCredential(paths, baseUrl, redeemed, dependencies.now());
+      dependencies.stderr?.(`Claimed: this machine now acts as ${redeemed.principal.id}. The key is in ${paths.credentialsFile}.\n`);
+    } catch (error) {
+      const code = error instanceof CliError ? error.code : "";
+      const used = code === "login_consumed";
+      const spent = used || code === "login_expired";
+      if (!spent || !alreadyAnAccount) {
+        if (spent) {
+          throw localError(
+            "claim_spent",
+            `That claim ${used ? "was already used" : "has expired"}, and this machine holds no SharedNet account. Open the join link again for a fresh command, or run \`npx -y sharednet@latest login\` here first.`,
+          );
+        }
+        throw error;
+      }
+      const stored = await readStoredApiCredential(paths).catch(() => null);
+      dependencies.stderr?.(
+        `That claim ${used ? "was already used, which is what happens when the same command runs in a second session" : "has expired"}. This machine already acts as ${stored?.principal_id ?? "an account"}, so this seat is that account's.\n`,
+      );
+    }
   }
 
   // Two doors, one model. With a credential on this machine, the seat is an
@@ -520,6 +545,9 @@ async function joinAsAccount(
     anchorKey: session.local_instance_key ?? (await anchorKeyFor(dependencies.env, paths)),
     joinedAt: dependencies.now().toISOString(),
   });
+  dependencies.stderr?.(
+    `Seat ${session.instance_id} in ${payload.room.id}. Other sessions of yours may hold seats in this directory too; address this one with --as ${session.instance_id}.\n`,
+  );
   return {
     room: payload.room,
     member_id: session.instance_id,
@@ -529,6 +557,11 @@ async function joinAsAccount(
     name,
     last_sequence: state.last_sequence,
     history,
+    next: {
+      say: `npx -y sharednet@latest say "…" --as ${session.instance_id}`,
+      wait: `npx -y sharednet@latest wait --as ${session.instance_id}`,
+      note: "This seat is yours alone. Pass --as on every verb when this directory holds seats from other sessions.",
+    },
   };
 }
 
