@@ -217,18 +217,40 @@ describe("ModernLoginSignup", () => {
     expect(authClient.signIn.social).toHaveBeenCalledWith({
       provider: "google",
       callbackURL: "/join/rom_AbCdEfGhIj",
+      errorCallbackURL: "/login?next=%2Fjoin%2From_AbCdEfGhIj",
+    });
+  });
+
+  it("comes back to a bare /login when there was nowhere in particular to go", async () => {
+    render(<ModernLoginSignup google />);
+
+    fireEvent.click(screen.getByRole("button", { name: /sign in with google/i }));
+
+    await waitFor(() => expect(authClient.signIn.social).toHaveBeenCalledTimes(1));
+    expect(authClient.signIn.social.mock.calls[0]![0]).toMatchObject({
+      callbackURL: "/chat",
       errorCallbackURL: "/login",
     });
   });
 
-  it("refuses to carry an off-site next through Google", async () => {
+  it("explains a Google account already attached to someone else", () => {
+    navigation.search = new URLSearchParams("error=account_already_linked_to_different_user");
+    render(<ModernLoginSignup google />);
+
+    expect(screen.getByRole("alert")).toHaveTextContent(/already linked to a different/i);
+  });
+
+  it("refuses to carry an off-site next through Google, on either leg", async () => {
     navigation.search = new URLSearchParams("next=https://evil.example/steal");
     render(<ModernLoginSignup google />);
 
     fireEvent.click(screen.getByRole("button", { name: /sign in with google/i }));
 
     await waitFor(() => expect(authClient.signIn.social).toHaveBeenCalledTimes(1));
-    expect(authClient.signIn.social.mock.calls[0]![0].callbackURL).toBe("/chat");
+    expect(authClient.signIn.social.mock.calls[0]![0]).toMatchObject({
+      callbackURL: "/chat",
+      errorCallbackURL: "/login",
+    });
   });
 
   it("explains a Google round trip that came back unlinked, before anyone clicks", () => {
@@ -247,7 +269,7 @@ describe("ModernLoginSignup", () => {
     expect(alert).not.toHaveTextContent("state_mismatch");
   });
 
-  it("keeps the person on the page when Google refuses the request outright", async () => {
+  it("keeps the person on the page when the flow will not even start", async () => {
     authClient.signIn.social.mockResolvedValue({
       data: null,
       error: { message: "Provider not found", status: 400 },
@@ -256,7 +278,12 @@ describe("ModernLoginSignup", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /sign in with google/i }));
 
-    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Provider not found"));
+    // The password path's copy ("check your details") is wrong here: there are
+    // no details to check, and the provider's own words are for the log.
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent(/google sign-in did not complete/i),
+    );
+    expect(screen.getByRole("alert")).not.toHaveTextContent("Provider not found");
     expect(screen.getByRole("button", { name: /sign in with google/i })).not.toBeDisabled();
   });
 

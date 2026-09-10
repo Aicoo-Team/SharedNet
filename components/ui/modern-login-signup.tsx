@@ -4,7 +4,7 @@ import { FormEvent, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 import { authClient } from "../../lib/auth-client";
-import { safePostAuthPath } from "../../src/auth/redirect";
+import { DEFAULT_POST_AUTH_PATH, safePostAuthPath } from "../../src/auth/redirect";
 import ParticlesComponent from "./particles-bg";
 
 type AuthMode = "sign-in" | "sign-up";
@@ -90,17 +90,32 @@ function errorMessage(error: unknown, mode: AuthMode): string {
     : "Unable to create the account. Check your details and try again.";
 }
 
+const GOOGLE_FALLBACK_MESSAGE =
+  "Google sign-in did not complete. Try again, or sign in with your password.";
+
 /**
- * What a failed Google round trip is called when it comes back as a query
- * parameter. Better Auth redirects to `errorCallbackURL` with `?error=<code>`
- * rather than answering the request that started the flow, because by then
- * the browser has been to Google and back.
+ * What a failed Google round trip is called when it comes back.
+ *
+ * Better Auth redirects to `errorCallbackURL` with `?error=<code>` rather than
+ * answering the request that started the flow, because by then the browser has
+ * been to Google and back. The codes are its own: the OAuth callback's fixed
+ * set, plus the account-linking outcomes, whose spaces become underscores on
+ * the way into the query string.
+ *
+ * Only the two a person can act on are named. Everything else — an expired
+ * state, a provider that answered strangely, a write that failed — is one
+ * sentence, because "invalid_code" tells them nothing they can use and the
+ * server has already logged what happened.
  */
 function socialErrorMessage(code: string): string {
-  if (code === "account_not_linked") {
-    return "An account already uses this email address. Sign in with your password, or verify that address first, then link Google.";
+  switch (code) {
+    case "account_not_linked":
+      return "An account already uses this email address. Sign in with your password, or verify that address first, then link Google.";
+    case "account_already_linked_to_different_user":
+      return "That Google account is already linked to a different SharedNet account. Sign in as that account, or use another Google account.";
+    default:
+      return GOOGLE_FALLBACK_MESSAGE;
   }
-  return "Google sign-in did not complete. Try again, or sign in with your password.";
 }
 
 export default function ModernLoginSignup({ google = false }: ModernLoginSignupProps) {
@@ -163,25 +178,38 @@ export default function ModernLoginSignup({ google = false }: ModernLoginSignupP
     setPending(true);
     setError(null);
 
+    // Where the round trip lands, either way. Both go through the guard the
+    // password path uses, so an off-site `next` cannot be carried to Google
+    // and back. A refusal returns to this page still holding the destination,
+    // so signing in with a password afterwards still arrives where the person
+    // was going.
+    const destination = safePostAuthPath(searchParams.get("next"));
+    const errorCallbackURL =
+      destination === DEFAULT_POST_AUTH_PATH
+        ? "/login"
+        : `/login?next=${encodeURIComponent(destination)}`;
+
     try {
-      // The browser leaves for Google, so nothing after this resolves on the
-      // happy path. `callbackURL` is where it lands on the way back, and it
-      // goes through the same guard the password path uses. The MCP
-      // authorization a connector may be mid-way through resumes on its own:
-      // the OAuth provider plugin carries the signed `oauth_query` this page
-      // was opened with into `/sign-in/social` and restores it server-side.
+      // The browser leaves for Google, so on the happy path nothing after
+      // this resolves. An MCP authorization a connector may be mid-way
+      // through resumes on its own: the OAuth provider plugin carries the
+      // signed `oauth_query` this page was opened with into
+      // `/sign-in/social` and restores it server-side.
       const result = await authClient.signIn.social({
         provider: "google",
-        callbackURL: safePostAuthPath(searchParams.get("next")),
-        errorCallbackURL: "/login",
+        callbackURL: destination,
+        errorCallbackURL,
       });
 
+      // Only a refusal to start the flow arrives here — a missing provider, an
+      // unreachable server. Anything that fails after Google has the person
+      // comes back through `errorCallbackURL` instead.
       if (result.error) {
-        setError(errorMessage(result.error, mode));
+        setError(GOOGLE_FALLBACK_MESSAGE);
         setPending(false);
       }
-    } catch (caught) {
-      setError(errorMessage(caught, mode));
+    } catch {
+      setError(GOOGLE_FALLBACK_MESSAGE);
       setPending(false);
     }
   };
