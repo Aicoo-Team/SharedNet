@@ -7,7 +7,7 @@ import { drizzleAdapter } from "@better-auth/drizzle-adapter";
 import { mcp } from "@better-auth/mcp";
 import { betterAuth, type BetterAuthOptions } from "better-auth";
 import { createAuthMiddleware } from "better-auth/api";
-import { jwt } from "better-auth/plugins";
+import { jwt, oAuthProxy } from "better-auth/plugins";
 
 import {
   apiKey as apiKeyTable,
@@ -39,16 +39,20 @@ const POSTGRES_ENVIRONMENT_NAMES = [
 ] as const;
 
 /**
+ * The origin SharedNet is canonically served from: the one whose Google
+ * redirect URI is registered, and the one a Vercel preview borrows through
+ * the OAuth proxy. See {@link resolveOAuthProxy}.
+ */
+const CANONICAL_ORIGIN = "https://www.sharednet.ai";
+
+/**
  * The origins the Dashboard is actually served from in production.
  *
  * Better Auth checks the Origin header against this list before accepting a
  * state-changing request, so it is CSRF defence and not merely configuration:
  * an origin listed here can drive an authenticated session.
  */
-const PRODUCTION_ORIGINS = [
-  "https://sharednet.ai",
-  "https://www.sharednet.ai",
-] as const;
+const PRODUCTION_ORIGINS = ["https://sharednet.ai", CANONICAL_ORIGIN] as const;
 
 /**
  * Loopback origins for local development. Both spellings of both ports are
@@ -85,12 +89,82 @@ export function resolveTrustedOrigins(
   const deploymentHost = env.VERCEL_URL?.trim();
   if (deploymentHost) origins.add(`https://${deploymentHost}`);
 
+  // The branch alias is the URL a person actually opens for a preview, while
+  // VERCEL_URL is that one deployment's own hostname. Both are set by the
+  // platform, so both carry the same trust; listing the alias too is what
+  // lets the OAuth proxy send a preview sign-in back to the page it started
+  // on rather than to the deployment URL behind it.
+  const branchHost = env.VERCEL_BRANCH_URL?.trim();
+  if (branchHost) origins.add(`https://${branchHost}`);
+
   for (const entry of (env.SHAREDNET_TRUSTED_ORIGINS ?? "").split(",")) {
     const origin = entry.trim();
     if (origin) origins.add(origin);
   }
 
   return [...origins];
+}
+
+export type SocialProviders = NonNullable<BetterAuthOptions["socialProviders"]>;
+
+/**
+ * Google sign-in, when this deployment has been given a client.
+ *
+ * Configured or absent, never half-configured: an id without a secret is the
+ * shape a half-finished environment has, and offering a button that cannot
+ * complete is worse than not offering one. The login page asks the same
+ * question to decide whether to draw the button, so the two cannot disagree.
+ */
+export function resolveSocialProviders(
+  env: Record<string, string | undefined>,
+): SocialProviders {
+  const clientId = env.GOOGLE_CLIENT_ID?.trim();
+  const clientSecret = env.GOOGLE_CLIENT_SECRET?.trim();
+  if (!clientId || !clientSecret) return {};
+
+  return {
+    google: {
+      clientId,
+      clientSecret,
+      // Ask which account. A person who holds a work and a personal Google
+      // account is otherwise signed in as whichever one the browser is
+      // already holding, with nothing on screen saying which.
+      prompt: "select_account",
+    },
+  };
+}
+
+/**
+ * Google refuses a wildcard redirect URI, and a Vercel preview's hostname is
+ * different on every deployment, so a preview cannot have one registered.
+ *
+ * The OAuth proxy lets it borrow production's: the preview sends the person
+ * to Google with production as the redirect, production hands the encrypted
+ * profile straight back to the preview's own callback, and the session is
+ * created on the preview. Production never creates a user or a session for a
+ * preview's sign-in.
+ *
+ * Only on a preview. On production the two origins agree and the plugin is a
+ * no-op anyway; on a laptop the origins do *not* agree, so leaving it on
+ * would route local sign-ins through production — hence the environment test
+ * rather than trusting the plugin's own skip.
+ *
+ * Both ends must derive the same encryption key, or production's reply is
+ * undecryptable: either BETTER_AUTH_SECRET is identical in Production and
+ * Preview, or SHAREDNET_OAUTH_PROXY_SECRET is set to the same value in both
+ * — which is the better shape, because a secret shared with previews should
+ * not also be the one that signs production sessions.
+ */
+export function resolveOAuthProxy(
+  env: Record<string, string | undefined>,
+): { productionURL: string; secret?: string } | null {
+  if (env.VERCEL_ENV !== "preview") return null;
+
+  const productionURL =
+    env.SHAREDNET_OAUTH_PROXY_PRODUCTION_URL?.trim() || CANONICAL_ORIGIN;
+  const secret = env.SHAREDNET_OAUTH_PROXY_SECRET?.trim();
+
+  return secret ? { productionURL, secret } : { productionURL };
 }
 
 type AuthDatabase = NonNullable<BetterAuthOptions["database"]>;
@@ -104,7 +178,9 @@ export type CreateSharedNetAuthOptions = {
   afterUserCreated?: (user: { id: string; name: string }) => Promise<void>;
   baseURL: string;
   database: AuthDatabase;
+  oauthProxy?: { productionURL: string; secret?: string } | null;
   secret: string;
+  socialProviders?: SocialProviders;
   trustedOrigins?: string[];
 };
 
@@ -158,7 +234,9 @@ export function createSharedNetAuth({
   afterUserCreated,
   baseURL,
   database,
+  oauthProxy,
   secret,
+  socialProviders,
   trustedOrigins,
 }: CreateSharedNetAuthOptions) {
   return betterAuth({
@@ -182,6 +260,10 @@ export function createSharedNetAuth({
     emailAndPassword: {
       enabled: true,
     },
+    // A person signs in with a password or with Google; both land on the same
+    // Principal, because the after-hook that provisions one runs on user
+    // creation whichever door was used.
+    socialProviders: socialProviders ?? {},
     // An address is proven, not blocked on: a person can use SharedNet at
     // once and the mail catches up with them. Nothing here can fail a
     // sign-up, because a mail provider having a bad minute must not cost
@@ -226,6 +308,8 @@ export function createSharedNetAuth({
         allowUnauthenticatedClientRegistration: true,
       }),
       cimd({ fetchClientMetadataResource, metadataProfile: "mcp-2026-07-28" }),
+      // Preview deployments only, and a no-op everywhere else.
+      ...(oauthProxy ? [oAuthProxy(oauthProxy)] : []),
       apiKey({
         customKeyGenerator: () => generateSecret("snk"),
         defaultKeyLength: 43,
@@ -264,7 +348,9 @@ function createRuntimeAuth() {
     afterUserCreated: usePostgres ? provisionPrincipalForUser : undefined,
     baseURL: requiredEnvironment("BETTER_AUTH_URL"),
     database: resolveAuthDatabase(),
+    oauthProxy: resolveOAuthProxy(process.env),
     secret: requiredEnvironment("BETTER_AUTH_SECRET"),
+    socialProviders: resolveSocialProviders(process.env),
     trustedOrigins: resolveTrustedOrigins(process.env),
   });
 }

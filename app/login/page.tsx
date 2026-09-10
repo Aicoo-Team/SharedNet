@@ -3,7 +3,7 @@ import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 
 import ModernLoginSignup from "../../components/ui/modern-login-signup";
-import { getAuth } from "../../lib/auth";
+import { getAuth, resolveSocialProviders } from "../../lib/auth";
 import { safePostAuthPath } from "../../src/auth/redirect";
 
 type LoginPageProps = {
@@ -30,9 +30,13 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
     redirect(safePostAuthPath(Array.isArray(requestedNext) ? requestedNext[0] : requestedNext));
   }
 
+  // Asked on the server, from the same function the auth config asks, so the
+  // button appears exactly when the flow behind it can complete.
+  const google = "google" in resolveSocialProviders(process.env);
+
   return (
     <Suspense fallback={<LoginFallback />}>
-      <ModernLoginSignup />
+      <ModernLoginSignup google={google} />
     </Suspense>
   );
 }

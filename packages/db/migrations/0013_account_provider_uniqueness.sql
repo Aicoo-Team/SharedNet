@@ -1,0 +1,25 @@
+-- 0013: a provider account is unique on (provider_id, account_id).
+--
+-- The constraint this replaces was on (issuer, account_id). `issuer` left the
+-- Better Auth account model in 1.7.3 and 0012 made the column nullable, so
+-- every row written since carries NULL there — and distinct NULLs made the
+-- constraint inert. It read as protection and enforced nothing.
+--
+-- (provider_id, account_id) is the key Better Auth looks an account up by.
+-- The library only *detects* a duplicate, and it detects it by refusing to
+-- sign anyone in ("Multiple accounts match the same accountId for provider
+-- ..."), which no request can recover from. With one provider that was
+-- theoretical: a credential account's account_id is its own user id. Adding
+-- Google makes it reachable, so the database refuses the second row instead.
+--
+-- Expand-only for the running code: nothing reads the dropped constraint, and
+-- nothing writes a row this one rejects. The `issuer` column itself stays;
+-- dropping a column Better Auth no longer writes is a separate contraction.
+--
+-- If this migration fails on the unique constraint, the database already holds
+-- duplicates and they must be resolved by hand first:
+--   SELECT provider_id, account_id, count(*), array_agg(id), array_agg(user_id)
+--   FROM sharednet_auth.account
+--   GROUP BY provider_id, account_id HAVING count(*) > 1;
+ALTER TABLE "sharednet_auth"."account" DROP CONSTRAINT IF EXISTS "auth_account_issuer_account_id_unique";--> statement-breakpoint
+ALTER TABLE "sharednet_auth"."account" ADD CONSTRAINT "auth_account_provider_id_account_id_unique" UNIQUE("provider_id","account_id");
