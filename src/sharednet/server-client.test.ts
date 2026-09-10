@@ -16,6 +16,9 @@ import {
   isRoomDetail,
   isRoomListResponse,
   isRoomSummary,
+  isShareRoomResponse,
+  isSharedRoomProjection,
+  isUnshareRoomResponse,
 } from "./contracts";
 
 /**
@@ -489,6 +492,78 @@ describe("SharedNetServerClient is one door onto the domain", () => {
     const shown = await client.getCliLogin(ACCOUNT, user_code);
     expect(shown).toMatchObject({ login_id: login.id, state: "pending", label: "laptop" });
     expect(shown.seats).toEqual([{ instance_id: guest.membership.instance_id, name: "claude-code", runtime_kind: "claude-code", rooms: [{ room_id: room.id, name: room.name }] }]);
+  });
+
+  it("publishes a Room its owner shares at a slug that is not the Room id, shows the owner the link, and a seat only that it is public", async () => {
+    const { repository, client, roomId, room } = await seededRoom({ agent: true });
+    const visitor = await seatFor(repository, "auth-user-2", "key-2");
+    await repository.joinRoom(visitor.auth, room.id);
+
+    expect((await client.getRoom(ACCOUNT, roomId)).room.sharing).toBeNull();
+    const shared = await client.shareRoom(ACCOUNT, roomId);
+    expect(isShareRoomResponse(shared)).toBe(true);
+    expect(shared.token).toMatch(/^shr_[A-Za-z0-9_-]{43}$/);
+    expect(shared.token).not.toContain(room.id);
+    expect(shared.room.sharing).toEqual({ since: expect.any(String), token: shared.token });
+    // Asking again is the same link, not a new one.
+    expect((await client.shareRoom(ACCOUNT, roomId)).token).toBe(shared.token);
+    expect((await client.getRoom(ACCOUNT, roomId)).room.sharing?.token).toBe(shared.token);
+    // A seated account learns that the Room is public, not where.
+    expect((await client.getRoom("auth-user-2", roomId)).room.sharing).toEqual({ since: shared.room.sharing?.since, token: null });
+    // Only the owner shares or stops sharing.
+    await expect(client.shareRoom("auth-user-2", roomId)).rejects.toMatchObject({ code: "room_not_found", status: 404 });
+    await expect(client.unshareRoom("auth-user-2", roomId)).rejects.toMatchObject({ code: "room_not_found", status: 404 });
+
+    const stopped = await client.unshareRoom(ACCOUNT, roomId);
+    expect(isUnshareRoomResponse(stopped)).toBe(true);
+    expect(stopped.room.sharing).toBeNull();
+    await expect(client.getSharedRoom(shared.token)).rejects.toMatchObject({ code: "room_not_found", status: 404 });
+    // Sharing again mints a new link; the old one stays dead.
+    const again = await client.shareRoom(ACCOUNT, roomId);
+    expect(again.token).not.toBe(shared.token);
+    await expect(client.getSharedRoom(shared.token)).rejects.toMatchObject({ code: "room_not_found" });
+    expect(isSharedRoomProjection(await client.getSharedRoom(again.token))).toBe(true);
+  });
+
+  it("shows the public the log by names, drivers and sequence numbers, with no ids and no credentials", async () => {
+    const { repository, client, auth, roomId, room, instance } = await seededRoom({ agent: true });
+    const guest = await guestIn(client, repository, roomId);
+    const invite = await client.createRoomInvite(ACCOUNT, roomId);
+    const [first] = (await repository.listMessages(auth, room.id, { after: 0, before: null, limit: 1, order: "asc", sender_instance_id: null, sender_agent_id: null, q: null })).items;
+    await repository.postMessage(auth, room.id, {
+      content: `join with ROOM=${room.id} TOKEN=${invite.token} BASE=https://www.sharednet.ai --claim clp_${"c".repeat(43)}`,
+      reply_to_message_id: first!.id,
+    });
+    const { token } = await client.shareRoom(ACCOUNT, roomId);
+
+    const shared = await client.getSharedRoom(token);
+    expect(isSharedRoomProjection(shared)).toBe(true);
+    expect(shared.room).toMatchObject({ name: "Hosted V1 migration", description: "seeded", status: "open", latest_sequence: 3 });
+    expect(shared.members.map((m) => [m.label, m.driver, m.kind, m.handle, m.status])).toEqual([
+      [`reviewer-${ACCOUNT}`, "codex", "account", instance.id.slice(2, 6), "active"],
+      ["claude-code", "claude-code", "anonymous", guest.membership.instance_id.slice(2, 6), "active"],
+    ]);
+    expect(shared.messages.map((m) => [m.sequence, m.sender.label, m.reply_to_sequence, m.content])).toEqual([
+      [1, `reviewer-${ACCOUNT}`, null, "first message"],
+      [2, "claude-code", null, "hello from curl"],
+      [3, `reviewer-${ACCOUNT}`, 1, "join with ROOM=rom_[redacted] TOKEN=rit_[redacted] BASE=https://www.sharednet.ai --claim clp_[redacted]"],
+    ]);
+    // Nothing that addresses anything leaves the server: no Room, Instance, Principal or message id,
+    // not even the Room id an Agent itself pasted, since that one admits.
+    const wire = JSON.stringify(shared);
+    expect(wire).not.toMatch(/\b(rom|i|p|msg|inv)_[0-9A-Za-z]{10}\b/);
+    expect(wire).not.toContain(invite.token);
+    // A slug that is not one, and a slug nobody minted, both read as absent.
+    await expect(client.getSharedRoom(room.id)).rejects.toMatchObject({ code: "room_not_found", status: 404 });
+    await expect(client.getSharedRoom(`shr_${"z".repeat(43)}`)).rejects.toMatchObject({ code: "room_not_found", status: 404 });
+  });
+
+  it("publishes a closed Room too, since a finished conversation is the one worth showing", async () => {
+    const { client, roomId } = await seededRoom();
+    await client.closeRoom(ACCOUNT, roomId);
+    const { token, room } = await client.shareRoom(ACCOUNT, roomId);
+    expect(room.status).toBe("closed");
+    expect((await client.getSharedRoom(token)).room.status).toBe("closed");
   });
 
   it("reports pairing as retired rather than pretending to claim one", async () => {

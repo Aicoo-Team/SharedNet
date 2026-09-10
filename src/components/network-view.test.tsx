@@ -79,6 +79,8 @@ function makeState(overrides: Partial<SharedNetState> = {}): SharedNetState {
     refresh: vi.fn(async () => undefined),
     removeMember: vi.fn(async () => { throw new Error("removeMember not stubbed"); }),
     resolveDecision: vi.fn(async () => undefined),
+    shareRoom: vi.fn(async () => { throw new Error("shareRoom not stubbed"); }),
+    unshareRoom: vi.fn(async () => { throw new Error("unshareRoom not stubbed"); }),
     rooms: [], selectRoom: vi.fn(), selectedRoom: null, selectedRoomId: null, status: "ready",
     ...overrides,
   };

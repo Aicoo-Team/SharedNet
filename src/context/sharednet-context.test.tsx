@@ -114,6 +114,7 @@ const roomDetail = {
     description: roomSummary.description,
     name: roomSummary.name,
     room_id: ROOM_ID,
+    sharing: null,
     status: "open",
     updated_at: NOW,
   },

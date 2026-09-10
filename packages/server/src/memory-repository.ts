@@ -37,9 +37,11 @@ import {
   type RoomId,
   type RoomInvite,
   type RoomMember,
+  SHR_SECRET_PATTERN,
+  type ShrSecret,
   type StartInstanceRequest,
 } from "../../protocol/src/index.ts";
-import { sharedRoomsEdges, type DecisionAnswer, type DecisionOverview, type McpClient, type McpSeat, type NetworkView, type RoomOverview, type SeatOverview } from "./repository.ts";
+import { sharedRoomsEdges, type DecisionAnswer, type DecisionOverview, type McpClient, type McpSeat, type NetworkView, type RoomOverview, type RoomView, type SeatOverview, type SharedRoomView } from "./repository.ts";
 import type {
   AddRoomMembersRequest,
   Admission,
@@ -86,6 +88,8 @@ type InstanceRecord = Instance & {
 // tag is read from the Instance at projection time so regrouping follows.
 type RoomRecord = Omit<Room, "creator_agent_id"> & {
   nextSequence: number;
+  /** The public link's slug while the Room is published; set and cleared with `shared_at`. */
+  shareToken: ShrSecret | null;
 };
 type MembershipRecord = {
   room_id: RoomId;
@@ -364,17 +368,10 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     return { items };
   }
 
-  async getRoomForPrincipal(
-    principalId: PrincipalId,
-    roomId: RoomId,
-  ): Promise<{ room: Room; memberships: RoomMember[]; messages: Message[]; latest_sequence: number }> {
+  async getRoomForPrincipal(principalId: PrincipalId, roomId: RoomId): Promise<RoomView> {
     const room = this.roomVisibleTo(principalId, roomId);
-    const memberships = [...this.memberships.values()]
-      .filter((membership) => membership.room_id === room.id)
-      .sort((a, b) => a.joined_at.localeCompare(b.joined_at))
-      .map((membership) => this.projectMembership(membership));
-    const messages = (this.messages.get(room.id) ?? []).map((record) => this.projectMessage(record));
-    return { room: this.projectRoom(room), memberships, messages, latest_sequence: room.nextSequence - 1 };
+    // The link is the owner's to hand out; a seated Principal sees only that one exists.
+    return { ...this.roomLog(room), share_token: room.principal_id === principalId ? room.shareToken : null };
   }
 
   async scheduleRoom(
@@ -393,11 +390,58 @@ export class MemorySharedNetRepository implements SharedNetRepository {
       creator_instance_id: null,
       created_at: this.timestamp(),
       closed_at: null,
+      shared_at: null,
+      shareToken: null,
       nextSequence: 1,
     };
     this.rooms.set(room.id, room);
     this.messages.set(room.id, []);
     return { room: this.projectRoom(room) };
+  }
+
+  async shareRoom(principalId: PrincipalId, roomId: RoomId): Promise<{ room: Room; share_token: ShrSecret }> {
+    const room = this.ownedRoom(principalId, roomId);
+    if (room.shareToken === null) {
+      room.shareToken = generateSecret("shr");
+      room.shared_at = this.timestamp();
+    }
+    return { room: this.projectRoom(room), share_token: room.shareToken };
+  }
+
+  async unshareRoom(principalId: PrincipalId, roomId: RoomId): Promise<{ room: Room }> {
+    const room = this.ownedRoom(principalId, roomId);
+    room.shareToken = null;
+    room.shared_at = null;
+    return { room: this.projectRoom(room) };
+  }
+
+  async getSharedRoom(shareToken: string): Promise<SharedRoomView> {
+    const room = SHR_SECRET_PATTERN.test(shareToken)
+      ? [...this.rooms.values()].find((candidate) => candidate.shareToken === shareToken)
+      : undefined;
+    if (!room) throw new RepositoryError(404, "room_not_found", "Room was not found.");
+    const log = this.roomLog(room);
+    return { ...log, agent_handles: this.agentHandlesIn(log) };
+  }
+
+  /** Every seat and every message of a Room, in order: what both the owner's page and the public one read. */
+  private roomLog(room: RoomRecord): Omit<RoomView, "share_token"> {
+    const memberships = [...this.memberships.values()]
+      .filter((membership) => membership.room_id === room.id)
+      .sort((a, b) => a.joined_at.localeCompare(b.joined_at))
+      .map((membership) => this.projectMembership(membership));
+    const messages = (this.messages.get(room.id) ?? []).map((record) => this.projectMessage(record));
+    return { room: this.projectRoom(room), memberships, messages, latest_sequence: room.nextSequence - 1 };
+  }
+
+  private agentHandlesIn(log: Pick<RoomView, "memberships" | "messages">): Record<AgentId, string> {
+    const handles: Record<AgentId, string> = {};
+    for (const agentId of [...log.memberships.map((m) => m.agent_id), ...log.messages.map((m) => m.sender_agent_id)]) {
+      if (agentId === null || agentId in handles) continue;
+      const agent = this.agents.get(agentId);
+      if (agent) handles[agentId] = agent.handle;
+    }
+    return handles;
   }
 
   async closeRoom(principalId: PrincipalId, roomId: RoomId): Promise<{ room: Room }> {
@@ -744,6 +788,8 @@ export class MemorySharedNetRepository implements SharedNetRepository {
       creator_instance_id: auth.instanceId,
       created_at: createdAt,
       closed_at: null,
+      shared_at: null,
+      shareToken: null,
       nextSequence: 1,
     };
     const membership: MembershipRecord = {
@@ -1545,7 +1591,7 @@ export class MemorySharedNetRepository implements SharedNetRepository {
   }
 
   private projectRoom(room: RoomRecord): Room {
-    const { nextSequence: _nextSequence, ...projected } = room;
+    const { nextSequence: _nextSequence, shareToken: _shareToken, ...projected } = room;
     return { ...projected, creator_agent_id: this.tagOf(room.creator_instance_id) };
   }
 }

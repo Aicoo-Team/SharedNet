@@ -51,6 +51,14 @@ export type RmtSecret = `rmt_${string}`;
 /** The poll token a CLI login holds while it waits for approval. */
 export type ClpSecret = `clp_${string}`;
 export const CLP_SECRET_PATTERN = /^clp_[A-Za-z0-9_-]{43}$/;
+/**
+ * The slug of a Room's public link: a bearer capability to *read* a Room its
+ * owner chose to publish, and nothing else. It is deliberately not the Room
+ * id, which is the capability to *join* (identity model §8), so a reader of
+ * the public page cannot walk in and speak.
+ */
+export type ShrSecret = `shr_${string}`;
+export const SHR_SECRET_PATTERN = /^shr_[A-Za-z0-9_-]{43}$/;
 export const CLI_LOGIN_ID_PATTERN = /^cli_[0-9A-Za-z]{10}$/;
 /** What the human types or reads on the authorize page: eight unambiguous characters. */
 export const CLI_LOGIN_CODE_PATTERN = /^[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/;
@@ -178,15 +186,30 @@ export function generateSecret(prefix: "sni"): SniSecret;
 export function generateSecret(prefix: "rit"): RitSecret;
 export function generateSecret(prefix: "rmt"): RmtSecret;
 export function generateSecret(prefix: "clp"): ClpSecret;
+export function generateSecret(prefix: "shr"): ShrSecret;
 export function generateSecret(
-  prefix: "snk" | "sni" | "rit" | "rmt" | "clp",
-): SnkSecret | SniSecret | RitSecret | RmtSecret | ClpSecret {
+  prefix: "snk" | "sni" | "rit" | "rmt" | "clp" | "shr",
+): SnkSecret | SniSecret | RitSecret | RmtSecret | ClpSecret | ShrSecret {
   return `${prefix}_${randomBytes(32).toString("base64url")}` as
     | SnkSecret
     | SniSecret
     | RitSecret
     | ClpSecret
-    | RmtSecret;
+    | RmtSecret
+    | ShrSecret;
+}
+
+/**
+ * Every secret SharedNet hands out has one of these prefixes and a body of at
+ * least 20 URL-safe characters (ours are 43). An Agent that pastes a join
+ * command into a Room pastes an invite token, a claim, or its own seat token
+ * with it; a Room published to the world must not publish those.
+ */
+export const SECRET_PATTERN = /\b(snk|sni|rit|rmt|clp|shr)_[A-Za-z0-9_-]{20,}/g;
+
+/** The text with every credential-shaped token replaced by its prefix and a marker. */
+export function redactSecrets(text: string): string {
+  return text.replace(SECRET_PATTERN, (_match, prefix: string) => `${prefix}_[redacted]`);
 }
 
 export function digestSecret(secret: string): string {
@@ -309,6 +332,12 @@ export interface Room {
   creator_agent_id: AgentId | null;
   created_at: Timestamp;
   closed_at: Timestamp | null;
+  /**
+   * Since when the Room's log has been readable at a public link, or null.
+   * Every member can see that the Room is published; only the owner holds
+   * the link, and only the owner can revoke it.
+   */
+  shared_at: Timestamp | null;
 }
 
 /**

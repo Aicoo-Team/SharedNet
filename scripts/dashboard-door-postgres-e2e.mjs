@@ -197,5 +197,41 @@ assert.deepEqual(seats.map((s) => [s.instance.id, s.rooms.map((r) => r.id)]), [
 const revoked = await repository.revokeRoomInvite({ inviteId: invite.id, principalId: owner.principalId });
 assert.ok(revoked.invite.revoked_at);
 
+// ---- Sharing: the owner publishes a Room at a slug; anyone reads it by the slug alone. ----
+await assert.rejects(repository.shareRoom(visitor.principalId, room.id), { code: "room_not_found", status: 404 });
+const shared = await repository.shareRoom(owner.principalId, room.id);
+assert.match(shared.share_token, /^shr_[A-Za-z0-9_-]{43}$/);
+assert.ok(shared.room.shared_at, "the Room records since when it is public");
+assert.equal(shared.room.state, "closed", "a closed Room can be published");
+// The same link every time it is asked for, on both the share door and the owner's detail.
+assert.equal((await repository.shareRoom(owner.principalId, room.id)).share_token, shared.share_token);
+assert.equal((await repository.getRoomForPrincipal(owner.principalId, room.id)).share_token, shared.share_token);
+// The public door: the whole log, and the handles behind the tags, for nobody in particular.
+const publicView = await repository.getSharedRoom(shared.share_token);
+assert.equal(publicView.room.id, room.id);
+assert.deepEqual(publicView.messages.map((m) => [m.sequence, m.sender.kind, m.content]), [[1, "instance", "first"], [2, "instance", "second"], [3, "guest", "third"]]);
+assert.equal(publicView.memberships.length, 3);
+assert.deepEqual(publicView.agent_handles, {}, "untagged seats carry no handles");
+// A slug that is not one, and one nobody minted, both read as absent; so does the Room id.
+await assert.rejects(repository.getSharedRoom(room.id), { code: "room_not_found", status: 404 });
+await assert.rejects(repository.getSharedRoom(`shr_${"z".repeat(43)}`), { code: "room_not_found", status: 404 });
+// Stopping is immediate and only the owner's; sharing again mints a new slug.
+await assert.rejects(repository.unshareRoom(visitor.principalId, room.id), { code: "room_not_found", status: 404 });
+const unshared = await repository.unshareRoom(owner.principalId, room.id);
+assert.equal(unshared.room.shared_at, null);
+await assert.rejects(repository.getSharedRoom(shared.share_token), { code: "room_not_found", status: 404 });
+assert.equal((await repository.unshareRoom(owner.principalId, room.id)).room.shared_at, null, "unsharing twice is a no-op");
+const reshared = await repository.shareRoom(owner.principalId, room.id);
+assert.notEqual(reshared.share_token, shared.share_token);
+// A tagged seat's handle reaches the public view, so a reader sees a name rather than an id.
+const taggedKey = await repository.authenticateApiKey(ownerKey);
+const tag = await repository.createAgent(taggedKey, { handle: "narrator" });
+const tagged = await repository.startInstance(taggedKey, { runtime_kind: "claude-code", cli_version: "0.1.3", agent_id: tag.agent.id });
+const taggedAuth = await repository.authenticateInstance(tagged.token);
+const { room: fourth } = await repository.createRoom(taggedAuth, { name: "Fourth" });
+await repository.postMessage(taggedAuth, fourth.id, { content: "hello" });
+const fourthShared = await repository.shareRoom(owner.principalId, fourth.id);
+assert.deepEqual((await repository.getSharedRoom(fourthShared.share_token)).agent_handles, { [tag.agent.id]: "narrator" });
+
 await pool.end();
 console.log(JSON.stringify({ status: "passed", room: room.id, scheduled: scheduled.room.id}));

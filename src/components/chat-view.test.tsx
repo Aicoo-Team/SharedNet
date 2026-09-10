@@ -166,10 +166,13 @@ const roomDetail: RoomDetail = {
     description: roomSummary.description,
     name: roomSummary.name,
     room_id: ROOM_ID,
+    sharing: null,
     status: "open",
     updated_at: NOW,
   },
 };
+
+const SHARE_TOKEN = `shr_${"s".repeat(43)}`;
 
 const networkProjection: NetworkProjection = {
   agents: [
@@ -280,7 +283,9 @@ function makeState(overrides: Partial<SharedNetState> = {}): SharedNetState {
     selectRoom: vi.fn(),
     selectedRoom: roomDetail,
     selectedRoomId: ROOM_ID,
+    shareRoom: vi.fn(async () => ({ room: { ...roomDetail.room, sharing: { since: NOW, token: SHARE_TOKEN } }, token: SHARE_TOKEN })),
     status: "ready",
+    unshareRoom: vi.fn(async () => roomDetail.room),
     ...overrides,
   };
 }
@@ -696,7 +701,8 @@ describe("SharedNet Rooms", () => {
     });
     expect(screen.queryByRole("button", { name: "Invite an Agent" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Close Room" })).toBeNull();
-    expect(screen.getByText(`Owned by ${PRINCIPAL_ID} · only the owner invites or closes`)).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Share" })).toBeNull();
+    expect(screen.getByText(`Owned by ${PRINCIPAL_ID} · only the owner invites, shares or closes`)).toBeVisible();
   });
 
   it("offers neither invite, close, nor remove on a closed Room", () => {
@@ -786,6 +792,57 @@ describe("SharedNet Rooms", () => {
     expect(within(dialog).getByLabelText("Local Agent instructions").textContent).toContain(
       `Join SharedNet Room ${ROOM_ID}`,
     );
+  });
+
+  it("publishes a Room from its header after saying what that means, and shows the link", async () => {
+    const { state } = renderChat({ principal: { ...networkProjection.principal, principal_id: PRINCIPAL_ID } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Share" }));
+    const dialog = await screen.findByRole("dialog", { name: `Share ${roomDetail.room.name}` });
+    expect(within(dialog).getByText(/every message so far and every message to come/)).toBeVisible();
+    expect(within(dialog).getByText(/Readers cannot join or speak/)).toBeVisible();
+    expect(state.shareRoom).not.toHaveBeenCalled();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Create public link" }));
+    await waitFor(() => expect(state.shareRoom).toHaveBeenCalledWith(ROOM_ID));
+    const link = await within(dialog).findByText(`http://localhost:3000/s/${SHARE_TOKEN}`);
+    expect(link).toBeVisible();
+    expect(within(dialog).getByRole("button", { name: "Stop sharing" })).toBeVisible();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Copy link" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(`http://localhost:3000/s/${SHARE_TOKEN}`));
+  });
+
+  it("shows a shared Room's link again, and stops sharing from the same dialog", async () => {
+    const { state } = renderChat({
+      principal: { ...networkProjection.principal, principal_id: PRINCIPAL_ID },
+      selectedRoom: { ...roomDetail, room: { ...roomDetail.room, sharing: { since: EARLIER, token: SHARE_TOKEN } } },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Shared · manage link" }));
+    const dialog = await screen.findByRole("dialog", { name: `Share ${roomDetail.room.name}` });
+    expect(within(dialog).getByText(`http://localhost:3000/s/${SHARE_TOKEN}`)).toBeVisible();
+    expect(within(dialog).getByText("Public since 2026-09-03 04:45:00 UTC.")).toBeVisible();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Stop sharing" }));
+    await waitFor(() => expect(state.unshareRoom).toHaveBeenCalledWith(ROOM_ID));
+  });
+
+  it("still offers Share on a closed Room the account owns, and tells a seat when a Room it sits in is public", () => {
+    renderChat({
+      principal: { ...networkProjection.principal, principal_id: PRINCIPAL_ID },
+      selectedRoom: { ...roomDetail, room: { ...roomDetail.room, status: "closed" } },
+    });
+    expect(screen.getByRole("button", { name: "Share" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Close Room" })).toBeNull();
+    cleanup();
+
+    renderChat({
+      principal: { ...networkProjection.principal, principal_id: SECOND_PRINCIPAL_ID },
+      selectedRoom: { ...roomDetail, room: { ...roomDetail.room, sharing: { since: EARLIER, token: null } } },
+    });
+    expect(screen.queryByRole("button", { name: "Share" })).toBeNull();
+    expect(screen.getByText(/Public: the owner shares this Room at a link/)).toBeVisible();
   });
 
   it("lists a guest member by the name it gave, with its own presence", () => {

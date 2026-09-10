@@ -88,6 +88,14 @@ export type RoomSummary = {
   updated_at: string;
 };
 
+/**
+ * A Room's public link, while the owner publishes the log. `token` is the
+ * link's slug, present only on the responses that carry it: the detail the
+ * owner reads, and the share response itself. A seated account sees `since`
+ * alone: that the Room is public, not where.
+ */
+export type RoomSharing = { since: string; token: string | null };
+
 export type RoomProjection = {
   access_policy: "anyone_with_id" | "principal_only";
   created_at: string;
@@ -95,8 +103,55 @@ export type RoomProjection = {
   description: string | null;
   name: string;
   room_id: RoomId;
+  sharing: RoomSharing | null;
   status: "open" | "closed";
   updated_at: string;
+};
+
+/** The link's slug is returned with the Room; the browser builds the URL from its own origin. */
+export type ShareRoomResponse = { room: RoomProjection; token: string };
+export type UnshareRoomResponse = { room: RoomProjection };
+
+/**
+ * What a share link shows to anyone: names, drivers and sequence numbers,
+ * and not one id. A Room id is the capability to join, an Instance id is an
+ * address anyone may add to a Room, and a Principal id names an account;
+ * none of them belongs on a page the whole web can read. `handle` is four
+ * characters of the seat's id, enough to tell two sessions of one tag apart
+ * and nothing more.
+ */
+export type SharedActor = {
+  driver: string;
+  handle: string;
+  kind: "account" | "anonymous";
+  /** A guest's own name, or the tag's handle; null when only the driver says who it is. */
+  label: string | null;
+};
+
+export type SharedMember = SharedActor & {
+  joined_at: string;
+  status: "active" | "left";
+};
+
+export type SharedMessage = {
+  content: string;
+  created_at: string;
+  reply_to_sequence: number | null;
+  sender: SharedActor;
+  sequence: number;
+};
+
+export type SharedRoomProjection = {
+  members: SharedMember[];
+  messages: SharedMessage[];
+  room: {
+    created_at: string;
+    description: string | null;
+    latest_sequence: number;
+    name: string;
+    shared_at: string;
+    status: "open" | "closed";
+  };
 };
 
 export type MemberPresence = "online" | "away" | "offline";
@@ -478,6 +533,10 @@ export function isRoomSummary(value: unknown): value is RoomSummary {
   );
 }
 
+function isRoomSharing(value: unknown): value is RoomSharing {
+  return hasExactKeys(value, ["since", "token"]) && isTimestamp(value.since) && isNullable(value.token, isNonEmptyString);
+}
+
 function isRoomProjection(value: unknown): value is RoomProjection {
   return (
     hasExactKeys(value, [
@@ -486,6 +545,7 @@ function isRoomProjection(value: unknown): value is RoomProjection {
       "description",
       "creator",
       "access_policy",
+      "sharing",
       "status",
       "created_at",
       "updated_at",
@@ -496,9 +556,64 @@ function isRoomProjection(value: unknown): value is RoomProjection {
     isActorProjection(value.creator) &&
     (value.access_policy === "anyone_with_id" ||
       value.access_policy === "principal_only") &&
+    isNullable(value.sharing, isRoomSharing) &&
     (value.status === "open" || value.status === "closed") &&
     isTimestamp(value.created_at) &&
     isTimestamp(value.updated_at)
+  );
+}
+
+export function isShareRoomResponse(value: unknown): value is ShareRoomResponse {
+  return hasExactKeys(value, ["room", "token"]) && isRoomProjection(value.room) && isNonEmptyString(value.token);
+}
+
+export function isUnshareRoomResponse(value: unknown): value is UnshareRoomResponse {
+  return hasExactKeys(value, ["room"]) && isRoomProjection(value.room);
+}
+
+function isSharedActor(value: unknown): value is SharedActor {
+  return (
+    hasExactKeys(value, ["driver", "handle", "kind", "label"]) &&
+    isNonEmptyString(value.driver) &&
+    isNonEmptyString(value.handle) &&
+    (value.kind === "account" || value.kind === "anonymous") &&
+    isNullable(value.label, isNonEmptyString)
+  );
+}
+
+function isSharedMember(value: unknown): value is SharedMember {
+  return (
+    hasExactKeys(value, ["driver", "handle", "kind", "label", "joined_at", "status"]) &&
+    isSharedActor({ driver: value.driver, handle: value.handle, kind: value.kind, label: value.label }) &&
+    isTimestamp(value.joined_at) &&
+    (value.status === "active" || value.status === "left")
+  );
+}
+
+function isSharedMessage(value: unknown): value is SharedMessage {
+  return (
+    hasExactKeys(value, ["content", "created_at", "reply_to_sequence", "sender", "sequence"]) &&
+    isString(value.content) &&
+    isTimestamp(value.created_at) &&
+    isNullable(value.reply_to_sequence, isPositiveInteger) &&
+    isSharedActor(value.sender) &&
+    isPositiveInteger(value.sequence)
+  );
+}
+
+export function isSharedRoomProjection(value: unknown): value is SharedRoomProjection {
+  if (!hasExactKeys(value, ["members", "messages", "room"])) return false;
+  const room = value.room;
+  return (
+    hasExactKeys(room, ["created_at", "description", "latest_sequence", "name", "shared_at", "status"]) &&
+    isTimestamp(room.created_at) &&
+    isNullable(room.description, isString) &&
+    isNonNegativeInteger(room.latest_sequence) &&
+    isNonEmptyString(room.name) &&
+    isTimestamp(room.shared_at) &&
+    (room.status === "open" || room.status === "closed") &&
+    isArrayOf(value.members, isSharedMember) &&
+    isArrayOf(value.messages, isSharedMessage)
   );
 }
 
