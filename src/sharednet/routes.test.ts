@@ -7,6 +7,9 @@ const { authGetSession, sharedNetClient } = vi.hoisted(() => ({
     createRoom: vi.fn(),
     createRoomInvite: vi.fn(),
     revokeRoomInvite: vi.fn(),
+    shareRoom: vi.fn(),
+    unshareRoom: vi.fn(),
+    getSharedRoom: vi.fn(),
     getNetwork: vi.fn(),
     getRoom: vi.fn(),
     listDecisions: vi.fn(),
@@ -34,6 +37,8 @@ import { GET as listRooms, POST as scheduleRoom } from "../../app/api/sharednet/
 import { GET as getRoom } from "../../app/api/sharednet/rooms/[roomId]/route";
 import { POST as mintInvite } from "../../app/api/sharednet/rooms/[roomId]/invites/route";
 import { DELETE as revokeInvite } from "../../app/api/sharednet/rooms/[roomId]/invites/[inviteId]/route";
+import { DELETE as unshareRoom, POST as shareRoom } from "../../app/api/sharednet/rooms/[roomId]/share/route";
+import { GET as readSharedRoom } from "../../app/api/sharednet/shared/[token]/route";
 import { GET as getNetwork } from "../../app/api/sharednet/network/route";
 import { GET as listDecisions } from "../../app/api/sharednet/decisions/route";
 import { PATCH as resolveDecision } from "../../app/api/sharednet/decisions/[decisionId]/route";
@@ -583,3 +588,63 @@ describe("authenticated SharedNet Dashboard routes", () => {
     expect(serialized).not.toContain("/internal/path");
   });
 });
+
+describe("sharing a Room: the owner's mutation, and the one route with nobody behind it", () => {
+  const SLUG = `shr_${"s".repeat(43)}`;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    authGetSession.mockResolvedValue({ user: { id: AUTH_USER_ID } });
+  });
+
+  it("publishes and unpublishes a Room for the signed-in account, from our own page only", async () => {
+    sharedNetClient.shareRoom.mockResolvedValue({ room: { room_id: "rom_lxw0rfaLIb" }, token: SLUG });
+    const published = await shareRoom(rawRequest("", "POST", "/api/sharednet/rooms/rom_lxw0rfaLIb/share"), {
+      params: Promise.resolve({ roomId: "rom_lxw0rfaLIb" }),
+    });
+    expect(published.status).toBe(200);
+    expect(await published.json()).toEqual({ room: { room_id: "rom_lxw0rfaLIb" }, token: SLUG });
+    expect(sharedNetClient.shareRoom).toHaveBeenCalledWith(AUTH_USER_ID, "rom_lxw0rfaLIb");
+
+    sharedNetClient.unshareRoom.mockResolvedValue({ room: { room_id: "rom_lxw0rfaLIb" } });
+    const stopped = await unshareRoom(rawRequest("", "DELETE", "/api/sharednet/rooms/rom_lxw0rfaLIb/share"), {
+      params: Promise.resolve({ roomId: "rom_lxw0rfaLIb" }),
+    });
+    expect(stopped.status).toBe(200);
+    expect(sharedNetClient.unshareRoom).toHaveBeenCalledWith(AUTH_USER_ID, "rom_lxw0rfaLIb");
+
+    const foreign = new Request("http://localhost/api/sharednet/rooms/rom_lxw0rfaLIb/share", {
+      headers: { cookie: "better-auth.session_token=test", origin: "https://evil.example" },
+      method: "POST",
+    });
+    expect((await shareRoom(foreign, { params: Promise.resolve({ roomId: "rom_lxw0rfaLIb" }) })).status).toBe(403);
+    authGetSession.mockResolvedValue(null);
+    expect((await shareRoom(rawRequest("", "POST", "/api/sharednet/rooms/rom_lxw0rfaLIb/share"), { params: Promise.resolve({ roomId: "rom_lxw0rfaLIb" }) })).status).toBe(401);
+    expect(sharedNetClient.shareRoom).toHaveBeenCalledTimes(1);
+  });
+
+  it("serves a shared Room to anyone, by its slug alone, and refuses anything that is not a slug before touching the domain", async () => {
+    authGetSession.mockResolvedValue(null);
+    const shared = { room: { name: "Launch" }, members: [], messages: [] };
+    sharedNetClient.getSharedRoom.mockResolvedValue(shared);
+
+    const anonymous = new Request(`http://localhost/api/sharednet/shared/${SLUG}`);
+    const response = await readSharedRoom(anonymous, { params: Promise.resolve({ token: SLUG }) });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual(shared);
+    expect(sharedNetClient.getSharedRoom).toHaveBeenCalledWith(SLUG);
+    expect(authGetSession).not.toHaveBeenCalled();
+
+    for (const notASlug of ["rom_lxw0rfaLIb", `rit_${"t".repeat(43)}`, "shr_short", ""]) {
+      const refused = await readSharedRoom(new Request("http://localhost/api/sharednet/shared/x"), { params: Promise.resolve({ token: notASlug }) });
+      expect(refused.status).toBe(400);
+    }
+    expect(sharedNetClient.getSharedRoom).toHaveBeenCalledTimes(1);
+
+    sharedNetClient.getSharedRoom.mockRejectedValue(new SharedNetApiError("room_not_found", 404, "Room was not found."));
+    const gone = await readSharedRoom(anonymous, { params: Promise.resolve({ token: SLUG }) });
+    expect(gone.status).toBe(404);
+    expect(await gone.json()).toMatchObject({ error: { code: "room_not_found" } });
+  });
+});
+

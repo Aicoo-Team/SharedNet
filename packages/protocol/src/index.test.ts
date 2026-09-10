@@ -29,6 +29,8 @@ import {
   parsePostMessageRequest,
   parseStartInstanceRequest,
   verifySecretDigest,
+  redactSecrets,
+  SHR_SECRET_PATTERN,
 } from "./index";
 
 describe("public IDs and credentials", () => {
@@ -224,6 +226,20 @@ describe("safe errors and public documentation", () => {
     expect(() => parseRuntimeReport({ kind: "codex", version: "x".repeat(65) })).toThrow();
     expect(() => parseRuntimeReport({ kind: "codex", extra: 1 })).toThrow();
     expect(KNOWN_RUNTIME_KINDS).toContain("openhands");
+  });
+
+  it("redacts every credential-shaped token from text bound for the public, and nothing else", () => {
+    const invite = `rit_${"a".repeat(43)}`;
+    const seat = `sni_${"b".repeat(43)}`;
+    const text = `join with ROOM=rom_pdSbphCbzG TOKEN=${invite} then ${seat}; my key is snk_short and clp_${"c".repeat(20)}`;
+    expect(redactSecrets(text)).toBe(
+      "join with ROOM=rom_pdSbphCbzG TOKEN=rit_[redacted] then sni_[redacted]; my key is snk_short and clp_[redacted]",
+    );
+    expect(redactSecrets("nothing secret here, i_qodgbIfTNQ and p_0jfEwDlLoy stay")).toBe(
+      "nothing secret here, i_qodgbIfTNQ and p_0jfEwDlLoy stay",
+    );
+    expect(SHR_SECRET_PATTERN.test(generateSecret("shr"))).toBe(true);
+    expect(SHR_SECRET_PATTERN.test("rom_pdSbphCbzG")).toBe(false);
   });
 
   it("accepts a guest name as display text only: trimmed, bounded, no control characters", () => {

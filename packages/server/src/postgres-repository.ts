@@ -33,6 +33,8 @@ import {
   digestSecret,
   generatePublicId,
   generateSecret,
+  SHR_SECRET_PATTERN,
+  type ShrSecret,
   presenceFor,
   type Agent,
   type AgentId,
@@ -67,7 +69,7 @@ import {
   type SharedNetRepository,
   type StoredHttpResult,
 } from "./repository.ts";
-import { sharedRoomsEdges, type DecisionAnswer, type DecisionOverview, type McpClient, type McpSeat, type NetworkView, type RoomOverview, type SeatOverview } from "./repository.ts";
+import { sharedRoomsEdges, type DecisionAnswer, type DecisionOverview, type McpClient, type McpSeat, type NetworkView, type RoomOverview, type RoomView, type SeatOverview, type SharedRoomView } from "./repository.ts";
 import { mcpLocalInstanceKey, runtimeKindForMcp } from "./memory-repository.ts";
 import type {
   AddRoomMembersRequest,
@@ -173,6 +175,7 @@ function projectRoom(row: RoomRow, creatorAgentId: AgentId | null): Room {
     creator_agent_id: creatorAgentId,
     created_at: timestamp(row.createdAt),
     closed_at: row.closedAt ? timestamp(row.closedAt) : null,
+    shared_at: row.sharedAt ? timestamp(row.sharedAt) : null,
   };
 }
 
@@ -1332,11 +1335,63 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
     return { items };
   }
 
-  async getRoomForPrincipal(
-    principalId: PrincipalId,
-    roomId: RoomId,
-  ): Promise<{ room: Room; memberships: RoomMember[]; messages: Message[]; latest_sequence: number }> {
+  async getRoomForPrincipal(principalId: PrincipalId, roomId: RoomId): Promise<RoomView> {
     const room = await this.roomVisibleTo(principalId, roomId);
+    // The link is the owner's to hand out; a seated Principal sees only that one exists.
+    return { ...(await this.roomLog(room)), share_token: room.principalId === principalId ? (room.shareToken as ShrSecret | null) : null };
+  }
+
+  async shareRoom(principalId: PrincipalId, roomId: RoomId): Promise<{ room: Room; share_token: ShrSecret }> {
+    // Locked, so two clicks on Share mint one link rather than racing the unique index.
+    return this.inTransaction(async () => {
+      const [room] = await this.executor()
+        .select()
+        .from(rooms)
+        .where(and(eq(rooms.id, roomId), eq(rooms.principalId, principalId)))
+        .for("update")
+        .limit(1);
+      if (!room) throw new RepositoryError(404, "room_not_found", "Room was not found.");
+      if (room.shareToken !== null) {
+        return { room: await this.projectRoomRow(room), share_token: room.shareToken as ShrSecret };
+      }
+      const token = generateSecret("shr");
+      const [published] = await this.executor()
+        .update(rooms)
+        .set({ shareToken: token, sharedAt: this.now() })
+        .where(eq(rooms.id, room.id))
+        .returning();
+      if (!published) throw new RepositoryError(500, "internal_error", "Room could not be published.");
+      return { room: await this.projectRoomRow(published), share_token: token };
+    });
+  }
+
+  async unshareRoom(principalId: PrincipalId, roomId: RoomId): Promise<{ room: Room }> {
+    const [room] = await this.executor()
+      .update(rooms)
+      .set({ shareToken: null, sharedAt: null })
+      .where(and(eq(rooms.id, roomId), eq(rooms.principalId, principalId)))
+      .returning();
+    if (!room) throw new RepositoryError(404, "room_not_found", "Room was not found.");
+    return { room: await this.projectRoomRow(room) };
+  }
+
+  async getSharedRoom(shareToken: string): Promise<SharedRoomView> {
+    const [room] = SHR_SECRET_PATTERN.test(shareToken)
+      ? await this.executor().select().from(rooms).where(eq(rooms.shareToken, shareToken)).limit(1)
+      : [];
+    if (!room) throw new RepositoryError(404, "room_not_found", "Room was not found.");
+    const log = await this.roomLog(room);
+    const agentIds = [...new Set([...log.memberships.map((m) => m.agent_id), ...log.messages.map((m) => m.sender_agent_id)])].filter(
+      (id): id is AgentId => id !== null,
+    );
+    const handles = agentIds.length
+      ? await this.executor().select({ id: agents.id, handle: agents.handle }).from(agents).where(inArray(agents.id, agentIds))
+      : [];
+    return { ...log, agent_handles: Object.fromEntries(handles.map((row) => [row.id, row.handle])) as Record<AgentId, string> };
+  }
+
+  /** Every seat and every message of a Room, in order: what both the owner's page and the public one read. */
+  private async roomLog(room: RoomRow): Promise<Omit<RoomView, "share_token">> {
     const rows = await this.executor()
       .select({
         message: messages,

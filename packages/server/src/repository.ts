@@ -36,6 +36,7 @@ import type {
   RoomId,
   RoomInvite,
   RoomMember,
+  ShrSecret,
   StartInstanceRequest,
 } from "../../protocol/src/index.ts";
 
@@ -167,6 +168,29 @@ export function sharedRoomsEdges(roomsOfInstances: InstanceId[][]): SharedRoomsE
 /** An Instance and the Rooms it sits in, for the CLI-login approve page. */
 export type SeatOverview = { instance: Instance; rooms: Array<{ id: RoomId; name: string }> };
 
+/** A Room as its owner or a seated Principal reads it; the link's slug only for the owner. */
+export type RoomView = {
+  room: Room;
+  memberships: RoomMember[];
+  messages: Message[];
+  latest_sequence: number;
+  share_token: ShrSecret | null;
+};
+
+/**
+ * What a share link opens, for anyone: the Room, its seats, every message,
+ * and the handle behind every tag a seat or a sender carries, so a reader
+ * sees names rather than ids. The projection that leaves the server decides
+ * what of this the public sees; the domain hands over the whole log.
+ */
+export type SharedRoomView = {
+  room: Room;
+  memberships: RoomMember[];
+  messages: Message[];
+  latest_sequence: number;
+  agent_handles: Record<AgentId, string>;
+};
+
 /**
  * The Dashboard's door: what a signed-in human's Principal may see and do.
  * Authorization lives here, in the one place the public API's rules also
@@ -197,10 +221,23 @@ export interface PrincipalRepository {
   /** Rooms the Principal scheduled or has an active seat in, newest first. */
   listRoomsForPrincipal(principalId: PrincipalId): Promise<{ items: RoomOverview[] }>;
   /** A Room the Principal may see, with every seat and every message, in order. */
-  getRoomForPrincipal(
-    principalId: PrincipalId,
-    roomId: RoomId,
-  ): Promise<{ room: Room; memberships: RoomMember[]; messages: Message[]; latest_sequence: number }>;
+  getRoomForPrincipal(principalId: PrincipalId, roomId: RoomId): Promise<RoomView>;
+  /**
+   * Publish a Room the Principal owns at a public, read-only link. Minting is
+   * idempotent: a Room already published answers with the link it has, so the
+   * owner can copy it again tomorrow; the link changes only when sharing stops
+   * and starts anew. A closed Room can be published: a finished conversation
+   * is the one most worth showing.
+   */
+  shareRoom(principalId: PrincipalId, roomId: RoomId): Promise<{ room: Room; share_token: ShrSecret }>;
+  /** Stop publishing; the link stops resolving at once. An unpublished Room is returned as it is. */
+  unshareRoom(principalId: PrincipalId, roomId: RoomId): Promise<{ room: Room }>;
+  /**
+   * The one door with nobody behind it: what a share link opens. An unknown,
+   * malformed or revoked slug reads as absent, with no distinction, so slugs
+   * cannot be probed.
+   */
+  getSharedRoom(shareToken: string): Promise<SharedRoomView>;
   /** Schedule an empty Room from the Web: no creator Instance, no members yet. */
   scheduleRoom(principalId: PrincipalId, input: { name: string; description: string | null }): Promise<{ room: Room }>;
   /** Close a Room the Principal owns; closing a closed Room returns it as it is. */

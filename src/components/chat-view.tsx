@@ -8,6 +8,7 @@ import type { RoomId, RoomMembership, RoomMessage } from "@/src/sharednet/contra
 import { DriverMark, driverMark } from "./driver-mark";
 import { InviteQr } from "./invite-qr";
 import { MessageContent } from "./message-content";
+import { readableTime } from "./room-format";
 import { SplitHandle, useSplitWidth } from "./split-handle";
 
 type CopyState = "idle" | "copied" | "error";
@@ -127,12 +128,6 @@ function driverOf(sender: RoomMessage["sender"], memberships: RoomMembership[]):
   return { kind, label: driverMark(kind).label };
 }
 
-/** "2026-09-06 07:34:03 UTC", from the ISO stamp the API sends; the full stamp is the title. */
-function readableTime(iso: string): string {
-  const match = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})/.exec(iso);
-  return match ? `${match[1]} ${match[2]} UTC` : iso;
-}
-
 function describeRuntime(runtime: RoomMembership["runtime"]): string {
   const version = runtime.version ? ` ${runtime.version}` : "";
   const entry = runtime.entrypoint ? ` · ${runtime.entrypoint}` : "";
@@ -183,7 +178,9 @@ export function ChatView() {
     selectRoom,
     selectedRoom,
     selectedRoomId,
+    shareRoom,
     status,
+    unshareRoom,
   } = useSharedNet();
   const [copyState, setCopyState] = useState<CopyState>("idle");
   const [instruction, setInstruction] = useState<LocalInstruction | null>(null);
@@ -198,6 +195,13 @@ export function ChatView() {
   const [inviting, setInviting] = useState(false);
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [closing, setClosing] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
+  const [shareBusy, setShareBusy] = useState(false);
+  const [shareError, setShareError] = useState<string | null>(null);
+  /** The slug the share response carried, until the refreshed detail carries it too. */
+  const [shareToken, setShareToken] = useState<string | null>(null);
+  const [shareCopyState, setShareCopyState] = useState<CopyState>("idle");
+  const shareDialogRef = useRef<HTMLDialogElement>(null);
   const [removingMemberId, setRemovingMemberId] = useState<string | null>(null);
   const [roomActionError, setRoomActionError] = useState<string | null>(null);
   const schedulerDialogRef = useRef<HTMLDialogElement>(null);
@@ -258,7 +262,17 @@ export function ChatView() {
 
   useEffect(() => {
     setMembersOpen(false);
+    setShareOpen(false);
+    setShareToken(null);
+    setShareError(null);
   }, [selectedRoomId]);
+
+  useEffect(() => {
+    const dialog = shareDialogRef.current;
+    if (!dialog) return;
+    if (shareOpen && !dialog.open) dialog.showModal();
+    if (!shareOpen && dialog.open) dialog.close();
+  }, [shareOpen]);
 
   useEffect(() => {
     if (instruction !== null) {
@@ -370,6 +384,51 @@ export function ChatView() {
       setRoomActionError(explain("Could not remove the member", cause));
     } finally {
       setRemovingMemberId(null);
+    }
+  }
+
+  /**
+   * Publishing is the second irreversible-feeling thing a human does to a
+   * Room, so the dialog says what it means before the link exists: every
+   * message, past and future, to anyone, with no account. Only the slug is
+   * minted here; the log itself does not move.
+   */
+  async function handleShareRoom(roomId: RoomId) {
+    if (shareBusy) return;
+    setShareBusy(true);
+    setShareError(null);
+    try {
+      const { token } = await shareRoom(roomId);
+      setShareToken(token);
+      setShareCopyState("idle");
+    } catch (cause) {
+      setShareError(explain("Could not create the link", cause));
+    } finally {
+      setShareBusy(false);
+    }
+  }
+
+  async function handleUnshareRoom(roomId: RoomId) {
+    if (shareBusy) return;
+    setShareBusy(true);
+    setShareError(null);
+    try {
+      await unshareRoom(roomId);
+      setShareToken(null);
+      setShareCopyState("idle");
+    } catch (cause) {
+      setShareError(explain("Could not stop sharing", cause));
+    } finally {
+      setShareBusy(false);
+    }
+  }
+
+  async function copyShareLink(link: string) {
+    try {
+      await navigator.clipboard.writeText(link);
+      setShareCopyState("copied");
+    } catch {
+      setShareCopyState("error");
     }
   }
 
@@ -571,31 +630,51 @@ export function ChatView() {
             </div>
             {detail ? (
               <div className="room-facts" aria-label="Room facts">
-                {detail.room.status === "open" && principal !== null && principal.principal_id !== detail.room.creator.principal_id ? (
+                {principal !== null && principal.principal_id !== detail.room.creator.principal_id ? (
                   // A seat in someone else's Room: reading and speaking are the
-                  // seat's; inviting and closing are the owner's.
-                  <span className="room-closed-mark">{`Owned by ${detail.room.creator.principal_id} · only the owner invites or closes`}</span>
-                ) : detail.room.status === "open" ? (
-                  <span className="room-actions">
-                    <button
-                      className="room-invite"
-                      disabled={inviting}
-                      onClick={() => void openInvite(selectedRoomId, detail.room.name, null)}
-                      type="button"
-                    >
-                      {inviting ? "Creating invite…" : "Invite an Agent"}
-                    </button>
-                    <button
-                      className="room-close"
-                      disabled={closing}
-                      onClick={() => void handleCloseRoom(selectedRoomId, detail.room.name)}
-                      type="button"
-                    >
-                      {closing ? "Closing…" : "Close Room"}
-                    </button>
+                  // seat's; inviting, sharing and closing are the owner's.
+                  <span className="room-closed-mark">
+                    {detail.room.status === "open"
+                      ? `Owned by ${detail.room.creator.principal_id} · only the owner invites, shares or closes`
+                      : "Closed · history stays readable"}
+                    {detail.room.sharing ? " · Public: the owner shares this Room at a link" : ""}
                   </span>
                 ) : (
-                  <span className="room-closed-mark">Closed · history stays readable</span>
+                  <span className="room-actions">
+                    {detail.room.status === "open" ? (
+                      <button
+                        className="room-invite"
+                        disabled={inviting}
+                        onClick={() => void openInvite(selectedRoomId, detail.room.name, null)}
+                        type="button"
+                      >
+                        {inviting ? "Creating invite…" : "Invite an Agent"}
+                      </button>
+                    ) : (
+                      <span className="room-closed-mark">Closed · history stays readable</span>
+                    )}
+                    <button
+                      className="room-share"
+                      onClick={() => {
+                        setShareError(null);
+                        setShareCopyState("idle");
+                        setShareOpen(true);
+                      }}
+                      type="button"
+                    >
+                      {detail.room.sharing ? "Shared · manage link" : "Share"}
+                    </button>
+                    {detail.room.status === "open" ? (
+                      <button
+                        className="room-close"
+                        disabled={closing}
+                        onClick={() => void handleCloseRoom(selectedRoomId, detail.room.name)}
+                        type="button"
+                      >
+                        {closing ? "Closing…" : "Close Room"}
+                      </button>
+                    ) : null}
+                  </span>
                 )}
                 <span>{activeMembers.length} members</span>
                 <span>{`Latest sequence ${String(detail.next_cursor).replace(/^cursor_/, "")}`}</span>
@@ -879,6 +958,94 @@ export function ChatView() {
             Close
           </button>
         </div>
+      </dialog>
+
+      <dialog
+        aria-labelledby="room-share-title"
+        aria-modal="true"
+        className="room-handoff-dialog"
+        onCancel={(event) => {
+          event.preventDefault();
+          setShareOpen(false);
+        }}
+        onClose={() => setShareOpen(false)}
+        ref={shareDialogRef}
+      >
+        <header>
+          <p>Share</p>
+          <h2 id="room-share-title">{`Share ${detail?.room.name ?? selectedSummary?.name ?? "this Room"}`}</h2>
+        </header>
+        {shareOpen && detail && selectedRoomId !== null ? (() => {
+          const token = shareToken ?? detail.room.sharing?.token ?? null;
+          const link = token === null ? null : `${currentOrigin().replace(/\/+$/, "")}/s/${token}`;
+          const shared = detail.room.sharing !== null || shareToken !== null;
+          return (
+            <>
+              <p>
+                Anyone with the link reads this Room: every message so far and every message to come, with no account.
+                Readers cannot join or speak, and the Room id stays private. Credential-shaped tokens an Agent pasted are hidden;
+                everything else stays exactly as it was said. You can stop sharing at any time.
+              </p>
+              {shared && link !== null ? (
+                <section aria-label="Public link" className="room-invite-pane">
+                  <p className="room-invite-link">
+                    <code className="room-canonical-id">{link}</code>
+                  </p>
+                  <InviteQr caption="Scan to open the Room" label="Public link QR code" link={link} />
+                  {detail.room.sharing ? (
+                    <p className="room-invite-note">{`Public since ${readableTime(detail.room.sharing.since)}.`}</p>
+                  ) : null}
+                </section>
+              ) : shared ? (
+                <p className="room-invite-note">This Room is public. Reopen it from the list to see its link.</p>
+              ) : null}
+              {shareError ? (
+                <p className="room-copy-state room-copy-error" role="alert">
+                  {shareError}
+                </p>
+              ) : shareCopyState === "copied" ? (
+                <p className="room-copy-state room-copy-success" role="status">
+                  Copied to clipboard.
+                </p>
+              ) : shareCopyState === "error" ? (
+                <p className="room-copy-state room-copy-error" role="alert">
+                  Clipboard access failed. Copy it manually.
+                </p>
+              ) : null}
+              <div className="room-handoff-actions">
+                <button onClick={() => setShareOpen(false)} type="button">
+                  Close
+                </button>
+                {shared ? (
+                  <>
+                    <button
+                      className="room-close"
+                      disabled={shareBusy}
+                      onClick={() => void handleUnshareRoom(selectedRoomId)}
+                      type="button"
+                    >
+                      {shareBusy ? "Stopping…" : "Stop sharing"}
+                    </button>
+                    {link !== null ? (
+                      <button className="room-copy-button" onClick={() => void copyShareLink(link)} type="button">
+                        {shareCopyState === "copied" ? "Copied" : "Copy link"}
+                      </button>
+                    ) : null}
+                  </>
+                ) : (
+                  <button
+                    className="room-copy-button"
+                    disabled={shareBusy}
+                    onClick={() => void handleShareRoom(selectedRoomId)}
+                    type="button"
+                  >
+                    {shareBusy ? "Creating link…" : "Create public link"}
+                  </button>
+                )}
+              </div>
+            </>
+          );
+        })() : null}
       </dialog>
 
       {instruction !== null ? (

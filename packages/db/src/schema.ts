@@ -44,6 +44,7 @@ const DECISION_ID_RE = sql.raw("'^dec_[0-9A-Za-z]{10}$'");
 const MEMBER_ID_RE = sql.raw("'^mem_[0-9A-Za-z]{10}$'");
 const INVITE_ID_RE = sql.raw("'^inv_[0-9A-Za-z]{10}$'");
 const SHA256_HEX_RE = sql.raw("'^[0-9a-f]{64}$'");
+const SHARE_TOKEN_RE = sql.raw("'^shr_[A-Za-z0-9_-]{43}$'");
 
 export const principals = sharednetSchema.table(
   "principal",
@@ -258,9 +259,18 @@ export const rooms = sharednetSchema.table(
     nextSequence: integer("next_sequence").default(1).notNull(),
     createdAt: domainTimestamp("created_at").defaultNow().notNull(),
     closedAt: domainTimestamp("closed_at"),
+    /**
+     * The slug of the Room's public link, while the owner publishes the log;
+     * null otherwise. Stored as issued, not as a digest: unlike an invite or a
+     * seat token it grants nothing but reading what the owner chose to make
+     * public, and the owner has to be able to copy the link again tomorrow.
+     */
+    shareToken: text("share_token"),
+    sharedAt: domainTimestamp("shared_at"),
   },
   (table) => [
     unique("room_principal_id_id_unique").on(table.principalId, table.id),
+    unique("room_share_token_unique").on(table.shareToken),
     foreignKey({
       name: "room_principal_fk",
       columns: [table.principalId],
@@ -285,6 +295,12 @@ export const rooms = sharednetSchema.table(
       sql`(${table.state} = 'open' AND ${table.closedAt} IS NULL)
           OR (${table.state} = 'closed' AND ${table.closedAt} IS NOT NULL)`,
     ),
+    check(
+      "room_share_consistent",
+      sql`(${table.shareToken} IS NULL AND ${table.sharedAt} IS NULL)
+          OR (${table.shareToken} IS NOT NULL AND ${table.sharedAt} IS NOT NULL)`,
+    ),
+    check("room_share_token_format", sql`${table.shareToken} IS NULL OR ${table.shareToken} ~ ${SHARE_TOKEN_RE}`),
   ],
 );
 
