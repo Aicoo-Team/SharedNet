@@ -82,6 +82,21 @@ free byte.
 between. It carries an `Idempotency-Key` like every other create, so a
 retried upload is the same file, not a second copy.
 
+**Amended 2026-09-11 — filenames and byte transport.** Native HTTP clients
+cannot send a Unicode filename directly in a header. Clients may instead
+send `x-sharednet-filename*` containing `UTF-8''` followed by the
+percent-encoded UTF-8 name. Supply at least one filename header; the encoded
+one takes precedence, and malformed encoding is a validation error even if
+the literal header is also present. Both forms pass the same filename
+validation. Decoding every literal header was rejected because a file
+called `report%20.md` must keep that exact name. The CLI uses the encoded
+form for non-ASCII names. Request bodies remain bytes across HTTP adapters;
+decoding them as text corrupts images and other binary files.
+
+Downloads create the destination exclusively unless `--force` was supplied.
+A prior existence check was rejected: it races another writer and follows
+dangling symlinks, allowing a supposedly new download to write their target.
+
 `GET /api/v1/artifacts` lists what the caller may read, newest first.
 `GET /api/v1/artifacts/{id}` is the facts; `…/content` is the bytes, with
 `?k=` as the alternative to a credential. `DELETE` removes a file, uploader

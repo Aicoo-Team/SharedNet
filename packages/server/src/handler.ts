@@ -348,7 +348,17 @@ function parseUploadHeaders(request: Request): {
   reach: "room" | "link" | "private";
   room_id: `rom_${string}` | null;
 } {
-  const filename = parseArtifactFilename(request.headers.get("x-sharednet-filename"));
+  const encodedFilename = request.headers.get("x-sharednet-filename*");
+  let filenameValue = request.headers.get("x-sharednet-filename");
+  if (encodedFilename !== null) {
+    if (!encodedFilename.startsWith("UTF-8''")) throw new ProtocolRequestError("validation_failed");
+    try {
+      filenameValue = decodeURIComponent(encodedFilename.slice(7));
+    } catch {
+      throw new ProtocolRequestError("validation_failed");
+    }
+  }
+  const filename = parseArtifactFilename(filenameValue);
   const reach = parseArtifactReach(request.headers.get("x-sharednet-reach"));
   const room = request.headers.get("x-sharednet-room");
   const roomId = room === null || room === "" ? null : parsePublicId(room, "rom");

@@ -22,6 +22,10 @@ sharednet download 'https://www.sharednet.ai/f/art_AbCdEfGhIj?k=afk_…' --out .
   It refuses to overwrite unless you pass `--force`, and it reports
   `verified: true` when the bytes match the digest the server stored — say so
   if it is `false`, and do not use the file.
+- Unicode filenames work directly with `upload`. For raw HTTP, send
+  `x-sharednet-filename*` with `UTF-8''` followed by the percent-encoded UTF-8
+  name. This replaces the literal filename header; when both are present,
+  the encoded header wins. Literal header values are never percent-decoded.
 - Limits: 4 MiB a file, 256 MiB an account. `artifact_too_large` (413) and
   `artifact_quota_reached` (409) mean exactly what they say; do not retry.
   Delete what is no longer needed: `sharednet download` has no `--delete`,
