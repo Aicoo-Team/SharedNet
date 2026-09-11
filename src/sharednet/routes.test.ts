@@ -10,6 +10,8 @@ const { authGetSession, sharedNetClient } = vi.hoisted(() => ({
     shareRoom: vi.fn(),
     unshareRoom: vi.fn(),
     getSharedRoom: vi.fn(),
+    getCredits: vi.fn(),
+    redeemCredits: vi.fn(),
     getNetwork: vi.fn(),
     getRoom: vi.fn(),
     listDecisions: vi.fn(),
@@ -33,6 +35,8 @@ vi.mock("./server-client", async (importOriginal) => {
 });
 
 import { POST as bootstrapAccount } from "../../app/api/sharednet/bootstrap/route";
+import { GET as getCredits } from "../../app/api/sharednet/credits/route";
+import { POST as redeemCredits } from "../../app/api/sharednet/credits/redeem/route";
 import { GET as listRooms, POST as scheduleRoom } from "../../app/api/sharednet/rooms/route";
 import { GET as getRoom } from "../../app/api/sharednet/rooms/[roomId]/route";
 import { POST as mintInvite } from "../../app/api/sharednet/rooms/[roomId]/invites/route";
@@ -44,6 +48,7 @@ import { GET as listDecisions } from "../../app/api/sharednet/decisions/route";
 import { PATCH as resolveDecision } from "../../app/api/sharednet/decisions/[decisionId]/route";
 import { POST as claimPairing } from "../../app/api/sharednet/pairings/[pairingId]/claim/route";
 import { SharedNetApiError } from "./server-client";
+import { isCreditsProjection, isRedeemCreditsResponse } from "./contracts";
 
 const AUTH_USER_ID = "auth-user-1";
 const PRINCIPAL_ID = "p_7CPHtWFsFn";
@@ -105,6 +110,109 @@ function expectNoBackendCall(): void {
     expect(method).not.toHaveBeenCalled();
   }
 }
+
+describe("credits Dashboard routes", () => {
+  const credits = { principal_id: PRINCIPAL_ID, balance: 0, granted: 0, sent: 0, received: 0, transfers: [] };
+
+  beforeEach(() => {
+    authGetSession.mockReset();
+    authGetSession.mockResolvedValue({ user: { id: AUTH_USER_ID } });
+    for (const method of Object.values(sharedNetClient)) method.mockReset();
+  });
+
+  it.each([
+    { name: "read", invoke: () => getCredits(request(undefined, "GET", "/api/sharednet/credits")) },
+    { name: "redeem", invoke: () => redeemCredits(rawRequest("{not-json", "POST", "/api/sharednet/credits/redeem")) },
+  ])("refuses an unauthenticated credits $name before reading input or calling the domain", async ({ invoke }) => {
+    authGetSession.mockResolvedValue(null);
+    const response = await invoke();
+
+    expect(response.status).toBe(401);
+    expect(await response.json()).toMatchObject({ error: { code: "unauthenticated" } });
+    expectNoBackendCall();
+  });
+
+  it("reads only the signed-in account's credits even when the URL names another Principal", async () => {
+    sharedNetClient.getCredits.mockResolvedValue(credits);
+    const response = await getCredits(new Request("http://localhost/api/sharednet/credits?principal_id=p_V80npHhNlU", {
+      headers: { cookie: "better-auth.session_token=test" },
+    }));
+    const body: unknown = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(isCreditsProjection(body)).toBe(true);
+    expect(body).toEqual(credits);
+    expect(sharedNetClient.getCredits).toHaveBeenCalledExactlyOnceWith(AUTH_USER_ID);
+  });
+
+  it.each(["https://evil.example", null])("refuses credit redemption with Origin %s before reading the session", async (origin) => {
+    const headers = new Headers({ "content-type": "application/json", cookie: "better-auth.session_token=test" });
+    if (origin !== null) headers.set("origin", origin);
+    const response = await redeemCredits(new Request("http://localhost/api/sharednet/credits/redeem", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ code: "BFF-100" }),
+    }));
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ error: { code: "forbidden_origin" } });
+    expect(authGetSession).not.toHaveBeenCalled();
+    expectNoBackendCall();
+  });
+
+  it("redeems a normalized code for the signed-in account and returns the updated credit projection", async () => {
+    const redeemed = {
+      granted: 100,
+      credits: {
+        ...credits,
+        balance: 100,
+        granted: 100,
+        transfers: [{
+          transfer_id: "txn_AbCdEfGhIj",
+          direction: "granted",
+          counterparty: null,
+          addressed_to: null,
+          amount: 100,
+          by_instance_id: null,
+          code: "BFF-100",
+          memo: null,
+          room_id: null,
+          created_at: "2026-09-08T07:00:00.000Z",
+        }],
+      },
+    };
+    sharedNetClient.redeemCredits.mockResolvedValue(redeemed);
+    const response = await redeemCredits(request({ code: " bff-100 " }, "POST", "/api/sharednet/credits/redeem?principal_id=p_V80npHhNlU"));
+    const body: unknown = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(isRedeemCreditsResponse(body)).toBe(true);
+    expect(body).toEqual(redeemed);
+    expect(sharedNetClient.redeemCredits).toHaveBeenCalledExactlyOnceWith(AUTH_USER_ID, "BFF-100");
+  });
+
+  it.each([
+    { name: "invalid JSON", body: "{not-json" },
+    { name: "an invalid code", body: JSON.stringify({ code: "!" }) },
+    { name: "a forged recipient", body: JSON.stringify({ code: "BFF-100", principal_id: "p_V80npHhNlU" }) },
+  ])("refuses a credit redemption containing $name before the domain can grant anything", async ({ body }) => {
+    const response = await redeemCredits(rawRequest(body, "POST", "/api/sharednet/credits/redeem"));
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: { code: "invalid_request" } });
+    expectNoBackendCall();
+  });
+
+  it("preserves the credit code refusal without exposing internal details", async () => {
+    sharedNetClient.redeemCredits.mockRejectedValue(new SharedNetApiError("credit_code_exhausted", 410, "internal grant details"));
+    const response = await redeemCredits(request({ code: "BFF-100" }, "POST", "/api/sharednet/credits/redeem"));
+
+    expect(response.status).toBe(410);
+    expect(await response.json()).toEqual({ error: { code: "credit_code_exhausted", message: "SharedNet request failed" } });
+  });
+});
 
 describe("the Web mutation boundary on the Dashboard routes", () => {
   beforeEach(() => {

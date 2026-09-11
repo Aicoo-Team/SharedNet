@@ -10,7 +10,7 @@
  *   TEST_DATABASE_URL=postgresql://…/sharednet_e2e node --experimental-strip-types scripts/dashboard-door-postgres-e2e.mjs
  */
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import pg from "pg";
 import { defaultKeyHasher } from "@better-auth/api-key";
 
@@ -232,6 +232,162 @@ const { room: fourth } = await repository.createRoom(taggedAuth, { name: "Fourth
 await repository.postMessage(taggedAuth, fourth.id, { content: "hello" });
 const fourthShared = await repository.shareRoom(owner.principalId, fourth.id);
 assert.deepEqual((await repository.getSharedRoom(fourthShared.share_token)).agent_handles, { [tag.agent.id]: "narrator" });
+
+// ---- Credits: a purse per Principal on real SQL; the debit is a conditional UPDATE. ----
+await repository.mintCreditCode({ code: "DOOR-100", amount: 100, max_redemptions: 2 });
+await repository.mintCreditCode({ code: "STALE", amount: 5, expires_at: "2020-01-01T00:00:00.000Z" });
+const ownerKeyAuth = await repository.authenticateApiKey(ownerKey);
+const redeemed = await repository.redeemCredits(ownerKeyAuth, "DOOR-100");
+assert.equal(redeemed.granted, 100);
+assert.deepEqual([redeemed.credits.balance, redeemed.credits.granted, redeemed.transfer.from_principal_id, redeemed.transfer.code], [100, 100, null, "DOOR-100"]);
+assert.deepEqual((await repository.redeemCredits(owner.auth, "DOOR-100")).granted, 0, "the same account redeems once; a retry grants nothing");
+assert.equal((await repository.redeemCredits(visitor.auth, "DOOR-100")).granted, 100);
+await assert.rejects(repository.redeemCredits(guestAuth, "DOOR-100"), { code: "credits_account_required", status: 403 });
+await assert.rejects(repository.redeemCredits(owner.auth, "STALE"), { code: "credit_code_expired", status: 410 });
+await assert.rejects(repository.redeemCredits(owner.auth, "NOPE"), { code: "credit_code_not_found", status: 404 });
+// The human's door reads the same purse.
+assert.equal((await repository.creditsForPrincipal(owner.principalId)).credits.balance, 100);
+assert.equal((await repository.redeemCreditsForPrincipal(owner.principalId, "DOOR-100")).granted, 0);
+// Pay by Instance id: the visitor's seat resolves to the visitor's purse; the seat that paid is recorded.
+const paid = await repository.transferCredits(owner.auth, { to: visitor.instance.id, amount: 30, memo: "map tiles", room_id: room.id });
+assert.deepEqual(
+  [paid.transfer.from_principal_id, paid.transfer.to_principal_id, paid.transfer.amount, paid.transfer.by_instance_id, paid.transfer.room_id, paid.credits.balance],
+  [owner.principalId, visitor.principalId, 30, owner.instance.id, room.id, 70],
+);
+assert.deepEqual((await repository.getCredits(visitor.auth)).credits, { principal_id: visitor.principalId, balance: 130, granted: 100, sent: 0, received: 30 });
+await assert.rejects(repository.transferCredits(owner.auth, { to: visitor.principalId, amount: 71 }), { code: "insufficient_credits", status: 409 });
+await assert.rejects(repository.transferCredits(owner.auth, { to: "i_nobody00001", amount: 1 }), { code: "payee_not_found", status: 404 });
+await assert.rejects(repository.transferCredits(owner.auth, { to: owner.instance.id, amount: 1 }), { code: "transfer_to_self", status: 422 });
+// Two payments racing for one purse: exactly one of a pair that together exceed it can pass.
+const race = await Promise.allSettled([
+  repository.transferCredits(owner.auth, { to: visitor.principalId, amount: 50 }),
+  repository.transferCredits(owner.auth, { to: visitor.principalId, amount: 50 }),
+]);
+assert.deepEqual(race.map((r) => r.status).sort(), ["fulfilled", "rejected"], "one of two racing debits wins");
+assert.equal((await repository.getCredits(owner.auth)).credits.balance, 20);
+// The ledger, newest first, paged by id; the balance recomputed from it matches the purse.
+const page = await repository.listCreditTransfers(owner.auth, { limit: 2, before: null });
+assert.deepEqual(page.items.map((t) => t.amount), [50, 30]);
+assert.equal(page.has_more, true);
+const rest = await repository.listCreditTransfers(owner.auth, { limit: 10, before: page.next_cursor });
+assert.deepEqual(rest.items.map((t) => [t.amount, t.code]), [[100, "DOOR-100"]]);
+await assert.rejects(repository.listCreditTransfers(owner.auth, { limit: 10, before: "txn_nowhere001" }), { code: "invalid_cursor" });
+const everything = [...page.items, ...rest.items];
+const recomputed = everything.reduce((sum, t) => sum + (t.to_principal_id === owner.principalId ? t.amount : 0) - (t.from_principal_id === owner.principalId ? t.amount : 0), 0);
+assert.equal(recomputed, (await repository.getCredits(owner.auth)).credits.balance, "the purse is the sum of the ledger");
+
+// Two purses paying each other at the same moment must not deadlock: both
+// transactions take the two row locks in the same (id) order.
+const [payerOne, payerTwo] = [owner, visitor];
+const swap = await Promise.allSettled([
+  repository.transferCredits(payerOne.auth, { to: payerTwo.principalId, amount: 1, memo: "swap a" }),
+  repository.transferCredits(payerTwo.auth, { to: payerOne.principalId, amount: 1, memo: "swap b" }),
+]);
+assert.deepEqual(swap.map((r) => r.status), ["fulfilled", "fulfilled"], `cross payments must not deadlock: ${swap.map((r) => r.reason?.message ?? "ok")}`);
+
+// One key, two requests, the whole purse: the loser replays the winner's
+// response rather than being told the money it already moved is missing.
+const wholePurse = (await repository.getCredits(owner.auth)).credits.balance;
+assert.ok(wholePurse > 0, "the owner has something to spend");
+const sharedKey = randomUUID();
+const scopeFor = () => ({ principalId: owner.principalId, credentialClass: "instance", actorId: owner.instance.id, operationId: "transferCredits", key: sharedKey });
+const attempt = () =>
+  repository.executeIdempotent(scopeFor(), createHash("sha256").update("the same request body").digest("hex"), async () => ({
+    status: 201,
+    body: JSON.stringify(await repository.transferCredits(owner.auth, { to: visitor.principalId, amount: wholePurse })),
+  }));
+const [keyRaceA, keyRaceB] = await Promise.all([attempt(), attempt()]);
+assert.deepEqual([keyRaceA.status, keyRaceB.status], [201, 201], "both answers are the created response");
+assert.equal(keyRaceA.body, keyRaceB.body, "the loser replays the winner's response");
+assert.deepEqual([keyRaceA.replayed, keyRaceB.replayed].sort(), [false, true], "exactly one of the two actually ran");
+assert.equal((await repository.getCredits(owner.auth)).credits.balance, 0, "the purse was spent once, not twice");
+
+// A guest paid before its human logged in keeps the credits: binding moves the purse.
+const guestPay = await repository.transferCredits(visitor.auth, { to: guest.membership.instance_id, amount: 7, memo: "for the guest" });
+assert.equal(guestPay.transfer.to_principal_id, guest.membership.principal_id);
+assert.equal((await repository.getCredits(guestAuth)).credits.balance, 7);
+const guestLogin = await repository.startCliLogin({ label: "guest laptop", seats: [guest.member_token] });
+const beforeBinding = (await repository.getCredits(owner.auth)).credits.balance;
+const bindingApproval = await repository.approveCliLogin({ code: guestLogin.user_code, principalId: owner.principalId });
+assert.deepEqual(bindingApproval.bound_principal_ids, [guest.membership.principal_id], "the guest's Principal was bound into the account");
+const afterBinding = await repository.getCredits(owner.auth);
+assert.equal(afterBinding.credits.balance, beforeBinding + 7, "the guest's credits moved into the account that claimed it");
+// The seat's token is unchanged; re-authenticating it is what a CLI does on
+// every call, and it now resolves to the account's Principal and its purse.
+const boundAuth = await repository.authenticateInstance(guest.member_token);
+assert.equal(boundAuth.principalId, owner.principalId, "the seat now acts as the account");
+assert.equal((await repository.getCredits(boundAuth)).credits.balance, afterBinding.credits.balance, "the same seat now spends from the account's purse");
+const movedRow = (await repository.listCreditTransfers(owner.auth, { limit: 1, before: null })).items[0];
+assert.deepEqual([movedRow.amount, movedRow.from_principal_id, movedRow.memo], [7, guest.membership.principal_id, "Bound into this account by sharednet login"]);
+
+// ---- A claim while credits are in flight. ----
+// A second guest, paid before its human claims the seat: the claim and a
+// payment out of that purse run at the same moment. Whichever order they land
+// in, the credits are neither lost nor conjured, and the ledger still sums.
+const raceInvite = await repository.createRoomInvite({ roomId: second.id, principalId: owner.principalId });
+const racer = await repository.joinRoomWithInvite(raceInvite.token, second.id, { name: "racer", runtime: { kind: "curl" } });
+const racerAuth = await repository.authenticateInstance(racer.member_token);
+await repository.transferCredits(visitor.auth, { to: racer.membership.instance_id, amount: 30 });
+assert.equal((await repository.getCredits(racerAuth)).credits.balance, 30);
+const racerLogin = await repository.startCliLogin({ label: "racer laptop", seats: [racer.member_token] });
+const claimerBefore = (await repository.getCredits(visitor.auth)).credits.balance;
+const spendRace = await Promise.allSettled([
+  repository.approveCliLogin({ code: racerLogin.user_code, principalId: visitor.principalId }),
+  repository.transferCredits(racerAuth, { to: owner.principalId, amount: 10, memo: "spent mid-claim" }),
+]);
+assert.equal(spendRace[0].status, "fulfilled", `the claim must not deadlock: ${spendRace[0].reason?.message ?? ""}`);
+const spendLanded = spendRace[1].status === "fulfilled";
+if (!spendLanded) {
+  assert.match(spendRace[1].reason?.code ?? "", /credits_identity_moved|insufficient_credits/, `a refused mid-claim payment is refused for a stated reason, not a crash: ${spendRace[1].reason?.message ?? ""}`);
+}
+// Whatever happened, the claimer holds the guest's purse minus anything that was spent.
+const claimerAfter = (await repository.getCredits(visitor.auth)).credits.balance;
+assert.equal(claimerAfter, claimerBefore + 30 - (spendLanded ? 10 : 0), "the claimed purse is exactly what the guest had, less what it spent");
+// The bound Principal keeps nothing behind.
+const strandedRacer = await repository.listCreditTransfers(visitor.auth, { limit: 100, before: null });
+const racerSum = strandedRacer.items.reduce(
+  (sum, t) => sum + (t.to_principal_id === visitor.principalId ? t.amount : 0) - (t.from_principal_id === visitor.principalId ? t.amount : 0),
+  0,
+);
+assert.equal(racerSum, claimerAfter, "after a claim, the claimer's balance is still the sum of its ledger");
+
+// Money arriving for a seat that is being claimed lands in the account that claimed it.
+const incomingInvite = await repository.createRoomInvite({ roomId: second.id, principalId: owner.principalId });
+const incoming = await repository.joinRoomWithInvite(incomingInvite.token, second.id, { name: "incoming", runtime: { kind: "curl" } });
+const incomingLogin = await repository.startCliLogin({ label: "incoming laptop", seats: [incoming.member_token] });
+const ownerBefore = (await repository.getCredits(owner.auth)).credits.balance;
+const payerBefore = (await repository.getCredits(visitor.auth)).credits.balance;
+const incomingRace = await Promise.allSettled([
+  repository.approveCliLogin({ code: incomingLogin.user_code, principalId: owner.principalId }),
+  repository.transferCredits(visitor.auth, { to: incoming.membership.instance_id, amount: 4, memo: "paid mid-claim" }),
+]);
+assert.equal(incomingRace[0].status, "fulfilled", `the claim must not deadlock: ${incomingRace[0].reason?.message ?? ""}`);
+if (incomingRace[1].status === "fulfilled") {
+  const landedOn = incomingRace[1].value.transfer.to_principal_id;
+  assert.ok(
+    landedOn === owner.principalId || landedOn === incoming.membership.principal_id,
+    "an incoming payment lands on one of the two identities, never on nothing",
+  );
+  const claimedAuth = await repository.authenticateInstance(incoming.member_token);
+  assert.equal(claimedAuth.principalId, owner.principalId, "the seat is the account's now");
+  // The seat must be able to spend what it was paid, whichever side it landed on.
+  assert.equal(
+    (await repository.getCredits(claimedAuth)).credits.balance,
+    ownerBefore + 4,
+    "the payment is spendable by the seat that was paid, through the account that claimed it",
+  );
+  assert.equal((await repository.getCredits(visitor.auth)).credits.balance, payerBefore - 4);
+} else {
+  assert.match(incomingRace[1].reason?.code ?? "", /credits_identity_moved/, "a payment across a finishing claim is refused by name");
+  assert.equal((await repository.getCredits(visitor.auth)).credits.balance, payerBefore, "a refused payment moved nothing");
+}
+
+// A code this Principal already redeemed answers the same way once it expires.
+await repository.mintCreditCode({ code: "SOON", amount: 3, expires_at: new Date(Date.now() + 60_000).toISOString() });
+assert.equal((await repository.redeemCredits(owner.auth, "SOON")).granted, 3);
+await pool.query(`update sharednet.credit_code set expires_at = now() - interval '1 minute' where code = 'SOON'`);
+assert.equal((await repository.redeemCredits(owner.auth, "SOON")).granted, 0, "a settled redemption stays settled after the code expires");
+await assert.rejects(repository.redeemCredits(visitor.auth, "SOON"), { code: "credit_code_expired" }, "someone who never redeemed it is told it expired");
 
 await pool.end();
 console.log(JSON.stringify({ status: "passed", room: room.id, scheduled: scheduled.room.id}));

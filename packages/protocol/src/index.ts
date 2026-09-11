@@ -1,6 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 
-export const PUBLIC_ID_PREFIXES = ["p", "key", "a", "i", "rom", "msg", "dec", "mem", "inv", "cli"] as const;
+export const PUBLIC_ID_PREFIXES = ["p", "key", "a", "i", "rom", "msg", "dec", "mem", "inv", "cli", "txn"] as const;
 export type PublicIdPrefix = (typeof PUBLIC_ID_PREFIXES)[number];
 
 /**
@@ -60,6 +60,9 @@ export const CLP_SECRET_PATTERN = /^clp_[A-Za-z0-9_-]{43}$/;
 export type ShrSecret = `shr_${string}`;
 export const SHR_SECRET_PATTERN = /^shr_[A-Za-z0-9_-]{43}$/;
 export const CLI_LOGIN_ID_PATTERN = /^cli_[0-9A-Za-z]{10}$/;
+/** A credit transfer: one movement of credits, minted by a code or paid by a Principal. */
+export const TRANSFER_ID_PATTERN = /^txn_[0-9A-Za-z]{10}$/;
+export type TransferId = `txn_${string}`;
 /** What the human types or reads on the authorize page: eight unambiguous characters. */
 export const CLI_LOGIN_CODE_PATTERN = /^[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/;
 export type Timestamp = string;
@@ -74,7 +77,8 @@ export type PublicId =
   | DecisionId
   | MemberId
   | InviteId
-  | CliLoginId;
+  | CliLoginId
+  | TransferId;
 
 export type IdForPrefix<P extends PublicIdPrefix> = P extends "p"
   ? PrincipalId
@@ -94,7 +98,9 @@ export type IdForPrefix<P extends PublicIdPrefix> = P extends "p"
                 ? MemberId
                 : P extends "inv"
                   ? InviteId
-                  : CliLoginId;
+                  : P extends "cli"
+                    ? CliLoginId
+                    : TransferId;
 
 const ID_PATTERNS: Record<PublicIdPrefix, RegExp> = {
   p: PRINCIPAL_ID_PATTERN,
@@ -107,6 +113,7 @@ const ID_PATTERNS: Record<PublicIdPrefix, RegExp> = {
   mem: MEMBER_ID_PATTERN,
   inv: INVITE_ID_PATTERN,
   cli: CLI_LOGIN_ID_PATTERN,
+  txn: TRANSFER_ID_PATTERN,
 };
 
 const CROCKFORD_LOWER = "0123456789abcdefghjkmnpqrstvwxyz";
@@ -579,6 +586,14 @@ export type ErrorCode =
   | "reserved_agent_handle"
   | "reply_target_invalid"
   | "decision_resolution_invalid"
+  | "insufficient_credits"
+  | "payee_not_found"
+  | "transfer_to_self"
+  | "credit_code_not_found"
+  | "credit_code_expired"
+  | "credit_code_exhausted"
+  | "credits_account_required"
+  | "credits_identity_moved"
   | "rate_limited"
   | "internal_error"
   | "service_unavailable";
@@ -623,6 +638,14 @@ export const SAFE_ERROR_MESSAGES: Readonly<Record<ErrorCode, string>> = {
   reserved_agent_handle: "The default Agent handle is reserved.",
   reply_target_invalid: "Reply target is invalid.",
   decision_resolution_invalid: "Decision resolution is invalid.",
+  insufficient_credits: "The purse does not hold that many credits.",
+  payee_not_found: "No Principal, Agent or Instance with that id.",
+  transfer_to_self: "A transfer to your own Principal moves nothing.",
+  credit_code_not_found: "That code grants nothing.",
+  credit_code_expired: "That code has expired.",
+  credit_code_exhausted: "That code has been redeemed as many times as it allows.",
+  credits_account_required: "Only a Principal with an account behind it can redeem a code; run sharednet login.",
+  credits_identity_moved: "The account behind one of these ids changed just now; try again.",
   rate_limited: "Rate limit exceeded.",
   internal_error: "An internal error occurred.",
   service_unavailable: "Service is temporarily unavailable.",
@@ -668,6 +691,14 @@ export const ERROR_STATUS: Readonly<Record<ErrorCode, number>> = {
   reserved_agent_handle: 422,
   reply_target_invalid: 422,
   decision_resolution_invalid: 422,
+  insufficient_credits: 409,
+  payee_not_found: 404,
+  transfer_to_self: 422,
+  credit_code_not_found: 404,
+  credit_code_expired: 410,
+  credit_code_exhausted: 410,
+  credits_account_required: 403,
+  credits_identity_moved: 409,
   rate_limited: 429,
   internal_error: 500,
   service_unavailable: 503,
@@ -981,6 +1012,115 @@ export function parseCreateRoomRequest(value: unknown): CreateRoomRequest {
   return request;
 }
 
+/**
+ * Credits: play money (decision 2026-09-11). A purse belongs to a Principal;
+ * a transfer records the Instance that moved it. Minting is a code
+ * redemption: a transfer with no payer and the code that granted it.
+ */
+export interface CreditTransfer {
+  id: TransferId;
+  /** Null when the credits were minted by a code redemption. */
+  from_principal_id: PrincipalId | null;
+  to_principal_id: PrincipalId;
+  amount: number;
+  memo: string | null;
+  /** The Room the trade was agreed in, when the payer said so. */
+  room_id: RoomId | null;
+  /** The seat that said pay; null for a redemption, or a payment made with an account key. */
+  by_instance_id: InstanceId | null;
+  /** What the payer typed: a Principal, Agent or Instance id, resolved to `to_principal_id`. */
+  addressed_to: string;
+  /** For a redemption: the code that granted it. */
+  code: string | null;
+  created_at: Timestamp;
+}
+
+export interface CreditBalance {
+  principal_id: PrincipalId;
+  balance: number;
+  granted: number;
+  sent: number;
+  received: number;
+}
+
+/** A grant code an operator minted: redeemable once per Principal, until it is switched off. */
+export interface CreditCode {
+  code: string;
+  amount: number;
+  max_redemptions: number | null;
+  redeemed_count: number;
+  expires_at: Timestamp | null;
+  active: boolean;
+  created_at: Timestamp;
+}
+
+export const CREDIT_CODE_PATTERN = /^[A-Z0-9][A-Z0-9-]{2,31}$/;
+export const MAX_CREDIT_AMOUNT = 1_000_000_000;
+export const MAX_CREDIT_MEMO_SCALARS = 200;
+/** The column holds 200 characters; a scalar can be several bytes, and the check counts characters. */
+export const MAX_CREDIT_MEMO_BYTES = 800;
+
+export interface RedeemCreditsRequest {
+  code: string;
+}
+
+/** Codes are case-insensitive as typed and stored upper-case. */
+export function normalizeCreditCode(value: string): string {
+  return value.normalize("NFKC").trim().toUpperCase();
+}
+
+export function parseRedeemCreditsRequest(value: unknown): RedeemCreditsRequest {
+  requireExactKeys(value, ["code"]);
+  const { code } = value;
+  if (typeof code !== "string") throw new ProtocolValidationError();
+  const normalized = normalizeCreditCode(code);
+  if (!CREDIT_CODE_PATTERN.test(normalized)) throw new ProtocolValidationError();
+  return { code: normalized };
+}
+
+export interface CreditTransferRequest {
+  /** A Principal, Agent or Instance id; all three resolve to the owning Principal's purse. */
+  to: PrincipalId | AgentId | InstanceId;
+  amount: number;
+  memo?: string | null;
+  room_id?: RoomId | null;
+}
+
+export function parseCreditTransferRequest(value: unknown): CreditTransferRequest {
+  requireExactKeys(value, ["to", "amount"], ["memo", "room_id"]);
+  const { to, amount, memo, room_id: roomId } = value;
+  if (
+    typeof to !== "string" ||
+    !(PRINCIPAL_ID_PATTERN.test(to) || AGENT_ID_PATTERN.test(to) || INSTANCE_ID_PATTERN.test(to))
+  ) {
+    throw new ProtocolValidationError();
+  }
+  if (typeof amount !== "number" || !Number.isSafeInteger(amount) || amount < 1 || amount > MAX_CREDIT_AMOUNT) {
+    throw new ProtocolValidationError();
+  }
+  // NFKC first, then measure: normalizing can make a string longer (ﬃ becomes
+  // ffi), and what the column has to hold is the normalized text.
+  const normalizedMemo = typeof memo === "string" ? memo.normalize("NFKC").trim() : memo;
+  if (
+    normalizedMemo !== undefined &&
+    normalizedMemo !== null &&
+    (typeof normalizedMemo !== "string" ||
+      !hasNonWhitespaceScalar(normalizedMemo) ||
+      scalarLength(normalizedMemo) > MAX_CREDIT_MEMO_SCALARS ||
+      utf8Length(normalizedMemo) > MAX_CREDIT_MEMO_BYTES ||
+      /[\p{Cc}]/u.test(normalizedMemo))
+  ) {
+    throw new ProtocolValidationError();
+  }
+  if (roomId !== undefined && roomId !== null && (typeof roomId !== "string" || !ROOM_ID_PATTERN.test(roomId))) {
+    throw new ProtocolValidationError();
+  }
+  const request: CreditTransferRequest = { to: to as CreditTransferRequest["to"], amount };
+  if (memo !== undefined) request.memo = normalizedMemo as string | null;
+  if (roomId !== undefined) request.room_id = roomId as RoomId | null;
+  return request;
+}
+
 export interface PostMessageRequest {
   content: string;
   reply_to_message_id?: MessageId | null;
@@ -1176,6 +1316,7 @@ export const CAPABILITIES = [
   "instances.reach",
   "rooms.members",
   "network",
+  "credits",
 ] as const;
 
 export type Capability = (typeof CAPABILITIES)[number];
@@ -1354,6 +1495,10 @@ export const ROUTE_CATALOGUE = [
     auth: "any",
     operationId: "resolveDecision",
   },
+  { method: "GET", path: "/api/v1/credits", auth: "any", operationId: "getCredits" },
+  { method: "POST", path: "/api/v1/credits/redeem", auth: "any", operationId: "redeemCredits" },
+  { method: "POST", path: "/api/v1/credits/transfers", auth: "any", operationId: "transferCredits" },
+  { method: "GET", path: "/api/v1/credits/transfers", auth: "any", operationId: "listCreditTransfers" },
   { method: "POST", path: "/api/v1/cli/logins", auth: "public", operationId: "startCliLogin" },
   { method: "POST", path: "/api/v1/cli/claims/redeem", auth: "public", operationId: "redeemCliClaim" },
   {
@@ -1451,6 +1596,36 @@ export const OPENAPI_DOCUMENT = {
         operationId: "heartbeat",
         security: [{ instanceToken: [] }],
         responses: { "200": { description: "Renewed presence lease" }, default: { description: "Error" } },
+      },
+    },
+    "/api/v1/credits": {
+      get: {
+        operationId: "getCredits",
+        security: [{ accountApiKey: [] }, { instanceToken: [] }],
+        responses: { "200": { description: "The calling Principal's purse: balance, granted, sent, received" }, default: { description: "Error" } },
+      },
+    },
+    "/api/v1/credits/redeem": {
+      post: {
+        operationId: "redeemCredits",
+        security: [{ accountApiKey: [] }, { instanceToken: [] }],
+        responses: {
+          "200": { description: "The purse after redeeming; `granted` is 0 when this Principal already redeemed the code" },
+          default: { description: "Error" },
+        },
+      },
+    },
+    "/api/v1/credits/transfers": {
+      get: {
+        operationId: "listCreditTransfers",
+        security: [{ accountApiKey: [] }, { instanceToken: [] }],
+        responses: { "200": { description: "The ledger as it concerns the calling Principal, newest first" }, default: { description: "Error" } },
+      },
+      post: {
+        operationId: "transferCredits",
+        security: [{ accountApiKey: [] }, { instanceToken: [] }],
+        parameters: [{ name: "Idempotency-Key", in: "header", required: true, schema: { type: "string", format: "uuid" } }],
+        responses: { "201": { description: "The transfer and the purse after it" }, default: { description: "Error" } },
       },
     },
     "/api/v1/rooms": {

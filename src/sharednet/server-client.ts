@@ -6,12 +6,14 @@ import {
   type DecisionAnswer,
   type DecisionOverview,
   RepositoryError,
+  type CreditsOverview,
   type SharedNetRepository,
   type SharedRoomView,
 } from "@/packages/server/src/repository.ts";
 import {
   type Agent,
   type CliLogin,
+  type CreditTransfer,
   type Instance,
   type Message,
   type Principal,
@@ -24,6 +26,9 @@ import {
 import {
   type CliClaimProjection,
   type CliLoginProjection,
+  type CreditsProjection,
+  type CreditTransferProjection,
+  type RedeemCreditsResponse,
   type RuntimeSummary,
   type CloseRoomResponse,
   type RemoveRoomMemberResponse,
@@ -282,6 +287,37 @@ function sharedRoomProjection(view: SharedRoomView): SharedRoomProjection {
       shared_at: view.room.shared_at ?? view.room.created_at,
       status: view.room.state,
     },
+  };
+}
+
+/** A transfer as one purse reads it: granted, sent, or received, with the other side named. */
+function creditTransferProjection(transfer: CreditTransfer, principalId: string): CreditTransferProjection {
+  const direction: CreditTransferProjection["direction"] =
+    transfer.from_principal_id === null ? "granted" : transfer.from_principal_id === principalId ? "sent" : "received";
+  return {
+    addressed_to: direction === "granted" ? null : transfer.addressed_to,
+    amount: transfer.amount,
+    by_instance_id: transfer.by_instance_id as InstanceId | null,
+    code: transfer.code,
+    counterparty:
+      direction === "granted" ? null : ((direction === "sent" ? transfer.to_principal_id : transfer.from_principal_id) as PrincipalId | null),
+    created_at: transfer.created_at,
+    direction,
+    memo: transfer.memo,
+    room_id: transfer.room_id as RoomId | null,
+    transfer_id: transfer.id,
+  };
+}
+
+function creditsProjection(overview: CreditsOverview): CreditsProjection {
+  const { credits, transfers } = overview;
+  return {
+    balance: credits.balance,
+    granted: credits.granted,
+    principal_id: credits.principal_id as PrincipalId,
+    received: credits.received,
+    sent: credits.sent,
+    transfers: transfers.map((transfer) => creditTransferProjection(transfer, credits.principal_id)),
   };
 }
 
@@ -555,6 +591,19 @@ export class SharedNetServerClient {
     const principal = await this.requirePrincipal(authUserId);
     const { room } = await this.domain(() => this.repository().unshareRoom(principal.id, roomId as never));
     return { room: roomProjection(room, room.closed_at ?? room.created_at) };
+  }
+
+  /** The account's purse and the latest transfers touching it. */
+  async getCredits(authUserId: string): Promise<CreditsProjection> {
+    const principal = await this.requirePrincipal(authUserId);
+    return creditsProjection(await this.domain(() => this.repository().creditsForPrincipal(principal.id)));
+  }
+
+  /** The human redeems a code for the account; a repeat grants 0 and is not an error. */
+  async redeemCredits(authUserId: string, code: string): Promise<RedeemCreditsResponse> {
+    const principal = await this.requirePrincipal(authUserId);
+    const { granted } = await this.domain(() => this.repository().redeemCreditsForPrincipal(principal.id, code));
+    return { credits: await this.getCredits(authUserId), granted };
   }
 
   /** What a share link opens, for anyone; no account is involved. */

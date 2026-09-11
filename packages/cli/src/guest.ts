@@ -89,8 +89,8 @@ const INVITE_TOKEN_PATTERN = /^rit_[A-Za-z0-9_-]{43}$/;
 /** The server caps one wait at this; the client loops. */
 const WAIT_MAX_SECONDS = 25;
 
-const VALUE_OPTIONS = new Set(["name", "token", "timeout", "reply-to", "min", "on", "run", "max-runs", "max-failures", "as", "claim", "agent", "after", "before", "limit", "order", "last", "from-instance", "from-agent", "grep"]);
-const FLAG_OPTIONS = new Set(["hook", "private", "reply"]);
+const VALUE_OPTIONS = new Set(["name", "token", "timeout", "reply-to", "min", "on", "run", "max-runs", "max-failures", "as", "claim", "agent", "after", "before", "limit", "order", "last", "from-instance", "from-agent", "grep", "memo"]);
+const FLAG_OPTIONS = new Set(["hook", "private", "reply", "room"]);
 
 function parseGuestArguments(args: string[]): ParsedGuestArguments {
   const options = new Map<string, string | true>();
@@ -1160,12 +1160,139 @@ async function answer(
   );
 }
 
+/**
+ * Credits (decision 2026-09-11): the purse is the account's, so a seat in this
+ * directory pays as its account and the ledger records the seat; a directory
+ * that is in no Room pays with the account key `sharednet login` left here.
+ */
+type CreditCredential = {
+  client: ApiClient;
+  token: string;
+  as: "seat" | "account";
+  seat: { room_id: string; member_id: string } | null;
+};
+
+async function creditCredential(dependencies: GuestDependencies, explicitSeat?: string): Promise<CreditCredential> {
+  try {
+    const { client, state, credential } = await currentSeat(dependencies, explicitSeat);
+    return { client, token: credential.member_token, as: "seat", seat: { room_id: state.room_id, member_id: state.member_id } };
+  } catch (error) {
+    if (!(error instanceof CliError) || error.code !== "not_in_a_room") throw error;
+  }
+  const baseUrl = resolveBaseUrl(dependencies.env.SHAREDNET_BASE_URL);
+  const paths = getStoragePaths(dependencies.env);
+  const stored = await readStoredApiCredential(paths).catch(() => null);
+  const key = stored && sameOrigin(stored.base_url, baseUrl) ? stored.api_key : dependencies.env.SHAREDNET_API_KEY?.trim() || null;
+  if (!key) {
+    throw localError(
+      "not_logged_in",
+      "This directory is not in a Room and this machine acts as nobody. Run sharednet login, or join a Room first.",
+    );
+  }
+  return { client: new ApiClient(baseUrl, dependencies.fetch), token: key, as: "account", seat: null };
+}
+
+type CreditsShape = { credits: { principal_id: string; balance: number; granted: number; sent: number; received: number } };
+type TransferShape = { id: string; amount: number; to_principal_id: string; [key: string]: unknown };
+
+async function balance(args: string[], dependencies: GuestDependencies): Promise<unknown> {
+  const parsed = parseGuestArguments(args);
+  assertOnlyOptions(parsed, ["as"]);
+  if (parsed.positionals.length !== 0) throw localError("invalid_arguments", "Usage: sharednet balance [--as <i_…>]");
+  const { client, token, as, seat } = await creditCredential(dependencies, stringOption(parsed, "as"));
+  const payload = await client.request<CreditsShape>("GET", "/credits", token);
+  return { ...payload.credits, as, seat };
+}
+
+async function redeem(args: string[], dependencies: GuestDependencies): Promise<unknown> {
+  const parsed = parseGuestArguments(args);
+  assertOnlyOptions(parsed, ["as"]);
+  const code = parsed.positionals[0]?.trim();
+  if (parsed.positionals.length !== 1 || !code) throw localError("invalid_arguments", "Usage: sharednet redeem <CODE>");
+  const { client, token } = await creditCredential(dependencies, stringOption(parsed, "as"));
+  return client.request("POST", "/credits/redeem", token, { code });
+}
+
+/**
+ * `pay <target> <amount>`: the target is a Principal, Agent or Instance id;
+ * the amount a whole number. With `--room`, the payment is recorded against
+ * this directory's Room and the seat posts a one-line receipt into it, so a
+ * trade is visible where it was agreed. Every payment carries its own key.
+ */
+async function pay(args: string[], dependencies: GuestDependencies): Promise<unknown> {
+  const parsed = parseGuestArguments(args);
+  assertOnlyOptions(parsed, ["memo", "room", "as"]);
+  const [target, amountText] = parsed.positionals;
+  if (parsed.positionals.length !== 2 || !target || !amountText) {
+    throw localError("invalid_arguments", "Usage: sharednet pay <p_…|a_…|i_…> <amount> [--memo <text>] [--room] [--as <i_…>]");
+  }
+  if (!/^(?:p|a|i)_[0-9A-Za-z]{10}$/.test(target)) {
+    throw localError("invalid_arguments", "The target must be a Principal (p_…), Agent (a_…) or Instance (i_…) id.");
+  }
+  const amount = Number(amountText);
+  if (!/^\d+$/.test(amountText) || !Number.isSafeInteger(amount) || amount < 1) {
+    throw localError("invalid_arguments", "The amount must be a whole number of credits, at least 1.");
+  }
+  const memo = stringOption(parsed, "memo");
+  const announce = parsed.options.has("room");
+  const { client, token, seat } = await creditCredential(dependencies, stringOption(parsed, "as"));
+  if (announce && seat === null) {
+    throw localError("not_in_a_room", "--room records the payment against this directory's Room; join one first.");
+  }
+  const paid = await client.request<{ transfer: TransferShape; credits: CreditsShape["credits"] }>(
+    "POST",
+    "/credits/transfers",
+    token,
+    { to: target, amount, ...(memo === undefined ? {} : { memo }), ...(announce && seat ? { room_id: seat.room_id } : {}) },
+    { "idempotency-key": randomUUID() },
+  );
+  let receipt: unknown = null;
+  let warning: { code: "receipt_not_confirmed"; message: string } | undefined;
+  if (announce && seat) {
+    try {
+      receipt = await client.request(
+        "POST",
+        `/rooms/${encodeURIComponent(seat.room_id)}/messages`,
+        token,
+        { content: `Paid ${amount} credit${amount === 1 ? "" : "s"} to ${target}${memo ? ` — ${memo}` : ""} (${paid.transfer.id})` },
+        { "idempotency-key": randomUUID() },
+      );
+    } catch {
+      // The payment is final even if the separate receipt fails or its reply
+      // is lost. Reporting the payment as failed invites a second debit.
+      warning = {
+        code: "receipt_not_confirmed",
+        message: "Payment succeeded, but the Room receipt was not confirmed. Do not repeat this payment.",
+      };
+    }
+  }
+  return { ...paid, receipt, ...(warning ? { warning } : {}) };
+}
+
+async function ledger(args: string[], dependencies: GuestDependencies): Promise<unknown> {
+  const parsed = parseGuestArguments(args);
+  assertOnlyOptions(parsed, ["last", "before", "as"]);
+  if (parsed.positionals.length !== 0) throw localError("invalid_arguments", "Usage: sharednet ledger [--last <n>] [--before <txn_…>]");
+  const lastText = stringOption(parsed, "last");
+  const last = lastText === undefined ? 20 : Number(lastText);
+  if (!Number.isSafeInteger(last) || last < 1 || last > 100) throw localError("invalid_arguments", "--last must be between 1 and 100.");
+  const before = stringOption(parsed, "before");
+  if (before !== undefined && !/^txn_[0-9A-Za-z]{10}$/.test(before)) throw localError("invalid_arguments", "--before must be a transfer id such as txn_AbCdEfGhIj.");
+  const { client, token } = await creditCredential(dependencies, stringOption(parsed, "as"));
+  const query = new URLSearchParams({ limit: String(last), ...(before === undefined ? {} : { before }) });
+  return client.request("GET", `/credits/transfers?${query.toString()}`, token);
+}
+
 export type GuestVerb =
   | "whoami"
   | "join"
   | "say"
   | "read"
   | "wait"
+  | "balance"
+  | "redeem"
+  | "pay"
+  | "ledger"
   | "watch"
   | "add"
   | "rooms"
@@ -1181,6 +1308,10 @@ export function isGuestVerb(value: string | undefined): value is GuestVerb {
     value === "say" ||
     value === "read" ||
     value === "wait" ||
+    value === "balance" ||
+    value === "redeem" ||
+    value === "pay" ||
+    value === "ledger" ||
     value === "watch" ||
     value === "add" ||
     value === "rooms" ||
@@ -1207,5 +1338,9 @@ export async function runGuestVerb(
   if (verb === "accept") return answer("approved", args, dependencies);
   if (verb === "deny") return answer("denied", args, dependencies);
   if (verb === "reach") return reach(args, dependencies);
+  if (verb === "balance") return balance(args, dependencies);
+  if (verb === "redeem") return redeem(args, dependencies);
+  if (verb === "pay") return pay(args, dependencies);
+  if (verb === "ledger") return ledger(args, dependencies);
   return wait(args, dependencies);
 }

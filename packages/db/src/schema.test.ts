@@ -44,7 +44,7 @@ describe("hosted Postgres schema", () => {
     ]);
   });
 
-  it("exports exactly the twelve V1 domain tables", () => {
+  it("exports exactly the twelve V1 domain tables and the four credit tables", () => {
     expect(Object.keys(databaseSchema)).toEqual([
       "principals",
       "agents",
@@ -58,6 +58,10 @@ describe("hosted Postgres schema", () => {
       "idempotencyRecords",
       "cliLogins",
       "instanceCursors",
+      "creditAccounts",
+      "creditCodes",
+      "creditTransfers",
+      "creditRedemptions",
     ]);
   });
 
@@ -148,6 +152,10 @@ describe("hosted Postgres schema", () => {
     expect(migration).toContain('CREATE UNIQUE INDEX "agent_one_default_per_principal"');
     expect(migration).toContain('CONSTRAINT "message_same_room_reply_fk"');
     expect(migration).toContain('CONSTRAINT "decision_state_consistent"');
+    expect(migration).toContain('CONSTRAINT "room_share_consistent"');
+    expect(migration).toContain('CONSTRAINT "credit_account_balance_nonnegative"');
+    expect(migration).toContain('CONSTRAINT "credit_transfer_minted_or_paid"');
+    expect(migration).toContain('CONSTRAINT "credit_redemption_pk" PRIMARY KEY("code","principal_id")');
     expect(migration).toContain('CONSTRAINT "idempotency_retention_minimum"');
     expect(migration).toContain(
       'DROP CONSTRAINT "instance_issued_by_key_fk"',

@@ -13,6 +13,11 @@ import type {
   AgentId,
   ApiKeyId,
   CreateAgentRequest,
+  CreditBalance,
+  CreditCode,
+  CreditTransfer,
+  CreditTransferRequest,
+  TransferId,
   CreateRoomRequest,
   Decision,
   DecisionId,
@@ -74,6 +79,22 @@ export type InstanceAuth = {
  * alias stays because Room routes are written against it.
  */
 export type RoomAuth = InstanceAuth;
+
+/**
+ * Credits are the Principal's, so either credential reaches the purse: an
+ * account key pays as the account, an Instance token pays as the account and
+ * records which seat said so.
+ */
+export type CreditAuth = PrincipalAuth | InstanceAuth;
+
+/** A page of the ledger, newest first; `before` is a transfer id to page past. */
+export type CreditLedgerQuery = { limit: number; before: TransferId | null };
+
+/** What redeeming answers: the purse, and how much this call added (0 when already redeemed). */
+export type CreditRedemption = { credits: CreditBalance; granted: number; transfer: CreditTransfer | null };
+
+/** The ledger as the Dashboard shows it: the purse and the latest transfers touching it. */
+export type CreditsOverview = { credits: CreditBalance; transfers: CreditTransfer[] };
 
 export type StoredHttpResult = {
   status: number;
@@ -259,6 +280,10 @@ export interface PrincipalRepository {
   networkForPrincipal(principalId: PrincipalId): Promise<NetworkView>;
   /** The named Instances with their Rooms; unknown ids are left out. */
   seatsOf(instanceIds: InstanceId[]): Promise<{ seats: SeatOverview[] }>;
+  /** The account's purse and the latest transfers touching it, newest first. */
+  creditsForPrincipal(principalId: PrincipalId): Promise<CreditsOverview>;
+  /** The human redeems a code on the Web; the same rules as through the API. */
+  redeemCreditsForPrincipal(principalId: PrincipalId, code: string): Promise<CreditRedemption>;
 }
 
 export interface SharedNetRepository extends PrincipalRepository {
@@ -444,4 +469,31 @@ export interface SharedNetRepository extends PrincipalRepository {
     fingerprint: string,
     operation: () => Promise<StoredHttpResult>,
   ): Promise<IdempotencyResult>;
+
+  // ---- Credits (decision 2026-09-11): a purse per Principal, a ledger of every movement. ----
+
+  /** The caller's purse: balance, and what was granted, sent and received in total. */
+  getCredits(auth: CreditAuth): Promise<{ credits: CreditBalance }>;
+  /**
+   * Redeems a grant code for the caller's Principal, once. Only a Principal
+   * with an account behind it may redeem (anonymous Principals are free to
+   * create); a second redemption of the same code by the same Principal
+   * answers with the purse unchanged and `granted: 0`, never an error, so a
+   * retry is safe.
+   */
+  redeemCredits(auth: CreditAuth, code: string): Promise<CreditRedemption>;
+  /**
+   * Moves credits from the caller's purse to the purse behind `to`, which may
+   * name a Principal, an Agent or an Instance. Final: no reversal exists.
+   * 409 `insufficient_credits` when the purse cannot cover it, 404
+   * `payee_not_found` for an id nobody holds, 422 `transfer_to_self`.
+   */
+  transferCredits(auth: CreditAuth, input: CreditTransferRequest): Promise<{ transfer: CreditTransfer; credits: CreditBalance }>;
+  /** The ledger as it concerns the caller: transfers it sent or received, newest first. */
+  listCreditTransfers(auth: CreditAuth, input: CreditLedgerQuery): Promise<Page<CreditTransfer>>;
+  /**
+   * The operator's door, with nobody behind it: mints a grant code. Reached
+   * only by scripts/credits/mint-code.mjs with database access; no route.
+   */
+  mintCreditCode(input: { code: string; amount: number; max_redemptions?: number | null; expires_at?: string | null }): Promise<{ code: CreditCode }>;
 }

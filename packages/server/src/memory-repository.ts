@@ -21,6 +21,11 @@ import {
   type AgentId,
   type ApiKeyId,
   type CreateAgentRequest,
+  type CreditBalance,
+  type CreditCode,
+  type CreditTransfer,
+  type CreditTransferRequest,
+  type TransferId,
   presenceFor,
   type Instance,
   type InstanceId,
@@ -41,7 +46,7 @@ import {
   type ShrSecret,
   type StartInstanceRequest,
 } from "../../protocol/src/index.ts";
-import { sharedRoomsEdges, type DecisionAnswer, type DecisionOverview, type McpClient, type McpSeat, type NetworkView, type RoomOverview, type RoomView, type SeatOverview, type SharedRoomView } from "./repository.ts";
+import { sharedRoomsEdges, type CreditAuth, type CreditLedgerQuery, type CreditRedemption, type CreditsOverview, type DecisionAnswer, type DecisionOverview, type McpClient, type McpSeat, type NetworkView, type RoomOverview, type RoomView, type SeatOverview, type SharedRoomView } from "./repository.ts";
 import type {
   AddRoomMembersRequest,
   Admission,
@@ -147,6 +152,8 @@ export type MemoryRepositoryOptions = {
   devApiKeys?: string[];
   /** Accounts with a Principal each, the way the Dashboard sees them; a key per account when given. */
   accounts?: Array<{ authUserId: string; apiKey?: string; displayName?: string }>;
+  /** Grant codes minted before anything runs, the way an operator would. */
+  creditCodes?: Array<{ code: string; amount: number; max_redemptions?: number | null; expires_at?: string | null }>;
   now?: () => Date;
 };
 
@@ -232,6 +239,11 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     string,
     { fingerprint: string; result: Promise<IdempotencyResult> }
   >();
+  /** Credits: the running total per Principal, the ledger, the codes, and who redeemed what. */
+  private readonly creditBalances = new Map<PrincipalId, number>();
+  private readonly creditTransfers: CreditTransfer[] = [];
+  private readonly creditCodes = new Map<string, CreditCode>();
+  private readonly creditRedemptions = new Set<string>();
 
   constructor(options: MemoryRepositoryOptions = {}) {
     this.now = options.now ?? (() => new Date());
@@ -272,6 +284,9 @@ export class MemorySharedNetRepository implements SharedNetRepository {
         const digest = digestSecret(account.apiKey);
         this.apiKeysByDigest.set(digest, { id: generatePublicId("key"), principalId: principal.id, digest, revokedAt: null });
       }
+    }
+    for (const code of options.creditCodes ?? []) {
+      void this.mintCreditCode(code);
     }
   }
 
@@ -1367,6 +1382,9 @@ export class MemorySharedNetRepository implements SharedNetRepository {
         }
       }
       this.mergedPrincipals.set(anonymousId, account.id);
+      // Credits follow the Instances: an anonymous seat may hold credits it was
+      // paid before its human logged in.
+      this.moveCreditPurse(anonymousId, account.id);
       bound.push(anonymousId);
     }
     record.state = "approved";
@@ -1593,5 +1611,174 @@ export class MemorySharedNetRepository implements SharedNetRepository {
   private projectRoom(room: RoomRecord): Room {
     const { nextSequence: _nextSequence, shareToken: _shareToken, ...projected } = room;
     return { ...projected, creator_agent_id: this.tagOf(room.creator_instance_id) };
+  }
+
+  // ---- Credits: a purse per Principal, a ledger of every movement. ----
+
+  async getCredits(auth: CreditAuth): Promise<{ credits: CreditBalance }> {
+    return { credits: this.purseOf(auth.principalId) };
+  }
+
+  async redeemCredits(auth: CreditAuth, code: string): Promise<CreditRedemption> {
+    return this.redeem(auth.principalId, code);
+  }
+
+  async transferCredits(auth: CreditAuth, input: CreditTransferRequest): Promise<{ transfer: CreditTransfer; credits: CreditBalance }> {
+    const payer = auth.principalId;
+    const payee = this.purseBehind(input.to);
+    if (payee === null) throw new RepositoryError(404, "payee_not_found", "No Principal, Agent or Instance with that id.");
+    if (payee === payer) throw new RepositoryError(422, "transfer_to_self", "A transfer to your own Principal moves nothing.");
+    if (input.room_id !== undefined && input.room_id !== null && !this.rooms.has(input.room_id)) {
+      throw new RepositoryError(404, "room_not_found", "Room was not found.");
+    }
+    const balance = this.creditBalances.get(payer) ?? 0;
+    if (balance < input.amount) {
+      throw new RepositoryError(409, "insufficient_credits", "The purse does not hold that many credits.");
+    }
+    this.creditBalances.set(payer, balance - input.amount);
+    this.creditBalances.set(payee, (this.creditBalances.get(payee) ?? 0) + input.amount);
+    const transfer: CreditTransfer = {
+      id: generatePublicId("txn"),
+      from_principal_id: payer,
+      to_principal_id: payee,
+      amount: input.amount,
+      memo: input.memo ?? null,
+      room_id: input.room_id ?? null,
+      by_instance_id: auth.kind === "instance" ? auth.instanceId : null,
+      addressed_to: input.to,
+      code: null,
+      created_at: this.timestamp(),
+    };
+    this.creditTransfers.push(transfer);
+    return { transfer: { ...transfer }, credits: this.purseOf(payer) };
+  }
+
+  async listCreditTransfers(auth: CreditAuth, input: CreditLedgerQuery): Promise<Page<CreditTransfer>> {
+    return this.ledgerOf(auth.principalId, input);
+  }
+
+  async mintCreditCode(input: { code: string; amount: number; max_redemptions?: number | null; expires_at?: string | null }): Promise<{ code: CreditCode }> {
+    const code: CreditCode = {
+      code: input.code,
+      amount: input.amount,
+      max_redemptions: input.max_redemptions ?? null,
+      redeemed_count: 0,
+      expires_at: input.expires_at ?? null,
+      active: true,
+      created_at: this.timestamp(),
+    };
+    this.creditCodes.set(code.code, code);
+    return { code: { ...code } };
+  }
+
+  async creditsForPrincipal(principalId: PrincipalId): Promise<CreditsOverview> {
+    if (!this.principals.has(principalId)) throw new RepositoryError(404, "principal_not_found", "Principal was not found.");
+    return { credits: this.purseOf(principalId), transfers: (await this.ledgerOf(principalId, { limit: 100, before: null })).items };
+  }
+
+  async redeemCreditsForPrincipal(principalId: PrincipalId, code: string): Promise<CreditRedemption> {
+    if (!this.principals.has(principalId)) throw new RepositoryError(404, "principal_not_found", "Principal was not found.");
+    return this.redeem(principalId, code);
+  }
+
+  /**
+   * Moves one purse into another when an anonymous Principal is bound into an
+   * account. The move is a ledger row like any other, so the balance is still
+   * the sum of the ledger and the account can see where the credits came from.
+   */
+  private moveCreditPurse(fromPrincipalId: PrincipalId, toPrincipalId: PrincipalId): void {
+    const amount = this.creditBalances.get(fromPrincipalId) ?? 0;
+    if (amount <= 0) return;
+    this.creditBalances.set(fromPrincipalId, 0);
+    this.creditBalances.set(toPrincipalId, (this.creditBalances.get(toPrincipalId) ?? 0) + amount);
+    this.creditTransfers.push({
+      id: generatePublicId("txn"),
+      from_principal_id: fromPrincipalId,
+      to_principal_id: toPrincipalId,
+      amount,
+      memo: "Bound into this account by sharednet login",
+      room_id: null,
+      by_instance_id: null,
+      addressed_to: toPrincipalId,
+      code: null,
+      created_at: this.timestamp(),
+    });
+  }
+
+  /** The Principal whose purse an id names: a Principal's own, an Agent's owner, an Instance's owner. */
+  private purseBehind(id: string): PrincipalId | null {
+    if (id.startsWith("p_")) {
+      const principal = this.principals.get(id as PrincipalId);
+      return principal ? (this.mergedPrincipals.get(principal.id) ?? principal.id) : null;
+    }
+    // A claim repoints Instances but not Agent tags, so both are followed to
+    // whatever Principal they belong to now.
+    const agent = id.startsWith("a_") ? this.agents.get(id as AgentId) : undefined;
+    if (agent) return this.mergedPrincipals.get(agent.principal_id) ?? agent.principal_id;
+    const instance = id.startsWith("i_") ? this.instances.get(id as InstanceId) : undefined;
+    if (instance) return this.mergedPrincipals.get(instance.principal_id) ?? instance.principal_id;
+    return null;
+  }
+
+  private purseOf(principalId: PrincipalId): CreditBalance {
+    let granted = 0;
+    let sent = 0;
+    let received = 0;
+    for (const transfer of this.creditTransfers) {
+      if (transfer.to_principal_id === principalId) {
+        if (transfer.from_principal_id === null) granted += transfer.amount;
+        else received += transfer.amount;
+      }
+      if (transfer.from_principal_id === principalId) sent += transfer.amount;
+    }
+    return { principal_id: principalId, balance: this.creditBalances.get(principalId) ?? 0, granted, sent, received };
+  }
+
+  private async ledgerOf(principalId: PrincipalId, input: CreditLedgerQuery): Promise<Page<CreditTransfer>> {
+    const mine = this.creditTransfers
+      .filter((transfer) => transfer.from_principal_id === principalId || transfer.to_principal_id === principalId)
+      .reverse();
+    const start = input.before === null ? 0 : mine.findIndex((transfer) => transfer.id === input.before) + 1;
+    if (input.before !== null && start === 0) throw new RepositoryError(400, "invalid_cursor", "Cursor is invalid.");
+    const items = mine.slice(start, start + input.limit).map((transfer) => ({ ...transfer }));
+    const hasMore = start + input.limit < mine.length;
+    return { items, next_cursor: hasMore ? items[items.length - 1]!.id : null, has_more: hasMore };
+  }
+
+  private redeem(principalId: PrincipalId, code: string): CreditRedemption {
+    const grant = this.creditCodes.get(code);
+    if (!grant || !grant.active) throw new RepositoryError(404, "credit_code_not_found", "That code grants nothing.");
+    // What this Principal already redeemed is settled history: a retry answers
+    // the same way for good, even once the code itself has expired or filled up.
+    const key = `${code}\0${principalId}`;
+    if (this.creditRedemptions.has(key)) return { credits: this.purseOf(principalId), granted: 0, transfer: null };
+    if (grant.expires_at !== null && Date.parse(grant.expires_at) <= this.now().getTime()) {
+      throw new RepositoryError(410, "credit_code_expired", "That code has expired.");
+    }
+    // An anonymous Principal is free to create, so a code it could redeem would be an infinite purse.
+    const backed = [...this.principalsByAccount.values()].includes(principalId);
+    if (!backed) {
+      throw new RepositoryError(403, "credits_account_required", "Only a Principal with an account behind it can redeem a code; run sharednet login.");
+    }
+    if (grant.max_redemptions !== null && grant.redeemed_count >= grant.max_redemptions) {
+      throw new RepositoryError(410, "credit_code_exhausted", "That code has been redeemed as many times as it allows.");
+    }
+    grant.redeemed_count += 1;
+    this.creditRedemptions.add(key);
+    this.creditBalances.set(principalId, (this.creditBalances.get(principalId) ?? 0) + grant.amount);
+    const transfer: CreditTransfer = {
+      id: generatePublicId("txn"),
+      from_principal_id: null,
+      to_principal_id: principalId,
+      amount: grant.amount,
+      memo: null,
+      room_id: null,
+      by_instance_id: null,
+      addressed_to: principalId,
+      code,
+      created_at: this.timestamp(),
+    };
+    this.creditTransfers.push(transfer);
+    return { credits: this.purseOf(principalId), granted: grant.amount, transfer: { ...transfer } };
   }
 }

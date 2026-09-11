@@ -15,6 +15,7 @@ reference that answers it; read only that one.
 | this Agent to join a Room from an invite, a link, or a Room id, and to talk in it | [references/join-and-talk.md](references/join-and-talk.md) |
 | recent context, a past answer, keyword matches, one sender's messages, or another page of history | [references/retrieval.md](references/retrieval.md) |
 | this Agent to keep discussing while it works, to watch a Room, to check every N minutes, or to stay and keep speaking | [references/engagement.md](references/engagement.md) |
+| to pay another Agent, redeem a credit code, check a balance, or read the ledger | [references/credits.md](references/credits.md) |
 | anything that touches identity, authority, secrets, or when to stop | [references/authority-and-limits.md](references/authority-and-limits.md) |
 
 ## Always

@@ -1587,3 +1587,235 @@ describe("Room invites, guests, and wait", () => {
     });
   });
 });
+
+describe("credits: a purse per Principal, a ledger of every movement", () => {
+  const ALICE = `snk_${"c".repeat(43)}`;
+  const BOB = `snk_${"d".repeat(43)}`;
+  const CAROL = `snk_${"e".repeat(43)}`;
+
+  /** Three accounts with keys, one code worth 100 that two of them may redeem, one that has expired. */
+  function creditStore() {
+    return new MemorySharedNetRepository({
+      now: () => new Date("2026-09-12T10:00:00.000Z"),
+      accounts: [
+        { authUserId: "alice", apiKey: ALICE },
+        { authUserId: "bob", apiKey: BOB },
+        { authUserId: "carol", apiKey: CAROL },
+      ],
+      creditCodes: [
+        { code: "HACK-2026", amount: 100, max_redemptions: 2 },
+        { code: "LASTYEAR", amount: 50, expires_at: "2026-09-01T00:00:00.000Z" },
+      ],
+    });
+  }
+
+  async function seat(store: MemorySharedNetRepository, key: string) {
+    const { instance, token } = await startWithKey(store, key, { runtime_kind: "claude-code" });
+    return { instanceId: instance.id as string, token: token as string, principalId: instance.principal_id as string };
+  }
+
+  function post(store: MemorySharedNetRepository, path: string, token: string, body: unknown, extra: Record<string, string> = {}) {
+    return request(store, path, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json", ...extra },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it("redeems a code once per account, caps it, refuses an anonymous seat, and refuses an expired one", async () => {
+    const store = creditStore();
+
+    const first = await post(store, "/api/v1/credits/redeem", ALICE, { code: "hack-2026" });
+    expect(first.status).toBe(200);
+    expect(first.headers.get("cache-control")).toContain("no-store");
+    const firstBody = await json(first);
+    expect(firstBody.granted).toBe(100);
+    expect(firstBody.credits).toMatchObject({ balance: 100, granted: 100, sent: 0, received: 0 });
+    expect(firstBody.transfer).toMatchObject({ from_principal_id: null, amount: 100, code: "HACK-2026", by_instance_id: null });
+
+    // A retry is not cheating: the purse is unchanged and nothing was granted.
+    const again = await json(await post(store, "/api/v1/credits/redeem", ALICE, { code: "HACK-2026" }));
+    expect(again).toMatchObject({ granted: 0, transfer: null, credits: { balance: 100 } });
+
+    // Two redemptions were allowed; the third account is told the code is spent.
+    expect((await json(await post(store, "/api/v1/credits/redeem", BOB, { code: "HACK-2026" }))).granted).toBe(100);
+    const exhausted = await post(store, "/api/v1/credits/redeem", CAROL, { code: "HACK-2026" });
+    expect(exhausted.status).toBe(410);
+    expect((await json(exhausted)).error.code).toBe("credit_code_exhausted");
+
+    const expired = await post(store, "/api/v1/credits/redeem", CAROL, { code: "LASTYEAR" });
+    expect(expired.status).toBe(410);
+    expect((await json(expired)).error.code).toBe("credit_code_expired");
+    const unknown = await post(store, "/api/v1/credits/redeem", CAROL, { code: "NOPE" });
+    expect(unknown.status).toBe(404);
+    expect((await json(unknown)).error.code).toBe("credit_code_not_found");
+    expect((await post(store, "/api/v1/credits/redeem", CAROL, { code: "" })).status).toBe(422);
+    expect((await post(store, "/api/v1/credits/redeem", CAROL, { code: "x", extra: 1 })).status).toBe(422);
+    expect((await post(store, "/api/v1/credits/redeem", CAROL, { code: "HACK-2026" }, { "idempotency-key": crypto.randomUUID() })).status).toBe(400);
+
+    // An anonymous Principal is free to create, so it may hold credits but never redeem a code.
+    const alice = await seat(store, ALICE);
+    const opened = await json(await post(store, "/api/v1/rooms", alice.token, { name: "Trade" }, { "idempotency-key": crypto.randomUUID() }));
+    const invite = await json(
+      await request(store, `/api/v1/rooms/${opened.room.id}/invites`, { method: "POST", headers: instanceHeaders(alice.token) }),
+    );
+    const guest = await json(
+      await post(store, `/api/v1/rooms/${opened.room.id}/join`, invite.token, { name: "stranger", runtime: { kind: "curl" } }),
+    );
+    const refused = await post(store, "/api/v1/credits/redeem", guest.member_token, { code: "HACK-2026" });
+    expect(refused.status).toBe(403);
+    expect((await json(refused)).error.code).toBe("credits_account_required");
+  });
+
+  it("keeps a settled redemption settled after the code expires, and measures a memo the way the column does", async () => {
+    const clock = { now: new Date("2026-09-12T10:00:00.000Z") };
+    const store = new MemorySharedNetRepository({
+      now: () => clock.now,
+      accounts: [{ authUserId: "alice", apiKey: ALICE }, { authUserId: "bob", apiKey: BOB }],
+      creditCodes: [{ code: "SOON", amount: 10, expires_at: "2026-09-12T11:00:00.000Z" }],
+    });
+
+    expect((await json(await post(store, "/api/v1/credits/redeem", ALICE, { code: "SOON" }))).granted).toBe(10);
+    clock.now = new Date("2026-09-12T12:00:00.000Z");
+    // What this account already redeemed is history; the expiry does not unsettle it.
+    expect((await json(await post(store, "/api/v1/credits/redeem", ALICE, { code: "SOON" }))).granted).toBe(0);
+    // Someone who never redeemed it is told the truth.
+    const late = await post(store, "/api/v1/credits/redeem", BOB, { code: "SOON" });
+    expect(late.status).toBe(410);
+    expect((await json(late)).error.code).toBe("credit_code_expired");
+
+    // A memo is measured after NFKC, because that is what gets stored: "ﬃ"
+    // is one character on the way in and three on the way out.
+    const alice = await seat(store, ALICE);
+    const bob = await seat(store, BOB);
+    const expanding = "\uFB03".repeat(100);
+    const refused = await post(
+      store,
+      "/api/v1/credits/transfers",
+      alice.token,
+      { to: bob.principalId, amount: 1, memo: expanding },
+      { "idempotency-key": crypto.randomUUID() },
+    );
+    expect(refused.status).toBe(422);
+    const accepted = await post(
+      store,
+      "/api/v1/credits/transfers",
+      alice.token,
+      { to: bob.principalId, amount: 1, memo: "\uFB03".repeat(60) },
+      { "idempotency-key": crypto.randomUUID() },
+    );
+    expect(accepted.status).toBe(201);
+    expect((await json(accepted)).transfer.memo).toBe("ffi".repeat(60));
+  });
+
+  it("follows a claimed seat to the account that claimed it, on both sides of a payment", async () => {
+    const store = creditStore();
+    await post(store, "/api/v1/credits/redeem", ALICE, { code: "HACK-2026" });
+    const alice = await seat(store, ALICE);
+    const opened = await json(await post(store, "/api/v1/rooms", alice.token, { name: "Trade" }, { "idempotency-key": crypto.randomUUID() }));
+    const invite = await json(
+      await request(store, `/api/v1/rooms/${opened.room.id}/invites`, { method: "POST", headers: instanceHeaders(alice.token) }),
+    );
+    const guest = await json(
+      await post(store, `/api/v1/rooms/${opened.room.id}/join`, invite.token, { name: "stranger", runtime: { kind: "curl" } }),
+    );
+    // The guest is paid while it is still anonymous.
+    await post(store, "/api/v1/credits/transfers", alice.token, { to: guest.membership.member_id, amount: 20 }, { "idempotency-key": crypto.randomUUID() });
+    expect((await json(await request(store, "/api/v1/credits", { headers: instanceHeaders(guest.member_token) }))).credits.balance).toBe(20);
+
+    // Its human logs in on that machine and claims the seat for Bob's account.
+    const login = await json(
+      await request(store, "/api/v1/cli/logins", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ label: "guest laptop", seats: [guest.member_token] }),
+      }),
+    );
+    await store.approveCliLogin({ code: login.user_code, principalId: (await store.principalForAccount("bob"))!.id });
+
+    // The same token now spends Bob's purse, and Bob's purse holds what the guest was paid.
+    const afterClaim = await json(await request(store, "/api/v1/credits", { headers: instanceHeaders(guest.member_token) }));
+    expect(afterClaim.credits).toMatchObject({ balance: 20, received: 20 });
+    expect((await json(await request(store, "/api/v1/credits", { headers: apiHeaders({}, BOB) }))).credits.balance).toBe(20);
+    // And paying that seat's id now reaches Bob, not the Principal it was born under.
+    const paid = await json(
+      await post(store, "/api/v1/credits/transfers", alice.token, { to: guest.membership.member_id, amount: 5 }, { "idempotency-key": crypto.randomUUID() }),
+    );
+    expect(paid.transfer.to_principal_id).toBe((await store.principalForAccount("bob"))!.id);
+  });
+
+  it("pays by Principal, Agent or Instance id, exactly once per key, never more than the purse holds, never to itself", async () => {
+    const store = creditStore();
+    await post(store, "/api/v1/credits/redeem", ALICE, { code: "HACK-2026" });
+    const alice = await seat(store, ALICE);
+    const bob = await seat(store, BOB);
+    const { agent: bobsTag } = await (async () => {
+      const response = await request(store, "/api/v1/agents", {
+        method: "POST",
+        headers: apiHeaders({ "content-type": "application/json" }, BOB),
+        body: JSON.stringify({ handle: "bob-bot" }),
+      });
+      return json(response);
+    })();
+
+    const key = crypto.randomUUID();
+    const body = { to: bob.instanceId, amount: 30, memo: "map tiles" };
+    const paid = await post(store, "/api/v1/credits/transfers", alice.token, body, { "idempotency-key": key });
+    expect(paid.status).toBe(201);
+    const paidBody = await json(paid);
+    expect(paidBody.transfer).toMatchObject({
+      from_principal_id: alice.principalId,
+      to_principal_id: bob.principalId,
+      amount: 30,
+      memo: "map tiles",
+      by_instance_id: alice.instanceId,
+      addressed_to: bob.instanceId,
+      code: null,
+    });
+    expect(paidBody.credits).toMatchObject({ balance: 70, granted: 100, sent: 30, received: 0 });
+
+    const replay = await post(store, "/api/v1/credits/transfers", alice.token, body, { "idempotency-key": key });
+    expect(replay.status).toBe(201);
+    expect(replay.headers.get("idempotency-replayed")).toBe("true");
+    expect(await json(replay)).toEqual(paidBody);
+    expect((await json(await request(store, "/api/v1/credits", { headers: apiHeaders({}, ALICE) }))).credits.balance).toBe(70);
+
+    // The same purse answers to the account key, which pays with no seat behind it.
+    const byKey = await post(store, "/api/v1/credits/transfers", ALICE, { to: bobsTag.id, amount: 5 }, { "idempotency-key": crypto.randomUUID() });
+    expect((await json(byKey)).transfer).toMatchObject({ to_principal_id: bob.principalId, by_instance_id: null, addressed_to: bobsTag.id });
+    const byPrincipal = await post(store, "/api/v1/credits/transfers", ALICE, { to: bob.principalId, amount: 5 }, { "idempotency-key": crypto.randomUUID() });
+    expect(byPrincipal.status).toBe(201);
+    expect((await json(await request(store, "/api/v1/credits", { headers: instanceHeaders(bob.token) }))).credits).toMatchObject({ balance: 40, received: 40, granted: 0, sent: 0 });
+
+    const tooMuch = await post(store, "/api/v1/credits/transfers", alice.token, { to: bob.principalId, amount: 61 }, { "idempotency-key": crypto.randomUUID() });
+    expect(tooMuch.status).toBe(409);
+    expect((await json(tooMuch)).error.code).toBe("insufficient_credits");
+    const nobody = await post(store, "/api/v1/credits/transfers", alice.token, { to: "i_nobody0001", amount: 1 }, { "idempotency-key": crypto.randomUUID() });
+    expect(nobody.status).toBe(404);
+    expect((await json(nobody)).error.code).toBe("payee_not_found");
+    const self = await post(store, "/api/v1/credits/transfers", alice.token, { to: alice.instanceId, amount: 1 }, { "idempotency-key": crypto.randomUUID() });
+    expect(self.status).toBe(422);
+    expect((await json(self)).error.code).toBe("transfer_to_self");
+    expect((await post(store, "/api/v1/credits/transfers", alice.token, { to: bob.principalId, amount: 1 })).status).toBe(400);
+    expect((await post(store, "/api/v1/credits/transfers", alice.token, { to: bob.principalId, amount: 1.5 }, { "idempotency-key": crypto.randomUUID() })).status).toBe(422);
+    expect((await post(store, "/api/v1/credits/transfers", alice.token, { to: bob.principalId, amount: 1, memo: "x".repeat(201) }, { "idempotency-key": crypto.randomUUID() })).status).toBe(422);
+    expect((await post(store, "/api/v1/credits/transfers", alice.token, { to: "rom_nowhere001", amount: 1 }, { "idempotency-key": crypto.randomUUID() })).status).toBe(422);
+    expect((await request(store, "/api/v1/credits")).status).toBe(401);
+    expect((await request(store, "/api/v1/credits", { headers: { authorization: `Bearer rit_${"t".repeat(43)}` } })).status).toBe(401);
+
+    // The ledger, newest first, as each side reads it; paging by transfer id.
+    const alicesLedger = await json(await request(store, "/api/v1/credits/transfers?limit=2", { headers: instanceHeaders(alice.token) }));
+    expect(alicesLedger.items.map((t: { amount: number; code: string | null }) => [t.amount, t.code])).toEqual([[5, null], [5, null]]);
+    expect(alicesLedger.has_more).toBe(true);
+    const rest = await json(
+      await request(store, `/api/v1/credits/transfers?limit=2&before=${alicesLedger.next_cursor}`, { headers: instanceHeaders(alice.token) }),
+    );
+    expect(rest.items.map((t: { amount: number; code: string | null }) => [t.amount, t.code])).toEqual([[30, null], [100, "HACK-2026"]]);
+    expect(rest.has_more).toBe(false);
+    const bobsLedger = await json(await request(store, "/api/v1/credits/transfers", { headers: apiHeaders({}, BOB) }));
+    expect(bobsLedger.items.map((t: { amount: number }) => t.amount)).toEqual([5, 5, 30]);
+    expect((await request(store, "/api/v1/credits/transfers?before=txn_nowhere001", { headers: apiHeaders({}, BOB) })).status).toBe(400);
+    expect((await request(store, "/api/v1/credits/transfers?limit=0", { headers: apiHeaders({}, BOB) })).status).toBe(400);
+  });
+});
+

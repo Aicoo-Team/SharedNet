@@ -20,6 +20,10 @@ import {
   generateRequestId,
   parseCreateAgentRequest,
   parseCreateRoomRequest,
+  parseCreditTransferRequest,
+  parseRedeemCreditsRequest,
+  TRANSFER_ID_PATTERN,
+  type TransferId,
   parseAddRoomMembersRequest,
   parseResolveDecisionRequest,
   parseUpdateInstanceRequest,
@@ -33,6 +37,8 @@ import {
 } from "../../protocol/src/index.ts";
 import {
   RepositoryError,
+  type CreditAuth,
+  type CreditLedgerQuery,
   type IdempotencyScope,
   type InstanceAuth,
   type PrincipalAuth,
@@ -137,6 +143,26 @@ async function authenticateRoomMember(
   return errorResponse("invalid_credentials");
 }
 
+/**
+ * Credits are the Principal's, so the purse answers to either credential: an
+ * account key, or the token of one of the account's Instances (which then
+ * records which seat paid).
+ */
+async function authenticateCreditHolder(
+  request: Request,
+  store: SharedNetRepository,
+): Promise<CreditAuth | Response> {
+  const bearer = parseBearer(request);
+  if (bearer === null) return errorResponse("authentication_required");
+  if (SNK_PATTERN.test(bearer)) {
+    return (await store.authenticateApiKey(bearer)) ?? errorResponse("invalid_credentials");
+  }
+  if (SNI_PATTERN.test(bearer) || RMT_PATTERN.test(bearer)) {
+    return (await store.authenticateInstance(bearer)) ?? errorResponse("invalid_credentials");
+  }
+  return errorResponse("invalid_credentials");
+}
+
 function isResponse(value: unknown): value is Response {
   return value instanceof Response;
 }
@@ -199,7 +225,7 @@ function canonicalJson(value: unknown): string {
 
 async function executeIdempotent(
   store: SharedNetRepository,
-  auth: RoomAuth,
+  auth: RoomAuth | CreditAuth,
   operationId: string,
   key: string,
   pathParameters: Record<string, string>,
@@ -301,6 +327,19 @@ function parseInboxQuery(url: URL): { after: InboxPosition | null; limit: number
   const after = parseInboxCursor(afterValue);
   if (after === null) throw new ProtocolRequestError("invalid_cursor");
   return { after, limit };
+}
+
+/** The ledger pages newest-first by transfer id; absent means the latest. */
+function parseLedgerQuery(url: URL): CreditLedgerQuery {
+  for (const key of url.searchParams.keys()) {
+    if (key !== "before" && key !== "limit") throw new ProtocolRequestError("invalid_request");
+  }
+  const limitValue = url.searchParams.get("limit");
+  const limit = limitValue === null ? 50 : Number(limitValue);
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new ProtocolRequestError("invalid_request");
+  const before = url.searchParams.get("before");
+  if (before !== null && !TRANSFER_ID_PATTERN.test(before)) throw new ProtocolRequestError("invalid_cursor");
+  return { limit, before: before as TransferId | null };
 }
 
 function parseWaitQuery(url: URL): { after: number; limit: number; timeoutMs: number } {
@@ -610,6 +649,52 @@ export async function handleRequest(
       if (isResponse(auth)) return auth;
       const roomId = parsePublicId(roomMatch[1], "rom");
       return jsonResponse(await repository.getRoom(auth, roomId), { status: 200 });
+    }
+
+    if (path === "/api/v1/credits") {
+      if (request.method !== "GET") return routeMethodNotAllowed("GET");
+      const repository = getRepository();
+      const auth = await authenticateCreditHolder(request, repository);
+      if (isResponse(auth)) return auth;
+      return jsonResponse(await repository.getCredits(auth), { status: 200, headers: NO_STORE_HEADERS });
+    }
+
+    if (path === "/api/v1/credits/redeem") {
+      if (request.method !== "POST") return routeMethodNotAllowed("POST");
+      const repository = getRepository();
+      const auth = await authenticateCreditHolder(request, repository);
+      if (isResponse(auth)) return auth;
+      // Redeeming is idempotent by construction (once per code per Principal),
+      // so a key would only add a second notion of "the same request".
+      requireNoIdempotency(request);
+      const input = await requiredJson(request, parseRedeemCreditsRequest);
+      return jsonResponse(await repository.redeemCredits(auth, input.code), { status: 200, headers: NO_STORE_HEADERS });
+    }
+
+    if (path === "/api/v1/credits/transfers") {
+      if (request.method !== "GET" && request.method !== "POST") return routeMethodNotAllowed("GET, POST");
+      const repository = getRepository();
+      const auth = await authenticateCreditHolder(request, repository);
+      if (isResponse(auth)) return auth;
+      if (request.method === "GET") {
+        return jsonResponse(await repository.listCreditTransfers(auth, parseLedgerQuery(url)), {
+          status: 200,
+          headers: NO_STORE_HEADERS,
+        });
+      }
+      // Money moves once: every payment carries a key, whoever the payer is.
+      const key = getIdempotencyKey(request);
+      const input = await requiredJson(request, parseCreditTransferRequest);
+      return await executeIdempotent(
+        repository,
+        auth,
+        "transferCredits",
+        key,
+        {},
+        input,
+        201,
+        () => repository.transferCredits(auth, input),
+      );
     }
 
     if (path === "/api/v1/cli/logins") {
