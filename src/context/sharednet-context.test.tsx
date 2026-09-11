@@ -67,7 +67,9 @@ const roomSummary = {
   member_count: 1,
   name: "Launch",
   owner_agent_ids: [AGENT_ID],
+  owner_principal_id: PRINCIPAL_ID,
   room_id: ROOM_ID,
+  shared_since: null,
   status: "open",
   updated_at: NOW,
 };

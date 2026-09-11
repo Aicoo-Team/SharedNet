@@ -83,7 +83,15 @@ export type RoomSummary = {
   member_count: number;
   name: string;
   owner_agent_ids: AgentId[];
+  /**
+   * The Principal that owns the Room. Present on every row so the Rooms list
+   * can offer only what the viewer may actually do with each Room, without
+   * opening it first: inviting, sharing and closing are the owner's.
+   */
+  owner_principal_id: PrincipalId;
   room_id: RoomId;
+  /** Since when the Room is readable at a public link, or null. */
+  shared_since: string | null;
   status: "open" | "closed";
   updated_at: string;
 };
@@ -554,6 +562,8 @@ export function isRoomSummary(value: unknown): value is RoomSummary {
       "latest_cursor",
       "member_count",
       "owner_agent_ids",
+      "owner_principal_id",
+      "shared_since",
     ]) &&
     isIdentifier(value.room_id) &&
     isNonEmptyString(value.name) &&
@@ -563,7 +573,9 @@ export function isRoomSummary(value: unknown): value is RoomSummary {
     isNonNegativeInteger(value.latest_sequence) &&
     isRoomCursor(value.latest_cursor) &&
     isNonNegativeInteger(value.member_count) &&
-    isArrayOf(value.owner_agent_ids, isAgentId)
+    isArrayOf(value.owner_agent_ids, isAgentId) &&
+    isPrincipalId(value.owner_principal_id) &&
+    isNullable(value.shared_since, isTimestamp)
   );
 }
 
