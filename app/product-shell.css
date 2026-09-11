@@ -3020,3 +3020,76 @@ body:has(.product-window) {
   text-underline-offset: 3px;
 }
 
+/*
+ * The Rooms list's context menu: Share, Invite and Close, where the hand
+ * already is. Positioned at the pointer, so it is placed inline and fixed.
+ */
+.rooms-sidebar-hint {
+  color: var(--sn-muted);
+  font-size: 9px;
+  line-height: 1.5;
+  margin: 8px 6px 0;
+}
+
+.room-menu {
+  background: var(--sn-paper);
+  border: 1px solid var(--sn-ink);
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgba(0, 33, 71, 0.22);
+  display: grid;
+  max-width: min(280px, calc(100vw - 24px));
+  min-width: 180px;
+  padding: 5px;
+  position: fixed;
+  z-index: 60;
+}
+
+.room-menu-title {
+  color: var(--sn-gold-ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  margin: 0;
+  overflow: hidden;
+  padding: 4px 8px 6px;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.product-window .room-menu button {
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  color: var(--sn-ink);
+  font-size: 11px;
+  font-weight: 550;
+  padding: 7px 8px;
+  text-align: left;
+  width: 100%;
+}
+
+.product-window .room-menu button:hover:not(:disabled),
+.product-window .room-menu button:focus-visible {
+  background: var(--sn-blue-soft);
+  outline: none;
+}
+
+.product-window .room-menu button:disabled {
+  color: var(--sn-muted);
+}
+
+.product-window .room-menu .room-menu-close:hover:not(:disabled),
+.product-window .room-menu .room-menu-close:focus-visible {
+  background: color-mix(in srgb, var(--sn-red) 9%, var(--sn-paper));
+  color: var(--sn-red);
+}
+
+.room-menu-note {
+  color: var(--sn-muted);
+  font-size: 10px;
+  line-height: 1.5;
+  margin: 0;
+  padding: 4px 8px 6px;
+}
+

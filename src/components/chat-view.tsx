@@ -1,9 +1,24 @@
 "use client";
 
-import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { type FormEvent, type KeyboardEvent as ReactKeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import { useSharedNet } from "@/src/context/sharednet-context";
-import type { RoomId, RoomMembership, RoomMessage } from "@/src/sharednet/contracts";
+import type { RoomId, RoomMembership, RoomMessage, RoomSummary } from "@/src/sharednet/contracts";
+
+/**
+ * What the Rooms list's context menu needs to know. Every Room row carries
+ * its owner and whether it is shared, so the menu offers only what this
+ * account may actually do with that Room, without opening it first.
+ */
+type RoomMenuState = {
+  name: string;
+  owned: boolean;
+  roomId: RoomId;
+  shared: boolean;
+  status: "open" | "closed";
+  x: number;
+  y: number;
+};
 
 import { DriverMark, driverMark } from "./driver-mark";
 import { InviteQr } from "./invite-qr";
@@ -195,11 +210,24 @@ export function ChatView() {
   const [inviting, setInviting] = useState(false);
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [closing, setClosing] = useState(false);
-  const [shareOpen, setShareOpen] = useState(false);
+  /** Which Room's context menu is open, and where it was summoned. */
+  const [menu, setMenu] = useState<RoomMenuState | null>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const menuTriggerRef = useRef<HTMLElement | null>(null);
+  /**
+   * Which Room the Share dialog is about. Held explicitly rather than read off
+   * the selected Room: the menu can be opened on a Room that is not the one on
+   * screen, and selecting it is a separate, slower thing.
+   */
+  const [share, setShare] = useState<{ name: string; roomId: RoomId } | null>(null);
   const [shareBusy, setShareBusy] = useState(false);
   const [shareError, setShareError] = useState<string | null>(null);
-  /** The slug the share response carried, until the refreshed detail carries it too. */
-  const [shareToken, setShareToken] = useState<string | null>(null);
+  /**
+   * The slug the share response carried, until the refreshed detail carries it
+   * too — tagged with the Room it belongs to, so a link minted for one Room can
+   * never be shown, or copied, under another.
+   */
+  const [shareToken, setShareToken] = useState<{ roomId: RoomId; token: string } | null>(null);
   const [shareCopyState, setShareCopyState] = useState<CopyState>("idle");
   const shareDialogRef = useRef<HTMLDialogElement>(null);
   const [removingMemberId, setRemovingMemberId] = useState<string | null>(null);
@@ -260,19 +288,45 @@ export function ChatView() {
     [detail, network],
   );
 
+  // Selecting a Room closes the members panel. It deliberately does not touch
+  // the Share dialog: sharing a Room from the list selects that Room as a side
+  // effect, and clearing here closed the dialog the click had just opened.
   useEffect(() => {
     setMembersOpen(false);
-    setShareOpen(false);
-    setShareToken(null);
-    setShareError(null);
   }, [selectedRoomId]);
 
   useEffect(() => {
     const dialog = shareDialogRef.current;
     if (!dialog) return;
-    if (shareOpen && !dialog.open) dialog.showModal();
-    if (!shareOpen && dialog.open) dialog.close();
-  }, [shareOpen]);
+    if (share !== null && !dialog.open) dialog.showModal();
+    if (share === null && dialog.open) dialog.close();
+  }, [share]);
+
+  // The menu closes on Escape, on a click anywhere else, and when the window
+  // moves under it. Its first item takes focus, so the keyboard can drive it.
+  useEffect(() => {
+    if (menu === null) return;
+    menuRef.current?.querySelector<HTMLButtonElement>("[role='menuitem']:not(:disabled)")?.focus();
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      closeMenu();
+    };
+    const closeOutside = (event: PointerEvent) => {
+      if (event.target instanceof Node && menuRef.current?.contains(event.target)) return;
+      closeMenu();
+    };
+    document.addEventListener("keydown", closeOnEscape);
+    document.addEventListener("pointerdown", closeOutside);
+    window.addEventListener("resize", closeMenu);
+    window.addEventListener("blur", closeMenu);
+    return () => {
+      document.removeEventListener("keydown", closeOnEscape);
+      document.removeEventListener("pointerdown", closeOutside);
+      window.removeEventListener("resize", closeMenu);
+      window.removeEventListener("blur", closeMenu);
+    };
+  }, [menu]);
 
   useEffect(() => {
     if (instruction !== null) {
@@ -387,6 +441,46 @@ export function ChatView() {
     }
   }
 
+  /** Opens the Room menu where it was summoned, keeping it inside the window. */
+  function openMenu(room: RoomSummary, at: { x: number; y: number }, trigger: HTMLElement | null) {
+    menuTriggerRef.current = trigger;
+    setMenu({
+      roomId: room.room_id,
+      name: room.name,
+      owned: principal === null || principal.principal_id === room.owner_principal_id,
+      shared: room.shared_since !== null,
+      status: room.status,
+      x: at.x,
+      y: at.y,
+    });
+  }
+
+  function closeMenu() {
+    setMenu(null);
+    const trigger = menuTriggerRef.current;
+    menuTriggerRef.current = null;
+    trigger?.focus();
+  }
+
+  /** Right-click, and the keyboard's own way of asking for a context menu. */
+  function menuKeyDown(event: ReactKeyboardEvent<HTMLButtonElement>, room: RoomSummary) {
+    const asked = event.key === "ContextMenu" || (event.shiftKey && event.key === "F10");
+    if (!asked) return;
+    event.preventDefault();
+    const box = event.currentTarget.getBoundingClientRect();
+    openMenu(room, { x: box.right - 8, y: box.top + box.height / 2 }, event.currentTarget);
+  }
+
+  /** Moves focus inside the open menu, the way a menu is expected to behave. */
+  function menuItemKeyDown(event: ReactKeyboardEvent<HTMLButtonElement>) {
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    event.preventDefault();
+    const items = [...(menuRef.current?.querySelectorAll<HTMLButtonElement>("[role='menuitem']:not(:disabled)") ?? [])];
+    const index = items.indexOf(event.currentTarget);
+    const next = event.key === "ArrowDown" ? index + 1 : index - 1;
+    items[(next + items.length) % items.length]?.focus();
+  }
+
   /**
    * Publishing is the second irreversible-feeling thing a human does to a
    * Room, so the dialog says what it means before the link exists: every
@@ -399,7 +493,7 @@ export function ChatView() {
     setShareError(null);
     try {
       const { token } = await shareRoom(roomId);
-      setShareToken(token);
+      setShareToken({ roomId, token });
       setShareCopyState("idle");
     } catch (cause) {
       setShareError(explain("Could not create the link", cause));
@@ -421,6 +515,14 @@ export function ChatView() {
     } finally {
       setShareBusy(false);
     }
+  }
+
+  /** Forgets the target and its link together, so nothing survives into the next Room. */
+  function closeShare() {
+    setShare(null);
+    setShareToken(null);
+    setShareError(null);
+    setShareCopyState("idle");
   }
 
   async function copyShareLink(link: string) {
@@ -592,9 +694,16 @@ export function ChatView() {
             rooms.map((room) => (
               <button
                 aria-current={room.room_id === selectedRoomId ? "true" : undefined}
+                aria-haspopup="menu"
                 aria-label={`Open room ${room.name}`}
                 key={room.room_id}
                 onClick={() => selectRoom(room.room_id)}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  openMenu(room, { x: event.clientX, y: event.clientY }, event.currentTarget);
+                }}
+                onKeyDown={(event) => menuKeyDown(event, room)}
+                title={`${room.name} — right-click for Share, Invite and Close`}
                 type="button"
               >
                 <strong>{room.name}</strong>
@@ -617,6 +726,9 @@ export function ChatView() {
             <p className="rooms-empty-copy">No rooms yet</p>
           )}
         </nav>
+        {rooms.length > 0 ? (
+          <p className="rooms-sidebar-hint">Right-click a Room for Share, Invite and Close.</p>
+        ) : null}
       </aside>
       <SplitHandle label="Resize Rooms sidebar" split={sidebarSplit} />
 
@@ -630,52 +742,21 @@ export function ChatView() {
             </div>
             {detail ? (
               <div className="room-facts" aria-label="Room facts">
-                {principal !== null && principal.principal_id !== detail.room.creator.principal_id ? (
-                  // A seat in someone else's Room: reading and speaking are the
-                  // seat's; inviting, sharing and closing are the owner's.
-                  <span className="room-closed-mark">
-                    {detail.room.status === "open"
+                {/*
+                  What is true about the Room, not what to do with it: Share,
+                  Invite and Close live in the Rooms list's context menu, where
+                  they apply to whichever Room the hand is already on.
+                 */}
+                <span className="room-closed-mark">
+                  {principal !== null && principal.principal_id !== detail.room.creator.principal_id
+                    ? detail.room.status === "open"
                       ? `Owned by ${detail.room.creator.principal_id} · only the owner invites, shares or closes`
+                      : "Closed · history stays readable"
+                    : detail.room.status === "open"
+                      ? "Right-click this Room in the list to share, invite or close"
                       : "Closed · history stays readable"}
-                    {detail.room.sharing ? " · Public: the owner shares this Room at a link" : ""}
-                  </span>
-                ) : (
-                  <span className="room-actions">
-                    {detail.room.status === "open" ? (
-                      <button
-                        className="room-invite"
-                        disabled={inviting}
-                        onClick={() => void openInvite(selectedRoomId, detail.room.name, null)}
-                        type="button"
-                      >
-                        {inviting ? "Creating invite…" : "Invite an Agent"}
-                      </button>
-                    ) : (
-                      <span className="room-closed-mark">Closed · history stays readable</span>
-                    )}
-                    <button
-                      className="room-share"
-                      onClick={() => {
-                        setShareError(null);
-                        setShareCopyState("idle");
-                        setShareOpen(true);
-                      }}
-                      type="button"
-                    >
-                      {detail.room.sharing ? "Shared · manage link" : "Share"}
-                    </button>
-                    {detail.room.status === "open" ? (
-                      <button
-                        className="room-close"
-                        disabled={closing}
-                        onClick={() => void handleCloseRoom(selectedRoomId, detail.room.name)}
-                        type="button"
-                      >
-                        {closing ? "Closing…" : "Close Room"}
-                      </button>
-                    ) : null}
-                  </span>
-                )}
+                  {detail.room.sharing ? " · Public at a link" : ""}
+                </span>
                 <span>{activeMembers.length} members</span>
                 <span>{`Latest sequence ${String(detail.next_cursor).replace(/^cursor_/, "")}`}</span>
                 <time
@@ -960,25 +1041,102 @@ export function ChatView() {
         </div>
       </dialog>
 
+      {menu !== null ? (
+        <div
+          aria-label={`Actions for ${menu.name}`}
+          className="room-menu"
+          onKeyDown={(event) => {
+            if (event.key === "Tab") {
+              event.preventDefault();
+              closeMenu();
+            }
+          }}
+          ref={menuRef}
+          role="menu"
+          style={{ left: `${menu.x}px`, top: `${menu.y}px` }}
+        >
+          <p className="room-menu-title">{menu.name}</p>
+          {menu.owned ? (
+            <>
+              <button
+                onClick={() => {
+                  const { roomId, name } = menu;
+                  closeMenu();
+                  // Show the Room too, since the dialog is about it — but the
+                  // dialog's own subject is this id, not whatever is selected.
+                  selectRoom(roomId);
+                  setShareError(null);
+                  setShareCopyState("idle");
+                  setShareToken(null);
+                  setShare({ name, roomId });
+                }}
+                onKeyDown={menuItemKeyDown}
+                role="menuitem"
+                type="button"
+              >
+                {menu.shared ? "Shared · manage link" : "Share…"}
+              </button>
+              <button
+                disabled={inviting || menu.status === "closed"}
+                onClick={() => {
+                  const { roomId, name } = menu;
+                  closeMenu();
+                  void openInvite(roomId, name, null);
+                }}
+                onKeyDown={menuItemKeyDown}
+                role="menuitem"
+                type="button"
+              >
+                {menu.status === "closed" ? "Invite an Agent (Room is closed)" : "Invite an Agent"}
+              </button>
+              <button
+                className="room-menu-close"
+                disabled={closing || menu.status === "closed"}
+                onClick={() => {
+                  const { roomId, name } = menu;
+                  closeMenu();
+                  void handleCloseRoom(roomId, name);
+                }}
+                onKeyDown={menuItemKeyDown}
+                role="menuitem"
+                type="button"
+              >
+                {menu.status === "closed" ? "Already closed" : "Close Room…"}
+              </button>
+            </>
+          ) : (
+            <p className="room-menu-note">
+              {`Owned by another account. Reading and speaking are your seat's; inviting, sharing and closing are the owner's.`}
+            </p>
+          )}
+        </div>
+      ) : null}
+
       <dialog
         aria-labelledby="room-share-title"
         aria-modal="true"
         className="room-handoff-dialog"
         onCancel={(event) => {
           event.preventDefault();
-          setShareOpen(false);
+          closeShare();
         }}
-        onClose={() => setShareOpen(false)}
+        onClose={() => closeShare()}
         ref={shareDialogRef}
       >
         <header>
           <p>Share</p>
-          <h2 id="room-share-title">{`Share ${detail?.room.name ?? selectedSummary?.name ?? "this Room"}`}</h2>
+          <h2 id="room-share-title">{`Share ${share?.name ?? "this Room"}`}</h2>
         </header>
-        {shareOpen && detail && selectedRoomId !== null ? (() => {
-          const token = shareToken ?? detail.room.sharing?.token ?? null;
+        {share !== null ? (() => {
+          // Everything below is about `share.roomId`, never about the selected
+          // Room: its detail may still be loading, or be another Room's.
+          const targetRoomId = share.roomId;
+          const targetDetail = detail?.room.room_id === targetRoomId ? detail : null;
+          const targetRow = rooms.find((room) => room.room_id === targetRoomId);
+          const token = shareToken?.roomId === targetRoomId ? shareToken.token : (targetDetail?.room.sharing?.token ?? null);
           const link = token === null ? null : `${currentOrigin().replace(/\/+$/, "")}/s/${token}`;
-          const shared = detail.room.sharing !== null || shareToken !== null;
+          const sharedSince = targetDetail?.room.sharing?.since ?? targetRow?.shared_since ?? null;
+          const shared = sharedSince !== null || token !== null;
           return (
             <>
               <p>
@@ -992,12 +1150,12 @@ export function ChatView() {
                     <code className="room-canonical-id">{link}</code>
                   </p>
                   <InviteQr caption="Scan to open the Room" label="Public link QR code" link={link} />
-                  {detail.room.sharing ? (
-                    <p className="room-invite-note">{`Public since ${readableTime(detail.room.sharing.since)}.`}</p>
+                  {sharedSince !== null ? (
+                    <p className="room-invite-note">{`Public since ${readableTime(sharedSince)}.`}</p>
                   ) : null}
                 </section>
               ) : shared ? (
-                <p className="room-invite-note">This Room is public. Reopen it from the list to see its link.</p>
+                <p className="room-invite-note">This Room is public. Its link is still loading; leave this open a moment.</p>
               ) : null}
               {shareError ? (
                 <p className="room-copy-state room-copy-error" role="alert">
@@ -1013,7 +1171,7 @@ export function ChatView() {
                 </p>
               ) : null}
               <div className="room-handoff-actions">
-                <button onClick={() => setShareOpen(false)} type="button">
+                <button onClick={() => closeShare()} type="button">
                   Close
                 </button>
                 {shared ? (
@@ -1021,7 +1179,7 @@ export function ChatView() {
                     <button
                       className="room-close"
                       disabled={shareBusy}
-                      onClick={() => void handleUnshareRoom(selectedRoomId)}
+                      onClick={() => void handleUnshareRoom(targetRoomId)}
                       type="button"
                     >
                       {shareBusy ? "Stopping…" : "Stop sharing"}
@@ -1036,7 +1194,7 @@ export function ChatView() {
                   <button
                     className="room-copy-button"
                     disabled={shareBusy}
-                    onClick={() => void handleShareRoom(selectedRoomId)}
+                    onClick={() => void handleShareRoom(targetRoomId)}
                     type="button"
                   >
                     {shareBusy ? "Creating link…" : "Create public link"}
