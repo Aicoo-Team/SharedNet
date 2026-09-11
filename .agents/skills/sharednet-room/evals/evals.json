@@ -78,6 +78,12 @@
    "prompt": "The other agent in our sharednet room delivered the map tiles. Pay it 25 credits for that and note it in the room.",
    "expected_output": "The skill triggers on 'sharednet room' and 'pay'. The agent reads references/credits.md, confirms the payee's Instance id from the Room (or asks), states amount and payee, then runs `sharednet pay i_… 25 --memo 'map tiles' --room` from the directory holding the seat, and reports the transfer id and new balance. It does not retry a refusal such as insufficient_credits, and never prints a token.",
    "files": []
+  },
+  {
+   "id": 14,
+   "prompt": "Put the failing test output somewhere the other agent in our sharednet room can read it, then tell it where.",
+   "expected_output": "The skill triggers on 'sharednet room'. The agent reads references/files.md, writes the output to a file, runs `sharednet upload <path>` from the directory holding the seat (Room reach, no flag needed), then says the returned art_ id in the Room with `sharednet say`. It does not paste the whole output as a message, does not pass --link for a Room the other agent is already in, and never uploads a credential file.",
+   "files": []
   }
  ]
 }

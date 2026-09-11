@@ -1865,3 +1865,230 @@ describe("credits: a purse per Principal, a ledger of every movement", () => {
   });
 });
 
+describe("artifacts: a file an Agent hands to the Room", () => {
+  const OWNER = `snk_${"f".repeat(43)}`;
+  const MEMBER = `snk_${"g".repeat(43)}`;
+  const STRANGER = `snk_${"h".repeat(43)}`;
+
+  /** The clock advances a second per read, so "newest first" is a real order. */
+  function artifactStore() {
+    let tick = 0;
+    return new MemorySharedNetRepository({
+      now: () => new Date(Date.parse("2026-09-12T10:00:00.000Z") + tick++ * 1000),
+      accounts: [
+        { authUserId: "owner", apiKey: OWNER },
+        { authUserId: "member", apiKey: MEMBER },
+        { authUserId: "stranger", apiKey: STRANGER },
+      ],
+    });
+  }
+
+  /** An owner's seat, a Room it opened, and a second account seated in it. */
+  async function sharedRoom(store: MemorySharedNetRepository) {
+    const owner = await startWithKey(store, OWNER, { runtime_kind: "claude-code" });
+    const member = await startWithKey(store, MEMBER, { runtime_kind: "codex" });
+    const ownerAuth = (await store.authenticateInstance(owner.token as string))!;
+    const memberAuth = (await store.authenticateInstance(member.token as string))!;
+    const { room } = await store.createRoom(ownerAuth, { name: "Handover" });
+    await store.joinRoom(memberAuth, room.id);
+    return { owner, member, ownerAuth, memberAuth, roomId: room.id as string };
+  }
+
+  function upload(
+    store: MemorySharedNetRepository,
+    token: string,
+    bytes: string | Uint8Array,
+    headers: Record<string, string>,
+  ) {
+    return request(store, "/api/v1/artifacts", {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "idempotency-key": crypto.randomUUID(), ...headers },
+      body: bytes as BodyInit,
+    });
+  }
+
+  it("hands a file to a Room: its members read it, a stranger is told it does not exist", async () => {
+    const store = artifactStore();
+    const { owner, member, roomId } = await sharedRoom(store);
+    const patch = "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n";
+
+    const created = await upload(store, owner.token as string, patch, {
+      "content-type": "text/plain; charset=utf-8",
+      "x-sharednet-filename": "fix.patch",
+      "x-sharednet-room": roomId,
+    });
+    expect(created.status).toBe(201);
+    const createdBody = await json(created.clone());
+    const { artifact } = createdBody;
+    expect(artifact).toMatchObject({
+      filename: "fix.patch",
+      content_type: "text/plain",
+      reach: "room",
+      room_id: roomId,
+      size_bytes: patch.length,
+      uploaded_by_instance_id: (owner as { instance: { id: string } }).instance.id,
+    });
+    expect(artifact.sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(artifact.id).toMatch(/^art_[0-9A-Za-z]{10}$/);
+    // No link exists for a Room file, so none is handed out.
+    expect(await json(created)).toEqual({ artifact });
+
+    // The other member reads the bytes, as an attachment and nothing else.
+    const content = await request(store, `/api/v1/artifacts/${artifact.id}/content`, {
+      headers: { authorization: `Bearer ${member.token}` },
+    });
+    expect(content.status).toBe(200);
+    expect(await content.text()).toBe(patch);
+    expect(content.headers.get("content-disposition")).toBe("attachment; filename*=UTF-8''fix.patch");
+    expect(content.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(content.headers.get("x-sharednet-sha256")).toBe(artifact.sha256);
+
+    // An account with no seat in that Room cannot see that the file exists.
+    for (const path of [`/api/v1/artifacts/${artifact.id}`, `/api/v1/artifacts/${artifact.id}/content`]) {
+      const refused = await request(store, path, { headers: apiHeaders({}, STRANGER) });
+      expect(refused.status).toBe(404);
+      expect((await json(refused)).error.code).toBe("artifact_not_found");
+    }
+    // And only the uploader may remove it.
+    expect((await request(store, `/api/v1/artifacts/${artifact.id}`, { method: "DELETE", headers: { authorization: `Bearer ${member.token}` } })).status).toBe(404);
+    const removed = await request(store, `/api/v1/artifacts/${artifact.id}`, { method: "DELETE", headers: apiHeaders({}, OWNER) });
+    expect(removed.status).toBe(200);
+    expect((await request(store, `/api/v1/artifacts/${artifact.id}`, { headers: apiHeaders({}, OWNER) })).status).toBe(404);
+  });
+
+  it("refuses to hand a file to a Room the caller does not sit in, or to a closed one", async () => {
+    const store = artifactStore();
+    const { owner, roomId } = await sharedRoom(store);
+
+    const notMine = await upload(store, STRANGER, "x", {
+      "x-sharednet-filename": "x.txt",
+      "x-sharednet-room": roomId,
+    });
+    expect(notMine.status).toBe(404);
+    expect((await json(notMine)).error.code).toBe("room_not_found");
+
+    await store.closeRoom((await store.principalForAccount("owner"))!.id, roomId as never);
+    const closed = await upload(store, owner.token as string, "x", {
+      "x-sharednet-filename": "x.txt",
+      "x-sharednet-room": roomId,
+    });
+    expect(closed.status).toBe(409);
+    expect((await json(closed)).error.code).toBe("room_closed");
+  });
+
+  it("opens a link file by its key alone, with no account, and refuses a wrong key the same way as a missing file", async () => {
+    const store = artifactStore();
+    const { owner } = await sharedRoom(store);
+
+    const created = await upload(store, owner.token as string, "a,b\n1,2\n", {
+      "content-type": "text/csv",
+      "x-sharednet-filename": "rows.csv",
+      "x-sharednet-reach": "link",
+    });
+    expect(created.status).toBe(201);
+    const body = await json(created);
+    expect(body.link_key).toMatch(/^afk_[A-Za-z0-9_-]{43}$/);
+    expect(body.url).toBe(`http://127.0.0.1:3001/f/${body.artifact.id}?k=${body.link_key}`);
+    expect(body.artifact.reach).toBe("link");
+
+    const opened = await request(store, `/api/v1/artifacts/${body.artifact.id}/content?k=${body.link_key}`);
+    expect(opened.status).toBe(200);
+    expect(await opened.text()).toBe("a,b\n1,2\n");
+    expect(opened.headers.get("content-type")).toBe("text/csv");
+
+    const wrong = await request(store, `/api/v1/artifacts/${body.artifact.id}/content?k=afk_${"z".repeat(43)}`);
+    expect(wrong.status).toBe(404);
+    expect((await json(wrong)).error.code).toBe("artifact_not_found");
+    expect((await request(store, `/api/v1/artifacts/${body.artifact.id}/content?k=nonsense`)).status).toBe(404);
+    // A Room file has no link, so its key cannot be guessed into existence.
+    const roomFile = await json(
+      await upload(store, owner.token as string, "x", { "x-sharednet-filename": "x.txt", "x-sharednet-room": (await sharedRoom(store)).roomId }),
+    );
+    expect((await request(store, `/api/v1/artifacts/${roomFile.artifact.id}/content?k=afk_${"y".repeat(43)}`)).status).toBe(404);
+    // And a reader with the key still cannot reach the account's other files.
+    expect((await request(store, `/api/v1/artifacts/${body.artifact.id}`)).status).toBe(401);
+  });
+
+  it("serves anything that could run in a browser as bytes, never inline", async () => {
+    const store = artifactStore();
+    const { owner } = await sharedRoom(store);
+    for (const [type, filename] of [
+      ["text/html", "page.html"],
+      ["image/svg+xml", "logo.svg"],
+      ["application/javascript", "script.js"],
+    ]) {
+      const created = await json(
+        await upload(store, owner.token as string, "<script>alert(1)</script>", {
+          "content-type": type!,
+          "x-sharednet-filename": filename!,
+          "x-sharednet-reach": "link",
+        }),
+      );
+      const served = await request(store, `/api/v1/artifacts/${created.artifact.id}/content?k=${created.link_key}`);
+      expect(served.headers.get("content-type")).toBe("application/octet-stream");
+      expect(served.headers.get("content-disposition")).toContain("attachment");
+      expect(served.headers.get("content-security-policy")).toContain("sandbox");
+    }
+  });
+
+  it("refuses a filename that is a path, an empty body, and a file over the limit", async () => {
+    const store = artifactStore();
+    const { owner, roomId } = await sharedRoom(store);
+    const bad = { "x-sharednet-room": roomId };
+
+    for (const filename of ["../../etc/passwd", "a/b.txt", "b\\c.txt", ".", "..", "", "x".repeat(121)]) {
+      const refused = await upload(store, owner.token as string, "x", { ...bad, "x-sharednet-filename": filename });
+      expect(refused.status).toBe(422);
+    }
+    expect((await upload(store, owner.token as string, "x", bad)).status).toBe(422);
+    expect((await upload(store, owner.token as string, "", { ...bad, "x-sharednet-filename": "empty.txt" })).status).toBe(422);
+    // Reach `room` needs a Room; reach `link` does not want one.
+    expect((await upload(store, owner.token as string, "x", { "x-sharednet-filename": "x.txt" })).status).toBe(422);
+    expect((await upload(store, owner.token as string, "x", { ...bad, "x-sharednet-filename": "x.txt", "x-sharednet-reach": "everyone" })).status).toBe(422);
+
+    const tooBig = new Uint8Array(4 * 1024 * 1024 + 1);
+    tooBig.fill(65);
+    const refused = await upload(store, owner.token as string, tooBig, { ...bad, "x-sharednet-filename": "big.bin" });
+    expect(refused.status).toBe(413);
+    expect((await json(refused)).error.code).toBe("artifact_too_large");
+  });
+
+  it("lists what the caller may read, newest first, and replays an upload that carried the same key", async () => {
+    const store = artifactStore();
+    const { owner, member, roomId } = await sharedRoom(store);
+    const names = ["one.txt", "two.txt", "three.txt"];
+    for (const filename of names) {
+      expect((await upload(store, owner.token as string, filename, { "x-sharednet-filename": filename, "x-sharednet-room": roomId })).status).toBe(201);
+    }
+    // A private file of the owner's, which the member must not see.
+    await upload(store, owner.token as string, "secret", { "x-sharednet-filename": "private.txt", "x-sharednet-reach": "private" });
+
+    const ownerList = await json(await request(store, "/api/v1/artifacts", { headers: apiHeaders({}, OWNER) }));
+    expect(ownerList.items.map((item: { filename: string }) => item.filename)).toEqual(["private.txt", "three.txt", "two.txt", "one.txt"]);
+    const memberList = await json(await request(store, "/api/v1/artifacts", { headers: { authorization: `Bearer ${member.token}` } }));
+    expect(memberList.items.map((item: { filename: string }) => item.filename)).toEqual(["three.txt", "two.txt", "one.txt"]);
+    const paged = await json(await request(store, "/api/v1/artifacts?limit=2", { headers: { authorization: `Bearer ${member.token}` } }));
+    expect(paged.has_more).toBe(true);
+    const rest = await json(
+      await request(store, `/api/v1/artifacts?limit=2&before=${paged.next_cursor}`, { headers: { authorization: `Bearer ${member.token}` } }),
+    );
+    expect(rest.items.map((item: { filename: string }) => item.filename)).toEqual(["one.txt"]);
+    expect((await request(store, "/api/v1/artifacts?before=art_nowhere01", { headers: apiHeaders({}, OWNER) })).status).toBe(400);
+    expect((await request(store, `/api/v1/artifacts?room_id=${roomId}`, { headers: apiHeaders({}, STRANGER) }))).toBeTruthy();
+
+    // One key, one file: a retried upload does not store the bytes twice.
+    const key = crypto.randomUUID();
+    const headers = { authorization: `Bearer ${owner.token}`, "idempotency-key": key, "x-sharednet-filename": "once.txt", "x-sharednet-room": roomId };
+    const first = await request(store, "/api/v1/artifacts", { method: "POST", headers, body: "once" });
+    const replay = await request(store, "/api/v1/artifacts", { method: "POST", headers, body: "once" });
+    expect([first.status, replay.status]).toEqual([201, 201]);
+    expect(replay.headers.get("idempotency-replayed")).toBe("true");
+    expect((await json(replay)).artifact.id).toBe((await json(first)).artifact.id);
+    // A different file under the same key is a conflict, not a second upload.
+    const conflict = await request(store, "/api/v1/artifacts", { method: "POST", headers, body: "twice" });
+    expect(conflict.status).toBe(409);
+    expect((await json(conflict)).error.code).toBe("idempotency_conflict");
+    expect((await request(store, "/api/v1/artifacts", { method: "POST", headers: { authorization: `Bearer ${owner.token}`, "x-sharednet-filename": "x.txt", "x-sharednet-room": roomId }, body: "x" })).status).toBe(400);
+  });
+});
+

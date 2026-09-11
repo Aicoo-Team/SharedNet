@@ -44,7 +44,7 @@ describe("hosted Postgres schema", () => {
     ]);
   });
 
-  it("exports exactly the twelve V1 domain tables and the four credit tables", () => {
+  it("exports exactly the twelve V1 domain tables, the four credit tables and the two artifact tables", () => {
     expect(Object.keys(databaseSchema)).toEqual([
       "principals",
       "agents",
@@ -62,6 +62,8 @@ describe("hosted Postgres schema", () => {
       "creditCodes",
       "creditTransfers",
       "creditRedemptions",
+      "artifacts",
+      "artifactBytes",
     ]);
   });
 
@@ -156,6 +158,9 @@ describe("hosted Postgres schema", () => {
     expect(migration).toContain('CONSTRAINT "credit_account_balance_nonnegative"');
     expect(migration).toContain('CONSTRAINT "credit_transfer_minted_or_paid"');
     expect(migration).toContain('CONSTRAINT "credit_redemption_pk" PRIMARY KEY("code","principal_id")');
+    expect(migration).toContain('CONSTRAINT "artifact_room_reach_has_a_room"');
+    expect(migration).toContain('CONSTRAINT "artifact_link_reach_has_a_key"');
+    expect(migration).toContain('CONSTRAINT "artifact_filename_is_a_name"');
     expect(migration).toContain('CONSTRAINT "idempotency_retention_minimum"');
     expect(migration).toContain(
       'DROP CONSTRAINT "instance_issued_by_key_fk"',

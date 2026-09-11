@@ -147,6 +147,7 @@ describe("safe errors and public documentation", () => {
       "rooms.members",
       "network",
       "credits",
+      "artifacts",
     ]);
     expect(DISCOVERY_DOCUMENT.limits.wait_max_seconds).toBe(25);
     expect(DISCOVERY_DOCUMENT.limits.invite_default_seconds).toBe(0);
