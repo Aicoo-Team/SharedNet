@@ -2,7 +2,16 @@ import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 
 import { RepositoryError, type McpClient, type SharedNetRepository } from "@/packages/server/src/repository.ts";
-import { DEFAULT_MESSAGE_QUERY, type InstanceId, type Message, type MessageId, type RitSecret, type RoomId } from "@/packages/protocol/src/index.ts";
+import {
+  DEFAULT_MESSAGE_QUERY,
+  MAX_ARTIFACT_BYTES,
+  type ArtifactId,
+  type InstanceId,
+  type Message,
+  type MessageId,
+  type RitSecret,
+  type RoomId,
+} from "@/packages/protocol/src/index.ts";
 
 /**
  * SharedNet over MCP. A chat product (ChatGPT, Claude) that connected on a
@@ -36,6 +45,13 @@ export type SharedNetMcpDependencies = {
 };
 
 const ROOM_ID = z.string().regex(/^rom_[0-9A-Za-z]{10}$/, "a Room id looks like rom_AbCdEfGhIj");
+const ARTIFACT_ID = z.string().regex(/^art_[0-9A-Za-z]{10}$/, "a file id looks like art_AbCdEfGhIj");
+const PAYEE_ID = z.string().regex(/^(?:p|a|i)_[0-9A-Za-z]{10}$/, "a Principal (p_…), Agent (a_…) or Instance (i_…) id");
+/**
+ * A chat connector has no disk, so a file it writes is text it composed and a
+ * file it reads has to come back as text. Binary stays reachable by link.
+ */
+const MAX_TEXT_FILE_BYTES = 64 * 1024;
 const WAIT_MAX_SECONDS = 25;
 
 /**
@@ -360,6 +376,174 @@ export function createSharedNetMcpServer(subject: McpSubject, deps: SharedNetMcp
   // document. Here a document is a message, and the search runs over every
   // Room this account can see, newest first, which is the policy that finds
   // the current value of a thing.
+  server.registerTool(
+    "files",
+    {
+      title: "Files in a Room",
+      description:
+        "The files this account may read, newest first: the ones handed to Rooms it sits in, and its own. A file is how an Agent passes a patch, a log, a screenshot or a dataset, since a message is text only. Read one with file_read, or hand out its link.",
+      inputSchema: z.object({ room_id: ROOM_ID.optional(), limit: z.number().int().min(1).max(100).optional() }),
+      annotations: { title: "Files in a Room", ...READS },
+    },
+    async ({ room_id, limit }) => {
+      try {
+        const s = await seat();
+        const page = await repository.listArtifacts(s.auth, {
+          room_id: (room_id as RoomId | undefined) ?? null,
+          before: null,
+          limit: limit ?? 20,
+        });
+        return result({
+          files: page.items.map((artifact) => ({
+            artifact_id: artifact.id,
+            filename: artifact.filename,
+            content_type: artifact.content_type,
+            size_bytes: artifact.size_bytes,
+            room_id: artifact.room_id,
+            created_at: artifact.created_at,
+          })),
+          has_more: page.has_more,
+        });
+      } catch (error) {
+        return failure(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "file_read",
+    {
+      title: "Read a file",
+      description:
+        `Returns a file's text, up to ${MAX_TEXT_FILE_BYTES / 1024} KB. Only for text: a file that is not valid UTF-8, or is larger than that, is described rather than returned, and you should hand out its link instead of guessing at its contents.`,
+      inputSchema: z.object({ artifact_id: ARTIFACT_ID }),
+      annotations: { title: "Read a file", ...READS },
+    },
+    async ({ artifact_id }) => {
+      try {
+        const s = await seat();
+        const { artifact, bytes } = await repository.readArtifact(s.auth, artifact_id as ArtifactId);
+        const facts = { artifact_id: artifact.id, filename: artifact.filename, content_type: artifact.content_type, size_bytes: artifact.size_bytes };
+        if (bytes.byteLength > MAX_TEXT_FILE_BYTES) {
+          return result({ ...facts, text: null, reason: `larger than ${MAX_TEXT_FILE_BYTES} bytes; ask for a link instead` });
+        }
+        let text: string;
+        try {
+          text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+        } catch {
+          return result({ ...facts, text: null, reason: "not UTF-8 text; ask for a link instead" });
+        }
+        return result({ ...facts, text });
+      } catch (error) {
+        return failure(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "file_write",
+    {
+      title: "Hand a file to a Room",
+      description:
+        "Puts text somewhere as a file, for what does not belong in a message: a patch, a report, a log. Every file comes back with a URL anyone can open, which is how you hand it to a person. Name a room_id as well and that Room's members can read it by id. Say the URL in the Room afterwards — nobody is watching for the file.",
+      inputSchema: z.object({
+        filename: z.string().min(1).max(120),
+        text: z.string().min(1).max(MAX_TEXT_FILE_BYTES),
+        room_id: ROOM_ID.optional(),
+      }),
+      annotations: { title: "Hand a file to a Room", ...WRITES },
+    },
+    async ({ filename, text, room_id }) => {
+      try {
+        const s = await seat();
+        const bytes = new TextEncoder().encode(text);
+        if (bytes.byteLength > MAX_ARTIFACT_BYTES) return failure(new Error("artifact_too_large: that text is too large to store."));
+        const uploaded = await repository.uploadArtifact(s.auth, {
+          filename,
+          content_type: filename.toLowerCase().endsWith(".md") ? "text/markdown" : filename.toLowerCase().endsWith(".json") ? "application/json" : "text/plain",
+          room_id: (room_id as RoomId | undefined) ?? null,
+          bytes,
+        });
+        return result({
+          artifact_id: uploaded.artifact.id,
+          filename: uploaded.artifact.filename,
+          size_bytes: uploaded.artifact.size_bytes,
+          room_id: uploaded.artifact.room_id,
+          url: `${deps.origin.replace(/\/+$/, "")}/f/${uploaded.artifact.id}?k=${uploaded.link_key}`,
+          next: "Say this url in the Room, so the others know the file is there.",
+        });
+      } catch (error) {
+        return failure(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "credits",
+    {
+      title: "This account's credits",
+      description:
+        "Play money for a trading round: the balance, and what was granted, sent and received. The purse belongs to the account, so every one of its sessions spends from the same one. Redeem a code with redeem_credits, pay with pay.",
+      inputSchema: z.object({}),
+      annotations: { title: "This account's credits", ...READS },
+    },
+    guarded(async () => {
+      const s = await seat();
+      const { credits } = await repository.getCredits(s.auth);
+      return credits;
+    }),
+  );
+
+  server.registerTool(
+    "redeem_credits",
+    {
+      title: "Redeem a credit code",
+      description:
+        "Redeems a grant code for this account, once. Redeeming again grants 0 and is not an error, so a retry is safe. Only an account can redeem.",
+      inputSchema: z.object({ code: z.string().min(3).max(32) }),
+      annotations: { title: "Redeem a credit code", ...WRITES },
+    },
+    async ({ code }) => {
+      try {
+        const s = await seat();
+        const redeemed = await repository.redeemCredits(s.auth, code.normalize("NFKC").trim().toUpperCase());
+        return result({ granted: redeemed.granted, balance: redeemed.credits.balance });
+      } catch (error) {
+        return failure(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "pay",
+    {
+      title: "Pay another Agent",
+      description:
+        "Moves credits from this account's purse to whoever holds the id you name — a Principal, an Agent or an Instance. Final: there is no reversal, so a wrong payment is fixed by paying it back. Say the amount and the payee to the person before you call this.",
+      inputSchema: z.object({
+        to: PAYEE_ID,
+        amount: z.number().int().min(1).max(1_000_000),
+        memo: z.string().max(200).optional(),
+        room_id: ROOM_ID.optional(),
+      }),
+      annotations: { title: "Pay another Agent", ...WRITES },
+    },
+    async ({ to, amount, memo, room_id }) => {
+      try {
+        const s = await seat();
+        const paid = await repository.transferCredits(s.auth, {
+          to: to as never,
+          amount,
+          ...(memo ? { memo } : {}),
+          ...(room_id ? { room_id: room_id as RoomId } : {}),
+        });
+        return result({ transfer_id: paid.transfer.id, amount: paid.transfer.amount, to: paid.transfer.to_principal_id, balance: paid.credits.balance });
+      } catch (error) {
+        return failure(error);
+      }
+    },
+  );
+
   server.registerTool(
     "search",
     {

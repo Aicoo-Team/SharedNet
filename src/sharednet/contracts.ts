@@ -83,10 +83,26 @@ export type RoomSummary = {
   member_count: number;
   name: string;
   owner_agent_ids: AgentId[];
+  /**
+   * The Principal that owns the Room. Present on every row so the Rooms list
+   * can offer only what the viewer may actually do with each Room, without
+   * opening it first: inviting, sharing and closing are the owner's.
+   */
+  owner_principal_id: PrincipalId;
   room_id: RoomId;
+  /** Since when the Room is readable at a public link, or null. */
+  shared_since: string | null;
   status: "open" | "closed";
   updated_at: string;
 };
+
+/**
+ * A Room's public link, while the owner publishes the log. `token` is the
+ * link's slug, present only on the responses that carry it: the detail the
+ * owner reads, and the share response itself. A seated account sees `since`
+ * alone: that the Room is public, not where.
+ */
+export type RoomSharing = { since: string; token: string | null };
 
 export type RoomProjection = {
   access_policy: "anyone_with_id" | "principal_only";
@@ -95,8 +111,55 @@ export type RoomProjection = {
   description: string | null;
   name: string;
   room_id: RoomId;
+  sharing: RoomSharing | null;
   status: "open" | "closed";
   updated_at: string;
+};
+
+/** The link's slug is returned with the Room; the browser builds the URL from its own origin. */
+export type ShareRoomResponse = { room: RoomProjection; token: string };
+export type UnshareRoomResponse = { room: RoomProjection };
+
+/**
+ * What a share link shows to anyone: names, drivers and sequence numbers,
+ * and not one id. A Room id is the capability to join, an Instance id is an
+ * address anyone may add to a Room, and a Principal id names an account;
+ * none of them belongs on a page the whole web can read. `handle` is four
+ * characters of the seat's id, enough to tell two sessions of one tag apart
+ * and nothing more.
+ */
+export type SharedActor = {
+  driver: string;
+  handle: string;
+  kind: "account" | "anonymous";
+  /** A guest's own name, or the tag's handle; null when only the driver says who it is. */
+  label: string | null;
+};
+
+export type SharedMember = SharedActor & {
+  joined_at: string;
+  status: "active" | "left";
+};
+
+export type SharedMessage = {
+  content: string;
+  created_at: string;
+  reply_to_sequence: number | null;
+  sender: SharedActor;
+  sequence: number;
+};
+
+export type SharedRoomProjection = {
+  members: SharedMember[];
+  messages: SharedMessage[];
+  room: {
+    created_at: string;
+    description: string | null;
+    latest_sequence: number;
+    name: string;
+    shared_at: string;
+    status: "open" | "closed";
+  };
 };
 
 export type MemberPresence = "online" | "away" | "offline";
@@ -174,11 +237,24 @@ export type RoomMessage = {
 };
 
 export type RoomDetail = {
+  /**
+   * The private notes this account has written on other people's seats in this
+   * Room, by Instance id. A seat's own nickname is not here: that one is the
+   * seat's `name` on its membership, because the whole Room sees it.
+   */
+  notes: Record<string, string>;
   memberships: RoomMembership[];
   messages: RoomMessage[];
   next_cursor: RoomCursor;
   room: RoomProjection;
 };
+
+/**
+ * What naming a seat answers. `scope` says which of the two it was: your own
+ * seat takes a `nickname`, which everyone in its Rooms sees, and anyone else's
+ * takes a `note`, which only this account sees.
+ */
+export type SeatNameResponse = { instance_id: InstanceId; name: string | null; scope: "nickname" | "note" };
 
 export type DecisionProjection = {
   consequence: string | null;
@@ -221,6 +297,40 @@ export type NetworkProjection = {
   instances: InstanceProjection[];
   principal: PrincipalProjection;
 };
+
+/**
+ * One movement of credits as the account reads it (decision 2026-09-11):
+ * granted by a code, sent to someone, or received from someone.
+ */
+export type CreditTransferProjection = {
+  /** For a payment: what the payer typed, a Principal, Agent or Instance id. */
+  addressed_to: string | null;
+  amount: number;
+  /** The seat that paid, when a seat did. */
+  by_instance_id: InstanceId | null;
+  /** For a grant: the code. */
+  code: string | null;
+  /** The other purse: the payer of a received transfer, the payee of a sent one; null for a grant. */
+  counterparty: PrincipalId | null;
+  created_at: string;
+  direction: "granted" | "received" | "sent";
+  memo: string | null;
+  room_id: RoomId | null;
+  transfer_id: string;
+};
+
+export type CreditsProjection = {
+  balance: number;
+  granted: number;
+  principal_id: PrincipalId;
+  received: number;
+  sent: number;
+  /** The latest transfers touching this purse, newest first. */
+  transfers: CreditTransferProjection[];
+};
+
+/** `granted` is what this redemption added: 0 when the account had already redeemed the code. */
+export type RedeemCreditsResponse = { credits: CreditsProjection; granted: number };
 
 export type ProvisionAccountResponse = {
   principal_id: PrincipalId;
@@ -465,6 +575,8 @@ export function isRoomSummary(value: unknown): value is RoomSummary {
       "latest_cursor",
       "member_count",
       "owner_agent_ids",
+      "owner_principal_id",
+      "shared_since",
     ]) &&
     isIdentifier(value.room_id) &&
     isNonEmptyString(value.name) &&
@@ -474,8 +586,14 @@ export function isRoomSummary(value: unknown): value is RoomSummary {
     isNonNegativeInteger(value.latest_sequence) &&
     isRoomCursor(value.latest_cursor) &&
     isNonNegativeInteger(value.member_count) &&
-    isArrayOf(value.owner_agent_ids, isAgentId)
+    isArrayOf(value.owner_agent_ids, isAgentId) &&
+    isPrincipalId(value.owner_principal_id) &&
+    isNullable(value.shared_since, isTimestamp)
   );
+}
+
+function isRoomSharing(value: unknown): value is RoomSharing {
+  return hasExactKeys(value, ["since", "token"]) && isTimestamp(value.since) && isNullable(value.token, isNonEmptyString);
 }
 
 function isRoomProjection(value: unknown): value is RoomProjection {
@@ -486,6 +604,7 @@ function isRoomProjection(value: unknown): value is RoomProjection {
       "description",
       "creator",
       "access_policy",
+      "sharing",
       "status",
       "created_at",
       "updated_at",
@@ -496,9 +615,64 @@ function isRoomProjection(value: unknown): value is RoomProjection {
     isActorProjection(value.creator) &&
     (value.access_policy === "anyone_with_id" ||
       value.access_policy === "principal_only") &&
+    isNullable(value.sharing, isRoomSharing) &&
     (value.status === "open" || value.status === "closed") &&
     isTimestamp(value.created_at) &&
     isTimestamp(value.updated_at)
+  );
+}
+
+export function isShareRoomResponse(value: unknown): value is ShareRoomResponse {
+  return hasExactKeys(value, ["room", "token"]) && isRoomProjection(value.room) && isNonEmptyString(value.token);
+}
+
+export function isUnshareRoomResponse(value: unknown): value is UnshareRoomResponse {
+  return hasExactKeys(value, ["room"]) && isRoomProjection(value.room);
+}
+
+function isSharedActor(value: unknown): value is SharedActor {
+  return (
+    hasExactKeys(value, ["driver", "handle", "kind", "label"]) &&
+    isNonEmptyString(value.driver) &&
+    isNonEmptyString(value.handle) &&
+    (value.kind === "account" || value.kind === "anonymous") &&
+    isNullable(value.label, isNonEmptyString)
+  );
+}
+
+function isSharedMember(value: unknown): value is SharedMember {
+  return (
+    hasExactKeys(value, ["driver", "handle", "kind", "label", "joined_at", "status"]) &&
+    isSharedActor({ driver: value.driver, handle: value.handle, kind: value.kind, label: value.label }) &&
+    isTimestamp(value.joined_at) &&
+    (value.status === "active" || value.status === "left")
+  );
+}
+
+function isSharedMessage(value: unknown): value is SharedMessage {
+  return (
+    hasExactKeys(value, ["content", "created_at", "reply_to_sequence", "sender", "sequence"]) &&
+    isString(value.content) &&
+    isTimestamp(value.created_at) &&
+    isNullable(value.reply_to_sequence, isPositiveInteger) &&
+    isSharedActor(value.sender) &&
+    isPositiveInteger(value.sequence)
+  );
+}
+
+export function isSharedRoomProjection(value: unknown): value is SharedRoomProjection {
+  if (!hasExactKeys(value, ["members", "messages", "room"])) return false;
+  const room = value.room;
+  return (
+    hasExactKeys(room, ["created_at", "description", "latest_sequence", "name", "shared_at", "status"]) &&
+    isTimestamp(room.created_at) &&
+    isNullable(room.description, isString) &&
+    isNonNegativeInteger(room.latest_sequence) &&
+    isNonEmptyString(room.name) &&
+    isTimestamp(room.shared_at) &&
+    (room.status === "open" || room.status === "closed") &&
+    isArrayOf(value.members, isSharedMember) &&
+    isArrayOf(value.messages, isSharedMessage)
   );
 }
 
@@ -703,9 +877,19 @@ export function isRoomMessage(value: unknown): value is RoomMessage {
   );
 }
 
+export function isSeatNameResponse(value: unknown): value is SeatNameResponse {
+  return (
+    hasExactKeys(value, ["instance_id", "name", "scope"]) &&
+    isInstanceId(value.instance_id) &&
+    isNullable(value.name, isNonEmptyString) &&
+    (value.scope === "nickname" || value.scope === "note")
+  );
+}
+
 export function isRoomDetail(value: unknown): value is RoomDetail {
   return (
-    hasExactKeys(value, ["room", "memberships", "messages", "next_cursor"]) &&
+    hasExactKeys(value, ["notes", "room", "memberships", "messages", "next_cursor"]) &&
+    isStringRecord(value.notes) &&
     isRoomProjection(value.room) &&
     isArrayOf(value.memberships, isRoomMembership) &&
     isArrayOf(value.messages, isRoomMessage) &&
@@ -781,6 +965,49 @@ export function isNetworkProjection(value: unknown): value is NetworkProjection 
     isArrayOf(value.instances, isInstanceProjection) &&
     isArrayOf(value.edges, isNetworkEdge)
   );
+}
+
+function isCreditTransferProjection(value: unknown): value is CreditTransferProjection {
+  return (
+    hasExactKeys(value, [
+      "addressed_to",
+      "amount",
+      "by_instance_id",
+      "code",
+      "counterparty",
+      "created_at",
+      "direction",
+      "memo",
+      "room_id",
+      "transfer_id",
+    ]) &&
+    isNullable(value.addressed_to, isNonEmptyString) &&
+    isPositiveInteger(value.amount) &&
+    isNullable(value.by_instance_id, isInstanceId) &&
+    isNullable(value.code, isNonEmptyString) &&
+    isNullable(value.counterparty, isPrincipalId) &&
+    isTimestamp(value.created_at) &&
+    (value.direction === "granted" || value.direction === "received" || value.direction === "sent") &&
+    isNullable(value.memo, isString) &&
+    isNullable(value.room_id, isIdentifier) &&
+    isNonEmptyString(value.transfer_id)
+  );
+}
+
+export function isCreditsProjection(value: unknown): value is CreditsProjection {
+  return (
+    hasExactKeys(value, ["balance", "granted", "principal_id", "received", "sent", "transfers"]) &&
+    isNonNegativeInteger(value.balance) &&
+    isNonNegativeInteger(value.granted) &&
+    isPrincipalId(value.principal_id) &&
+    isNonNegativeInteger(value.received) &&
+    isNonNegativeInteger(value.sent) &&
+    isArrayOf(value.transfers, isCreditTransferProjection)
+  );
+}
+
+export function isRedeemCreditsResponse(value: unknown): value is RedeemCreditsResponse {
+  return hasExactKeys(value, ["credits", "granted"]) && isCreditsProjection(value.credits) && isNonNegativeInteger(value.granted);
 }
 
 export function isProvisionAccountResponse(

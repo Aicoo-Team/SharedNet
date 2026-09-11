@@ -1587,3 +1587,595 @@ describe("Room invites, guests, and wait", () => {
     });
   });
 });
+
+describe("credits: a purse per Principal, a ledger of every movement", () => {
+  const ALICE = `snk_${"c".repeat(43)}`;
+  const BOB = `snk_${"d".repeat(43)}`;
+  const CAROL = `snk_${"e".repeat(43)}`;
+
+  /** Three accounts with keys, one code worth 100 that two of them may redeem, one that has expired. */
+  function creditStore() {
+    return new MemorySharedNetRepository({
+      now: () => new Date("2026-09-12T10:00:00.000Z"),
+      accounts: [
+        { authUserId: "alice", apiKey: ALICE },
+        { authUserId: "bob", apiKey: BOB },
+        { authUserId: "carol", apiKey: CAROL },
+      ],
+      creditCodes: [
+        { code: "HACK-2026", amount: 100, max_redemptions: 2 },
+        { code: "LASTYEAR", amount: 50, expires_at: "2026-09-01T00:00:00.000Z" },
+      ],
+    });
+  }
+
+  async function seat(store: MemorySharedNetRepository, key: string) {
+    const { instance, token } = await startWithKey(store, key, { runtime_kind: "claude-code" });
+    return { instanceId: instance.id as string, token: token as string, principalId: instance.principal_id as string };
+  }
+
+  function post(store: MemorySharedNetRepository, path: string, token: string, body: unknown, extra: Record<string, string> = {}) {
+    return request(store, path, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json", ...extra },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it("redeems a code once per account, caps it, refuses an anonymous seat, and refuses an expired one", async () => {
+    const store = creditStore();
+
+    const first = await post(store, "/api/v1/credits/redeem", ALICE, { code: "hack-2026" });
+    expect(first.status).toBe(200);
+    expect(first.headers.get("cache-control")).toContain("no-store");
+    const firstBody = await json(first);
+    expect(firstBody.granted).toBe(100);
+    expect(firstBody.credits).toMatchObject({ balance: 100, granted: 100, sent: 0, received: 0 });
+    expect(firstBody.transfer).toMatchObject({ from_principal_id: null, amount: 100, code: "HACK-2026", by_instance_id: null });
+
+    // A retry is not cheating: the purse is unchanged and nothing was granted.
+    const again = await json(await post(store, "/api/v1/credits/redeem", ALICE, { code: "HACK-2026" }));
+    expect(again).toMatchObject({ granted: 0, transfer: null, credits: { balance: 100 } });
+
+    // Two redemptions were allowed; the third account is told the code is spent.
+    expect((await json(await post(store, "/api/v1/credits/redeem", BOB, { code: "HACK-2026" }))).granted).toBe(100);
+    const exhausted = await post(store, "/api/v1/credits/redeem", CAROL, { code: "HACK-2026" });
+    expect(exhausted.status).toBe(410);
+    expect((await json(exhausted)).error.code).toBe("credit_code_exhausted");
+
+    const expired = await post(store, "/api/v1/credits/redeem", CAROL, { code: "LASTYEAR" });
+    expect(expired.status).toBe(410);
+    expect((await json(expired)).error.code).toBe("credit_code_expired");
+    const unknown = await post(store, "/api/v1/credits/redeem", CAROL, { code: "NOPE" });
+    expect(unknown.status).toBe(404);
+    expect((await json(unknown)).error.code).toBe("credit_code_not_found");
+    expect((await post(store, "/api/v1/credits/redeem", CAROL, { code: "" })).status).toBe(422);
+    expect((await post(store, "/api/v1/credits/redeem", CAROL, { code: "x", extra: 1 })).status).toBe(422);
+    expect((await post(store, "/api/v1/credits/redeem", CAROL, { code: "HACK-2026" }, { "idempotency-key": crypto.randomUUID() })).status).toBe(400);
+
+    // An anonymous Principal is free to create, so it may hold credits but never redeem a code.
+    const alice = await seat(store, ALICE);
+    const opened = await json(await post(store, "/api/v1/rooms", alice.token, { name: "Trade" }, { "idempotency-key": crypto.randomUUID() }));
+    const invite = await json(
+      await request(store, `/api/v1/rooms/${opened.room.id}/invites`, { method: "POST", headers: instanceHeaders(alice.token) }),
+    );
+    const guest = await json(
+      await post(store, `/api/v1/rooms/${opened.room.id}/join`, invite.token, { name: "stranger", runtime: { kind: "curl" } }),
+    );
+    const refused = await post(store, "/api/v1/credits/redeem", guest.member_token, { code: "HACK-2026" });
+    expect(refused.status).toBe(403);
+    expect((await json(refused)).error.code).toBe("credits_account_required");
+  });
+
+  it("keeps a settled redemption settled after the code expires, and measures a memo the way the column does", async () => {
+    const clock = { now: new Date("2026-09-12T10:00:00.000Z") };
+    const store = new MemorySharedNetRepository({
+      now: () => clock.now,
+      accounts: [{ authUserId: "alice", apiKey: ALICE }, { authUserId: "bob", apiKey: BOB }],
+      creditCodes: [{ code: "SOON", amount: 10, expires_at: "2026-09-12T11:00:00.000Z" }],
+    });
+
+    expect((await json(await post(store, "/api/v1/credits/redeem", ALICE, { code: "SOON" }))).granted).toBe(10);
+    clock.now = new Date("2026-09-12T12:00:00.000Z");
+    // What this account already redeemed is history; the expiry does not unsettle it.
+    expect((await json(await post(store, "/api/v1/credits/redeem", ALICE, { code: "SOON" }))).granted).toBe(0);
+    // Someone who never redeemed it is told the truth.
+    const late = await post(store, "/api/v1/credits/redeem", BOB, { code: "SOON" });
+    expect(late.status).toBe(410);
+    expect((await json(late)).error.code).toBe("credit_code_expired");
+
+    // A memo is measured after NFKC, because that is what gets stored: "ﬃ"
+    // is one character on the way in and three on the way out.
+    const alice = await seat(store, ALICE);
+    const bob = await seat(store, BOB);
+    const expanding = "\uFB03".repeat(100);
+    const refused = await post(
+      store,
+      "/api/v1/credits/transfers",
+      alice.token,
+      { to: bob.principalId, amount: 1, memo: expanding },
+      { "idempotency-key": crypto.randomUUID() },
+    );
+    expect(refused.status).toBe(422);
+    const accepted = await post(
+      store,
+      "/api/v1/credits/transfers",
+      alice.token,
+      { to: bob.principalId, amount: 1, memo: "\uFB03".repeat(60) },
+      { "idempotency-key": crypto.randomUUID() },
+    );
+    expect(accepted.status).toBe(201);
+    expect((await json(accepted)).transfer.memo).toBe("ffi".repeat(60));
+  });
+
+  it("follows a claimed seat to the account that claimed it, on both sides of a payment", async () => {
+    const store = creditStore();
+    await post(store, "/api/v1/credits/redeem", ALICE, { code: "HACK-2026" });
+    const alice = await seat(store, ALICE);
+    const opened = await json(await post(store, "/api/v1/rooms", alice.token, { name: "Trade" }, { "idempotency-key": crypto.randomUUID() }));
+    const invite = await json(
+      await request(store, `/api/v1/rooms/${opened.room.id}/invites`, { method: "POST", headers: instanceHeaders(alice.token) }),
+    );
+    const guest = await json(
+      await post(store, `/api/v1/rooms/${opened.room.id}/join`, invite.token, { name: "stranger", runtime: { kind: "curl" } }),
+    );
+    // The guest is paid while it is still anonymous.
+    await post(store, "/api/v1/credits/transfers", alice.token, { to: guest.membership.member_id, amount: 20 }, { "idempotency-key": crypto.randomUUID() });
+    expect((await json(await request(store, "/api/v1/credits", { headers: instanceHeaders(guest.member_token) }))).credits.balance).toBe(20);
+
+    // Its human logs in on that machine and claims the seat for Bob's account.
+    const login = await json(
+      await request(store, "/api/v1/cli/logins", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ label: "guest laptop", seats: [guest.member_token] }),
+      }),
+    );
+    await store.approveCliLogin({ code: login.user_code, principalId: (await store.principalForAccount("bob"))!.id });
+
+    // The same token now spends Bob's purse, and Bob's purse holds what the guest was paid.
+    const afterClaim = await json(await request(store, "/api/v1/credits", { headers: instanceHeaders(guest.member_token) }));
+    expect(afterClaim.credits).toMatchObject({ balance: 20, received: 20 });
+    expect((await json(await request(store, "/api/v1/credits", { headers: apiHeaders({}, BOB) }))).credits.balance).toBe(20);
+    // And paying that seat's id now reaches Bob, not the Principal it was born under.
+    const paid = await json(
+      await post(store, "/api/v1/credits/transfers", alice.token, { to: guest.membership.member_id, amount: 5 }, { "idempotency-key": crypto.randomUUID() }),
+    );
+    expect(paid.transfer.to_principal_id).toBe((await store.principalForAccount("bob"))!.id);
+  });
+
+  it("keeps one payment replay across guest claim and refuses a changed body", async () => {
+    const store = creditStore();
+    await post(store, "/api/v1/credits/redeem", ALICE, { code: "HACK-2026" });
+    const alice = await seat(store, ALICE);
+    const bob = await seat(store, BOB);
+    const aliceAuth = await store.authenticateInstance(alice.token);
+    const { room } = await store.createRoom(aliceAuth!, { name: "Replay after claim" });
+    const invite = await store.createRoomInvite({ roomId: room.id, principalId: aliceAuth!.principalId });
+    const guest = await store.joinRoomWithInvite(invite.token, room.id, { name: "payer" });
+    await post(store, "/api/v1/credits/transfers", ALICE, { to: guest.membership.instance_id, amount: 20 }, { "idempotency-key": crypto.randomUUID() });
+    const key = crypto.randomUUID();
+    const body = { to: alice.principalId, amount: 7 };
+    const first = await post(store, "/api/v1/credits/transfers", guest.member_token, body, { "idempotency-key": key });
+    const firstText = await first.text();
+    expect(first.status).toBe(201);
+    const login = await store.startCliLogin({ label: "payer", seats: [guest.member_token] });
+    await store.approveCliLogin({ code: login.user_code, principalId: (await store.principalForAccount("bob"))!.id });
+
+    const replay = await post(store, "/api/v1/credits/transfers", guest.member_token, body, { "idempotency-key": key });
+    expect(replay.status).toBe(201);
+    expect(replay.headers.get("idempotency-replayed")).toBe("true");
+    expect(await replay.text()).toBe(firstText);
+    const conflict = await post(store, "/api/v1/credits/transfers", guest.member_token, { ...body, amount: 8 }, { "idempotency-key": key });
+    expect(conflict.status).toBe(409);
+    expect((await json(conflict)).error.code).toBe("idempotency_conflict");
+    expect((await json(await request(store, "/api/v1/credits", { headers: apiHeaders({}, BOB) }))).credits.balance).toBe(13);
+
+    // A second Instance of the same account owns a separate replay namespace.
+    const independent = await post(store, "/api/v1/credits/transfers", bob.token, body, { "idempotency-key": key });
+    expect(independent.status).toBe(201);
+    expect(independent.headers.get("idempotency-replayed")).toBeNull();
+    expect((await json(await request(store, "/api/v1/credits", { headers: apiHeaders({}, BOB) }))).credits.balance).toBe(6);
+  });
+
+  it("retains the Principal namespace for account-key idempotency", async () => {
+    const store = creditStore();
+    const alice = (await store.authenticateApiKey(ALICE))!;
+    const bob = (await store.authenticateApiKey(BOB))!;
+    const key = crypto.randomUUID();
+    const scope = { principalId: alice.principalId, credentialClass: alice.kind, actorId: alice.actorId, operationId: "scope-contract", key };
+    const first = await store.executeIdempotent(scope, "same-body", async () => ({ status: 201, body: "first Principal" }));
+    const second = await store.executeIdempotent({ ...scope, principalId: bob.principalId }, "same-body", async () => ({ status: 201, body: "second Principal" }));
+    expect(first).toMatchObject({ replayed: false, body: "first Principal" });
+    expect(second).toMatchObject({ replayed: false, body: "second Principal" });
+  });
+
+  it("pays by Principal, Agent or Instance id, exactly once per key, never more than the purse holds, never to itself", async () => {
+    const store = creditStore();
+    await post(store, "/api/v1/credits/redeem", ALICE, { code: "HACK-2026" });
+    const alice = await seat(store, ALICE);
+    const bob = await seat(store, BOB);
+    const { agent: bobsTag } = await (async () => {
+      const response = await request(store, "/api/v1/agents", {
+        method: "POST",
+        headers: apiHeaders({ "content-type": "application/json" }, BOB),
+        body: JSON.stringify({ handle: "bob-bot" }),
+      });
+      return json(response);
+    })();
+
+    const key = crypto.randomUUID();
+    const body = { to: bob.instanceId, amount: 30, memo: "map tiles" };
+    const paid = await post(store, "/api/v1/credits/transfers", alice.token, body, { "idempotency-key": key });
+    expect(paid.status).toBe(201);
+    const paidBody = await json(paid);
+    expect(paidBody.transfer).toMatchObject({
+      from_principal_id: alice.principalId,
+      to_principal_id: bob.principalId,
+      amount: 30,
+      memo: "map tiles",
+      by_instance_id: alice.instanceId,
+      addressed_to: bob.instanceId,
+      code: null,
+    });
+    expect(paidBody.credits).toMatchObject({ balance: 70, granted: 100, sent: 30, received: 0 });
+
+    const replay = await post(store, "/api/v1/credits/transfers", alice.token, body, { "idempotency-key": key });
+    expect(replay.status).toBe(201);
+    expect(replay.headers.get("idempotency-replayed")).toBe("true");
+    expect(await json(replay)).toEqual(paidBody);
+    expect((await json(await request(store, "/api/v1/credits", { headers: apiHeaders({}, ALICE) }))).credits.balance).toBe(70);
+
+    // The same purse answers to the account key, which pays with no seat behind it.
+    const byKey = await post(store, "/api/v1/credits/transfers", ALICE, { to: bobsTag.id, amount: 5 }, { "idempotency-key": crypto.randomUUID() });
+    expect((await json(byKey)).transfer).toMatchObject({ to_principal_id: bob.principalId, by_instance_id: null, addressed_to: bobsTag.id });
+    const byPrincipal = await post(store, "/api/v1/credits/transfers", ALICE, { to: bob.principalId, amount: 5 }, { "idempotency-key": crypto.randomUUID() });
+    expect(byPrincipal.status).toBe(201);
+    expect((await json(await request(store, "/api/v1/credits", { headers: instanceHeaders(bob.token) }))).credits).toMatchObject({ balance: 40, received: 40, granted: 0, sent: 0 });
+
+    const tooMuch = await post(store, "/api/v1/credits/transfers", alice.token, { to: bob.principalId, amount: 61 }, { "idempotency-key": crypto.randomUUID() });
+    expect(tooMuch.status).toBe(409);
+    expect((await json(tooMuch)).error.code).toBe("insufficient_credits");
+    const nobody = await post(store, "/api/v1/credits/transfers", alice.token, { to: "i_nobody0001", amount: 1 }, { "idempotency-key": crypto.randomUUID() });
+    expect(nobody.status).toBe(404);
+    expect((await json(nobody)).error.code).toBe("payee_not_found");
+    const self = await post(store, "/api/v1/credits/transfers", alice.token, { to: alice.instanceId, amount: 1 }, { "idempotency-key": crypto.randomUUID() });
+    expect(self.status).toBe(422);
+    expect((await json(self)).error.code).toBe("transfer_to_self");
+    expect((await post(store, "/api/v1/credits/transfers", alice.token, { to: bob.principalId, amount: 1 })).status).toBe(400);
+    expect((await post(store, "/api/v1/credits/transfers", alice.token, { to: bob.principalId, amount: 1.5 }, { "idempotency-key": crypto.randomUUID() })).status).toBe(422);
+    expect((await post(store, "/api/v1/credits/transfers", alice.token, { to: bob.principalId, amount: 1, memo: "x".repeat(201) }, { "idempotency-key": crypto.randomUUID() })).status).toBe(422);
+    expect((await post(store, "/api/v1/credits/transfers", alice.token, { to: "rom_nowhere001", amount: 1 }, { "idempotency-key": crypto.randomUUID() })).status).toBe(422);
+    expect((await request(store, "/api/v1/credits")).status).toBe(401);
+    expect((await request(store, "/api/v1/credits", { headers: { authorization: `Bearer rit_${"t".repeat(43)}` } })).status).toBe(401);
+
+    // The ledger, newest first, as each side reads it; paging by transfer id.
+    const alicesLedger = await json(await request(store, "/api/v1/credits/transfers?limit=2", { headers: instanceHeaders(alice.token) }));
+    expect(alicesLedger.items.map((t: { amount: number; code: string | null }) => [t.amount, t.code])).toEqual([[5, null], [5, null]]);
+    expect(alicesLedger.has_more).toBe(true);
+    const rest = await json(
+      await request(store, `/api/v1/credits/transfers?limit=2&before=${alicesLedger.next_cursor}`, { headers: instanceHeaders(alice.token) }),
+    );
+    expect(rest.items.map((t: { amount: number; code: string | null }) => [t.amount, t.code])).toEqual([[30, null], [100, "HACK-2026"]]);
+    expect(rest.has_more).toBe(false);
+    const bobsLedger = await json(await request(store, "/api/v1/credits/transfers", { headers: apiHeaders({}, BOB) }));
+    expect(bobsLedger.items.map((t: { amount: number }) => t.amount)).toEqual([5, 5, 30]);
+    expect((await request(store, "/api/v1/credits/transfers?before=txn_nowhere001", { headers: apiHeaders({}, BOB) })).status).toBe(400);
+    expect((await request(store, "/api/v1/credits/transfers?limit=0", { headers: apiHeaders({}, BOB) })).status).toBe(400);
+  });
+});
+
+describe("artifacts: a file an Agent hands to the Room", () => {
+  const OWNER = `snk_${"f".repeat(43)}`;
+  const MEMBER = `snk_${"g".repeat(43)}`;
+  const STRANGER = `snk_${"h".repeat(43)}`;
+
+  /** The clock advances a second per read, so "newest first" is a real order. */
+  function artifactStore() {
+    let tick = 0;
+    return new MemorySharedNetRepository({
+      now: () => new Date(Date.parse("2026-09-12T10:00:00.000Z") + tick++ * 1000),
+      accounts: [
+        { authUserId: "owner", apiKey: OWNER },
+        { authUserId: "member", apiKey: MEMBER },
+        { authUserId: "stranger", apiKey: STRANGER },
+      ],
+    });
+  }
+
+  /** An owner's seat, a Room it opened, and a second account seated in it. */
+  async function sharedRoom(store: MemorySharedNetRepository) {
+    const owner = await startWithKey(store, OWNER, { runtime_kind: "claude-code" });
+    const member = await startWithKey(store, MEMBER, { runtime_kind: "codex" });
+    const ownerAuth = (await store.authenticateInstance(owner.token as string))!;
+    const memberAuth = (await store.authenticateInstance(member.token as string))!;
+    const { room } = await store.createRoom(ownerAuth, { name: "Handover" });
+    await store.joinRoom(memberAuth, room.id);
+    return { owner, member, ownerAuth, memberAuth, roomId: room.id as string };
+  }
+
+  function upload(
+    store: MemorySharedNetRepository,
+    token: string,
+    bytes: string | Uint8Array,
+    headers: Record<string, string>,
+  ) {
+    return request(store, "/api/v1/artifacts", {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "idempotency-key": crypto.randomUUID(), ...headers },
+      body: bytes as BodyInit,
+    });
+  }
+
+  it("hands a file to a Room: its members read it, a stranger is told it does not exist", async () => {
+    const store = artifactStore();
+    const { owner, member, roomId } = await sharedRoom(store);
+    const patch = "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n";
+
+    const created = await upload(store, owner.token as string, patch, {
+      "content-type": "text/plain; charset=utf-8",
+      "x-sharednet-filename": "fix.patch",
+      "x-sharednet-room": roomId,
+    });
+    expect(created.status).toBe(201);
+    const createdBody = await json(created.clone());
+    const { artifact } = createdBody;
+    expect(artifact).toMatchObject({
+      filename: "fix.patch",
+      content_type: "text/plain",
+      room_id: roomId,
+      size_bytes: patch.length,
+      uploaded_by_instance_id: (owner as { instance: { id: string } }).instance.id,
+    });
+    expect(artifact.sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(artifact.id).toMatch(/^art_[0-9A-Za-z]{10}$/);
+    // Every file has a link, handed back exactly once, with the file it opens.
+    expect(createdBody.link_key).toMatch(/^afk_[A-Za-z0-9_-]{43}$/);
+    expect(createdBody.url).toBe(`http://127.0.0.1:3001/f/${artifact.id}?k=${createdBody.link_key}`);
+    // And a read never hands the key out again.
+    expect(await json(await request(store, `/api/v1/artifacts/${artifact.id}`, { headers: apiHeaders({}, OWNER) }))).toEqual({ artifact });
+
+    // The other member reads the bytes, as an attachment and nothing else.
+    const content = await request(store, `/api/v1/artifacts/${artifact.id}/content`, {
+      headers: { authorization: `Bearer ${member.token}` },
+    });
+    expect(content.status).toBe(200);
+    expect(await content.text()).toBe(patch);
+    expect(content.headers.get("content-disposition")).toBe("attachment; filename*=UTF-8''fix.patch");
+    expect(content.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(content.headers.get("x-sharednet-sha256")).toBe(artifact.sha256);
+
+    // An account with no seat in that Room cannot see that the file exists.
+    for (const path of [`/api/v1/artifacts/${artifact.id}`, `/api/v1/artifacts/${artifact.id}/content`]) {
+      const refused = await request(store, path, { headers: apiHeaders({}, STRANGER) });
+      expect(refused.status).toBe(404);
+      expect((await json(refused)).error.code).toBe("artifact_not_found");
+    }
+    // And only the uploader may remove it.
+    expect((await request(store, `/api/v1/artifacts/${artifact.id}`, { method: "DELETE", headers: { authorization: `Bearer ${member.token}` } })).status).toBe(404);
+    const removed = await request(store, `/api/v1/artifacts/${artifact.id}`, { method: "DELETE", headers: apiHeaders({}, OWNER) });
+    expect(removed.status).toBe(200);
+    expect((await request(store, `/api/v1/artifacts/${artifact.id}`, { headers: apiHeaders({}, OWNER) })).status).toBe(404);
+  });
+
+  it("refuses to address a file to a Room the caller does not sit in, or to a closed one", async () => {
+    const store = artifactStore();
+    const { owner, roomId } = await sharedRoom(store);
+
+    const notMine = await upload(store, STRANGER, "x", {
+      "x-sharednet-filename": "x.txt",
+      "x-sharednet-room": roomId,
+    });
+    expect(notMine.status).toBe(404);
+    expect((await json(notMine)).error.code).toBe("room_not_found");
+
+    await store.closeRoom((await store.principalForAccount("owner"))!.id, roomId as never);
+    const closed = await upload(store, owner.token as string, "x", {
+      "x-sharednet-filename": "x.txt",
+      "x-sharednet-room": roomId,
+    });
+    expect(closed.status).toBe(409);
+    expect((await json(closed)).error.code).toBe("room_closed");
+  });
+
+  it("opens a file by its link alone, with no account, and refuses a wrong key the same way as a missing file", async () => {
+    const store = artifactStore();
+    const { owner } = await sharedRoom(store);
+
+    // No Room named: still a file, still a link, addressed to nobody.
+    const created = await upload(store, owner.token as string, "a,b\n1,2\n", {
+      "content-type": "text/csv",
+      "x-sharednet-filename": "rows.csv",
+    });
+    expect(created.status).toBe(201);
+    const body = await json(created);
+    expect(body.link_key).toMatch(/^afk_[A-Za-z0-9_-]{43}$/);
+    expect(body.url).toBe(`http://127.0.0.1:3001/f/${body.artifact.id}?k=${body.link_key}`);
+    expect(body.artifact.room_id).toBeNull();
+
+    const opened = await request(store, `/api/v1/artifacts/${body.artifact.id}/content?k=${body.link_key}`);
+    expect(opened.status).toBe(200);
+    expect(await opened.text()).toBe("a,b\n1,2\n");
+    expect(opened.headers.get("content-type")).toBe("text/csv");
+
+    const wrong = await request(store, `/api/v1/artifacts/${body.artifact.id}/content?k=afk_${"z".repeat(43)}`);
+    expect(wrong.status).toBe(404);
+    expect((await json(wrong)).error.code).toBe("artifact_not_found");
+    expect((await request(store, `/api/v1/artifacts/${body.artifact.id}/content?k=nonsense`)).status).toBe(404);
+    // One file's key opens that file and nothing else, not even the same account's next one.
+    const other = await json(await upload(store, owner.token as string, "x", { "x-sharednet-filename": "x.txt" }));
+    expect((await request(store, `/api/v1/artifacts/${other.artifact.id}/content?k=${body.link_key}`)).status).toBe(404);
+    // And a reader holding a key is still nobody: it cannot list or inspect.
+    expect((await request(store, `/api/v1/artifacts/${body.artifact.id}`)).status).toBe(401);
+    expect((await request(store, "/api/v1/artifacts")).status).toBe(401);
+  });
+
+  it("decodes the explicit UTF-8 filename header and preserves literal percent names", async () => {
+    const store = artifactStore();
+    const { owner } = await sharedRoom(store);
+    for (const [headers, expected] of [
+      [{ "x-sharednet-filename*": `UTF-8''${encodeURIComponent("研究报告.md")}` }, "研究报告.md"],
+      [{ "x-sharednet-filename": "fallback.md", "x-sharednet-filename*": "UTF-8''caf%C3%A9.md" }, "café.md"],
+      [{ "x-sharednet-filename": "report%20.md" }, "report%20.md"],
+    ] as [Record<string, string>, string][]) {
+      const response = await upload(store, owner.token as string, "bytes", { ...headers, "x-sharednet-reach": "private" });
+      expect(response.status).toBe(201);
+      expect((await json(response)).artifact.filename).toBe(expected);
+    }
+    for (const value of ["", "ISO-8859-1''caf%E9.md", "UTF-8''%ZZ", "UTF-8''%FF", "UTF-8''..%2Fsecret", "UTF-8''bad%00name"]) {
+      const response = await upload(store, owner.token as string, "bytes", {
+        "x-sharednet-reach": "private",
+        "x-sharednet-filename": "fallback.md",
+        "x-sharednet-filename*": value,
+      });
+      expect(response.status).toBe(422);
+      expect((await json(response)).error.code).toBe("validation_failed");
+    }
+  });
+
+  it("serves anything that could run in a browser as bytes, never inline", async () => {
+    const store = artifactStore();
+    const { owner } = await sharedRoom(store);
+    for (const [type, filename] of [
+      ["text/html", "page.html"],
+      ["image/svg+xml", "logo.svg"],
+      ["application/javascript", "script.js"],
+    ]) {
+      const created = await json(
+        await upload(store, owner.token as string, "<script>alert(1)</script>", {
+          "content-type": type!,
+          "x-sharednet-filename": filename!,
+          "x-sharednet-reach": "link",
+        }),
+      );
+      const served = await request(store, `/api/v1/artifacts/${created.artifact.id}/content?k=${created.link_key}`);
+      expect(served.headers.get("content-type")).toBe("application/octet-stream");
+      expect(served.headers.get("content-disposition")).toContain("attachment");
+      expect(served.headers.get("content-security-policy")).toContain("sandbox");
+    }
+  });
+
+  it("refuses a filename that is a path, an empty body, and a file over the limit", async () => {
+    const store = artifactStore();
+    const { owner, roomId } = await sharedRoom(store);
+    const bad = { "x-sharednet-room": roomId };
+
+    for (const filename of ["../../etc/passwd", "a/b.txt", "b\\c.txt", ".", "..", "", "x".repeat(121)]) {
+      const refused = await upload(store, owner.token as string, "x", { ...bad, "x-sharednet-filename": filename });
+      expect(refused.status).toBe(422);
+    }
+    expect((await upload(store, owner.token as string, "x", bad)).status).toBe(422);
+    expect((await upload(store, owner.token as string, "", { ...bad, "x-sharednet-filename": "empty.txt" })).status).toBe(422);
+    // A Room is optional; a malformed one is not.
+    expect((await upload(store, owner.token as string, "x", { "x-sharednet-filename": "x.txt" })).status).toBe(201);
+    expect((await upload(store, owner.token as string, "x", { "x-sharednet-filename": "x.txt", "x-sharednet-room": "not-a-room" })).status).toBe(400);
+
+    const tooBig = new Uint8Array(4 * 1024 * 1024 + 1);
+    tooBig.fill(65);
+    const refused = await upload(store, owner.token as string, tooBig, { ...bad, "x-sharednet-filename": "big.bin" });
+    expect(refused.status).toBe(413);
+    expect((await json(refused)).error.code).toBe("artifact_too_large");
+  });
+
+  it("lists what the caller may read, newest first, and replays an upload that carried the same key", async () => {
+    const store = artifactStore();
+    const { owner, member, roomId } = await sharedRoom(store);
+    const names = ["one.txt", "two.txt", "three.txt"];
+    for (const filename of names) {
+      expect((await upload(store, owner.token as string, filename, { "x-sharednet-filename": filename, "x-sharednet-room": roomId })).status).toBe(201);
+    }
+    // A file of the owner's with no Room: the member must not see it.
+    await upload(store, owner.token as string, "mine", { "x-sharednet-filename": "mine.txt" });
+
+    const ownerList = await json(await request(store, "/api/v1/artifacts", { headers: apiHeaders({}, OWNER) }));
+    expect(ownerList.items.map((item: { filename: string }) => item.filename)).toEqual(["mine.txt", "three.txt", "two.txt", "one.txt"]);
+    const memberList = await json(await request(store, "/api/v1/artifacts", { headers: { authorization: `Bearer ${member.token}` } }));
+    expect(memberList.items.map((item: { filename: string }) => item.filename)).toEqual(["three.txt", "two.txt", "one.txt"]);
+    const paged = await json(await request(store, "/api/v1/artifacts?limit=2", { headers: { authorization: `Bearer ${member.token}` } }));
+    expect(paged.has_more).toBe(true);
+    const rest = await json(
+      await request(store, `/api/v1/artifacts?limit=2&before=${paged.next_cursor}`, { headers: { authorization: `Bearer ${member.token}` } }),
+    );
+    expect(rest.items.map((item: { filename: string }) => item.filename)).toEqual(["one.txt"]);
+    expect((await request(store, "/api/v1/artifacts?before=art_nowhere01", { headers: apiHeaders({}, OWNER) })).status).toBe(400);
+    expect((await request(store, `/api/v1/artifacts?room_id=${roomId}`, { headers: apiHeaders({}, STRANGER) }))).toBeTruthy();
+
+    // One key, one file: a retried upload does not store the bytes twice.
+    const key = crypto.randomUUID();
+    const headers = { authorization: `Bearer ${owner.token}`, "idempotency-key": key, "x-sharednet-filename": "once.txt", "x-sharednet-room": roomId };
+    const first = await request(store, "/api/v1/artifacts", { method: "POST", headers, body: "once" });
+    const replay = await request(store, "/api/v1/artifacts", { method: "POST", headers, body: "once" });
+    expect([first.status, replay.status]).toEqual([201, 201]);
+    expect(replay.headers.get("idempotency-replayed")).toBe("true");
+    expect((await json(replay)).artifact.id).toBe((await json(first)).artifact.id);
+    // A different file under the same key is a conflict, not a second upload.
+    const conflict = await request(store, "/api/v1/artifacts", { method: "POST", headers, body: "twice" });
+    expect(conflict.status).toBe(409);
+    expect((await json(conflict)).error.code).toBe("idempotency_conflict");
+    expect((await request(store, "/api/v1/artifacts", { method: "POST", headers: { authorization: `Bearer ${owner.token}`, "x-sharednet-filename": "x.txt", "x-sharednet-room": roomId }, body: "x" })).status).toBe(400);
+  });
+  it("keeps every guest file manageable by the claiming account, including the original upload replay", async () => {
+    const store = artifactStore();
+    const { ownerAuth, memberAuth, roomId } = await sharedRoom(store);
+    const { token } = await store.createRoomInvite({ roomId: roomId as `rom_${string}`, principalId: ownerAuth.principalId });
+    const guest = await store.joinRoomWithInvite(token, roomId as `rom_${string}`, { name: "file author", runtime: { kind: "curl" } });
+    const guestAuth = (await store.authenticateInstance(guest.member_token))!;
+    const files = [];
+    for (const reach of ["private", "room", "link"] as const) {
+      const headers = {
+        authorization: `Bearer ${guest.member_token}`,
+        "idempotency-key": crypto.randomUUID(),
+        "x-sharednet-filename": `${reach}.txt`,
+        "x-sharednet-reach": reach,
+        ...(reach === "room" ? { "x-sharednet-room": roomId } : {}),
+      };
+      const response = await request(store, "/api/v1/artifacts", { method: "POST", headers, body: "guest file" });
+      expect(response.status).toBe(201);
+      const body = await response.text();
+      const decoded = JSON.parse(body) as { artifact: { id: `art_${string}` }; link_key?: string };
+      files.push({ reach, headers, body, ...decoded });
+    }
+    expect(await store.artifactUsage(guestAuth)).toMatchObject({ bytes: 30, count: 3 });
+    const login = await store.startCliLogin({ label: "file author", seats: [guest.member_token] });
+    await store.approveCliLogin({ code: login.user_code, principalId: ownerAuth.principalId });
+    const claimed = (await store.authenticateInstance(guest.member_token))!;
+    expect(claimed.principalId).toBe(ownerAuth.principalId);
+    expect(await store.artifactUsage(claimed)).toMatchObject({ bytes: 30, count: 3 });
+    expect((await store.listArtifacts(claimed, { room_id: null, before: null, limit: 50 })).items).toHaveLength(3);
+    for (const file of files) {
+      const read = await store.readArtifact(claimed, file.artifact.id);
+      expect(new TextDecoder().decode(read.bytes)).toBe("guest file");
+      expect(read.artifact.principal_id).toBe(ownerAuth.principalId);
+      await expect(store.deleteArtifact(memberAuth, file.artifact.id)).rejects.toMatchObject({ code: "artifact_not_found" });
+      if (file.reach !== "room") await expect(store.readArtifact(memberAuth, file.artifact.id)).rejects.toMatchObject({ code: "artifact_not_found" });
+      const replay = await request(store, "/api/v1/artifacts", { method: "POST", headers: file.headers, body: "guest file" });
+      expect(replay.status).toBe(201);
+      expect(replay.headers.get("idempotency-replayed")).toBe("true");
+      expect(await replay.text()).toBe(file.body);
+      const conflict = await request(store, "/api/v1/artifacts", { method: "POST", headers: file.headers, body: "changed" });
+      expect(conflict.status).toBe(409);
+      expect((await json(conflict)).error.code).toBe("idempotency_conflict");
+    }
+    expect(await store.artifactUsage(claimed)).toMatchObject({ bytes: 30, count: 3 });
+    for (const file of files) {
+      expect((await store.deleteArtifact(claimed, file.artifact.id)).artifact.principal_id).toBe(ownerAuth.principalId);
+      if (file.link_key) await expect(store.readArtifactByLink(file.artifact.id, file.link_key)).rejects.toMatchObject({ code: "artifact_not_found" });
+    }
+    expect(await store.artifactUsage(claimed)).toMatchObject({ bytes: 0, count: 0 });
+  });
+
+  it("charges an upload authenticated before a finished guest claim to the current account", async () => {
+    const store = artifactStore();
+    const { ownerAuth, roomId } = await sharedRoom(store);
+    const { token } = await store.createRoomInvite({ roomId: roomId as `rom_${string}`, principalId: ownerAuth.principalId });
+    const guest = await store.joinRoomWithInvite(token, roomId as `rom_${string}`, { name: "late upload", runtime: { kind: "curl" } });
+    const staleAuth = (await store.authenticateInstance(guest.member_token))!;
+    const login = await store.startCliLogin({ label: "late upload", seats: [guest.member_token] });
+    await store.approveCliLogin({ code: login.user_code, principalId: ownerAuth.principalId });
+    const uploaded = await store.uploadArtifact(staleAuth, { filename: "late.txt", room_id: null, content_type: "text/plain", bytes: new TextEncoder().encode("late") });
+    expect(uploaded.artifact.principal_id).toBe(ownerAuth.principalId);
+    expect(await store.artifactUsage(ownerAuth)).toMatchObject({ bytes: 4, count: 1 });
+    expect((await store.readArtifact(ownerAuth, uploaded.artifact.id)).artifact.id).toBe(uploaded.artifact.id);
+  });
+
+});

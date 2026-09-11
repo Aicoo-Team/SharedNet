@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { readdir } from "node:fs/promises";
-import { join as joinPath } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { readdir, readFile, writeFile } from "node:fs/promises";
+import { isAbsolute, join as joinPath, resolve as resolvePathFrom } from "node:path";
 
 import { ApiClient, resolveBaseUrl, sameOrigin } from "./api-client.ts";
 import { storeAccountCredential } from "./login.ts";
@@ -32,6 +32,11 @@ import {
  */
 
 type Environment = Record<string, string | undefined>;
+
+/** A path the human typed, resolved against the directory the CLI was run in. */
+function resolvePath(cwd: string, path: string): string {
+  return isAbsolute(path) ? path : resolvePathFrom(cwd, path);
+}
 
 export interface GuestDependencies {
   env: Environment;
@@ -89,8 +94,8 @@ const INVITE_TOKEN_PATTERN = /^rit_[A-Za-z0-9_-]{43}$/;
 /** The server caps one wait at this; the client loops. */
 const WAIT_MAX_SECONDS = 25;
 
-const VALUE_OPTIONS = new Set(["name", "token", "timeout", "reply-to", "min", "on", "run", "max-runs", "max-failures", "as", "claim", "agent", "after", "before", "limit", "order", "last", "from-instance", "from-agent", "grep"]);
-const FLAG_OPTIONS = new Set(["hook", "private", "reply"]);
+const VALUE_OPTIONS = new Set(["name", "token", "timeout", "reply-to", "min", "on", "run", "max-runs", "max-failures", "as", "claim", "agent", "after", "before", "limit", "order", "last", "from-instance", "from-agent", "grep", "memo", "out"]);
+const FLAG_OPTIONS = new Set(["hook", "private", "reply", "room", "force"]);
 
 function parseGuestArguments(args: string[]): ParsedGuestArguments {
   const options = new Map<string, string | true>();
@@ -1160,12 +1165,300 @@ async function answer(
   );
 }
 
+/**
+ * Credits (decision 2026-09-11): the purse is the account's, so a seat in this
+ * directory pays as its account and the ledger records the seat; a directory
+ * that is in no Room pays with the account key `sharednet login` left here.
+ */
+type CreditCredential = {
+  client: ApiClient;
+  token: string;
+  as: "seat" | "account";
+  seat: { room_id: string; member_id: string } | null;
+};
+
+async function creditCredential(dependencies: GuestDependencies, explicitSeat?: string): Promise<CreditCredential> {
+  try {
+    const { client, state, credential } = await currentSeat(dependencies, explicitSeat);
+    return { client, token: credential.member_token, as: "seat", seat: { room_id: state.room_id, member_id: state.member_id } };
+  } catch (error) {
+    if (!(error instanceof CliError) || error.code !== "not_in_a_room") throw error;
+  }
+  const baseUrl = resolveBaseUrl(dependencies.env.SHAREDNET_BASE_URL);
+  const paths = getStoragePaths(dependencies.env);
+  const stored = await readStoredApiCredential(paths).catch(() => null);
+  const key = stored && sameOrigin(stored.base_url, baseUrl) ? stored.api_key : dependencies.env.SHAREDNET_API_KEY?.trim() || null;
+  if (!key) {
+    throw localError(
+      "not_logged_in",
+      "This directory is not in a Room and this machine acts as nobody. Run sharednet login, or join a Room first.",
+    );
+  }
+  return { client: new ApiClient(baseUrl, dependencies.fetch), token: key, as: "account", seat: null };
+}
+
+type CreditsShape = { credits: { principal_id: string; balance: number; granted: number; sent: number; received: number } };
+type TransferShape = { id: string; amount: number; to_principal_id: string; [key: string]: unknown };
+
+async function balance(args: string[], dependencies: GuestDependencies): Promise<unknown> {
+  const parsed = parseGuestArguments(args);
+  assertOnlyOptions(parsed, ["as"]);
+  if (parsed.positionals.length !== 0) throw localError("invalid_arguments", "Usage: sharednet balance [--as <i_…>]");
+  const { client, token, as, seat } = await creditCredential(dependencies, stringOption(parsed, "as"));
+  const payload = await client.request<CreditsShape>("GET", "/credits", token);
+  return { ...payload.credits, as, seat };
+}
+
+async function redeem(args: string[], dependencies: GuestDependencies): Promise<unknown> {
+  const parsed = parseGuestArguments(args);
+  assertOnlyOptions(parsed, ["as"]);
+  const code = parsed.positionals[0]?.trim();
+  if (parsed.positionals.length !== 1 || !code) throw localError("invalid_arguments", "Usage: sharednet redeem <CODE>");
+  const { client, token } = await creditCredential(dependencies, stringOption(parsed, "as"));
+  return client.request("POST", "/credits/redeem", token, { code });
+}
+
+/**
+ * `pay <target> <amount>`: the target is a Principal, Agent or Instance id;
+ * the amount a whole number. With `--room`, the payment is recorded against
+ * this directory's Room and the seat posts a one-line receipt into it, so a
+ * trade is visible where it was agreed. Every payment carries its own key.
+ */
+async function pay(args: string[], dependencies: GuestDependencies): Promise<unknown> {
+  const parsed = parseGuestArguments(args);
+  assertOnlyOptions(parsed, ["memo", "room", "as"]);
+  const [target, amountText] = parsed.positionals;
+  if (parsed.positionals.length !== 2 || !target || !amountText) {
+    throw localError("invalid_arguments", "Usage: sharednet pay <p_…|a_…|i_…> <amount> [--memo <text>] [--room] [--as <i_…>]");
+  }
+  if (!/^(?:p|a|i)_[0-9A-Za-z]{10}$/.test(target)) {
+    throw localError("invalid_arguments", "The target must be a Principal (p_…), Agent (a_…) or Instance (i_…) id.");
+  }
+  const amount = Number(amountText);
+  if (!/^\d+$/.test(amountText) || !Number.isSafeInteger(amount) || amount < 1) {
+    throw localError("invalid_arguments", "The amount must be a whole number of credits, at least 1.");
+  }
+  const memo = stringOption(parsed, "memo");
+  const announce = parsed.options.has("room");
+  const { client, token, seat } = await creditCredential(dependencies, stringOption(parsed, "as"));
+  if (announce && seat === null) {
+    throw localError("not_in_a_room", "--room records the payment against this directory's Room; join one first.");
+  }
+  const paid = await client.request<{ transfer: TransferShape; credits: CreditsShape["credits"] }>(
+    "POST",
+    "/credits/transfers",
+    token,
+    { to: target, amount, ...(memo === undefined ? {} : { memo }), ...(announce && seat ? { room_id: seat.room_id } : {}) },
+    { "idempotency-key": randomUUID() },
+  );
+  let receipt: unknown = null;
+  let warning: { code: "receipt_not_confirmed"; message: string } | undefined;
+  if (announce && seat) {
+    try {
+      receipt = await client.request(
+        "POST",
+        `/rooms/${encodeURIComponent(seat.room_id)}/messages`,
+        token,
+        { content: `Paid ${amount} credit${amount === 1 ? "" : "s"} to ${target}${memo ? ` — ${memo}` : ""} (${paid.transfer.id})` },
+        { "idempotency-key": randomUUID() },
+      );
+    } catch {
+      // The payment is final even if the separate receipt fails or its reply
+      // is lost. Reporting the payment as failed invites a second debit.
+      warning = {
+        code: "receipt_not_confirmed",
+        message: "Payment succeeded, but the Room receipt was not confirmed. Do not repeat this payment.",
+      };
+    }
+  }
+  return { ...paid, receipt, ...(warning ? { warning } : {}) };
+}
+
+async function ledger(args: string[], dependencies: GuestDependencies): Promise<unknown> {
+  const parsed = parseGuestArguments(args);
+  assertOnlyOptions(parsed, ["last", "before", "as"]);
+  if (parsed.positionals.length !== 0) throw localError("invalid_arguments", "Usage: sharednet ledger [--last <n>] [--before <txn_…>]");
+  const lastText = stringOption(parsed, "last");
+  const last = lastText === undefined ? 20 : Number(lastText);
+  if (!Number.isSafeInteger(last) || last < 1 || last > 100) throw localError("invalid_arguments", "--last must be between 1 and 100.");
+  const before = stringOption(parsed, "before");
+  if (before !== undefined && !/^txn_[0-9A-Za-z]{10}$/.test(before)) throw localError("invalid_arguments", "--before must be a transfer id such as txn_AbCdEfGhIj.");
+  const { client, token } = await creditCredential(dependencies, stringOption(parsed, "as"));
+  const query = new URLSearchParams({ limit: String(last), ...(before === undefined ? {} : { before }) });
+  return client.request("GET", `/credits/transfers?${query.toString()}`, token);
+}
+
+/**
+ * Artifacts (decision 2026-09-11): a file handed to the Room. `upload` puts
+ * one in the Room this directory sits in, or behind a link for anyone;
+ * `download` takes an id or a link and writes the bytes here.
+ */
+type ArtifactShape = {
+  id: string;
+  filename: string;
+  content_type: string;
+  size_bytes: number;
+  sha256: string;
+  room_id: string | null;
+};
+
+/** A name to write on this machine: the last segment, never a path. */
+function safeBasename(value: string): string {
+  const name = value.split(/[\\/]+/).pop()?.trim() ?? "";
+  if (name === "" || name === "." || name === "..") {
+    throw localError("invalid_filename", "That file has no usable name; pass --out to say where to write it.");
+  }
+  return name;
+}
+
+async function upload(args: string[], dependencies: GuestDependencies): Promise<unknown> {
+  const parsed = parseGuestArguments(args);
+  assertOnlyOptions(parsed, ["name", "as"]);
+  const path = parsed.positionals[0];
+  if (parsed.positionals.length !== 1 || !path) {
+    throw localError("invalid_arguments", "Usage: sharednet upload <path> [--name <filename>] [--as <i_…>]");
+  }
+  const resolved = resolvePath(dependencies.cwd, path);
+  let bytes: Buffer;
+  try {
+    bytes = await readFile(resolved);
+  } catch {
+    throw localError("file_not_found", `Nothing to upload at ${path}.`);
+  }
+  if (bytes.byteLength === 0) throw localError("file_empty", "That file is empty.");
+  const filename = safeBasename(stringOption(parsed, "name") ?? resolved);
+  const { client, token, seat } = await creditCredential(dependencies, stringOption(parsed, "as"));
+  // Every file comes back with a link. A directory that holds a seat also
+  // hands the file to that Room, so the others can read it by id.
+  return client.request("POST", "/artifacts", token, bytes, {
+    "content-type": contentTypeFor(filename),
+    ...(/[^\x20-\x7e]/.test(filename)
+      ? { "x-sharednet-filename*": `UTF-8''${encodeURIComponent(filename)}` }
+      : { "x-sharednet-filename": filename }),
+    ...(seat === null ? {} : { "x-sharednet-room": seat.room_id }),
+    "idempotency-key": randomUUID(),
+  });
+}
+
+async function download(args: string[], dependencies: GuestDependencies): Promise<unknown> {
+  const parsed = parseGuestArguments(args);
+  assertOnlyOptions(parsed, ["out", "force", "as"]);
+  const target = parsed.positionals[0];
+  if (parsed.positionals.length !== 1 || !target) {
+    throw localError("invalid_arguments", "Usage: sharednet download <art_… | link> [--out <path>] [--force]");
+  }
+  // A link carries its own key and needs no credential; an id is read as this seat.
+  const link = /^https?:\/\//.test(target) ? new URL(target) : null;
+  let artifactId: string;
+  let client: ApiClient;
+  let token = "";
+  let key: string | null = null;
+  if (link) {
+    const match = /\/(?:f|api\/v1\/artifacts)\/(art_[0-9A-Za-z]{10})(?:\/content)?$/.exec(link.pathname);
+    key = link.searchParams.get("k");
+    if (!match || key === null) {
+      throw localError("invalid_arguments", "That link does not point at a SharedNet file.");
+    }
+    artifactId = match[1]!;
+    client = new ApiClient(`${link.protocol}//${link.host}`, dependencies.fetch);
+  } else {
+    if (!/^art_[0-9A-Za-z]{10}$/.test(target)) {
+      throw localError("invalid_arguments", "Pass a file id such as art_AbCdEfGhIj, or a link.");
+    }
+    artifactId = target;
+    const credential = await creditCredential(dependencies, stringOption(parsed, "as"));
+    client = credential.client;
+    token = credential.token;
+  }
+  const meta = key === null ? await client.request<{ artifact: ArtifactShape }>("GET", `/artifacts/${artifactId}`, token) : null;
+  const bytes = await client.requestBytes(
+    `/artifacts/${artifactId}/content${key === null ? "" : `?k=${encodeURIComponent(key)}`}`,
+    token,
+  );
+  const name = safeBasename(stringOption(parsed, "out") ?? meta?.artifact.filename ?? bytes.filename ?? artifactId);
+  const out = resolvePath(dependencies.cwd, stringOption(parsed, "out") ?? name);
+  try {
+    // Exclusive creation handles competing downloads and dangling symlinks in
+    // the same operation that opens the file; a prior stat cannot protect it.
+    await writeFile(out, bytes.bytes, { flag: parsed.options.has("force") ? "w" : "wx" });
+  } catch (error) {
+    if (error !== null && typeof error === "object" && "code" in error && error.code === "EEXIST") {
+      throw localError("file_exists", `${name} is already here. Pass --force to overwrite it, or --out to write elsewhere.`);
+    }
+    throw error;
+  }
+  const digest = createHash("sha256").update(bytes.bytes).digest("hex");
+  return {
+    artifact_id: artifactId,
+    path: out,
+    size_bytes: bytes.bytes.byteLength,
+    sha256: digest,
+    // The server states the digest it stored; a mismatch means the bytes changed on the way.
+    verified: bytes.sha256 === null ? null : bytes.sha256 === digest,
+  };
+}
+
+async function files(args: string[], dependencies: GuestDependencies): Promise<unknown> {
+  const parsed = parseGuestArguments(args);
+  assertOnlyOptions(parsed, ["last", "before", "room", "as"]);
+  if (parsed.positionals.length !== 0) throw localError("invalid_arguments", "Usage: sharednet files [--room] [--last <n>] [--before <art_…>]");
+  const lastText = stringOption(parsed, "last");
+  const last = lastText === undefined ? 20 : Number(lastText);
+  if (!Number.isSafeInteger(last) || last < 1 || last > 100) throw localError("invalid_arguments", "--last must be between 1 and 100.");
+  const before = stringOption(parsed, "before");
+  if (before !== undefined && !/^art_[0-9A-Za-z]{10}$/.test(before)) {
+    throw localError("invalid_arguments", "--before must be a file id such as art_AbCdEfGhIj.");
+  }
+  const { client, token, seat } = await creditCredential(dependencies, stringOption(parsed, "as"));
+  if (parsed.options.has("room") && seat === null) {
+    throw localError("not_in_a_room", "--room lists this directory's Room; join one first.");
+  }
+  const query = new URLSearchParams({
+    limit: String(last),
+    ...(before === undefined ? {} : { before }),
+    ...(parsed.options.has("room") && seat ? { room_id: seat.room_id } : {}),
+  });
+  return client.request("GET", `/artifacts?${query.toString()}`, token);
+}
+
+/** Enough of a media type for the common things Agents pass; the rest are bytes. */
+function contentTypeFor(filename: string): string {
+  const extension = filename.includes(".") ? filename.split(".").pop()!.toLowerCase() : "";
+  const known: Record<string, string> = {
+    csv: "text/csv",
+    diff: "text/plain",
+    gif: "image/gif",
+    html: "text/html",
+    jpeg: "image/jpeg",
+    jpg: "image/jpeg",
+    json: "application/json",
+    log: "text/plain",
+    md: "text/markdown",
+    patch: "text/plain",
+    pdf: "application/pdf",
+    png: "image/png",
+    svg: "image/svg+xml",
+    txt: "text/plain",
+    webp: "image/webp",
+    yaml: "text/plain",
+    yml: "text/plain",
+  };
+  return known[extension] ?? "application/octet-stream";
+}
+
 export type GuestVerb =
   | "whoami"
   | "join"
   | "say"
   | "read"
   | "wait"
+  | "balance"
+  | "redeem"
+  | "pay"
+  | "ledger"
+  | "upload"
+  | "download"
+  | "files"
   | "watch"
   | "add"
   | "rooms"
@@ -1181,6 +1474,13 @@ export function isGuestVerb(value: string | undefined): value is GuestVerb {
     value === "say" ||
     value === "read" ||
     value === "wait" ||
+    value === "balance" ||
+    value === "redeem" ||
+    value === "pay" ||
+    value === "ledger" ||
+    value === "upload" ||
+    value === "download" ||
+    value === "files" ||
     value === "watch" ||
     value === "add" ||
     value === "rooms" ||
@@ -1207,5 +1507,12 @@ export async function runGuestVerb(
   if (verb === "accept") return answer("approved", args, dependencies);
   if (verb === "deny") return answer("denied", args, dependencies);
   if (verb === "reach") return reach(args, dependencies);
+  if (verb === "balance") return balance(args, dependencies);
+  if (verb === "redeem") return redeem(args, dependencies);
+  if (verb === "pay") return pay(args, dependencies);
+  if (verb === "ledger") return ledger(args, dependencies);
+  if (verb === "upload") return upload(args, dependencies);
+  if (verb === "download") return download(args, dependencies);
+  if (verb === "files") return files(args, dependencies);
   return wait(args, dependencies);
 }

@@ -1,6 +1,9 @@
 import { sql } from "drizzle-orm";
 import {
+  bigint,
+  boolean,
   check,
+  customType,
   foreignKey,
   index,
   integer,
@@ -23,8 +26,10 @@ import type {
   InviteId,
   MemberId,
   MessageId,
+  ArtifactId,
   PrincipalId,
   RoomId,
+  TransferId,
 } from "../../protocol/src/index.ts";
 import { authUser } from "./auth-schema.ts";
 
@@ -44,6 +49,11 @@ const DECISION_ID_RE = sql.raw("'^dec_[0-9A-Za-z]{10}$'");
 const MEMBER_ID_RE = sql.raw("'^mem_[0-9A-Za-z]{10}$'");
 const INVITE_ID_RE = sql.raw("'^inv_[0-9A-Za-z]{10}$'");
 const SHA256_HEX_RE = sql.raw("'^[0-9a-f]{64}$'");
+const SHARE_TOKEN_RE = sql.raw("'^shr_[A-Za-z0-9_-]{43}$'");
+const TRANSFER_ID_RE = sql.raw("'^txn_[0-9A-Za-z]{10}$'");
+const ARTIFACT_ID_RE = sql.raw("'^art_[0-9A-Za-z]{10}$'");
+const LINK_KEY_RE = sql.raw("'^afk_[A-Za-z0-9_-]{43}$'");
+const CREDIT_CODE_RE = sql.raw("'^[A-Z0-9][A-Z0-9-]{2,31}$'");
 
 export const principals = sharednetSchema.table(
   "principal",
@@ -258,9 +268,18 @@ export const rooms = sharednetSchema.table(
     nextSequence: integer("next_sequence").default(1).notNull(),
     createdAt: domainTimestamp("created_at").defaultNow().notNull(),
     closedAt: domainTimestamp("closed_at"),
+    /**
+     * The slug of the Room's public link, while the owner publishes the log;
+     * null otherwise. Stored as issued, not as a digest: unlike an invite or a
+     * seat token it grants nothing but reading what the owner chose to make
+     * public, and the owner has to be able to copy the link again tomorrow.
+     */
+    shareToken: text("share_token"),
+    sharedAt: domainTimestamp("shared_at"),
   },
   (table) => [
     unique("room_principal_id_id_unique").on(table.principalId, table.id),
+    unique("room_share_token_unique").on(table.shareToken),
     foreignKey({
       name: "room_principal_fk",
       columns: [table.principalId],
@@ -285,6 +304,12 @@ export const rooms = sharednetSchema.table(
       sql`(${table.state} = 'open' AND ${table.closedAt} IS NULL)
           OR (${table.state} = 'closed' AND ${table.closedAt} IS NOT NULL)`,
     ),
+    check(
+      "room_share_consistent",
+      sql`(${table.shareToken} IS NULL AND ${table.sharedAt} IS NULL)
+          OR (${table.shareToken} IS NOT NULL AND ${table.sharedAt} IS NOT NULL)`,
+    ),
+    check("room_share_token_format", sql`${table.shareToken} IS NULL OR ${table.shareToken} ~ ${SHARE_TOKEN_RE}`),
   ],
 );
 
@@ -733,6 +758,235 @@ export const instanceCursors = sharednetSchema.table(
   ],
 );
 
+/**
+ * Credits (decision 2026-09-11): play money for a hackathon's trading round.
+ * The purse belongs to the Principal; every movement of value, minted or
+ * paid, is one row in `credit_transfer`, and the account row is the running
+ * total the debit is checked against in the same transaction.
+ */
+export const creditAccounts = sharednetSchema.table(
+  "credit_account",
+  {
+    principalId: text("principal_id").$type<PrincipalId>().primaryKey(),
+    balance: bigint("balance", { mode: "number" }).default(0).notNull(),
+    updatedAt: domainTimestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    foreignKey({
+      name: "credit_account_principal_fk",
+      columns: [table.principalId],
+      foreignColumns: [principals.id],
+    }).onDelete("cascade"),
+    check("credit_account_balance_nonnegative", sql`${table.balance} >= 0`),
+  ],
+);
+
+/** A grant code an operator minted; never a value in the repository. */
+export const creditCodes = sharednetSchema.table(
+  "credit_code",
+  {
+    code: text("code").primaryKey(),
+    amount: bigint("amount", { mode: "number" }).notNull(),
+    /** Null: unlimited. */
+    maxRedemptions: integer("max_redemptions"),
+    redeemedCount: integer("redeemed_count").default(0).notNull(),
+    expiresAt: domainTimestamp("expires_at"),
+    active: boolean("active").default(true).notNull(),
+    createdAt: domainTimestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [
+    check("credit_code_format", sql`${table.code} ~ ${CREDIT_CODE_RE}`),
+    check("credit_code_amount_positive", sql`${table.amount} > 0`),
+    check("credit_code_redemptions_nonnegative", sql`${table.redeemedCount} >= 0`),
+    check(
+      "credit_code_redemptions_within_max",
+      sql`${table.maxRedemptions} IS NULL OR ${table.redeemedCount} <= ${table.maxRedemptions}`,
+    ),
+  ],
+);
+
+export const creditTransfers = sharednetSchema.table(
+  "credit_transfer",
+  {
+    id: text("id").$type<TransferId>().primaryKey(),
+    /** Null when minted by a code redemption. */
+    fromPrincipalId: text("from_principal_id").$type<PrincipalId>(),
+    toPrincipalId: text("to_principal_id").$type<PrincipalId>().notNull(),
+    amount: bigint("amount", { mode: "number" }).notNull(),
+    memo: text("memo"),
+    roomId: text("room_id").$type<RoomId>(),
+    /** The seat that said pay; null for a redemption or an account-key payment. */
+    byInstanceId: text("by_instance_id").$type<InstanceId>(),
+    /** What the payer typed; resolved to `to_principal_id` at the time. */
+    addressedTo: text("addressed_to").notNull(),
+    /** For a redemption: the code. */
+    code: text("code"),
+    createdAt: domainTimestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [
+    foreignKey({
+      name: "credit_transfer_from_principal_fk",
+      columns: [table.fromPrincipalId],
+      foreignColumns: [principals.id],
+    }),
+    foreignKey({
+      name: "credit_transfer_to_principal_fk",
+      columns: [table.toPrincipalId],
+      foreignColumns: [principals.id],
+    }),
+    foreignKey({ name: "credit_transfer_room_fk", columns: [table.roomId], foreignColumns: [rooms.id] }).onDelete(
+      "set null",
+    ),
+    foreignKey({
+      name: "credit_transfer_by_instance_fk",
+      columns: [table.byInstanceId],
+      foreignColumns: [instances.id],
+    })
+      .onDelete("set null")
+      .onUpdate("cascade"),
+    foreignKey({ name: "credit_transfer_code_fk", columns: [table.code], foreignColumns: [creditCodes.code] }),
+    index("credit_transfer_from_created_at_idx").on(table.fromPrincipalId, table.createdAt),
+    index("credit_transfer_to_created_at_idx").on(table.toPrincipalId, table.createdAt),
+    check("credit_transfer_id_format", sql`${table.id} ~ ${TRANSFER_ID_RE}`),
+    check("credit_transfer_amount_positive", sql`${table.amount} > 0`),
+    check(
+      "credit_transfer_minted_or_paid",
+      sql`(${table.fromPrincipalId} IS NULL AND ${table.code} IS NOT NULL)
+          OR (${table.fromPrincipalId} IS NOT NULL AND ${table.code} IS NULL)`,
+    ),
+    check("credit_transfer_memo_length", sql`${table.memo} IS NULL OR length(${table.memo}) <= 200`),
+  ],
+);
+
+/** One redemption per code per Principal: the scarcity the whole thing rests on. */
+export const creditRedemptions = sharednetSchema.table(
+  "credit_redemption",
+  {
+    code: text("code").notNull(),
+    principalId: text("principal_id").$type<PrincipalId>().notNull(),
+    transferId: text("transfer_id").$type<TransferId>().notNull(),
+    createdAt: domainTimestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [
+    primaryKey({ name: "credit_redemption_pk", columns: [table.code, table.principalId] }),
+    foreignKey({ name: "credit_redemption_code_fk", columns: [table.code], foreignColumns: [creditCodes.code] }).onDelete(
+      "cascade",
+    ),
+    foreignKey({
+      name: "credit_redemption_principal_fk",
+      columns: [table.principalId],
+      foreignColumns: [principals.id],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "credit_redemption_transfer_fk",
+      columns: [table.transferId],
+      foreignColumns: [creditTransfers.id],
+    }),
+  ],
+);
+
+/**
+ * An artifact: a file an Agent handed to a Room (decision 2026-09-11). The
+ * metadata and the bytes are separate tables, because listing files must not
+ * drag megabytes through the connection.
+ */
+export const artifacts = sharednetSchema.table(
+  "artifact",
+  {
+    id: text("id").$type<ArtifactId>().primaryKey(),
+    principalId: text("principal_id").$type<PrincipalId>().notNull(),
+    /** The seat that uploaded it; kept as history, cleared if the Instance goes. */
+    uploadedByInstanceId: text("uploaded_by_instance_id").$type<InstanceId>(),
+    /** Required for `room` reach: which Room's members may read it. */
+    roomId: text("room_id").$type<RoomId>(),
+    filename: text("filename").notNull(),
+    contentType: text("content_type").notNull(),
+    sizeBytes: integer("size_bytes").notNull(),
+    sha256: text("sha256").notNull(),
+    /**
+     * The link's key. Every file has one: that is what makes "here, take this"
+     * work. Stored as issued for the reason a Room's share slug is — it grants
+     * a read of one file, and the uploader has to be able to hand the link out
+     * again tomorrow.
+     */
+    linkKey: text("link_key").notNull(),
+    createdAt: domainTimestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [
+    unique("artifact_link_key_unique").on(table.linkKey),
+    foreignKey({
+      name: "artifact_principal_fk",
+      columns: [table.principalId],
+      foreignColumns: [principals.id],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "artifact_instance_fk",
+      columns: [table.uploadedByInstanceId],
+      foreignColumns: [instances.id],
+    })
+      .onDelete("set null")
+      .onUpdate("cascade"),
+    foreignKey({ name: "artifact_room_fk", columns: [table.roomId], foreignColumns: [rooms.id] }).onDelete("cascade"),
+    index("artifact_principal_created_at_idx").on(table.principalId, table.createdAt),
+    index("artifact_room_created_at_idx").on(table.roomId, table.createdAt),
+    check("artifact_id_format", sql`${table.id} ~ ${ARTIFACT_ID_RE}`),
+    check("artifact_size_positive", sql`${table.sizeBytes} > 0`),
+    check("artifact_sha256_format", sql`${table.sha256} ~ ${SHA256_HEX_RE}`),
+    check("artifact_filename_length", sql`length(${table.filename}) BETWEEN 1 AND 120`),
+    check("artifact_filename_is_a_name", sql`${table.filename} !~ '[/\\]'`),
+    check("artifact_link_key_format", sql`${table.linkKey} ~ ${LINK_KEY_RE}`),
+  ],
+);
+
+/**
+ * The bytes. In the database on purpose, for now: it works in every
+ * environment the project already has, including CI, and it needs no vendor
+ * token. `ArtifactStore` is the seam to move this to object storage later.
+ */
+export const artifactBytes = sharednetSchema.table(
+  "artifact_bytes",
+  {
+    artifactId: text("artifact_id").$type<ArtifactId>().primaryKey(),
+    bytes: customType<{ data: Buffer; driverData: Buffer }>({ dataType: () => "bytea" })("bytes").notNull(),
+  },
+  (table) => [
+    foreignKey({
+      name: "artifact_bytes_artifact_fk",
+      columns: [table.artifactId],
+      foreignColumns: [artifacts.id],
+    }).onDelete("cascade"),
+  ],
+);
+
+/**
+ * The name one account gives a seat it can see. A Room shows an untagged
+ * Instance by its id, which is exact and unreadable; this is where a human
+ * writes "Codex" over it. Deliberately per-viewer: letting anyone rename
+ * anyone else's seat for everyone would be a way to misrepresent them.
+ */
+export const instanceAliases = sharednetSchema.table(
+  "instance_alias",
+  {
+    /** Whose name for it. */
+    principalId: text("principal_id").$type<PrincipalId>().notNull(),
+    instanceId: text("instance_id").$type<InstanceId>().notNull(),
+    alias: text("alias").notNull(),
+    updatedAt: domainTimestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    primaryKey({ name: "instance_alias_pk", columns: [table.principalId, table.instanceId] }),
+    foreignKey({
+      name: "instance_alias_principal_fk",
+      columns: [table.principalId],
+      foreignColumns: [principals.id],
+    }).onDelete("cascade"),
+    foreignKey({ name: "instance_alias_instance_fk", columns: [table.instanceId], foreignColumns: [instances.id] })
+      .onDelete("cascade")
+      .onUpdate("cascade"),
+    check("instance_alias_length", sql`length(${table.alias}) BETWEEN 1 AND 48`),
+  ],
+);
+
 export const databaseSchema = {
   principals,
   agents,
@@ -746,4 +1000,11 @@ export const databaseSchema = {
   idempotencyRecords,
   cliLogins,
   instanceCursors,
+  creditAccounts,
+  creditCodes,
+  creditTransfers,
+  creditRedemptions,
+  artifacts,
+  artifactBytes,
+  instanceAliases,
 } as const;

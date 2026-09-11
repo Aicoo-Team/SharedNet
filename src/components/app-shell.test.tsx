@@ -187,6 +187,9 @@ describe("SharedNet application shell", () => {
     expect(fetchMock.mock.calls.every(([input]) => !String(input).includes("user_xisen")))
       .toBe(true);
 
+    // Credits live off the three surfaces, on one page reached from here.
+    expect(within(accountPanel).getByRole("link", { name: "Credits" })).toHaveAttribute("href", "/credits");
+
     fireEvent.click(within(accountPanel).getByRole("button", { name: "Sign out" }));
     await waitFor(() => expect(authClient.signOut).toHaveBeenCalledTimes(1));
     expect(navigationState.replace).toHaveBeenCalledWith("/login");

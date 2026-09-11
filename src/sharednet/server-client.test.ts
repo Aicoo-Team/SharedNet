@@ -10,12 +10,17 @@ import { SharedNetServerClient } from "./server-client";
 import {
   isCloseRoomResponse,
   isCreateRoomInviteResponse,
+  isCreditsProjection,
   isDecisionProjection,
   isNetworkProjection,
   isRemoveRoomMemberResponse,
+  isRedeemCreditsResponse,
   isRoomDetail,
   isRoomListResponse,
   isRoomSummary,
+  isShareRoomResponse,
+  isSharedRoomProjection,
+  isUnshareRoomResponse,
 } from "./contracts";
 
 /**
@@ -88,6 +93,116 @@ async function guestIn(client: SharedNetServerClient, repository: SharedNetRepos
 }
 
 describe("SharedNetServerClient is one door onto the domain", () => {
+  it("projects an empty credit purse for an account and refuses an account with no Principal", async () => {
+    const { repository } = repositoryWithClock();
+    const client = new SharedNetServerClient(repository);
+    const principal = (await repository.principalForAccount(ACCOUNT))!;
+
+    const credits = await client.getCredits(ACCOUNT);
+    expect(isCreditsProjection(credits)).toBe(true);
+    expect(credits).toEqual({
+      principal_id: principal.id,
+      balance: 0,
+      granted: 0,
+      received: 0,
+      sent: 0,
+      transfers: [],
+    });
+    await expect(client.getCredits("absent-account")).rejects.toMatchObject({ code: "principal_not_found", status: 404 });
+    await expect(client.redeemCredits("absent-account", "BFF-100")).rejects.toMatchObject({ code: "principal_not_found", status: 404 });
+  });
+
+  it("projects credit grants, payments and receipts from the signed-in account's side of the ledger", async () => {
+    const { repository, clock } = repositoryWithClock();
+    const client = new SharedNetServerClient(repository);
+    const owner = await seatFor(repository, ACCOUNT, "key-1");
+    const visitor = await seatFor(repository, "auth-user-2", "key-2");
+    const { room } = await repository.createRoom(owner.auth, { name: "Trading round" });
+    await repository.joinRoom(visitor.auth, room.id);
+    await repository.mintCreditCode({ code: "BFF-100", amount: 100 });
+    const grant = await client.redeemCredits(ACCOUNT, "BFF-100");
+    expect(isRedeemCreditsResponse(grant)).toBe(true);
+
+    clock.now = new Date("2026-09-08T07:01:00.000Z");
+    const sent = await repository.transferCredits(owner.auth, { to: visitor.instance.id, amount: 30, memo: "map tiles", room_id: room.id });
+    clock.now = new Date("2026-09-08T07:02:00.000Z");
+    const received = await repository.transferCredits(visitor.auth, { to: owner.instance.id, amount: 5 });
+    const credits = await client.getCredits(ACCOUNT);
+
+    expect(isCreditsProjection(credits)).toBe(true);
+    expect(credits).toMatchObject({ principal_id: owner.instance.principal_id, balance: 75, granted: 100, sent: 30, received: 5 });
+    expect(credits.transfers).toEqual([
+      {
+        transfer_id: received.transfer.id,
+        direction: "received",
+        counterparty: visitor.instance.principal_id,
+        addressed_to: owner.instance.id,
+        amount: 5,
+        by_instance_id: visitor.instance.id,
+        code: null,
+        memo: null,
+        room_id: null,
+        created_at: "2026-09-08T07:02:00.000Z",
+      },
+      {
+        transfer_id: sent.transfer.id,
+        direction: "sent",
+        counterparty: visitor.instance.principal_id,
+        addressed_to: visitor.instance.id,
+        amount: 30,
+        by_instance_id: owner.instance.id,
+        code: null,
+        memo: "map tiles",
+        room_id: room.id,
+        created_at: "2026-09-08T07:01:00.000Z",
+      },
+      {
+        transfer_id: grant.credits.transfers[0]!.transfer_id,
+        direction: "granted",
+        counterparty: null,
+        addressed_to: null,
+        amount: 100,
+        by_instance_id: null,
+        code: "BFF-100",
+        memo: null,
+        room_id: null,
+        created_at: "2026-09-08T07:00:00.000Z",
+      },
+    ]);
+    const theirs = await client.getCredits("auth-user-2");
+    expect(isCreditsProjection(theirs)).toBe(true);
+    expect(theirs).toMatchObject({ principal_id: visitor.instance.principal_id, balance: 25, granted: 0, sent: 5, received: 30 });
+    expect(theirs.transfers.map(({ transfer_id, direction }) => [transfer_id, direction])).toEqual([
+      [received.transfer.id, "sent"],
+      [sent.transfer.id, "received"],
+    ]);
+  });
+
+  it("redeems a credit code once for each signed-in account and returns its updated purse", async () => {
+    const { repository } = repositoryWithClock();
+    const client = new SharedNetServerClient(repository);
+    await repository.mintCreditCode({ code: "BFF-100", amount: 100 });
+
+    const first = await client.redeemCredits(ACCOUNT, "BFF-100");
+    const repeat = await client.redeemCredits(ACCOUNT, "BFF-100");
+    const other = await client.redeemCredits("auth-user-2", "BFF-100");
+    for (const result of [first, repeat, other]) expect(isRedeemCreditsResponse(result)).toBe(true);
+    expect(first).toMatchObject({ granted: 100, credits: { balance: 100, granted: 100 } });
+    expect(repeat).toEqual({ granted: 0, credits: first.credits });
+    expect(other).toMatchObject({ granted: 100, credits: { balance: 100, granted: 100 } });
+    expect(other.credits.principal_id).not.toBe(first.credits.principal_id);
+    expect(other.credits.transfers).toHaveLength(1);
+  });
+
+  it("preserves a credit redemption refusal without changing the account's purse", async () => {
+    const { repository } = repositoryWithClock();
+    const client = new SharedNetServerClient(repository);
+    const before = await client.getCredits(ACCOUNT);
+
+    await expect(client.redeemCredits(ACCOUNT, "NO-SUCH-CODE")).rejects.toMatchObject({ code: "credit_code_not_found", status: 404 });
+    await expect(client.getCredits(ACCOUNT)).resolves.toEqual(before);
+  });
+
   it("fails closed when the account has no Principal", async () => {
     const client = new SharedNetServerClient(new MemorySharedNetRepository({ accounts: [] }));
     await expect(client.listRooms("auth-user-1")).rejects.toMatchObject({
@@ -489,6 +604,125 @@ describe("SharedNetServerClient is one door onto the domain", () => {
     const shown = await client.getCliLogin(ACCOUNT, user_code);
     expect(shown).toMatchObject({ login_id: login.id, state: "pending", label: "laptop" });
     expect(shown.seats).toEqual([{ instance_id: guest.membership.instance_id, name: "claude-code", runtime_kind: "claude-code", rooms: [{ room_id: room.id, name: room.name }] }]);
+  });
+
+  it("publishes a Room its owner shares at a slug that is not the Room id, shows the owner the link, and a seat only that it is public", async () => {
+    const { repository, client, roomId, room } = await seededRoom({ agent: true });
+    const visitor = await seatFor(repository, "auth-user-2", "key-2");
+    await repository.joinRoom(visitor.auth, room.id);
+
+    expect((await client.getRoom(ACCOUNT, roomId)).room.sharing).toBeNull();
+    const shared = await client.shareRoom(ACCOUNT, roomId);
+    expect(isShareRoomResponse(shared)).toBe(true);
+    expect(shared.token).toMatch(/^shr_[A-Za-z0-9_-]{43}$/);
+    expect(shared.token).not.toContain(room.id);
+    expect(shared.room.sharing).toEqual({ since: expect.any(String), token: shared.token });
+    // Asking again is the same link, not a new one.
+    expect((await client.shareRoom(ACCOUNT, roomId)).token).toBe(shared.token);
+    expect((await client.getRoom(ACCOUNT, roomId)).room.sharing?.token).toBe(shared.token);
+    // A seated account learns that the Room is public, not where.
+    expect((await client.getRoom("auth-user-2", roomId)).room.sharing).toEqual({ since: shared.room.sharing?.since, token: null });
+    // Only the owner shares or stops sharing.
+    await expect(client.shareRoom("auth-user-2", roomId)).rejects.toMatchObject({ code: "room_not_found", status: 404 });
+    await expect(client.unshareRoom("auth-user-2", roomId)).rejects.toMatchObject({ code: "room_not_found", status: 404 });
+
+    const stopped = await client.unshareRoom(ACCOUNT, roomId);
+    expect(isUnshareRoomResponse(stopped)).toBe(true);
+    expect(stopped.room.sharing).toBeNull();
+    await expect(client.getSharedRoom(shared.token)).rejects.toMatchObject({ code: "room_not_found", status: 404 });
+    // Sharing again mints a new link; the old one stays dead.
+    const again = await client.shareRoom(ACCOUNT, roomId);
+    expect(again.token).not.toBe(shared.token);
+    await expect(client.getSharedRoom(shared.token)).rejects.toMatchObject({ code: "room_not_found" });
+    expect(isSharedRoomProjection(await client.getSharedRoom(again.token))).toBe(true);
+  });
+
+  it("shows the public the log by names, drivers and sequence numbers, with no ids and no credentials", async () => {
+    const { repository, client, auth, roomId, room, instance } = await seededRoom({ agent: true });
+    const guest = await guestIn(client, repository, roomId);
+    const invite = await client.createRoomInvite(ACCOUNT, roomId);
+    const [first] = (await repository.listMessages(auth, room.id, { after: 0, before: null, limit: 1, order: "asc", sender_instance_id: null, sender_agent_id: null, q: null })).items;
+    await repository.postMessage(auth, room.id, {
+      content: `join with ROOM=${room.id} TOKEN=${invite.token} BASE=https://www.sharednet.ai --claim clp_${"c".repeat(43)}`,
+      reply_to_message_id: first!.id,
+    });
+    const { token } = await client.shareRoom(ACCOUNT, roomId);
+
+    const shared = await client.getSharedRoom(token);
+    expect(isSharedRoomProjection(shared)).toBe(true);
+    expect(shared.room).toMatchObject({ name: "Hosted V1 migration", description: "seeded", status: "open", latest_sequence: 3 });
+    expect(shared.members.map((m) => [m.label, m.driver, m.kind, m.handle, m.status])).toEqual([
+      [`reviewer-${ACCOUNT}`, "codex", "account", instance.id.slice(2, 6), "active"],
+      ["claude-code", "claude-code", "anonymous", guest.membership.instance_id.slice(2, 6), "active"],
+    ]);
+    expect(shared.messages.map((m) => [m.sequence, m.sender.label, m.reply_to_sequence, m.content])).toEqual([
+      [1, `reviewer-${ACCOUNT}`, null, "first message"],
+      [2, "claude-code", null, "hello from curl"],
+      [3, `reviewer-${ACCOUNT}`, 1, "join with ROOM=rom_[redacted] TOKEN=rit_[redacted] BASE=https://www.sharednet.ai --claim clp_[redacted]"],
+    ]);
+    // Nothing that addresses anything leaves the server: no Room, Instance, Principal or message id,
+    // not even the Room id an Agent itself pasted, since that one admits.
+    const wire = JSON.stringify(shared);
+    expect(wire).not.toMatch(/\b(rom|i|p|msg|inv)_[0-9A-Za-z]{10}\b/);
+    expect(wire).not.toContain(invite.token);
+    // A slug that is not one, and a slug nobody minted, both read as absent.
+    await expect(client.getSharedRoom(room.id)).rejects.toMatchObject({ code: "room_not_found", status: 404 });
+    await expect(client.getSharedRoom(`shr_${"z".repeat(43)}`)).rejects.toMatchObject({ code: "room_not_found", status: 404 });
+  });
+
+  it("publishes a closed Room too, since a finished conversation is the one worth showing", async () => {
+    const { client, roomId } = await seededRoom();
+    await client.closeRoom(ACCOUNT, roomId);
+    const { token, room } = await client.shareRoom(ACCOUNT, roomId);
+    expect(room.status).toBe("closed");
+    expect((await client.getSharedRoom(token)).room.status).toBe("closed");
+  });
+
+  it("gives your own seat a nickname the Room sees, and someone else's a note only you see", async () => {
+    const { repository, client, auth, roomId, room, instance } = await seededRoom();
+    const visitor = await seatFor(repository, "auth-user-2", "key-2");
+    await repository.joinRoom(visitor.auth, room.id);
+    await repository.postMessage(visitor.auth, room.id, { content: "second" });
+
+    // Until it is named, the Room carries no name for that seat.
+    expect((await client.getRoom(ACCOUNT, roomId)).notes).toEqual({});
+
+    const named = await client.nameSeat(ACCOUNT, visitor.instance.id as never, "Kai");
+    expect(named).toEqual({ instance_id: visitor.instance.id, name: "Kai", scope: "note" });
+    expect((await client.getRoom(ACCOUNT, roomId)).notes).toEqual({ [visitor.instance.id]: "Kai" });
+    // It is this account's name and nobody else's: the other side sees none.
+    expect((await client.getRoom("auth-user-2", roomId)).notes).toEqual({});
+    // Naming again replaces it; naming with nothing forgets it.
+    expect((await client.nameSeat(ACCOUNT, visitor.instance.id as never, "Kai 2")).name).toBe("Kai 2");
+    expect((await client.getRoom(ACCOUNT, roomId)).notes).toEqual({ [visitor.instance.id]: "Kai 2" });
+    expect((await client.nameSeat(ACCOUNT, visitor.instance.id as never, null)).name).toBeNull();
+    expect((await client.getRoom(ACCOUNT, roomId)).notes).toEqual({});
+
+    // Naming your own seat is a nickname instead: it is not a note, and the
+    // whole Room sees it — including the account that did not write it.
+    const nickname = await client.nameSeat(ACCOUNT, instance.id as never, "Xisen");
+    expect(nickname).toEqual({ instance_id: instance.id, name: "Xisen", scope: "nickname" });
+    expect((await client.getRoom(ACCOUNT, roomId)).notes).toEqual({});
+    const asMe = await client.getRoom(ACCOUNT, roomId);
+    const asThem = await client.getRoom("auth-user-2", roomId);
+    for (const seen of [asMe, asThem]) {
+      expect(seen.memberships.find((member) => member.instance_id === instance.id)?.name).toBe("Xisen");
+    }
+    // And it comes back off the same way.
+    expect((await client.nameSeat(ACCOUNT, instance.id as never, null)).name).toBeNull();
+    expect((await client.getRoom("auth-user-2", roomId)).memberships.find((member) => member.instance_id === instance.id)?.name).toBeNull();
+
+    // A seat this account shares no Room with reads as absent, so naming one
+    // cannot be used to find out whether an Instance id is real.
+    const stranger = await seatFor(repository, "auth-user-2", "key-2");
+    await expect(client.nameSeat(ACCOUNT, stranger.instance.id as never, "Nope")).rejects.toMatchObject({
+      code: "instance_not_found",
+      status: 404,
+    });
+    await expect(client.nameSeat(ACCOUNT, "i_nowhere0001" as never, "Nope")).rejects.toMatchObject({
+      code: "instance_not_found",
+      status: 404,
+    });
   });
 
   it("reports pairing as retired rather than pretending to claim one", async () => {

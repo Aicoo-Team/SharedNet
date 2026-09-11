@@ -11,8 +11,17 @@ import type {
   InviteDescription,
   Agent,
   AgentId,
+  AfkSecret,
   ApiKeyId,
+  Artifact,
+  ArtifactId,
+  ArtifactQuery,
   CreateAgentRequest,
+  CreditBalance,
+  CreditCode,
+  CreditTransfer,
+  CreditTransferRequest,
+  TransferId,
   CreateRoomRequest,
   Decision,
   DecisionId,
@@ -36,6 +45,7 @@ import type {
   RoomId,
   RoomInvite,
   RoomMember,
+  ShrSecret,
   StartInstanceRequest,
 } from "../../protocol/src/index.ts";
 
@@ -73,6 +83,42 @@ export type InstanceAuth = {
  * alias stays because Room routes are written against it.
  */
 export type RoomAuth = InstanceAuth;
+
+/**
+ * Credits are the Principal's, so either credential reaches the purse: an
+ * account key pays as the account, an Instance token pays as the account and
+ * records which seat said so.
+ */
+export type CreditAuth = PrincipalAuth | InstanceAuth;
+
+/**
+ * Artifacts (decision 2026-09-11). An account holds files; a Room's members
+ * read the ones handed to that Room. The same credential that speaks in a Room
+ * uploads to it, so this takes the credit auth: either an account key or one
+ * of its Instances, and the Instance is recorded as the uploader.
+ */
+export type UploadArtifactInput = {
+  filename: string;
+  content_type: string;
+  /** The Room whose members may read it by id, when the caller sits in one. */
+  room_id: RoomId | null;
+  bytes: Uint8Array;
+};
+
+/** The link is returned once, with the artifact, exactly like an invite token. */
+export type UploadedArtifact = { artifact: Artifact; link_key: AfkSecret };
+
+/** What one account is holding, against what it may hold. */
+export type ArtifactUsage = { bytes: number; quota_bytes: number; count: number };
+
+/** A page of the ledger, newest first; `before` is a transfer id to page past. */
+export type CreditLedgerQuery = { limit: number; before: TransferId | null };
+
+/** What redeeming answers: the purse, and how much this call added (0 when already redeemed). */
+export type CreditRedemption = { credits: CreditBalance; granted: number; transfer: CreditTransfer | null };
+
+/** The ledger as the Dashboard shows it: the purse and the latest transfers touching it. */
+export type CreditsOverview = { credits: CreditBalance; transfers: CreditTransfer[] };
 
 export type StoredHttpResult = {
   status: number;
@@ -164,8 +210,44 @@ export function sharedRoomsEdges(roomsOfInstances: InstanceId[][]): SharedRoomsE
   return [...edges.values()];
 }
 
+/**
+ * What naming a seat did. `scope` says which of the two it was, because the
+ * difference matters to whoever is looking: a nickname is public to the Room,
+ * a note is private to the account that wrote it.
+ */
+export type SeatName = { instance_id: InstanceId; name: string | null; scope: "nickname" | "note" };
+
 /** An Instance and the Rooms it sits in, for the CLI-login approve page. */
 export type SeatOverview = { instance: Instance; rooms: Array<{ id: RoomId; name: string }> };
+
+/** A Room as its owner or a seated Principal reads it; the link's slug only for the owner. */
+export type RoomView = {
+  room: Room;
+  memberships: RoomMember[];
+  messages: Message[];
+  latest_sequence: number;
+  share_token: ShrSecret | null;
+  /**
+   * The private notes this account wrote on other people's seats here. A
+   * seat's own nickname is not in this map: that one is its `display_name`,
+   * on the membership, because the whole Room sees it.
+   */
+  aliases: Record<InstanceId, string>;
+};
+
+/**
+ * What a share link opens, for anyone: the Room, its seats, every message,
+ * and the handle behind every tag a seat or a sender carries, so a reader
+ * sees names rather than ids. The projection that leaves the server decides
+ * what of this the public sees; the domain hands over the whole log.
+ */
+export type SharedRoomView = {
+  room: Room;
+  memberships: RoomMember[];
+  messages: Message[];
+  latest_sequence: number;
+  agent_handles: Record<AgentId, string>;
+};
 
 /**
  * The Dashboard's door: what a signed-in human's Principal may see and do.
@@ -197,10 +279,23 @@ export interface PrincipalRepository {
   /** Rooms the Principal scheduled or has an active seat in, newest first. */
   listRoomsForPrincipal(principalId: PrincipalId): Promise<{ items: RoomOverview[] }>;
   /** A Room the Principal may see, with every seat and every message, in order. */
-  getRoomForPrincipal(
-    principalId: PrincipalId,
-    roomId: RoomId,
-  ): Promise<{ room: Room; memberships: RoomMember[]; messages: Message[]; latest_sequence: number }>;
+  getRoomForPrincipal(principalId: PrincipalId, roomId: RoomId): Promise<RoomView>;
+  /**
+   * Publish a Room the Principal owns at a public, read-only link. Minting is
+   * idempotent: a Room already published answers with the link it has, so the
+   * owner can copy it again tomorrow; the link changes only when sharing stops
+   * and starts anew. A closed Room can be published: a finished conversation
+   * is the one most worth showing.
+   */
+  shareRoom(principalId: PrincipalId, roomId: RoomId): Promise<{ room: Room; share_token: ShrSecret }>;
+  /** Stop publishing; the link stops resolving at once. An unpublished Room is returned as it is. */
+  unshareRoom(principalId: PrincipalId, roomId: RoomId): Promise<{ room: Room }>;
+  /**
+   * The one door with nobody behind it: what a share link opens. An unknown,
+   * malformed or revoked slug reads as absent, with no distinction, so slugs
+   * cannot be probed.
+   */
+  getSharedRoom(shareToken: string): Promise<SharedRoomView>;
   /** Schedule an empty Room from the Web: no creator Instance, no members yet. */
   scheduleRoom(principalId: PrincipalId, input: { name: string; description: string | null }): Promise<{ room: Room }>;
   /** Close a Room the Principal owns; closing a closed Room returns it as it is. */
@@ -222,6 +317,24 @@ export interface PrincipalRepository {
   networkForPrincipal(principalId: PrincipalId): Promise<NetworkView>;
   /** The named Instances with their Rooms; unknown ids are left out. */
   seatsOf(instanceIds: InstanceId[]): Promise<{ seats: SeatOverview[] }>;
+  /**
+   * Names a seat. What that means depends on whose seat it is, which is the
+   * whole of the rule:
+   *
+   * - **Your own seat** — the name it goes by, and everyone in its Rooms sees
+   *   it. It is your name for yourself, so there is nobody to mislead.
+   * - **Someone else's seat** — a note, kept against your account and shown to
+   *   you alone. Nobody can relabel another person's seat for the Room.
+   *
+   * `name` null takes it back off. Only a seat this account can already see
+   * may be named — its own, or one it shares a Room with — so naming cannot be
+   * used to find out whether an Instance id exists.
+   */
+  nameSeat(principalId: PrincipalId, instanceId: InstanceId, name: string | null): Promise<SeatName>;
+  /** The account's purse and the latest transfers touching it, newest first. */
+  creditsForPrincipal(principalId: PrincipalId): Promise<CreditsOverview>;
+  /** The human redeems a code on the Web; the same rules as through the API. */
+  redeemCreditsForPrincipal(principalId: PrincipalId, code: string): Promise<CreditRedemption>;
 }
 
 export interface SharedNetRepository extends PrincipalRepository {
@@ -407,4 +520,61 @@ export interface SharedNetRepository extends PrincipalRepository {
     fingerprint: string,
     operation: () => Promise<StoredHttpResult>,
   ): Promise<IdempotencyResult>;
+
+  // ---- Credits (decision 2026-09-11): a purse per Principal, a ledger of every movement. ----
+
+  /** The caller's purse: balance, and what was granted, sent and received in total. */
+  getCredits(auth: CreditAuth): Promise<{ credits: CreditBalance }>;
+  /**
+   * Redeems a grant code for the caller's Principal, once. Only a Principal
+   * with an account behind it may redeem (anonymous Principals are free to
+   * create); a second redemption of the same code by the same Principal
+   * answers with the purse unchanged and `granted: 0`, never an error, so a
+   * retry is safe.
+   */
+  redeemCredits(auth: CreditAuth, code: string): Promise<CreditRedemption>;
+  /**
+   * Moves credits from the caller's purse to the purse behind `to`, which may
+   * name a Principal, an Agent or an Instance. Final: no reversal exists.
+   * 409 `insufficient_credits` when the purse cannot cover it, 404
+   * `payee_not_found` for an id nobody holds, 422 `transfer_to_self`.
+   */
+  transferCredits(auth: CreditAuth, input: CreditTransferRequest): Promise<{ transfer: CreditTransfer; credits: CreditBalance }>;
+  /** The ledger as it concerns the caller: transfers it sent or received, newest first. */
+  listCreditTransfers(auth: CreditAuth, input: CreditLedgerQuery): Promise<Page<CreditTransfer>>;
+  /**
+   * The operator's door, with nobody behind it: mints a grant code. Reached
+   * only by scripts/credits/mint-code.mjs with database access; no route.
+   */
+  mintCreditCode(input: { code: string; amount: number; max_redemptions?: number | null; expires_at?: string | null }): Promise<{ code: CreditCode }>;
+
+  // ---- Artifacts (decision 2026-09-11): files an Agent hands to a Room. ----
+
+  /**
+   * Stores a file and mints its link, which is returned once. A `room_id` must
+   * be a Room the caller has an active seat in — you hand a file to a Room you
+   * are in, not to one you merely know the id of — and its members may then
+   * read the file by id. Refuses a file over `MAX_ARTIFACT_BYTES`, or one that
+   * would put the account over its quota.
+   */
+  uploadArtifact(auth: CreditAuth, input: UploadArtifactInput): Promise<UploadedArtifact>;
+  /**
+   * What a file is, without its bytes. Visible to the account that owns it and
+   * to every Principal with an active seat in the file's Room. Anything else
+   * reads as absent, so ids cannot be probed.
+   */
+  getArtifact(auth: CreditAuth, artifactId: ArtifactId): Promise<{ artifact: Artifact }>;
+  /** The same rule, plus the bytes. */
+  readArtifact(auth: CreditAuth, artifactId: ArtifactId): Promise<{ artifact: Artifact; bytes: Uint8Array }>;
+  /**
+   * The door with nobody behind it: a file opened by its link key. A wrong key
+   * and a missing file read the same way.
+   */
+  readArtifactByLink(artifactId: ArtifactId, key: string): Promise<{ artifact: Artifact; bytes: Uint8Array }>;
+  /** Files the caller may read, newest first: its own, and its Rooms'. */
+  listArtifacts(auth: CreditAuth, input: ArtifactQuery): Promise<Page<Artifact>>;
+  /** How much the account is holding. */
+  artifactUsage(auth: CreditAuth): Promise<ArtifactUsage>;
+  /** Only the account that uploaded a file may remove it; removing it twice is a no-op. */
+  deleteArtifact(auth: CreditAuth, artifactId: ArtifactId): Promise<{ artifact: Artifact }>;
 }

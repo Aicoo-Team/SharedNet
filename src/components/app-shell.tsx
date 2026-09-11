@@ -140,6 +140,9 @@ function AccountControl({ account }: Readonly<{ account: Account }>) {
                 : "Principal unavailable"}
           </p>
           {signOutError ? <p className="rail-account-error" role="alert">{signOutError}</p> : null}
+          <Link className="rail-account-link" href="/credits" onClick={() => setOpen(false)}>
+            Credits
+          </Link>
           <button disabled={signingOut} onClick={() => void signOut()} type="button">
             {signingOut ? "Signing out" : "Sign out"}
           </button>
@@ -280,8 +283,9 @@ export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
 
   // A join link, /join/<invite token>, is what a Room's owner sends to people
-  // who have no account yet; it must open without one.
-  if (PUBLIC_PATHS.has(pathname) || pathname.startsWith("/join/")) {
+  // who have no account yet; it must open without one. A shared Room,
+  // /s/<slug>, is what an owner sends to everyone: readable with nothing.
+  if (PUBLIC_PATHS.has(pathname) || pathname.startsWith("/join/") || pathname.startsWith("/s/") || pathname.startsWith("/f/")) {
     return <>{children}</>;
   }
   return <AuthenticatedProductShell>{children}</AuthenticatedProductShell>;

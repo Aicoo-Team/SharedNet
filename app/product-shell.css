@@ -1,4 +1,6 @@
-.product-window {
+/* The product's palette, shared with the one public surface that shows a Room: a shared Room's page. */
+.product-window,
+.shared-room {
   --sn-paper: oklch(98.6% 0.01 240);
   --sn-paper-deep: oklch(96.2% 0.022 240);
   --sn-ink: #002147;
@@ -13,6 +15,9 @@
   --sn-gold-soft: oklch(96% 0.045 85);
   --sn-green: oklch(54% 0.13 157);
   --sn-red: oklch(55% 0.16 28);
+}
+
+.product-window {
   background: var(--sn-paper);
   border: 1px solid var(--sn-ink);
   border-radius: 16px;
@@ -2698,3 +2703,450 @@ body:has(.product-window) {
   color: var(--sn-oxford);
   font-weight: 600;
 }
+
+/*
+ * A shared Room: the same log, read by anyone. The page wears the public
+ * look outside and the product's palette inside, so the conversation reads
+ * exactly as it does in the Dashboard, minus every control.
+ */
+.shared-room {
+  background: var(--sn-paper);
+  border: 1px solid var(--sn-ink);
+  border-radius: 16px;
+  box-shadow: 0 18px 50px rgba(0, 33, 71, 0.16);
+  color: var(--sn-ink);
+  display: grid;
+  font-family: "Albert Sans Variable", ui-sans-serif, system-ui, sans-serif;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  min-height: min(78vh, 900px);
+  overflow: hidden;
+}
+
+.shared-room .room-heading {
+  align-items: start;
+}
+
+.shared-room-public {
+  align-items: center;
+  border-bottom: 1px solid var(--sn-line);
+  color: var(--sn-muted);
+  display: flex;
+  flex-wrap: wrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  gap: 6px 14px;
+  margin: 0;
+  padding: 8px 20px;
+}
+
+.shared-room-public strong {
+  color: var(--sn-gold-ink);
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.shared-room-members {
+  color: var(--sn-muted);
+  display: flex;
+  flex-wrap: wrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  gap: 6px 14px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.shared-room-members li {
+  align-items: center;
+  display: inline-flex;
+  gap: 5px;
+}
+
+.shared-room-members li[data-status="left"] {
+  opacity: 0.55;
+}
+
+.shared-room-members .driver-mark {
+  display: block;
+}
+
+.shared-room .room-history {
+  padding-bottom: 40px;
+}
+
+.shared-room-ended {
+  background: var(--sn-gold-soft);
+  border-top: 1px solid var(--sn-line);
+  color: var(--sn-gold-ink);
+  font-size: 11px;
+  margin: 0;
+  padding: 10px 20px;
+}
+
+/* Credits: the one page play money gets. */
+.credits-workspace {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 22px 28px;
+}
+
+.credits-titlebar h1 {
+  font-size: 12px;
+  font-weight: 600;
+  margin: 0;
+  min-height: 38px;
+  line-height: 38px;
+  text-align: center;
+}
+
+.credits-kicker {
+  color: var(--sn-muted);
+  font-size: 11px;
+  line-height: 1.5;
+  margin: 0 auto;
+  max-width: 640px;
+  text-align: center;
+}
+
+.credits-data-state {
+  background: var(--sn-blue-soft);
+  border: 1px solid var(--sn-columbia);
+  border-radius: 4px;
+  color: var(--sn-oxford);
+  font-size: 10px;
+  justify-self: center;
+  margin: 0;
+  padding: 5px 8px;
+}
+
+.credits-data-error {
+  background: color-mix(in srgb, var(--sn-red) 7%, var(--sn-paper));
+  border-color: color-mix(in srgb, var(--sn-red) 35%, var(--sn-paper));
+  color: var(--sn-red);
+}
+
+.credits-purse {
+  align-items: start;
+  border: 1px solid var(--sn-line);
+  border-radius: 10px;
+  display: grid;
+  gap: 18px;
+  grid-template-columns: auto auto minmax(220px, 1fr);
+  margin: 0 auto;
+  max-width: 900px;
+  padding: 16px 18px;
+  width: 100%;
+}
+
+.credits-balance {
+  display: grid;
+  gap: 2px;
+}
+
+.credits-balance span,
+.credits-totals dt {
+  color: var(--sn-gold-ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.credits-balance strong {
+  font-size: 30px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+
+.credits-totals {
+  display: flex;
+  gap: 16px;
+  margin: 0;
+}
+
+.credits-totals div {
+  display: grid;
+  gap: 2px;
+}
+
+.credits-totals dd {
+  font-size: 14px;
+  font-weight: 560;
+  margin: 0;
+}
+
+.credits-redeem {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.credits-redeem label {
+  color: var(--sn-muted);
+  display: grid;
+  font-size: 10px;
+  gap: 4px;
+}
+
+.credits-redeem input {
+  border: 1px solid var(--sn-line);
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  padding: 7px 9px;
+}
+
+.credits-redeem input:focus {
+  border-color: var(--sn-atlantic);
+  outline: none;
+}
+
+.product-window .credits-redeem button {
+  align-self: end;
+  background: var(--sn-ink);
+  border: 1px solid var(--sn-ink);
+  border-radius: 999px;
+  color: var(--sn-paper);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 8px 14px;
+}
+
+.product-window .credits-redeem button:disabled {
+  opacity: 0.45;
+}
+
+.credits-redeem-state {
+  color: var(--sn-green);
+  font-size: 10px;
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.credits-redeem-error {
+  color: var(--sn-red);
+}
+
+.credits-ledger,
+.credits-howto {
+  margin: 0 auto;
+  max-width: 900px;
+  width: 100%;
+}
+
+.credits-ledger h2,
+.credits-howto h2 {
+  font-size: 11px;
+  font-weight: 600;
+  margin: 0 0 8px;
+}
+
+.credits-ledger table {
+  border-collapse: collapse;
+  font-size: 11px;
+  width: 100%;
+}
+
+.credits-ledger th,
+.credits-ledger td {
+  border-top: 1px solid var(--sn-line);
+  padding: 7px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.credits-ledger th {
+  color: var(--sn-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.credits-ledger td time {
+  color: var(--sn-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.credits-amount {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-align: right !important;
+  white-space: nowrap;
+}
+
+.credits-ledger tr[data-direction="sent"] .credits-amount {
+  color: var(--sn-red);
+}
+
+.credits-ledger tr[data-direction="received"] .credits-amount,
+.credits-ledger tr[data-direction="granted"] .credits-amount {
+  color: var(--sn-green);
+}
+
+.credits-howto pre {
+  background: var(--sn-paper-deep);
+  border: 1px solid var(--sn-line);
+  border-radius: 8px;
+  font-size: 11px;
+  line-height: 1.6;
+  margin: 0 0 8px;
+  overflow-x: auto;
+  padding: 10px 12px;
+}
+
+.credits-howto p {
+  color: var(--sn-muted);
+  font-size: 11px;
+  margin: 0;
+}
+
+.rail-account-link {
+  color: var(--sn-oxford);
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  margin: 2px 0 8px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/*
+ * The Rooms list's context menu: Share, Invite and Close, where the hand
+ * already is. Positioned at the pointer, so it is placed inline and fixed.
+ */
+.rooms-sidebar-hint {
+  color: var(--sn-muted);
+  font-size: 9px;
+  line-height: 1.5;
+  margin: 8px 6px 0;
+}
+
+.room-menu {
+  background: var(--sn-paper);
+  border: 1px solid var(--sn-ink);
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgba(0, 33, 71, 0.22);
+  display: grid;
+  max-width: min(280px, calc(100vw - 24px));
+  min-width: 180px;
+  padding: 5px;
+  position: fixed;
+  z-index: 60;
+}
+
+.room-menu-title {
+  color: var(--sn-gold-ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  margin: 0;
+  overflow: hidden;
+  padding: 4px 8px 6px;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.product-window .room-menu button {
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  color: var(--sn-ink);
+  font-size: 11px;
+  font-weight: 550;
+  padding: 7px 8px;
+  text-align: left;
+  width: 100%;
+}
+
+.product-window .room-menu button:hover:not(:disabled),
+.product-window .room-menu button:focus-visible {
+  background: var(--sn-blue-soft);
+  outline: none;
+}
+
+.product-window .room-menu button:disabled {
+  color: var(--sn-muted);
+}
+
+.product-window .room-menu .room-menu-close:hover:not(:disabled),
+.product-window .room-menu .room-menu-close:focus-visible {
+  background: color-mix(in srgb, var(--sn-red) 9%, var(--sn-paper));
+  color: var(--sn-red);
+}
+
+.room-menu-note {
+  color: var(--sn-muted);
+  font-size: 10px;
+  line-height: 1.5;
+  margin: 0;
+  padding: 4px 8px 6px;
+}
+
+/*
+ * A seat's name, renamed in place: double-click, or Enter / F2 when focused.
+ * Nothing shows until the hand is on it — the pencil and the underline arrive
+ * on hover and on focus, so a Room that nobody is renaming looks exactly as
+ * it did before there was any renaming.
+ */
+.room-message-sender[role="button"],
+.room-member-name[role="button"] {
+  border-bottom: 1px dashed transparent;
+  cursor: text;
+}
+
+.room-message-sender[role="button"]::after,
+.room-member-name[role="button"]::after {
+  color: var(--sn-muted);
+  content: "✎";
+  font-size: 0.85em;
+  margin-left: 4px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.room-message-sender[role="button"]:hover::after,
+.room-message-sender[role="button"]:focus-visible::after,
+.room-member-name[role="button"]:hover::after,
+.room-member-name[role="button"]:focus-visible::after {
+  opacity: 1;
+}
+
+.room-message-sender[role="button"]:hover,
+.room-message-sender[role="button"]:focus-visible,
+.room-member-name[role="button"]:hover,
+.room-member-name[role="button"]:focus-visible {
+  border-bottom-color: var(--sn-columbia);
+  outline: none;
+}
+
+.room-seat-name-failed {
+  border-bottom: 1px dashed var(--sn-red) !important;
+  color: var(--sn-red);
+}
+
+.product-window .room-seat-name-input {
+  background: var(--sn-paper);
+  border: 1px solid var(--sn-atlantic);
+  border-radius: 4px;
+  color: var(--sn-ink);
+  font: inherit;
+  max-width: 220px;
+  padding: 1px 5px;
+}
+
+.room-member-name {
+  font-size: 12px;
+  font-weight: 650;
+}
+

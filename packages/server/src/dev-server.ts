@@ -43,7 +43,7 @@ export function createSharedNetDevServer(store?: SharedNetRepository) {
       const request = new Request(url, {
         method: incoming.method ?? "GET",
         headers: requestHeaders(incoming),
-        ...(body ? { body: body.toString("utf8") } : {}),
+        ...(body ? { body: new Uint8Array(body) } : {}),
       });
       await writeResponse(await handleRequest(request, store), outgoing);
     } catch {

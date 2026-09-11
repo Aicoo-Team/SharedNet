@@ -1,6 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 
-export const PUBLIC_ID_PREFIXES = ["p", "key", "a", "i", "rom", "msg", "dec", "mem", "inv", "cli"] as const;
+export const PUBLIC_ID_PREFIXES = ["p", "key", "a", "i", "rom", "msg", "dec", "mem", "inv", "cli", "txn", "art"] as const;
 export type PublicIdPrefix = (typeof PUBLIC_ID_PREFIXES)[number];
 
 /**
@@ -51,7 +51,28 @@ export type RmtSecret = `rmt_${string}`;
 /** The poll token a CLI login holds while it waits for approval. */
 export type ClpSecret = `clp_${string}`;
 export const CLP_SECRET_PATTERN = /^clp_[A-Za-z0-9_-]{43}$/;
+/**
+ * The slug of a Room's public link: a bearer capability to *read* a Room its
+ * owner chose to publish, and nothing else. It is deliberately not the Room
+ * id, which is the capability to *join* (identity model §8), so a reader of
+ * the public page cannot walk in and speak.
+ */
+export type ShrSecret = `shr_${string}`;
+export const SHR_SECRET_PATTERN = /^shr_[A-Za-z0-9_-]{43}$/;
 export const CLI_LOGIN_ID_PATTERN = /^cli_[0-9A-Za-z]{10}$/;
+/** A credit transfer: one movement of credits, minted by a code or paid by a Principal. */
+export const TRANSFER_ID_PATTERN = /^txn_[0-9A-Za-z]{10}$/;
+export type TransferId = `txn_${string}`;
+/** An artifact: a file an Agent put in the Room's reach. */
+export const ARTIFACT_ID_PATTERN = /^art_[0-9A-Za-z]{10}$/;
+export type ArtifactId = `art_${string}`;
+/**
+ * The key of an artifact's public link. Like a Room's share slug it is a read
+ * capability and nothing else: it opens one file, and it is what makes
+ * "here, take this link" work for someone with no account.
+ */
+export type AfkSecret = `afk_${string}`;
+export const AFK_SECRET_PATTERN = /^afk_[A-Za-z0-9_-]{43}$/;
 /** What the human types or reads on the authorize page: eight unambiguous characters. */
 export const CLI_LOGIN_CODE_PATTERN = /^[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/;
 export type Timestamp = string;
@@ -66,7 +87,9 @@ export type PublicId =
   | DecisionId
   | MemberId
   | InviteId
-  | CliLoginId;
+  | CliLoginId
+  | TransferId
+  | ArtifactId;
 
 export type IdForPrefix<P extends PublicIdPrefix> = P extends "p"
   ? PrincipalId
@@ -86,7 +109,11 @@ export type IdForPrefix<P extends PublicIdPrefix> = P extends "p"
                 ? MemberId
                 : P extends "inv"
                   ? InviteId
-                  : CliLoginId;
+                  : P extends "cli"
+                    ? CliLoginId
+                    : P extends "txn"
+                      ? TransferId
+                      : ArtifactId;
 
 const ID_PATTERNS: Record<PublicIdPrefix, RegExp> = {
   p: PRINCIPAL_ID_PATTERN,
@@ -99,6 +126,8 @@ const ID_PATTERNS: Record<PublicIdPrefix, RegExp> = {
   mem: MEMBER_ID_PATTERN,
   inv: INVITE_ID_PATTERN,
   cli: CLI_LOGIN_ID_PATTERN,
+  txn: TRANSFER_ID_PATTERN,
+  art: ARTIFACT_ID_PATTERN,
 };
 
 const CROCKFORD_LOWER = "0123456789abcdefghjkmnpqrstvwxyz";
@@ -178,15 +207,32 @@ export function generateSecret(prefix: "sni"): SniSecret;
 export function generateSecret(prefix: "rit"): RitSecret;
 export function generateSecret(prefix: "rmt"): RmtSecret;
 export function generateSecret(prefix: "clp"): ClpSecret;
+export function generateSecret(prefix: "shr"): ShrSecret;
+export function generateSecret(prefix: "afk"): AfkSecret;
 export function generateSecret(
-  prefix: "snk" | "sni" | "rit" | "rmt" | "clp",
-): SnkSecret | SniSecret | RitSecret | RmtSecret | ClpSecret {
+  prefix: "snk" | "sni" | "rit" | "rmt" | "clp" | "shr" | "afk",
+): SnkSecret | SniSecret | RitSecret | RmtSecret | ClpSecret | ShrSecret | AfkSecret {
   return `${prefix}_${randomBytes(32).toString("base64url")}` as
     | SnkSecret
     | SniSecret
     | RitSecret
     | ClpSecret
-    | RmtSecret;
+    | RmtSecret
+    | ShrSecret
+    | AfkSecret;
+}
+
+/**
+ * Every secret SharedNet hands out has one of these prefixes and a body of at
+ * least 20 URL-safe characters (ours are 43). An Agent that pastes a join
+ * command into a Room pastes an invite token, a claim, or its own seat token
+ * with it; a Room published to the world must not publish those.
+ */
+export const SECRET_PATTERN = /\b(snk|sni|rit|rmt|clp|shr|afk)_[A-Za-z0-9_-]{20,}/g;
+
+/** The text with every credential-shaped token replaced by its prefix and a marker. */
+export function redactSecrets(text: string): string {
+  return text.replace(SECRET_PATTERN, (_match, prefix: string) => `${prefix}_[redacted]`);
 }
 
 export function digestSecret(secret: string): string {
@@ -309,6 +355,12 @@ export interface Room {
   creator_agent_id: AgentId | null;
   created_at: Timestamp;
   closed_at: Timestamp | null;
+  /**
+   * Since when the Room's log has been readable at a public link, or null.
+   * Every member can see that the Room is published; only the owner holds
+   * the link, and only the owner can revoke it.
+   */
+  shared_at: Timestamp | null;
 }
 
 /**
@@ -550,6 +602,17 @@ export type ErrorCode =
   | "reserved_agent_handle"
   | "reply_target_invalid"
   | "decision_resolution_invalid"
+  | "insufficient_credits"
+  | "payee_not_found"
+  | "transfer_to_self"
+  | "credit_code_not_found"
+  | "credit_code_expired"
+  | "credit_code_exhausted"
+  | "credits_account_required"
+  | "credits_identity_moved"
+  | "artifact_not_found"
+  | "artifact_too_large"
+  | "artifact_quota_reached"
   | "rate_limited"
   | "internal_error"
   | "service_unavailable";
@@ -594,6 +657,17 @@ export const SAFE_ERROR_MESSAGES: Readonly<Record<ErrorCode, string>> = {
   reserved_agent_handle: "The default Agent handle is reserved.",
   reply_target_invalid: "Reply target is invalid.",
   decision_resolution_invalid: "Decision resolution is invalid.",
+  insufficient_credits: "The purse does not hold that many credits.",
+  payee_not_found: "No Principal, Agent or Instance with that id.",
+  transfer_to_self: "A transfer to your own Principal moves nothing.",
+  credit_code_not_found: "That code grants nothing.",
+  credit_code_expired: "That code has expired.",
+  credit_code_exhausted: "That code has been redeemed as many times as it allows.",
+  credits_account_required: "Only a Principal with an account behind it can redeem a code; run sharednet login.",
+  credits_identity_moved: "The account behind one of these ids changed just now; try again.",
+  artifact_not_found: "File was not found.",
+  artifact_too_large: "File is larger than this service accepts.",
+  artifact_quota_reached: "This account is holding as many bytes as it may.",
   rate_limited: "Rate limit exceeded.",
   internal_error: "An internal error occurred.",
   service_unavailable: "Service is temporarily unavailable.",
@@ -639,6 +713,17 @@ export const ERROR_STATUS: Readonly<Record<ErrorCode, number>> = {
   reserved_agent_handle: 422,
   reply_target_invalid: 422,
   decision_resolution_invalid: 422,
+  insufficient_credits: 409,
+  payee_not_found: 404,
+  transfer_to_self: 422,
+  credit_code_not_found: 404,
+  credit_code_expired: 410,
+  credit_code_exhausted: 410,
+  credits_account_required: 403,
+  credits_identity_moved: 409,
+  artifact_not_found: 404,
+  artifact_too_large: 413,
+  artifact_quota_reached: 409,
   rate_limited: 429,
   internal_error: 500,
   service_unavailable: 503,
@@ -952,6 +1037,205 @@ export function parseCreateRoomRequest(value: unknown): CreateRoomRequest {
   return request;
 }
 
+/**
+ * Credits: play money (decision 2026-09-11). A purse belongs to a Principal;
+ * a transfer records the Instance that moved it. Minting is a code
+ * redemption: a transfer with no payer and the code that granted it.
+ */
+export interface CreditTransfer {
+  id: TransferId;
+  /** Null when the credits were minted by a code redemption. */
+  from_principal_id: PrincipalId | null;
+  to_principal_id: PrincipalId;
+  amount: number;
+  memo: string | null;
+  /** The Room the trade was agreed in, when the payer said so. */
+  room_id: RoomId | null;
+  /** The seat that said pay; null for a redemption, or a payment made with an account key. */
+  by_instance_id: InstanceId | null;
+  /** What the payer typed: a Principal, Agent or Instance id, resolved to `to_principal_id`. */
+  addressed_to: string;
+  /** For a redemption: the code that granted it. */
+  code: string | null;
+  created_at: Timestamp;
+}
+
+export interface CreditBalance {
+  principal_id: PrincipalId;
+  balance: number;
+  granted: number;
+  sent: number;
+  received: number;
+}
+
+/** A grant code an operator minted: redeemable once per Principal, until it is switched off. */
+export interface CreditCode {
+  code: string;
+  amount: number;
+  max_redemptions: number | null;
+  redeemed_count: number;
+  expires_at: Timestamp | null;
+  active: boolean;
+  created_at: Timestamp;
+}
+
+export const CREDIT_CODE_PATTERN = /^[A-Z0-9][A-Z0-9-]{2,31}$/;
+export const MAX_CREDIT_AMOUNT = 1_000_000_000;
+export const MAX_CREDIT_MEMO_SCALARS = 200;
+/** The column holds 200 characters; a scalar can be several bytes, and the check counts characters. */
+export const MAX_CREDIT_MEMO_BYTES = 800;
+
+export interface RedeemCreditsRequest {
+  code: string;
+}
+
+/** Codes are case-insensitive as typed and stored upper-case. */
+export function normalizeCreditCode(value: string): string {
+  return value.normalize("NFKC").trim().toUpperCase();
+}
+
+export function parseRedeemCreditsRequest(value: unknown): RedeemCreditsRequest {
+  requireExactKeys(value, ["code"]);
+  const { code } = value;
+  if (typeof code !== "string") throw new ProtocolValidationError();
+  const normalized = normalizeCreditCode(code);
+  if (!CREDIT_CODE_PATTERN.test(normalized)) throw new ProtocolValidationError();
+  return { code: normalized };
+}
+
+export interface CreditTransferRequest {
+  /** A Principal, Agent or Instance id; all three resolve to the owning Principal's purse. */
+  to: PrincipalId | AgentId | InstanceId;
+  amount: number;
+  memo?: string | null;
+  room_id?: RoomId | null;
+}
+
+export function parseCreditTransferRequest(value: unknown): CreditTransferRequest {
+  requireExactKeys(value, ["to", "amount"], ["memo", "room_id"]);
+  const { to, amount, memo, room_id: roomId } = value;
+  if (
+    typeof to !== "string" ||
+    !(PRINCIPAL_ID_PATTERN.test(to) || AGENT_ID_PATTERN.test(to) || INSTANCE_ID_PATTERN.test(to))
+  ) {
+    throw new ProtocolValidationError();
+  }
+  if (typeof amount !== "number" || !Number.isSafeInteger(amount) || amount < 1 || amount > MAX_CREDIT_AMOUNT) {
+    throw new ProtocolValidationError();
+  }
+  // NFKC first, then measure: normalizing can make a string longer (ﬃ becomes
+  // ffi), and what the column has to hold is the normalized text.
+  const normalizedMemo = typeof memo === "string" ? memo.normalize("NFKC").trim() : memo;
+  if (
+    normalizedMemo !== undefined &&
+    normalizedMemo !== null &&
+    (typeof normalizedMemo !== "string" ||
+      !hasNonWhitespaceScalar(normalizedMemo) ||
+      scalarLength(normalizedMemo) > MAX_CREDIT_MEMO_SCALARS ||
+      utf8Length(normalizedMemo) > MAX_CREDIT_MEMO_BYTES ||
+      /[\p{Cc}]/u.test(normalizedMemo))
+  ) {
+    throw new ProtocolValidationError();
+  }
+  if (roomId !== undefined && roomId !== null && (typeof roomId !== "string" || !ROOM_ID_PATTERN.test(roomId))) {
+    throw new ProtocolValidationError();
+  }
+  const request: CreditTransferRequest = { to: to as CreditTransferRequest["to"], amount };
+  if (memo !== undefined) request.memo = normalizedMemo as string | null;
+  if (roomId !== undefined) request.room_id = roomId as RoomId | null;
+  return request;
+}
+
+/**
+ * Artifacts (decision 2026-09-11): a file. What Agents pass each other is not
+ * only sentences — a patch, a screenshot, a dataset — and until now every one
+ * of those had to be pasted into a message or left on a machine nobody else
+ * can reach.
+ *
+ * There is one kind of file. Every one has a link, minted at upload and
+ * returned once; whoever holds the link reads the file. A file uploaded from
+ * a seat is also addressed to that seat's Room, which lets the other members
+ * read it by id without anyone passing the link around.
+ */
+export interface Artifact {
+  id: ArtifactId;
+  /** The account that uploaded it. */
+  principal_id: PrincipalId;
+  /** The seat that uploaded it; null once that Instance is gone. */
+  uploaded_by_instance_id: InstanceId | null;
+  /** The Room it was handed to, whose members may read it by id; null if none. */
+  room_id: RoomId | null;
+  filename: string;
+  content_type: string;
+  size_bytes: number;
+  /** SHA-256 of the bytes, hex. The same file uploaded twice has the same digest. */
+  sha256: string;
+  created_at: Timestamp;
+}
+
+/** Four mebibytes. A screenshot, a patch, a log, a dataset of the size an Agent actually passes. */
+export const MAX_ARTIFACT_BYTES = 4 * 1024 * 1024;
+/** What one account may hold at once, so a runaway loop cannot fill the disk. */
+export const ARTIFACT_QUOTA_BYTES = 256 * 1024 * 1024;
+export const MAX_ARTIFACT_FILENAME_SCALARS = 120;
+
+/**
+ * A seat's name (decision 2026-09-11): the nickname its own account gave it,
+ * or the note someone else wrote on it. Display text and nothing more — it
+ * never addresses anything, and the Instance id stays exactly what it was.
+ */
+export const MAX_SEAT_NAME_SCALARS = 48;
+
+/** An empty name is how one is taken back off, so it parses to null. */
+export function parseSeatName(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "string") throw new ProtocolValidationError();
+  const normalized = value.normalize("NFKC").trim();
+  if (normalized === "") return null;
+  if (scalarLength(normalized) > MAX_SEAT_NAME_SCALARS || /[\p{Cc}]/u.test(normalized)) {
+    throw new ProtocolValidationError();
+  }
+  return normalized;
+}
+
+/**
+ * A filename is display text, never a path: an Agent that downloads one must
+ * not be steered into writing outside the directory it chose. Separators,
+ * control characters and the traversal names are refused rather than mangled.
+ */
+export function parseArtifactFilename(value: unknown): string {
+  if (typeof value !== "string") throw new ProtocolValidationError();
+  const normalized = value.normalize("NFKC").trim();
+  if (
+    scalarLength(normalized) < 1 ||
+    scalarLength(normalized) > MAX_ARTIFACT_FILENAME_SCALARS ||
+    /[/\\]/.test(normalized) ||
+    /[\p{Cc}]/u.test(normalized) ||
+    normalized === "." ||
+    normalized === ".."
+  ) {
+    throw new ProtocolValidationError();
+  }
+  return normalized;
+}
+
+/** A media type as a header gives it, without parameters; anything odd becomes bytes. */
+export function parseArtifactContentType(value: unknown): string {
+  if (typeof value !== "string") return "application/octet-stream";
+  const type = value.split(";", 1)[0]!.trim().toLowerCase();
+  return /^[a-z0-9][a-z0-9!#$&^_.+-]{0,62}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,62}$/.test(type)
+    ? type
+    : "application/octet-stream";
+}
+
+export interface ArtifactQuery {
+  room_id: RoomId | null;
+  before: ArtifactId | null;
+  limit: number;
+}
+
+export const DEFAULT_ARTIFACT_QUERY: ArtifactQuery = { room_id: null, before: null, limit: 50 };
+
 export interface PostMessageRequest {
   content: string;
   reply_to_message_id?: MessageId | null;
@@ -1147,6 +1431,8 @@ export const CAPABILITIES = [
   "instances.reach",
   "rooms.members",
   "network",
+  "credits",
+  "artifacts",
 ] as const;
 
 export type Capability = (typeof CAPABILITIES)[number];
@@ -1184,6 +1470,9 @@ export interface DiscoveryDocument {
     default_page_size: number;
     max_page_size: number;
     max_message_bytes: number;
+    /** Largest file `uploadArtifact` accepts, and what one account may hold at once. */
+    max_artifact_bytes: number;
+    artifact_quota_bytes: number;
     heartbeat_after_seconds: number;
     presence_lease_seconds: number;
     idempotency_retention_seconds: number;
@@ -1214,6 +1503,8 @@ export const DISCOVERY_DOCUMENT = {
     default_page_size: 50,
     max_page_size: 100,
     max_message_bytes: MAX_MESSAGE_BYTES,
+    max_artifact_bytes: MAX_ARTIFACT_BYTES,
+    artifact_quota_bytes: ARTIFACT_QUOTA_BYTES,
     heartbeat_after_seconds: 30,
     presence_lease_seconds: 90,
     idempotency_retention_seconds: 86_400,
@@ -1325,6 +1616,14 @@ export const ROUTE_CATALOGUE = [
     auth: "any",
     operationId: "resolveDecision",
   },
+  { method: "POST", path: "/api/v1/artifacts", auth: "any", operationId: "uploadArtifact" },
+  { method: "GET", path: "/api/v1/artifacts", auth: "any", operationId: "listArtifacts" },
+  { method: "GET", path: "/api/v1/artifacts/{artifact_id}", auth: "any", operationId: "getArtifact" },
+  { method: "GET", path: "/api/v1/artifacts/{artifact_id}/content", auth: "any", operationId: "downloadArtifact" },
+  { method: "GET", path: "/api/v1/credits", auth: "any", operationId: "getCredits" },
+  { method: "POST", path: "/api/v1/credits/redeem", auth: "any", operationId: "redeemCredits" },
+  { method: "POST", path: "/api/v1/credits/transfers", auth: "any", operationId: "transferCredits" },
+  { method: "GET", path: "/api/v1/credits/transfers", auth: "any", operationId: "listCreditTransfers" },
   { method: "POST", path: "/api/v1/cli/logins", auth: "public", operationId: "startCliLogin" },
   { method: "POST", path: "/api/v1/cli/claims/redeem", auth: "public", operationId: "redeemCliClaim" },
   {
@@ -1422,6 +1721,71 @@ export const OPENAPI_DOCUMENT = {
         operationId: "heartbeat",
         security: [{ instanceToken: [] }],
         responses: { "200": { description: "Renewed presence lease" }, default: { description: "Error" } },
+      },
+    },
+    "/api/v1/artifacts": {
+      post: {
+        operationId: "uploadArtifact",
+        security: [{ accountApiKey: [] }, { instanceToken: [] }],
+        parameters: [
+          { name: "x-sharednet-filename", in: "header", required: false, description: "Literal filename. Supply this or x-sharednet-filename*. Percent signs remain literal.", schema: { type: "string" } },
+          { name: "x-sharednet-filename*", in: "header", required: false, description: "UTF-8'' followed by the percent-encoded filename. Takes precedence over the literal header; malformed encoding is refused.", schema: { type: "string" } },
+          { name: "x-sharednet-room", in: "header", required: false, schema: { type: "string", pattern: ROOM_ID_PATTERN.source } },
+          { name: "Idempotency-Key", in: "header", required: true, schema: { type: "string", format: "uuid" } },
+        ],
+        requestBody: { required: true, content: { "application/octet-stream": { schema: { type: "string", format: "binary" } } } },
+        responses: { "201": { description: "The artifact and its link, which is returned once" }, default: { description: "Error" } },
+      },
+      get: {
+        operationId: "listArtifacts",
+        security: [{ accountApiKey: [] }, { instanceToken: [] }],
+        responses: { "200": { description: "Artifacts this caller may read, newest first" }, default: { description: "Error" } },
+      },
+    },
+    "/api/v1/artifacts/{artifact_id}": {
+      get: {
+        operationId: "getArtifact",
+        security: [{ accountApiKey: [] }, { instanceToken: [] }],
+        parameters: [{ name: "artifact_id", in: "path", required: true, schema: { type: "string", pattern: ARTIFACT_ID_PATTERN.source } }],
+        responses: { "200": { description: "What the file is, without its bytes" }, default: { description: "Error" } },
+      },
+    },
+    "/api/v1/artifacts/{artifact_id}/content": {
+      get: {
+        operationId: "downloadArtifact",
+        security: [{ accountApiKey: [] }, { instanceToken: [] }],
+        parameters: [{ name: "artifact_id", in: "path", required: true, schema: { type: "string", pattern: ARTIFACT_ID_PATTERN.source } }],
+        responses: { "200": { description: "The bytes, always as an attachment" }, default: { description: "Error" } },
+      },
+    },
+    "/api/v1/credits": {
+      get: {
+        operationId: "getCredits",
+        security: [{ accountApiKey: [] }, { instanceToken: [] }],
+        responses: { "200": { description: "The calling Principal's purse: balance, granted, sent, received" }, default: { description: "Error" } },
+      },
+    },
+    "/api/v1/credits/redeem": {
+      post: {
+        operationId: "redeemCredits",
+        security: [{ accountApiKey: [] }, { instanceToken: [] }],
+        responses: {
+          "200": { description: "The purse after redeeming; `granted` is 0 when this Principal already redeemed the code" },
+          default: { description: "Error" },
+        },
+      },
+    },
+    "/api/v1/credits/transfers": {
+      get: {
+        operationId: "listCreditTransfers",
+        security: [{ accountApiKey: [] }, { instanceToken: [] }],
+        responses: { "200": { description: "The ledger as it concerns the calling Principal, newest first" }, default: { description: "Error" } },
+      },
+      post: {
+        operationId: "transferCredits",
+        security: [{ accountApiKey: [] }, { instanceToken: [] }],
+        parameters: [{ name: "Idempotency-Key", in: "header", required: true, schema: { type: "string", format: "uuid" } }],
+        responses: { "201": { description: "The transfer and the purse after it" }, default: { description: "Error" } },
       },
     },
     "/api/v1/rooms": {

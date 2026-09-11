@@ -29,6 +29,9 @@ import {
   isCliClaimProjection,
   isCreateRoomInviteResponse,
   isRemoveRoomMemberResponse,
+  isSeatNameResponse,
+  isShareRoomResponse,
+  isUnshareRoomResponse,
   type CliClaimProjection,
   type CreateRoomInviteResponse,
   type RoomMembership,
@@ -36,6 +39,7 @@ import {
   type RoomDetail,
   type RoomId,
   type RoomSummary,
+  type ShareRoomResponse,
 } from "@/src/sharednet/contracts";
 
 type SharedNetStatus = "loading" | "ready" | "stale";
@@ -67,7 +71,16 @@ type SharedNetContextValue = {
   selectRoom: (roomId: RoomId) => void;
   selectedRoom: RoomDetail | null;
   selectedRoomId: RoomId | null;
+  /**
+   * Name a seat: your own takes a nickname the whole Room sees, anyone else's
+   * takes a note only this account sees. An empty name takes it back off.
+   */
+  nameSeat: (instanceId: string, name: string | null) => Promise<string | null>;
+  /** Publish a Room this account owns at a public link; the slug comes back with the Room. */
+  shareRoom: (roomId: RoomId) => Promise<ShareRoomResponse>;
   status: SharedNetStatus;
+  /** Stop publishing a Room this account owns; the link stops resolving at once. */
+  unshareRoom: (roomId: RoomId) => Promise<RoomProjection>;
 };
 
 const SharedNetContext = createContext<SharedNetContextValue | null>(null);
@@ -416,6 +429,70 @@ export function SharedNetProvider({ children }: { children: ReactNode }) {
     [refresh],
   );
 
+  const nameSeat = useCallback(
+    async (instanceId: string, name: string | null) => {
+      const mutationController = mutationAbortControllerRef.current;
+      if (!mountedRef.current || mutationController === null || mutationController.signal.aborted) {
+        throw mutationUnavailableError();
+      }
+      const named = await requestJson(
+        `/api/sharednet/instances/${encodeURIComponent(instanceId)}/name`,
+        isSeatNameResponse,
+        {
+          body: JSON.stringify({ name }),
+          headers: { "content-type": "application/json" },
+          method: "PUT",
+          signal: mutationController.signal,
+        },
+      );
+      await refresh();
+      return named.name;
+    },
+    [refresh],
+  );
+
+  const shareRoom = useCallback(
+    async (roomId: RoomId) => {
+      const mutationController = mutationAbortControllerRef.current;
+      if (
+        !mountedRef.current ||
+        mutationController === null ||
+        mutationController.signal.aborted
+      ) {
+        throw mutationUnavailableError();
+      }
+      const shared = await requestJson(
+        `/api/sharednet/rooms/${encodeURIComponent(roomId)}/share`,
+        isShareRoomResponse,
+        { method: "POST", signal: mutationController.signal },
+      );
+      await refresh();
+      return shared;
+    },
+    [refresh],
+  );
+
+  const unshareRoom = useCallback(
+    async (roomId: RoomId) => {
+      const mutationController = mutationAbortControllerRef.current;
+      if (
+        !mountedRef.current ||
+        mutationController === null ||
+        mutationController.signal.aborted
+      ) {
+        throw mutationUnavailableError();
+      }
+      const { room } = await requestJson(
+        `/api/sharednet/rooms/${encodeURIComponent(roomId)}/share`,
+        isUnshareRoomResponse,
+        { method: "DELETE", signal: mutationController.signal },
+      );
+      await refresh();
+      return room;
+    },
+    [refresh],
+  );
+
   const removeMember = useCallback(
     async (roomId: RoomId, memberId: string) => {
       const mutationController = mutationAbortControllerRef.current;
@@ -530,6 +607,7 @@ export function SharedNetProvider({ children }: { children: ReactNode }) {
       createRoom,
       decisions,
       error,
+      nameSeat,
       network,
       principal,
       refresh,
@@ -539,7 +617,9 @@ export function SharedNetProvider({ children }: { children: ReactNode }) {
       selectRoom,
       selectedRoom,
       selectedRoomId,
+      shareRoom,
       status,
+      unshareRoom,
     }),
     [
       claimPairing,
@@ -549,6 +629,7 @@ export function SharedNetProvider({ children }: { children: ReactNode }) {
       createRoom,
       decisions,
       error,
+      nameSeat,
       network,
       principal,
       refresh,
@@ -558,7 +639,9 @@ export function SharedNetProvider({ children }: { children: ReactNode }) {
       selectRoom,
       selectedRoom,
       selectedRoomId,
+      shareRoom,
       status,
+      unshareRoom,
     ],
   );
 

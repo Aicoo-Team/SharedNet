@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 
 import { defaultKeyHasher } from "@better-auth/api-key";
 import { and, asc, count, desc, eq, gt, ilike, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
@@ -7,10 +7,17 @@ import { and, asc, count, desc, eq, gt, ilike, inArray, isNull, lt, lte, or, sql
 import {
   cliLogins,
   agents,
+  artifactBytes,
+  artifacts,
+  creditAccounts,
+  creditCodes,
+  creditRedemptions,
+  creditTransfers,
   apiKey,
   decisions,
   idempotencyRecords,
   instanceCursors,
+  instanceAliases,
   instances,
   messages,
   principals,
@@ -33,6 +40,19 @@ import {
   digestSecret,
   generatePublicId,
   generateSecret,
+  SHR_SECRET_PATTERN,
+  type ShrSecret,
+  type AfkSecret,
+  type Artifact,
+  type ArtifactId,
+  type ArtifactQuery,
+  ARTIFACT_QUOTA_BYTES,
+  MAX_ARTIFACT_BYTES,
+  type CreditBalance,
+  type CreditCode,
+  type CreditTransfer,
+  type CreditTransferRequest,
+  type TransferId,
   presenceFor,
   type Agent,
   type AgentId,
@@ -67,7 +87,7 @@ import {
   type SharedNetRepository,
   type StoredHttpResult,
 } from "./repository.ts";
-import { sharedRoomsEdges, type DecisionAnswer, type DecisionOverview, type McpClient, type McpSeat, type NetworkView, type RoomOverview, type SeatOverview } from "./repository.ts";
+import { sharedRoomsEdges, type SeatName, type ArtifactUsage, type UploadArtifactInput, type UploadedArtifact, type CreditAuth, type CreditLedgerQuery, type CreditRedemption, type CreditsOverview, type DecisionAnswer, type DecisionOverview, type McpClient, type McpSeat, type NetworkView, type RoomOverview, type RoomView, type SeatOverview, type SharedRoomView } from "./repository.ts";
 import { mcpLocalInstanceKey, runtimeKindForMcp } from "./memory-repository.ts";
 import type {
   AddRoomMembersRequest,
@@ -173,6 +193,7 @@ function projectRoom(row: RoomRow, creatorAgentId: AgentId | null): Room {
     creator_agent_id: creatorAgentId,
     created_at: timestamp(row.createdAt),
     closed_at: row.closedAt ? timestamp(row.closedAt) : null,
+    shared_at: row.sharedAt ? timestamp(row.sharedAt) : null,
   };
 }
 
@@ -287,6 +308,59 @@ function projectMessage(
     type: "message",
     content: row.content,
     reply_to_message_id: row.replyToMessageId,
+    created_at: timestamp(row.createdAt),
+  };
+}
+
+/**
+ * One string per idempotency scope, for the advisory lock that serializes it.
+ * The separator is a unit separator rather than a NUL: PostgreSQL text cannot
+ * hold a NUL byte, and the parameter is sent as text.
+ */
+function idempotencyLockKey(scope: IdempotencyScope): string {
+  // An Instance keeps its replay history when a guest is claimed. Its globally
+  // unique actor id owns this namespace; the Principal only owns the purse.
+  const principal = scope.credentialClass === "instance" ? "" : scope.principalId;
+  return [principal, scope.credentialClass, scope.actorId, scope.operationId, scope.key].join("\u001f");
+}
+
+function projectArtifact(row: typeof artifacts.$inferSelect): Artifact {
+  return {
+    id: row.id,
+    principal_id: row.principalId,
+    uploaded_by_instance_id: row.uploadedByInstanceId,
+    room_id: row.roomId,
+    filename: row.filename,
+    content_type: row.contentType,
+    size_bytes: row.sizeBytes,
+    sha256: row.sha256,
+    created_at: timestamp(row.createdAt),
+  };
+}
+
+function projectTransfer(row: typeof creditTransfers.$inferSelect): CreditTransfer {
+  return {
+    id: row.id,
+    from_principal_id: row.fromPrincipalId,
+    to_principal_id: row.toPrincipalId,
+    amount: row.amount,
+    memo: row.memo,
+    room_id: row.roomId,
+    by_instance_id: row.byInstanceId,
+    addressed_to: row.addressedTo,
+    code: row.code,
+    created_at: timestamp(row.createdAt),
+  };
+}
+
+function projectCreditCode(row: typeof creditCodes.$inferSelect): CreditCode {
+  return {
+    code: row.code,
+    amount: row.amount,
+    max_redemptions: row.maxRedemptions,
+    redeemed_count: row.redeemedCount,
+    expires_at: row.expiresAt ? timestamp(row.expiresAt) : null,
+    active: row.active,
     created_at: timestamp(row.createdAt),
   };
 }
@@ -1332,11 +1406,126 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
     return { items };
   }
 
-  async getRoomForPrincipal(
-    principalId: PrincipalId,
-    roomId: RoomId,
-  ): Promise<{ room: Room; memberships: RoomMember[]; messages: Message[]; latest_sequence: number }> {
+  async getRoomForPrincipal(principalId: PrincipalId, roomId: RoomId): Promise<RoomView> {
     const room = await this.roomVisibleTo(principalId, roomId);
+    const log = await this.roomLog(room);
+    const seats = [
+      ...new Set([...log.memberships.map((member) => member.instance_id), ...log.messages.map((message) => message.sender_instance_id)]),
+    ];
+    const named = seats.length
+      ? await this.executor()
+          .select({ instanceId: instanceAliases.instanceId, alias: instanceAliases.alias })
+          .from(instanceAliases)
+          .where(and(eq(instanceAliases.principalId, principalId), inArray(instanceAliases.instanceId, seats)))
+      : [];
+    // The link is the owner's to hand out; a seated Principal sees only that one exists.
+    return {
+      ...log,
+      share_token: room.principalId === principalId ? (room.shareToken as ShrSecret | null) : null,
+      aliases: Object.fromEntries(named.map((row) => [row.instanceId, row.alias])) as Record<InstanceId, string>,
+    };
+  }
+
+  async nameSeat(principalId: PrincipalId, instanceId: InstanceId, name: string | null): Promise<SeatName> {
+    // A seat this account cannot see does not exist as far as it is concerned,
+    // so naming one cannot be used to discover that an id is real.
+    const [own] = await this.executor()
+      .select({ id: instances.id })
+      .from(instances)
+      .where(and(eq(instances.id, instanceId), eq(instances.principalId, principalId)))
+      .limit(1);
+    if (own) {
+      // Your own seat's name is the name it goes by: everyone in its Rooms
+      // sees it, because it is your name for yourself.
+      await this.executor().update(instances).set({ displayName: name }).where(eq(instances.id, instanceId));
+      // A note you once left on your own seat would now sit under its nickname.
+      await this.executor()
+        .delete(instanceAliases)
+        .where(and(eq(instanceAliases.principalId, principalId), eq(instanceAliases.instanceId, instanceId)));
+      return { instance_id: instanceId, name, scope: "nickname" };
+    }
+    {
+      const [shared] = await this.executor()
+        .select({ id: roomMembers.instanceId })
+        .from(roomMembers)
+        .where(
+          and(
+            eq(roomMembers.instanceId, instanceId),
+            eq(roomMembers.state, "active"),
+            inArray(roomMembers.roomId, this.roomsSeatedIn(principalId)),
+          ),
+        )
+        .limit(1);
+      if (!shared) throw new RepositoryError(404, "instance_not_found", "Instance was not found.");
+    }
+    // Someone else's seat: a note, for this account's eyes only.
+    if (name === null) {
+      await this.executor()
+        .delete(instanceAliases)
+        .where(and(eq(instanceAliases.principalId, principalId), eq(instanceAliases.instanceId, instanceId)));
+      return { instance_id: instanceId, name: null, scope: "note" };
+    }
+    await this.executor()
+      .insert(instanceAliases)
+      .values({ principalId, instanceId, alias: name, updatedAt: this.now() })
+      .onConflictDoUpdate({
+        target: [instanceAliases.principalId, instanceAliases.instanceId],
+        set: { alias: name, updatedAt: this.now() },
+      });
+    return { instance_id: instanceId, name, scope: "note" };
+  }
+
+  async shareRoom(principalId: PrincipalId, roomId: RoomId): Promise<{ room: Room; share_token: ShrSecret }> {
+    // Locked, so two clicks on Share mint one link rather than racing the unique index.
+    return this.inTransaction(async () => {
+      const [room] = await this.executor()
+        .select()
+        .from(rooms)
+        .where(and(eq(rooms.id, roomId), eq(rooms.principalId, principalId)))
+        .for("update")
+        .limit(1);
+      if (!room) throw new RepositoryError(404, "room_not_found", "Room was not found.");
+      if (room.shareToken !== null) {
+        return { room: await this.projectRoomRow(room), share_token: room.shareToken as ShrSecret };
+      }
+      const token = generateSecret("shr");
+      const [published] = await this.executor()
+        .update(rooms)
+        .set({ shareToken: token, sharedAt: this.now() })
+        .where(eq(rooms.id, room.id))
+        .returning();
+      if (!published) throw new RepositoryError(500, "internal_error", "Room could not be published.");
+      return { room: await this.projectRoomRow(published), share_token: token };
+    });
+  }
+
+  async unshareRoom(principalId: PrincipalId, roomId: RoomId): Promise<{ room: Room }> {
+    const [room] = await this.executor()
+      .update(rooms)
+      .set({ shareToken: null, sharedAt: null })
+      .where(and(eq(rooms.id, roomId), eq(rooms.principalId, principalId)))
+      .returning();
+    if (!room) throw new RepositoryError(404, "room_not_found", "Room was not found.");
+    return { room: await this.projectRoomRow(room) };
+  }
+
+  async getSharedRoom(shareToken: string): Promise<SharedRoomView> {
+    const [room] = SHR_SECRET_PATTERN.test(shareToken)
+      ? await this.executor().select().from(rooms).where(eq(rooms.shareToken, shareToken)).limit(1)
+      : [];
+    if (!room) throw new RepositoryError(404, "room_not_found", "Room was not found.");
+    const log = await this.roomLog(room);
+    const agentIds = [...new Set([...log.memberships.map((m) => m.agent_id), ...log.messages.map((m) => m.sender_agent_id)])].filter(
+      (id): id is AgentId => id !== null,
+    );
+    const handles = agentIds.length
+      ? await this.executor().select({ id: agents.id, handle: agents.handle }).from(agents).where(inArray(agents.id, agentIds))
+      : [];
+    return { ...log, agent_handles: Object.fromEntries(handles.map((row) => [row.id, row.handle])) as Record<AgentId, string> };
+  }
+
+  /** Every seat and every message of a Room, in order: what both the owner's page and the public one read. */
+  private async roomLog(room: RoomRow): Promise<Omit<RoomView, "aliases" | "share_token">> {
     const rows = await this.executor()
       .select({
         message: messages,
@@ -1827,6 +2016,24 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
       if (state === "expired") throw new RepositoryError(410, "login_expired", "CLI login has expired.");
       if (state === "denied") throw new RepositoryError(410, "login_denied", "CLI login was denied.");
       if (state !== "pending") throw new RepositoryError(410, "login_consumed", "CLI login was already used.");
+      // Keep the login row locked from the state check through approval: the
+      // same code cannot be consumed by a second account while we wait. Read
+      // every seat only to discover the complete identity lock set, then take
+      // it once in global order before deciding which guests still qualify.
+      const candidates = record.bindInstanceIds.length === 0
+        ? []
+        : await this.executor()
+            .select({ principal: principals })
+            .from(instances)
+            .innerJoin(principals, eq(principals.id, instances.principalId))
+            .where(inArray(instances.id, record.bindInstanceIds));
+      const lockedIdentities = new Set<PrincipalId>([
+        input.principalId,
+        ...candidates.flatMap(({ principal }) => principal.mergedIntoPrincipalId
+          ? [principal.id, principal.mergedIntoPrincipalId]
+          : [principal.id]),
+      ]);
+      await this.lockIdentities([...lockedIdentities]);
       const [account] = await this.executor()
         .select()
         .from(principals)
@@ -1846,6 +2053,12 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
         const anonymous = row?.principal;
         if (!anonymous || anonymous.id === account.id) continue;
         if (anonymous.authUserId !== null || anonymous.mergedIntoPrincipalId !== null) continue;
+        // Another login may have claimed this seat while we waited for the
+        // locks. Eligibility comes from the current joined rows above, never
+        // from the discovery snapshot. Do not extend the lock set mid-claim.
+        if (!lockedIdentities.has(anonymous.id)) {
+          throw new RepositoryError(409, "credits_identity_moved", "The account behind one of these ids changed just now; try again.");
+        }
         // Binding: every Instance of the anonymous Principal moves under the
         // account's Principal. Memberships, messages, Rooms and Decisions carry
         // the Instance's Principal beside its id and follow by ON UPDATE CASCADE.
@@ -1857,6 +2070,13 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
           .update(principals)
           .set({ mergedIntoPrincipalId: account.id })
           .where(eq(principals.id, anonymous.id));
+        // Artifact ownership follows this permanent merge pointer at read and
+        // quota time; no file or original idempotent response is rewritten.
+        // Uploads hold these same identity locks before reading account usage.
+        // Credits follow the Instances. An anonymous seat may hold credits it
+        // was paid before its human logged in; without this the purse would be
+        // stranded on a Principal nothing acts as any more.
+        await this.moveCreditPurse(anonymous.id, account.id);
         bound.push(anonymous.id);
       }
       const now = this.now();
@@ -1977,20 +2197,26 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
   ): Promise<IdempotencyResult> {
     try {
       return await this.inTransaction(async () => {
+        // The scope is held for the whole transaction before anything is read
+        // or done. Two requests that share a key would otherwise both find no
+        // record, both run the operation, and the loser would surface whatever
+        // the now-changed world says — for a payment, `insufficient_credits`
+        // for money that its own twin had already moved — instead of replaying
+        // the one response the key promises. Blocking here makes the loser wait
+        // and then replay. Advisory locks are transaction-scoped and released
+        // on commit or rollback; a hash collision only serializes two unrelated
+        // keys for a moment.
+        await this.executor().execute(sql`SELECT pg_advisory_xact_lock(hashtext(${idempotencyLockKey(scope)}))`);
         const now = this.now();
         await this.executor()
           .delete(idempotencyRecords)
           .where(lte(idempotencyRecords.expiresAt, now));
-        const existing = await this.findIdempotencyRecord(scope);
-        if (existing && existing.expiresAt > now) {
-          return this.replayIdempotency(existing, fingerprint);
-        }
-        if (existing) {
-          await this.deleteIdempotencyRecord(scope);
-        }
+        const existing = await this.findIdempotencyRecord(scope, this.executor(), now);
+        if (existing) return this.replayIdempotency(existing, fingerprint);
 
         const result = await operation();
         const record: typeof idempotencyRecords.$inferInsert = {
+          // Historical metadata, not the replay namespace for an Instance.
           principalId: scope.principalId,
           credentialClass: scope.credentialClass,
           actorId: scope.actorId,
@@ -2013,6 +2239,545 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
       if (!winner) throw error;
       return this.replayIdempotency(winner, fingerprint);
     }
+  }
+
+  // ---- Artifacts: files an Agent hands to a Room. ----
+
+  async uploadArtifact(auth: CreditAuth, input: UploadArtifactInput): Promise<UploadedArtifact> {
+    if (input.bytes.byteLength === 0) throw new RepositoryError(422, "validation_failed", "Request is invalid.");
+    if (input.bytes.byteLength > MAX_ARTIFACT_BYTES) {
+      throw new RepositoryError(413, "artifact_too_large", "File is larger than this service accepts.");
+    }
+    return this.inTransaction(async () => {
+      // The same identity locks used by claims stabilize both the uploader and
+      // its effective account before quota is read. Never add a new identity
+      // lock after discovery: the ordering must match a multi-seat claim.
+      const discoveredOwner = await this.canonicalPrincipal(auth.principalId);
+      const locked = new Set([auth.principalId, discoveredOwner]);
+      await this.lockIdentities([...locked]);
+      const principalId = await this.canonicalPrincipal(auth.principalId);
+      if (!locked.has(principalId)) {
+        throw new RepositoryError(409, "credits_identity_moved", "The account behind one of these ids changed just now; try again.");
+      }
+      if (input.room_id !== null) {
+        // You hand a file to a Room you are in, not to one you know the id of.
+        const [seat] = await this.executor()
+          .select({ instanceId: roomMembers.instanceId })
+          .from(roomMembers)
+          .where(
+            and(
+              eq(roomMembers.roomId, input.room_id),
+              eq(roomMembers.principalId, principalId),
+              eq(roomMembers.state, "active"),
+            ),
+          )
+          .limit(1);
+        if (!seat) throw new RepositoryError(404, "room_not_found", "Room was not found.");
+        const room = await this.roomById(input.room_id);
+        if (room.state === "closed") throw new RepositoryError(409, "room_closed", "Room is closed.");
+      }
+      // The quota is read and the row written in one transaction, so two
+      // uploads racing cannot both squeeze past the last free byte.
+      const held = await this.usageOf(principalId, true);
+      if (held.bytes + input.bytes.byteLength > ARTIFACT_QUOTA_BYTES) {
+        throw new RepositoryError(409, "artifact_quota_reached", "This account is holding as many bytes as it may.");
+      }
+      // Every file has a link: that is what makes handing one over work.
+      const linkKey = generateSecret("afk");
+      const [row] = await this.executor()
+        .insert(artifacts)
+        .values({
+          id: generatePublicId("art"),
+          principalId,
+          uploadedByInstanceId: auth.kind === "instance" ? auth.instanceId : null,
+          roomId: input.room_id,
+          filename: input.filename,
+          contentType: input.content_type,
+          sizeBytes: input.bytes.byteLength,
+          sha256: createHash("sha256").update(input.bytes).digest("hex"),
+          linkKey,
+          createdAt: this.now(),
+        })
+        .returning();
+      if (!row) throw new RepositoryError(500, "internal_error", "Upload failed.");
+      await this.executor().insert(artifactBytes).values({ artifactId: row.id, bytes: Buffer.from(input.bytes) });
+      return { artifact: projectArtifact(row), link_key: linkKey };
+    });
+  }
+
+  async getArtifact(auth: CreditAuth, artifactId: ArtifactId): Promise<{ artifact: Artifact }> {
+    return { artifact: projectArtifact(await this.artifactVisibleTo(auth.principalId, artifactId)) };
+  }
+
+  async readArtifact(auth: CreditAuth, artifactId: ArtifactId): Promise<{ artifact: Artifact; bytes: Uint8Array }> {
+    const row = await this.artifactVisibleTo(auth.principalId, artifactId);
+    return { artifact: projectArtifact(row), bytes: await this.bytesOf(row.id) };
+  }
+
+  async readArtifactByLink(artifactId: ArtifactId, key: string): Promise<{ artifact: Artifact; bytes: Uint8Array }> {
+    const [found] = await this.executor()
+      .select({ artifact: artifacts, owner: principals.mergedIntoPrincipalId })
+      .from(artifacts)
+      .innerJoin(principals, eq(principals.id, artifacts.principalId))
+      .where(eq(artifacts.id, artifactId)).limit(1);
+    const row = found ? { ...found.artifact, principalId: found.owner ?? found.artifact.principalId } : null;
+    // A wrong key reads exactly like a missing file, and the comparison of the
+    // two keys is constant-time so a near-miss cannot be measured.
+    if (!row || !secureDigestEquals(digestSecret(row.linkKey), digestSecret(key))) {
+      throw new RepositoryError(404, "artifact_not_found", "File was not found.");
+    }
+    return { artifact: projectArtifact(row), bytes: await this.bytesOf(row.id) };
+  }
+
+  async listArtifacts(auth: CreditAuth, input: ArtifactQuery): Promise<Page<Artifact>> {
+    const principalId = await this.canonicalPrincipal(auth.principalId);
+    const readable = or(
+      inArray(artifacts.principalId, this.artifactOwnersOf(principalId)),
+      inArray(artifacts.roomId, this.roomsSeatedIn(principalId)),
+    );
+    const scoped = input.room_id === null ? readable : and(readable, eq(artifacts.roomId, input.room_id));
+    let boundary: { createdAt: Date; id: ArtifactId } | null = null;
+    if (input.before !== null) {
+      const [row] = await this.executor()
+        .select({ createdAt: artifacts.createdAt, id: artifacts.id })
+        .from(artifacts)
+        .where(and(eq(artifacts.id, input.before), scoped))
+        .limit(1);
+      if (!row) throw new RepositoryError(400, "invalid_cursor", "Cursor is invalid.");
+      boundary = row;
+    }
+    const rows = await this.executor()
+      .select({ artifact: artifacts, owner: principals.mergedIntoPrincipalId })
+      .from(artifacts)
+      .innerJoin(principals, eq(principals.id, artifacts.principalId))
+      .where(
+        boundary === null
+          ? scoped
+          : and(
+              scoped,
+              or(
+                lt(artifacts.createdAt, boundary.createdAt),
+                and(eq(artifacts.createdAt, boundary.createdAt), lt(artifacts.id, boundary.id)),
+              ),
+            ),
+      )
+      .orderBy(desc(artifacts.createdAt), desc(artifacts.id))
+      .limit(input.limit + 1);
+    const hasMore = rows.length > input.limit;
+    const items = rows.slice(0, input.limit).map(({ artifact, owner }) => projectArtifact({ ...artifact, principalId: owner ?? artifact.principalId }));
+    return { items, next_cursor: hasMore ? items[items.length - 1]!.id : null, has_more: hasMore };
+  }
+
+  async artifactUsage(auth: CreditAuth): Promise<ArtifactUsage> {
+    return this.usageOf(await this.canonicalPrincipal(auth.principalId));
+  }
+
+  async deleteArtifact(auth: CreditAuth, artifactId: ArtifactId): Promise<{ artifact: Artifact }> {
+    const principalId = await this.canonicalPrincipal(auth.principalId);
+    const [row] = await this.executor()
+      .delete(artifacts)
+      .where(and(eq(artifacts.id, artifactId), inArray(artifacts.principalId, this.artifactOwnersOf(principalId))))
+      .returning();
+    // Only the account that uploaded it; to anyone else it is not there at all.
+    if (!row) throw new RepositoryError(404, "artifact_not_found", "File was not found.");
+    return { artifact: projectArtifact({ ...row, principalId }) };
+  }
+
+  /** The Rooms a Principal has an active seat in, as a subquery. */
+  private roomsSeatedIn(principalId: PrincipalId) {
+    return this.executor()
+      .select({ roomId: roomMembers.roomId })
+      .from(roomMembers)
+      .where(and(eq(roomMembers.principalId, principalId), eq(roomMembers.state, "active")));
+  }
+
+  private async usageOf(principalId: PrincipalId, forUpdate = false): Promise<ArtifactUsage> {
+    const query = this.executor()
+      .select({
+        bytes: sql<string>`coalesce(sum(${artifacts.sizeBytes}), 0)`,
+        count: sql<string>`count(*)`,
+      })
+      .from(artifacts)
+      .where(inArray(artifacts.principalId, this.artifactOwnersOf(principalId)));
+    if (forUpdate) {
+      // Serialize this account's uploads against each other, and nothing else.
+      await this.executor().execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`artifacts:${principalId}`}))`);
+    }
+    const [row] = await query;
+    return { bytes: Number(row?.bytes ?? 0), quota_bytes: ARTIFACT_QUOTA_BYTES, count: Number(row?.count ?? 0) };
+  }
+
+  private async bytesOf(artifactId: ArtifactId): Promise<Uint8Array> {
+    const [row] = await this.executor()
+      .select({ bytes: artifactBytes.bytes })
+      .from(artifactBytes)
+      .where(eq(artifactBytes.artifactId, artifactId))
+      .limit(1);
+    return row ? new Uint8Array(row.bytes) : new Uint8Array();
+  }
+
+  private async artifactVisibleTo(principalId: PrincipalId, artifactId: ArtifactId): Promise<typeof artifacts.$inferSelect> {
+    principalId = await this.canonicalPrincipal(principalId);
+    const [found] = await this.executor()
+      .select({ artifact: artifacts, owner: principals.mergedIntoPrincipalId })
+      .from(artifacts)
+      .innerJoin(principals, eq(principals.id, artifacts.principalId))
+      .where(eq(artifacts.id, artifactId)).limit(1);
+    const row = found ? { ...found.artifact, principalId: found.owner ?? found.artifact.principalId } : null;
+    if (!row) throw new RepositoryError(404, "artifact_not_found", "File was not found.");
+    if (row.principalId === principalId) return row;
+    if (row.roomId !== null) {
+      const [seat] = await this.executor()
+        .select({ instanceId: roomMembers.instanceId })
+        .from(roomMembers)
+        .where(and(eq(roomMembers.roomId, row.roomId), eq(roomMembers.principalId, principalId), eq(roomMembers.state, "active")))
+        .limit(1);
+      if (seat) return row;
+    }
+    throw new RepositoryError(404, "artifact_not_found", "File was not found.");
+  }
+
+  /** Includes old artifact rows stranded by claims made before this fix. */
+  private artifactOwnersOf(principalId: PrincipalId) {
+    return this.executor().select({ id: principals.id }).from(principals)
+      .where(or(eq(principals.id, principalId), eq(principals.mergedIntoPrincipalId, principalId)));
+  }
+
+  // ---- Credits: a purse per Principal, a ledger of every movement. ----
+
+  async getCredits(auth: CreditAuth): Promise<{ credits: CreditBalance }> {
+    return { credits: await this.purseOf(auth.principalId) };
+  }
+
+  async redeemCredits(auth: CreditAuth, code: string): Promise<CreditRedemption> {
+    return this.redeem(auth.principalId, code);
+  }
+
+  async transferCredits(auth: CreditAuth, input: CreditTransferRequest): Promise<{ transfer: CreditTransfer; credits: CreditBalance }> {
+    if (input.room_id !== undefined && input.room_id !== null) await this.roomById(input.room_id);
+    // One transaction: identities are locked and only then resolved, so a
+    // claim finishing mid-payment cannot leave either side pointing at a purse
+    // nothing spends from; the debit is then a conditional UPDATE, so two
+    // payments racing for one purse cannot both pass a check they read a
+    // moment earlier.
+    const { transfer, payer } = await this.inTransaction(async () => {
+      // Read first without locking, to know which identities are in play, then
+      // lock every one of them — the raw ids and where they currently point.
+      const payerRaw = auth.principalId;
+      const payeeRaw = await this.purseBehind(input.to);
+      if (payeeRaw === null) throw new RepositoryError(404, "payee_not_found", "No Principal, Agent or Instance with that id.");
+      const lockedIdentities = new Set([payerRaw, payeeRaw, await this.canonicalPrincipal(payerRaw)]);
+      await this.lockIdentities([...lockedIdentities]);
+      // Re-resolve after locking. A claim may have moved either side since
+      // discovery; taking that newly discovered owner's lock here could go
+      // backwards in the global order and deadlock. Refuse before any writes
+      // or additional locks so the caller can retry the same idempotency key.
+      const payer = await this.canonicalPrincipal(payerRaw);
+      const payee = await this.purseBehind(input.to);
+      if (payee === null) throw new RepositoryError(404, "payee_not_found", "No Principal, Agent or Instance with that id.");
+      if (!lockedIdentities.has(payer) || !lockedIdentities.has(payee)) {
+        throw new RepositoryError(409, "credits_identity_moved", "The account behind one of these ids changed just now; try again.");
+      }
+      if (payee === payer) throw new RepositoryError(422, "transfer_to_self", "A transfer to your own Principal moves nothing.");
+      await this.ensurePurses([payer, payee]);
+      await this.lockPurses([payer, payee]);
+      const [debited] = await this.executor()
+        .update(creditAccounts)
+        .set({ balance: sql`${creditAccounts.balance} - ${input.amount}`, updatedAt: this.now() })
+        .where(and(eq(creditAccounts.principalId, payer), sql`${creditAccounts.balance} >= ${input.amount}`))
+        .returning({ balance: creditAccounts.balance });
+      if (!debited) throw new RepositoryError(409, "insufficient_credits", "The purse does not hold that many credits.");
+      await this.executor()
+        .update(creditAccounts)
+        .set({ balance: sql`${creditAccounts.balance} + ${input.amount}`, updatedAt: this.now() })
+        .where(eq(creditAccounts.principalId, payee));
+      const [row] = await this.executor()
+        .insert(creditTransfers)
+        .values({
+          id: generatePublicId("txn"),
+          fromPrincipalId: payer,
+          toPrincipalId: payee,
+          amount: input.amount,
+          memo: input.memo ?? null,
+          roomId: input.room_id ?? null,
+          byInstanceId: auth.kind === "instance" ? auth.instanceId : null,
+          addressedTo: input.to,
+          code: null,
+          createdAt: this.now(),
+        })
+        .returning();
+      if (!row) throw new RepositoryError(500, "internal_error", "Transfer failed.");
+      return { transfer: projectTransfer(row), payer };
+    });
+    return { transfer, credits: await this.purseOf(payer) };
+  }
+
+  async listCreditTransfers(auth: CreditAuth, input: CreditLedgerQuery): Promise<Page<CreditTransfer>> {
+    return this.ledgerOf(auth.principalId, input);
+  }
+
+  async mintCreditCode(input: { code: string; amount: number; max_redemptions?: number | null; expires_at?: string | null }): Promise<{ code: CreditCode }> {
+    const [row] = await this.executor()
+      .insert(creditCodes)
+      .values({
+        code: input.code,
+        amount: input.amount,
+        maxRedemptions: input.max_redemptions ?? null,
+        redeemedCount: 0,
+        expiresAt: input.expires_at ? new Date(input.expires_at) : null,
+        active: true,
+        createdAt: this.now(),
+      })
+      .returning();
+    if (!row) throw new RepositoryError(500, "internal_error", "Code could not be minted.");
+    return { code: projectCreditCode(row) };
+  }
+
+  async creditsForPrincipal(principalId: PrincipalId): Promise<CreditsOverview> {
+    await this.requirePrincipalRow(principalId);
+    return { credits: await this.purseOf(principalId), transfers: (await this.ledgerOf(principalId, { limit: 100, before: null })).items };
+  }
+
+  async redeemCreditsForPrincipal(principalId: PrincipalId, code: string): Promise<CreditRedemption> {
+    await this.requirePrincipalRow(principalId);
+    return this.redeem(principalId, code);
+  }
+
+  private async requirePrincipalRow(principalId: PrincipalId): Promise<PrincipalRow> {
+    const [row] = await this.executor().select().from(principals).where(eq(principals.id, principalId)).limit(1);
+    if (!row) throw new RepositoryError(404, "principal_not_found", "Principal was not found.");
+    return row;
+  }
+
+  /**
+   * Moves one purse into another, as part of binding an anonymous Principal
+   * into an account (identity model: history follows the Instance). The move
+   * is a ledger row like any other, so "balance is the sum of the ledger"
+   * still holds on both sides, and the account can see where it came from.
+   */
+  private async moveCreditPurse(fromPrincipalId: PrincipalId, toPrincipalId: PrincipalId): Promise<void> {
+    // Lock first, read second. Reading the balance before taking the lock
+    // meant a payment that committed while this waited was spent twice: the
+    // old figure was moved across and the old purse zeroed, conjuring the
+    // difference out of nothing and breaking "balance is the sum of the ledger".
+    await this.ensurePurses([fromPrincipalId, toPrincipalId]);
+    await this.lockPurses([fromPrincipalId, toPrincipalId]);
+    const [purse] = await this.executor()
+      .select({ balance: creditAccounts.balance })
+      .from(creditAccounts)
+      .where(eq(creditAccounts.principalId, fromPrincipalId))
+      .limit(1);
+    const amount = purse?.balance ?? 0;
+    if (amount <= 0) return;
+    await this.executor()
+      .update(creditAccounts)
+      .set({ balance: 0, updatedAt: this.now() })
+      .where(eq(creditAccounts.principalId, fromPrincipalId));
+    await this.executor()
+      .update(creditAccounts)
+      .set({ balance: sql`${creditAccounts.balance} + ${amount}`, updatedAt: this.now() })
+      .where(eq(creditAccounts.principalId, toPrincipalId));
+    await this.executor().insert(creditTransfers).values({
+      id: generatePublicId("txn"),
+      fromPrincipalId,
+      toPrincipalId,
+      amount,
+      memo: "Bound into this account by sharednet login",
+      roomId: null,
+      byInstanceId: null,
+      addressedTo: toPrincipalId,
+      code: null,
+      createdAt: this.now(),
+    });
+  }
+
+  /**
+   * A purse row exists for everyone who ever moved credits; balance 0 until
+   * then. Inserted in id order for the same reason the locks are taken in id
+   * order: two transactions creating the same pair must agree on a sequence.
+   */
+  private async ensurePurses(principalIds: PrincipalId[]): Promise<void> {
+    const ordered = [...new Set(principalIds)].sort();
+    await this.executor()
+      .insert(creditAccounts)
+      .values(ordered.map((principalId) => ({ principalId, balance: 0, updatedAt: this.now() })))
+      .onConflictDoNothing();
+  }
+
+  /** Locks the named purses for this transaction, always in ascending id order. */
+  private async lockPurses(principalIds: PrincipalId[]): Promise<void> {
+    for (const principalId of [...new Set(principalIds)].sort()) {
+      await this.executor()
+        .select({ principalId: creditAccounts.principalId })
+        .from(creditAccounts)
+        .where(eq(creditAccounts.principalId, principalId))
+        .for("update")
+        .limit(1);
+    }
+  }
+
+  /**
+   * The identity lock. Credits and account claims both move value between
+   * Principals, and a claim can change which Principal an id means while a
+   * payment or artifact upload is deciding. Every such transaction collects its complete identity
+   * set, then takes one advisory lock per Principal in ascending id order, so
+   * they serialize instead of racing or deadlocking: the order is the
+   * same for everyone. Advisory locks last to the end of the transaction and
+   * are released on commit or rollback.
+   */
+  private async lockIdentities(principalIds: Array<PrincipalId | null | undefined>): Promise<void> {
+    const ordered = [...new Set(principalIds.filter((id): id is PrincipalId => Boolean(id)))].sort();
+    for (const principalId of ordered) {
+      await this.executor().execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`credits:${principalId}`}))`);
+    }
+  }
+
+  /** Follows a bound Principal to the account it was bound into; anything else is itself. */
+  private async canonicalPrincipal(principalId: PrincipalId): Promise<PrincipalId> {
+    const [row] = await this.executor()
+      .select({ mergedInto: principals.mergedIntoPrincipalId })
+      .from(principals)
+      .where(eq(principals.id, principalId))
+      .limit(1);
+    return (row?.mergedInto as PrincipalId | undefined) ?? principalId;
+  }
+
+  /** The Principal whose purse an id names: a Principal's own, an Agent's owner, an Instance's owner. */
+  private async purseBehind(id: string): Promise<PrincipalId | null> {
+    if (id.startsWith("p_")) {
+      const [row] = await this.executor()
+        .select({ id: principals.id, mergedInto: principals.mergedIntoPrincipalId })
+        .from(principals)
+        .where(eq(principals.id, id as PrincipalId))
+        .limit(1);
+      return row ? (row.mergedInto ?? row.id) : null;
+    }
+    if (id.startsWith("a_")) {
+      const [row] = await this.executor().select({ principalId: agents.principalId }).from(agents).where(eq(agents.id, id as AgentId)).limit(1);
+      // A claim repoints Instances but not Agent tags, so a tag can still name
+      // the Principal it was created under after that Principal was bound.
+      return row ? this.canonicalPrincipal(row.principalId) : null;
+    }
+    if (id.startsWith("i_")) {
+      const [row] = await this.executor().select({ principalId: instances.principalId }).from(instances).where(eq(instances.id, id as InstanceId)).limit(1);
+      return row ? this.canonicalPrincipal(row.principalId) : null;
+    }
+    return null;
+  }
+
+  private async purseOf(principalId: PrincipalId): Promise<CreditBalance> {
+    const [account] = await this.executor()
+      .select({ balance: creditAccounts.balance })
+      .from(creditAccounts)
+      .where(eq(creditAccounts.principalId, principalId))
+      .limit(1);
+    const [sums] = await this.executor()
+      .select({
+        granted: sql<string>`coalesce(sum(case when ${creditTransfers.toPrincipalId} = ${principalId} and ${creditTransfers.fromPrincipalId} is null then ${creditTransfers.amount} else 0 end), 0)`,
+        received: sql<string>`coalesce(sum(case when ${creditTransfers.toPrincipalId} = ${principalId} and ${creditTransfers.fromPrincipalId} is not null then ${creditTransfers.amount} else 0 end), 0)`,
+        sent: sql<string>`coalesce(sum(case when ${creditTransfers.fromPrincipalId} = ${principalId} then ${creditTransfers.amount} else 0 end), 0)`,
+      })
+      .from(creditTransfers)
+      .where(or(eq(creditTransfers.toPrincipalId, principalId), eq(creditTransfers.fromPrincipalId, principalId)));
+    return {
+      principal_id: principalId,
+      balance: account?.balance ?? 0,
+      granted: Number(sums?.granted ?? 0),
+      sent: Number(sums?.sent ?? 0),
+      received: Number(sums?.received ?? 0),
+    };
+  }
+
+  private async ledgerOf(principalId: PrincipalId, input: CreditLedgerQuery): Promise<Page<CreditTransfer>> {
+    const mine = or(eq(creditTransfers.toPrincipalId, principalId), eq(creditTransfers.fromPrincipalId, principalId));
+    let boundary: { createdAt: Date; id: TransferId } | null = null;
+    if (input.before !== null) {
+      const [row] = await this.executor()
+        .select({ createdAt: creditTransfers.createdAt, id: creditTransfers.id })
+        .from(creditTransfers)
+        .where(and(eq(creditTransfers.id, input.before), mine))
+        .limit(1);
+      if (!row) throw new RepositoryError(400, "invalid_cursor", "Cursor is invalid.");
+      boundary = row;
+    }
+    const rows = await this.executor()
+      .select()
+      .from(creditTransfers)
+      .where(
+        boundary === null
+          ? mine
+          : and(
+              mine,
+              or(
+                lt(creditTransfers.createdAt, boundary.createdAt),
+                and(eq(creditTransfers.createdAt, boundary.createdAt), lt(creditTransfers.id, boundary.id)),
+              ),
+            ),
+      )
+      .orderBy(desc(creditTransfers.createdAt), desc(creditTransfers.id))
+      .limit(input.limit + 1);
+    const hasMore = rows.length > input.limit;
+    const items = rows.slice(0, input.limit).map(projectTransfer);
+    return { items, next_cursor: hasMore ? items[items.length - 1]!.id : null, has_more: hasMore };
+  }
+
+  private async redeem(principalId: PrincipalId, code: string): Promise<CreditRedemption> {
+    return this.inTransaction(async () => {
+      await this.lockIdentities([principalId]);
+      // The code row is locked for the whole redemption, so a cap of N is N.
+      const [grant] = await this.executor().select().from(creditCodes).where(eq(creditCodes.code, code)).for("update").limit(1);
+      if (!grant || !grant.active) throw new RepositoryError(404, "credit_code_not_found", "That code grants nothing.");
+      // What this Principal already redeemed is settled history: a retry answers
+      // the same way for good, even once the code itself has expired or filled up.
+      const [already] = await this.executor()
+        .select({ transferId: creditRedemptions.transferId })
+        .from(creditRedemptions)
+        .where(and(eq(creditRedemptions.code, code), eq(creditRedemptions.principalId, principalId)))
+        .limit(1);
+      if (already) return { credits: await this.purseOf(principalId), granted: 0, transfer: null };
+      if (grant.expiresAt !== null && grant.expiresAt.getTime() <= this.now().getTime()) {
+        throw new RepositoryError(410, "credit_code_expired", "That code has expired.");
+      }
+      // An anonymous Principal is free to create, so a code it could redeem would be an infinite purse.
+      const [principal] = await this.executor()
+        .select({ authUserId: principals.authUserId })
+        .from(principals)
+        .where(eq(principals.id, principalId))
+        .limit(1);
+      if (!principal?.authUserId) {
+        throw new RepositoryError(403, "credits_account_required", "Only a Principal with an account behind it can redeem a code; run sharednet login.");
+      }
+      if (grant.maxRedemptions !== null && grant.redeemedCount >= grant.maxRedemptions) {
+        throw new RepositoryError(410, "credit_code_exhausted", "That code has been redeemed as many times as it allows.");
+      }
+      await this.executor()
+        .update(creditCodes)
+        .set({ redeemedCount: sql`${creditCodes.redeemedCount} + 1` })
+        .where(eq(creditCodes.code, code));
+      await this.ensurePurses([principalId]);
+      await this.executor()
+        .update(creditAccounts)
+        .set({ balance: sql`${creditAccounts.balance} + ${grant.amount}`, updatedAt: this.now() })
+        .where(eq(creditAccounts.principalId, principalId));
+      const [row] = await this.executor()
+        .insert(creditTransfers)
+        .values({
+          id: generatePublicId("txn"),
+          fromPrincipalId: null,
+          toPrincipalId: principalId,
+          amount: grant.amount,
+          memo: null,
+          roomId: null,
+          byInstanceId: null,
+          addressedTo: principalId,
+          code,
+          createdAt: this.now(),
+        })
+        .returning();
+      if (!row) throw new RepositoryError(500, "internal_error", "Redemption failed.");
+      await this.executor().insert(creditRedemptions).values({ code, principalId, transferId: row.id, createdAt: this.now() });
+      return { credits: await this.purseOf(principalId), granted: grant.amount, transfer: projectTransfer(row) };
+    });
   }
 
   private executor(): SharedNetDatabase {
@@ -2142,35 +2907,27 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
   private async findIdempotencyRecord(
     scope: IdempotencyScope,
     database: SharedNetDatabase = this.executor(),
+    now: Date = this.now(),
   ): Promise<typeof idempotencyRecords.$inferSelect | undefined> {
     const [record] = await database
       .select()
       .from(idempotencyRecords)
       .where(
         and(
-          eq(idempotencyRecords.principalId, scope.principalId),
+          scope.credentialClass === "instance" ? undefined : eq(idempotencyRecords.principalId, scope.principalId),
           eq(idempotencyRecords.credentialClass, scope.credentialClass),
           eq(idempotencyRecords.actorId, scope.actorId),
           eq(idempotencyRecords.operationId, scope.operationId),
           eq(idempotencyRecords.idempotencyKey, scope.key),
+          gt(idempotencyRecords.expiresAt, now),
         ),
       )
+      // Older versions could create a row on each side of a claim. Preserve
+      // those rows and always choose the first unexpired result, including
+      // its fingerprint. A later conflicting row cannot authorize a retry.
+      .orderBy(asc(idempotencyRecords.createdAt), asc(idempotencyRecords.principalId))
       .limit(1);
     return record;
-  }
-
-  private async deleteIdempotencyRecord(scope: IdempotencyScope): Promise<void> {
-    await this.executor()
-      .delete(idempotencyRecords)
-      .where(
-        and(
-          eq(idempotencyRecords.principalId, scope.principalId),
-          eq(idempotencyRecords.credentialClass, scope.credentialClass),
-          eq(idempotencyRecords.actorId, scope.actorId),
-          eq(idempotencyRecords.operationId, scope.operationId),
-          eq(idempotencyRecords.idempotencyKey, scope.key),
-        ),
-      );
   }
 
   private replayIdempotency(

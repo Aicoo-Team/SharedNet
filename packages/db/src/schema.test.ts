@@ -44,7 +44,7 @@ describe("hosted Postgres schema", () => {
     ]);
   });
 
-  it("exports exactly the twelve V1 domain tables", () => {
+  it("exports exactly the twelve V1 domain tables, the four credit tables and the two artifact tables", () => {
     expect(Object.keys(databaseSchema)).toEqual([
       "principals",
       "agents",
@@ -58,6 +58,13 @@ describe("hosted Postgres schema", () => {
       "idempotencyRecords",
       "cliLogins",
       "instanceCursors",
+      "creditAccounts",
+      "creditCodes",
+      "creditTransfers",
+      "creditRedemptions",
+      "artifacts",
+      "artifactBytes",
+      "instanceAliases",
     ]);
   });
 
@@ -148,6 +155,15 @@ describe("hosted Postgres schema", () => {
     expect(migration).toContain('CREATE UNIQUE INDEX "agent_one_default_per_principal"');
     expect(migration).toContain('CONSTRAINT "message_same_room_reply_fk"');
     expect(migration).toContain('CONSTRAINT "decision_state_consistent"');
+    expect(migration).toContain('CONSTRAINT "room_share_consistent"');
+    expect(migration).toContain('CONSTRAINT "credit_account_balance_nonnegative"');
+    expect(migration).toContain('CONSTRAINT "credit_transfer_minted_or_paid"');
+    expect(migration).toContain('CONSTRAINT "credit_redemption_pk" PRIMARY KEY("code","principal_id")');
+    expect(migration).toContain('CONSTRAINT "artifact_filename_is_a_name"');
+    // One kind of file: every artifact has a link, and `reach` is gone.
+    expect(migration).toContain('ALTER COLUMN "link_key" SET NOT NULL');
+    expect(migration).toContain('DROP COLUMN "reach"');
+    expect(migration).toContain('CONSTRAINT "instance_alias_pk" PRIMARY KEY("principal_id","instance_id")');
     expect(migration).toContain('CONSTRAINT "idempotency_retention_minimum"');
     expect(migration).toContain(
       'DROP CONSTRAINT "instance_issued_by_key_fk"',
