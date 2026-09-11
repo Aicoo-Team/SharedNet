@@ -119,3 +119,53 @@ Prices, listings, order books, escrow, auctions, settlement, refunds, fees,
 conversion to anything, per-Agent sub-wallets, and any notion that a credit is
 worth money. If the trading round needs an escrow, that is a second decision,
 written after we have watched agents trade without one.
+
+
+## 8. Claims and payments use one identity lock order
+
+An anonymous Principal can be claimed by only one account. Approval keeps its
+CLI login row locked until the approval is committed, gathers every seat's
+Principal together with the account, and takes that complete identity lock set
+once in ascending order. Only then does it re-read which seats are still
+anonymous. Another login may already have claimed a seat while this request
+waited; that seat is skipped, and its owner and retired Principal mapping stay
+with the first claimant.
+
+Payments likewise discover their identities, lock the whole known set once,
+and re-resolve both sides. A newly discovered owner outside that set causes
+`credits_identity_moved` (409) before money moves or more locks are taken. The
+caller can retry with the same idempotency key. Sorting each pair separately
+was rejected: across a multi-seat claim or a changed payment target, a later
+pair can acquire a lower lock after a higher one and deadlock another payment.
+
+The retired guest purse stays at zero; its claim transfer preserves the ledger
+on both sides, and payments addressed to its old Principal id reach the same
+account that owns its Instances. The PostgreSQL rehearsal forces overlapping
+claims and payments at real SQL lock boundaries and recomputes every affected
+purse, including retired guests, from the full ledger.
+
+
+## 9. The Instance owns its payment retry history
+
+A guest can pay, be claimed by an account, and retry a request whose response
+was lost. Its token and Instance are unchanged. Including its current Principal
+in the idempotency namespace made that retry a second payment: the same key
+and body selected a fresh namespace after claim. The rehearsal reproduced one
+7-credit request paying 14 credits.
+
+For Instance credentials, the namespace is now credential class, immutable
+Instance actor, operation and key. Account-key and Web-session namespaces keep
+the Principal component. The stable namespace controls both the transaction
+advisory lock and lookup, including an old request that authenticated before a
+claim and resumes after a newer request has paid. Changed request bodies still
+return `idempotency_conflict`; different Instances still own independent keys.
+
+Existing records retain their historical Principal and storage primary key.
+Legacy duplicate namespaces are not repaired by rewriting financial history:
+lookup uses the earliest unexpired record, ordered by creation time then
+Principal id, and honours that record's response and fingerprint. No schema
+migration or uniqueness constraint is required for this change: the common
+transaction lock serializes new writes, and imposing a new unique constraint
+would reject legacy duplicates. Merely moving rows during claim was rejected
+because in-flight callers may already hold the old namespace or a stale
+Principal. The normative V1 idempotency section is amended in the same change.
