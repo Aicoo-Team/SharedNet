@@ -3,7 +3,7 @@
 import { type FormEvent, type KeyboardEvent as ReactKeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import { useSharedNet } from "@/src/context/sharednet-context";
-import type { RoomId, RoomMembership, RoomMessage, RoomSummary } from "@/src/sharednet/contracts";
+import type { RoomDetail, RoomId, RoomMembership, RoomMessage, RoomSummary } from "@/src/sharednet/contracts";
 
 /**
  * What the Rooms list's context menu needs to know. Every Room row carries
@@ -128,9 +128,16 @@ function describeAdmission(membership: RoomMembership): string {
  * Who said it, the way a human reads it: the name this account gave the seat,
  * else the seat's own name, else its tag, else its Instance id.
  */
-function senderLabel(sender: RoomMessage["sender"], aliases: Record<string, string> = {}): string {
+function senderLabel(
+  sender: RoomMessage["sender"],
+  notes: Record<string, string> = {},
+  memberships: RoomMembership[] = [],
+): string {
   const instanceId = senderInstanceId(sender);
-  if (instanceId && aliases[instanceId]) return aliases[instanceId]!;
+  if (instanceId && notes[instanceId]) return notes[instanceId]!;
+  // The seat's own nickname, which the whole Room sees, lives on its membership.
+  const seat = instanceId ? memberships.find((member) => member.instance_id === instanceId) : undefined;
+  if (seat?.name) return seat.name;
   if ("name" in sender && sender.name) return sender.name;
   if (sender.agent_id) return sender.agent_id;
   return instanceId ?? sender.principal_id;
@@ -146,15 +153,18 @@ function SeatName({
   className,
   instanceId,
   label,
+  mine,
   named,
   rename,
 }: Readonly<{
   className: string;
   instanceId: string | undefined;
   label: string;
-  /** True when `label` is a name this account wrote, rather than an id or a tag. */
+  /** True for one of this account's own seats: the name is then the Room's to see. */
+  mine: boolean;
+  /** True when `label` is a name somebody wrote, rather than an id or a tag. */
   named: boolean;
-  rename: (instanceId: string, alias: string | null) => Promise<unknown>;
+  rename: (instanceId: string, name: string | null) => Promise<unknown>;
 }>) {
   const [draft, setDraft] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
@@ -185,7 +195,7 @@ function SeatName({
   if (draft !== null) {
     return (
       <input
-        aria-label={`Name for ${instanceId}`}
+        aria-label={mine ? `Your name in this Room` : `Your note for ${instanceId}`}
         autoFocus
         className={`${className} room-seat-name-input`}
         maxLength={48}
@@ -210,7 +220,13 @@ function SeatName({
 
   return (
     <strong
-      aria-label={failed ? `${label} — that name could not be saved` : `${label}. Double-click to name this seat`}
+      aria-label={
+        failed
+          ? `${label} — that name could not be saved`
+          : mine
+            ? `${label}. Double-click to rename yourself in this Room`
+            : `${label}. Double-click to note who this is, for you alone`
+      }
       className={failed ? `${className} room-seat-name-failed` : className}
       onDoubleClick={begin}
       onKeyDown={(event) => {
@@ -220,7 +236,13 @@ function SeatName({
       }}
       role="button"
       tabIndex={0}
-      title={failed ? "That name could not be saved. Try again." : `${instanceId} — double-click to name this seat. Only you see the name.`}
+      title={
+        failed
+          ? "That name could not be saved. Try again."
+          : mine
+            ? `${instanceId} — double-click to rename yourself here. Everyone in the Room sees it.`
+            : `${instanceId} — double-click to note who this is. Only you see it.`
+      }
     >
       {label}
     </strong>
@@ -229,6 +251,17 @@ function SeatName({
 
 function senderInstanceId(sender: RoomMessage["sender"]): string | undefined {
   return "instance_id" in sender ? sender.instance_id : undefined;
+}
+
+/**
+ * Whether the label shown for a seat is a name somebody wrote — this
+ * account's note on someone else's seat, or the seat's own nickname — rather
+ * than a tag or an id. It decides what the editor starts with.
+ */
+function namedAlready(instanceId: string | undefined, detail: RoomDetail, mine: boolean): boolean {
+  if (instanceId === undefined) return false;
+  if (!mine) return Boolean(detail.notes[instanceId]);
+  return Boolean(detail.memberships.find((member) => member.instance_id === instanceId)?.name);
 }
 
 /** The driver behind the sender's Instance, read off the member list. */
@@ -911,12 +944,12 @@ export function ChatView() {
                             className="room-member-name"
                             instanceId={member.membership.instance_id}
                             label={
-                              detail.aliases[member.membership.instance_id] ??
-                              (member.membership.kind === "guest"
-                                ? (member.membership.name ?? member.membership.instance_id)
-                                : (member.agent?.diagnostic_label ?? "Room Agent"))
+                              detail.notes[member.membership.instance_id] ??
+                              member.membership.name ??
+                              (member.agent?.diagnostic_label ?? member.membership.instance_id)
                             }
-                            named={Boolean(detail.aliases[member.membership.instance_id])}
+                            mine={member.membership.principal_id === principal?.principal_id}
+                            named={namedAlready(member.membership.instance_id, detail, member.membership.principal_id === principal?.principal_id)}
                             rename={nameSeat}
                           />
                           <span>
@@ -1061,8 +1094,9 @@ export function ChatView() {
                           <SeatName
                             className="room-message-sender"
                             instanceId={senderInstanceId(message.sender)}
-                            label={senderLabel(message.sender, detail.aliases)}
-                            named={Boolean(senderInstanceId(message.sender) && detail.aliases[senderInstanceId(message.sender)!])}
+                            label={senderLabel(message.sender, detail.notes, detail.memberships)}
+                            mine={message.sender.principal_id === principal?.principal_id}
+                            named={namedAlready(senderInstanceId(message.sender), detail, message.sender.principal_id === principal?.principal_id)}
                             rename={nameSeat}
                           />
                           <code className="room-message-instance">{senderInstanceId(message.sender) ?? ""}</code>

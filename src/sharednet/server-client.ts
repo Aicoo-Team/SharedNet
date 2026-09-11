@@ -27,7 +27,7 @@ import {
   type CliClaimProjection,
   type CliLoginProjection,
   type CreditsProjection,
-  type InstanceAliasResponse,
+  type SeatNameResponse,
   type CreditTransferProjection,
   type RedeemCreditsResponse,
   type RuntimeSummary,
@@ -265,7 +265,11 @@ function sharedRoomProjection(view: SharedRoomView): SharedRoomProjection {
     driver: driverOf.get(instanceId as never) ?? "custom",
     handle: publicHandle(instanceId),
     kind: kind === "guest" ? "anonymous" : "account",
-    label: kind === "guest" ? (name ? redactForPublic(name) : null) : (agentId && (view.agent_handles as Record<string, string>)[agentId]) || null,
+    // The name a seat goes by is its own, whoever set it: a guest's word for
+    // itself, or the nickname its account gave it. The tag is the fallback.
+    label: name
+      ? redactForPublic(name)
+      : ((agentId && (view.agent_handles as Record<string, string>)[agentId]) || null),
   });
   return {
     members: view.memberships.map((member): SharedMember => ({
@@ -577,7 +581,7 @@ export class SharedNetServerClient {
     const principal = await this.requirePrincipal(authUserId);
     const detail = await this.domain(() => this.repository().getRoomForPrincipal(principal.id, roomId as never));
     return {
-      aliases: detail.aliases,
+      notes: detail.aliases,
       memberships: detail.memberships.map(membershipProjection),
       messages: detail.messages.map(messageProjection),
       next_cursor: cursor(detail.latest_sequence),
@@ -586,14 +590,15 @@ export class SharedNetServerClient {
   }
 
   /**
-   * Names a seat for this account alone. An empty name takes it back off. A
-   * seat this account cannot see answers as absent, so this cannot be used to
-   * find out whether an Instance id is real.
+   * Names a seat. Your own seat gets the name it goes by, which everyone in
+   * its Rooms sees; anyone else's gets a note only this account sees. An empty
+   * name takes it back off. A seat this account cannot see answers as absent,
+   * so this cannot be used to find out whether an Instance id is real.
    */
-  async setInstanceAlias(authUserId: string, instanceId: InstanceId, alias: string | null): Promise<InstanceAliasResponse> {
+  async nameSeat(authUserId: string, instanceId: InstanceId, name: string | null): Promise<SeatNameResponse> {
     const principal = await this.requirePrincipal(authUserId);
-    const named = await this.domain(() => this.repository().setInstanceAlias(principal.id, instanceId as never, alias));
-    return { alias: named.alias, instance_id: named.instance_id as InstanceId };
+    const named = await this.domain(() => this.repository().nameSeat(principal.id, instanceId as never, name));
+    return { instance_id: named.instance_id as InstanceId, name: named.name, scope: named.scope };
   }
 
   /** Publish a Room this account owns at a public link; the slug comes back with the Room, every time it is asked for. */

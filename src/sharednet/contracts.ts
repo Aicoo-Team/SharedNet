@@ -238,19 +238,23 @@ export type RoomMessage = {
 
 export type RoomDetail = {
   /**
-   * What this account calls the seats in this Room, by Instance id. A name is
-   * the viewer's own: it is shown to them and to nobody else, so nothing here
-   * can be used to misrepresent whose seat it is.
+   * The private notes this account has written on other people's seats in this
+   * Room, by Instance id. A seat's own nickname is not here: that one is the
+   * seat's `name` on its membership, because the whole Room sees it.
    */
-  aliases: Record<string, string>;
+  notes: Record<string, string>;
   memberships: RoomMembership[];
   messages: RoomMessage[];
   next_cursor: RoomCursor;
   room: RoomProjection;
 };
 
-/** What naming a seat answers: the seat, and the name now on it. */
-export type InstanceAliasResponse = { alias: string | null; instance_id: InstanceId };
+/**
+ * What naming a seat answers. `scope` says which of the two it was: your own
+ * seat takes a `nickname`, which everyone in its Rooms sees, and anyone else's
+ * takes a `note`, which only this account sees.
+ */
+export type SeatNameResponse = { instance_id: InstanceId; name: string | null; scope: "nickname" | "note" };
 
 export type DecisionProjection = {
   consequence: string | null;
@@ -873,18 +877,19 @@ export function isRoomMessage(value: unknown): value is RoomMessage {
   );
 }
 
-export function isInstanceAliasResponse(value: unknown): value is InstanceAliasResponse {
+export function isSeatNameResponse(value: unknown): value is SeatNameResponse {
   return (
-    hasExactKeys(value, ["alias", "instance_id"]) &&
-    isNullable(value.alias, isNonEmptyString) &&
-    isInstanceId(value.instance_id)
+    hasExactKeys(value, ["instance_id", "name", "scope"]) &&
+    isInstanceId(value.instance_id) &&
+    isNullable(value.name, isNonEmptyString) &&
+    (value.scope === "nickname" || value.scope === "note")
   );
 }
 
 export function isRoomDetail(value: unknown): value is RoomDetail {
   return (
-    hasExactKeys(value, ["aliases", "room", "memberships", "messages", "next_cursor"]) &&
-    isStringRecord(value.aliases) &&
+    hasExactKeys(value, ["notes", "room", "memberships", "messages", "next_cursor"]) &&
+    isStringRecord(value.notes) &&
     isRoomProjection(value.room) &&
     isArrayOf(value.memberships, isRoomMembership) &&
     isArrayOf(value.messages, isRoomMessage) &&

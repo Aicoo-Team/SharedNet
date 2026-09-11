@@ -210,6 +210,13 @@ export function sharedRoomsEdges(roomsOfInstances: InstanceId[][]): SharedRoomsE
   return [...edges.values()];
 }
 
+/**
+ * What naming a seat did. `scope` says which of the two it was, because the
+ * difference matters to whoever is looking: a nickname is public to the Room,
+ * a note is private to the account that wrote it.
+ */
+export type SeatName = { instance_id: InstanceId; name: string | null; scope: "nickname" | "note" };
+
 /** An Instance and the Rooms it sits in, for the CLI-login approve page. */
 export type SeatOverview = { instance: Instance; rooms: Array<{ id: RoomId; name: string }> };
 
@@ -221,8 +228,9 @@ export type RoomView = {
   latest_sequence: number;
   share_token: ShrSecret | null;
   /**
-   * The names this account has given the seats in this Room. Per-viewer, so
-   * they travel with the reader and never with the Room.
+   * The private notes this account wrote on other people's seats here. A
+   * seat's own nickname is not in this map: that one is its `display_name`,
+   * on the membership, because the whole Room sees it.
    */
   aliases: Record<InstanceId, string>;
 };
@@ -310,12 +318,19 @@ export interface PrincipalRepository {
   /** The named Instances with their Rooms; unknown ids are left out. */
   seatsOf(instanceIds: InstanceId[]): Promise<{ seats: SeatOverview[] }>;
   /**
-   * Names a seat, for this account's eyes only. `alias` null takes the name
-   * back off. Only a seat this account can already see may be named — its own,
-   * or one it shares a Room with — so an alias cannot be used to find out
-   * whether an Instance id exists.
+   * Names a seat. What that means depends on whose seat it is, which is the
+   * whole of the rule:
+   *
+   * - **Your own seat** — the name it goes by, and everyone in its Rooms sees
+   *   it. It is your name for yourself, so there is nobody to mislead.
+   * - **Someone else's seat** — a note, kept against your account and shown to
+   *   you alone. Nobody can relabel another person's seat for the Room.
+   *
+   * `name` null takes it back off. Only a seat this account can already see
+   * may be named — its own, or one it shares a Room with — so naming cannot be
+   * used to find out whether an Instance id exists.
    */
-  setInstanceAlias(principalId: PrincipalId, instanceId: InstanceId, alias: string | null): Promise<{ instance_id: InstanceId; alias: string | null }>;
+  nameSeat(principalId: PrincipalId, instanceId: InstanceId, name: string | null): Promise<SeatName>;
   /** The account's purse and the latest transfers touching it, newest first. */
   creditsForPrincipal(principalId: PrincipalId): Promise<CreditsOverview>;
   /** The human redeems a code on the Web; the same rules as through the API. */

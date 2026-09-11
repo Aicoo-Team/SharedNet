@@ -7,7 +7,7 @@ const { authGetSession, sharedNetClient } = vi.hoisted(() => ({
     createRoom: vi.fn(),
     createRoomInvite: vi.fn(),
     revokeRoomInvite: vi.fn(),
-    setInstanceAlias: vi.fn(),
+    nameSeat: vi.fn(),
     shareRoom: vi.fn(),
     unshareRoom: vi.fn(),
     getSharedRoom: vi.fn(),
@@ -44,7 +44,7 @@ import { POST as mintInvite } from "../../app/api/sharednet/rooms/[roomId]/invit
 import { DELETE as revokeInvite } from "../../app/api/sharednet/rooms/[roomId]/invites/[inviteId]/route";
 import { DELETE as unshareRoom, POST as shareRoom } from "../../app/api/sharednet/rooms/[roomId]/share/route";
 import { GET as readSharedRoom } from "../../app/api/sharednet/shared/[token]/route";
-import { PUT as nameSeat } from "../../app/api/sharednet/instances/[instanceId]/alias/route";
+import { PUT as nameSeatRoute } from "../../app/api/sharednet/instances/[instanceId]/name/route";
 import { GET as getNetwork } from "../../app/api/sharednet/network/route";
 import { GET as listDecisions } from "../../app/api/sharednet/decisions/route";
 import { PATCH as resolveDecision } from "../../app/api/sharednet/decisions/[decisionId]/route";
@@ -767,52 +767,52 @@ describe("naming a seat, for this account's eyes only", () => {
   });
 
   it("puts the name through for the signed-in account, from our own page only", async () => {
-    sharedNetClient.setInstanceAlias.mockResolvedValue({ alias: "Kai", instance_id: INSTANCE });
+    sharedNetClient.nameSeat.mockResolvedValue({ instance_id: INSTANCE, name: "Kai", scope: "note" });
 
-    const named = await nameSeat(request({ alias: "  Kai  " }, "PUT", `/api/sharednet/instances/${INSTANCE}/alias`), {
+    const named = await nameSeatRoute(request({ name: "  Kai  " }, "PUT", `/api/sharednet/instances/${INSTANCE}/name`), {
       params: Promise.resolve({ instanceId: INSTANCE }),
     });
     expect(named.status).toBe(200);
-    expect(await named.json()).toEqual({ alias: "Kai", instance_id: INSTANCE });
+    expect(await named.json()).toEqual({ instance_id: INSTANCE, name: "Kai", scope: "note" });
     // The protocol trims and normalises before the domain ever sees it.
-    expect(sharedNetClient.setInstanceAlias).toHaveBeenCalledWith(AUTH_USER_ID, INSTANCE, "Kai");
+    expect(sharedNetClient.nameSeat).toHaveBeenCalledWith(AUTH_USER_ID, INSTANCE, "Kai");
 
     // An empty name is how one is taken back off.
-    sharedNetClient.setInstanceAlias.mockResolvedValue({ alias: null, instance_id: INSTANCE });
-    await nameSeat(request({ alias: "" }, "PUT", `/api/sharednet/instances/${INSTANCE}/alias`), {
+    sharedNetClient.nameSeat.mockResolvedValue({ instance_id: INSTANCE, name: null, scope: "note" });
+    await nameSeatRoute(request({ name: "" }, "PUT", `/api/sharednet/instances/${INSTANCE}/name`), {
       params: Promise.resolve({ instanceId: INSTANCE }),
     });
-    expect(sharedNetClient.setInstanceAlias).toHaveBeenLastCalledWith(AUTH_USER_ID, INSTANCE, null);
+    expect(sharedNetClient.nameSeat).toHaveBeenLastCalledWith(AUTH_USER_ID, INSTANCE, null);
 
-    const foreign = new Request(`http://localhost/api/sharednet/instances/${INSTANCE}/alias`, {
-      body: JSON.stringify({ alias: "Kai" }),
+    const foreign = new Request(`http://localhost/api/sharednet/instances/${INSTANCE}/name`, {
+      body: JSON.stringify({ name: "Kai" }),
       headers: { "content-type": "application/json", cookie: "better-auth.session_token=test", origin: "https://evil.example" },
       method: "PUT",
     });
-    expect((await nameSeat(foreign, { params: Promise.resolve({ instanceId: INSTANCE }) })).status).toBe(403);
+    expect((await nameSeatRoute(foreign, { params: Promise.resolve({ instanceId: INSTANCE }) })).status).toBe(403);
 
     authGetSession.mockResolvedValue(null);
-    const signedOut = await nameSeat(request({ alias: "Kai" }, "PUT", `/api/sharednet/instances/${INSTANCE}/alias`), {
+    const signedOut = await nameSeatRoute(request({ name: "Kai" }, "PUT", `/api/sharednet/instances/${INSTANCE}/name`), {
       params: Promise.resolve({ instanceId: INSTANCE }),
     });
     expect(signedOut.status).toBe(401);
-    expect(sharedNetClient.setInstanceAlias).toHaveBeenCalledTimes(2);
+    expect(sharedNetClient.nameSeat).toHaveBeenCalledTimes(2);
   });
 
   it("refuses a name that is not one, and an id that is not an Instance, before the domain is asked", async () => {
     for (const body of [{ alias: "x".repeat(49) }, { alias: "line\nbreak" }, { alias: 7 }, { notAlias: "Kai" }]) {
-      const refused = await nameSeat(request(body, "PUT", `/api/sharednet/instances/${INSTANCE}/alias`), {
+      const refused = await nameSeatRoute(request(body, "PUT", `/api/sharednet/instances/${INSTANCE}/name`), {
         params: Promise.resolve({ instanceId: INSTANCE }),
       });
       expect(refused.status).toBe(400);
     }
     for (const id of ["p_7CPHtWFsFn", "i_short", "../../etc"]) {
-      const refused = await nameSeat(request({ alias: "Kai" }, "PUT", "/api/sharednet/instances/x/alias"), {
+      const refused = await nameSeatRoute(request({ name: "Kai" }, "PUT", "/api/sharednet/instances/x/name"), {
         params: Promise.resolve({ instanceId: id }),
       });
       expect(refused.status).toBe(400);
     }
-    expect(sharedNetClient.setInstanceAlias).not.toHaveBeenCalled();
+    expect(sharedNetClient.nameSeat).not.toHaveBeenCalled();
   });
 });
 

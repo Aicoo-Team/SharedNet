@@ -87,7 +87,7 @@ import {
   type SharedNetRepository,
   type StoredHttpResult,
 } from "./repository.ts";
-import { sharedRoomsEdges, type ArtifactUsage, type UploadArtifactInput, type UploadedArtifact, type CreditAuth, type CreditLedgerQuery, type CreditRedemption, type CreditsOverview, type DecisionAnswer, type DecisionOverview, type McpClient, type McpSeat, type NetworkView, type RoomOverview, type RoomView, type SeatOverview, type SharedRoomView } from "./repository.ts";
+import { sharedRoomsEdges, type SeatName, type ArtifactUsage, type UploadArtifactInput, type UploadedArtifact, type CreditAuth, type CreditLedgerQuery, type CreditRedemption, type CreditsOverview, type DecisionAnswer, type DecisionOverview, type McpClient, type McpSeat, type NetworkView, type RoomOverview, type RoomView, type SeatOverview, type SharedRoomView } from "./repository.ts";
 import { mcpLocalInstanceKey, runtimeKindForMcp } from "./memory-repository.ts";
 import type {
   AddRoomMembersRequest,
@@ -1426,7 +1426,7 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
     };
   }
 
-  async setInstanceAlias(principalId: PrincipalId, instanceId: InstanceId, alias: string | null): Promise<{ instance_id: InstanceId; alias: string | null }> {
+  async nameSeat(principalId: PrincipalId, instanceId: InstanceId, name: string | null): Promise<SeatName> {
     // A seat this account cannot see does not exist as far as it is concerned,
     // so naming one cannot be used to discover that an id is real.
     const [own] = await this.executor()
@@ -1434,7 +1434,17 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
       .from(instances)
       .where(and(eq(instances.id, instanceId), eq(instances.principalId, principalId)))
       .limit(1);
-    if (!own) {
+    if (own) {
+      // Your own seat's name is the name it goes by: everyone in its Rooms
+      // sees it, because it is your name for yourself.
+      await this.executor().update(instances).set({ displayName: name }).where(eq(instances.id, instanceId));
+      // A note you once left on your own seat would now sit under its nickname.
+      await this.executor()
+        .delete(instanceAliases)
+        .where(and(eq(instanceAliases.principalId, principalId), eq(instanceAliases.instanceId, instanceId)));
+      return { instance_id: instanceId, name, scope: "nickname" };
+    }
+    {
       const [shared] = await this.executor()
         .select({ id: roomMembers.instanceId })
         .from(roomMembers)
@@ -1448,20 +1458,21 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
         .limit(1);
       if (!shared) throw new RepositoryError(404, "instance_not_found", "Instance was not found.");
     }
-    if (alias === null) {
+    // Someone else's seat: a note, for this account's eyes only.
+    if (name === null) {
       await this.executor()
         .delete(instanceAliases)
         .where(and(eq(instanceAliases.principalId, principalId), eq(instanceAliases.instanceId, instanceId)));
-      return { instance_id: instanceId, alias: null };
+      return { instance_id: instanceId, name: null, scope: "note" };
     }
     await this.executor()
       .insert(instanceAliases)
-      .values({ principalId, instanceId, alias, updatedAt: this.now() })
+      .values({ principalId, instanceId, alias: name, updatedAt: this.now() })
       .onConflictDoUpdate({
         target: [instanceAliases.principalId, instanceAliases.instanceId],
-        set: { alias, updatedAt: this.now() },
+        set: { alias: name, updatedAt: this.now() },
       });
-    return { instance_id: instanceId, alias };
+    return { instance_id: instanceId, name, scope: "note" };
   }
 
   async shareRoom(principalId: PrincipalId, roomId: RoomId): Promise<{ room: Room; share_token: ShrSecret }> {
