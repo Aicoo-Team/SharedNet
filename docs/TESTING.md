@@ -19,7 +19,7 @@ before it is done. `pnpm test` is the fast loop; CI is the source of truth.
 | Email | `src/auth/email.test.ts` (in the unit run) | every PR, every push | the Resend request's shape, that a missing key sends nothing and throws nothing, that a refusal or an unreachable provider is reported rather than raised, and that the key never appears in a result; the verification message escapes what a person typed and carries the link. Sending for real is checked by hand against the owner's own address |
 | Production build | `pnpm run build` | every PR, every push | the Dashboard builds with placeholder env and no database |
 | Coverage | `pnpm run test:coverage` (v8) | every PR, every push, **report-only** | lines/branches/functions in the job summary and an `lcov` artifact; baseline 2026-09-05: 77.6% lines, 66.5% branches |
-| Production smoke | `scripts/smoke-production.mjs` via `.github/workflows/smoke.yml` | after every successful **production deployment**, daily, on demand | the deployed system end to end as the fixed `smoke-ci@sharednet.ai` account: 23 checks from sign-in to a cross-Instance Room. A manual run without the secrets signs up a throwaway `probe-*@example.test` account instead |
+| Production smoke | `scripts/smoke-production.mjs` via `.github/workflows/smoke.yml` | after every successful **production deployment**, daily, on demand | the deployed system end to end as the fixed `smoke-ci@sharednet.ai` account: 44 checks from sign-in to a cross-Instance Room to a credit paid across it and paid back. A manual run without the secrets signs up a throwaway `probe-*@example.test` account instead |
 | Acceptance | see below | **manual**, before a milestone | the browser UI and the CLI as a user meets them, across two accounts |
 
 Both CI jobs must be green before merge. There is no "skip CI".
@@ -83,6 +83,18 @@ hand without the secrets and it signs up a `probe-*` account instead; delete
 those periodically. There is one database and it is production's — see
 `docs/decisions/2026-09-05-one-database-for-now.md` for what that implies.
 
+Credits are money, so the smoke proves them where they actually run. It reads
+the purse through the account key and through a seat of that account — the
+same purse, or the identity rule is broken — and checks the refusals: an
+unknown code, a payment to your own sibling seat, a payment with no
+idempotency key, a redemption by an anonymous Principal, a payment from an
+empty one. Then it moves a credit. The payee is the guest this run's invite
+admits: a Principal of its own, free to make, which pays the credit straight
+back. A run therefore leaves the purse exactly where it found it, and a credit
+that leaks shows up as a balance that falls. `SMOKE_CREDIT_CODE` names a live
+grant code: the first run ever funds the account, and every run after proves
+the same code grants that Principal nothing a second time.
+
 ## What a change must prove
 
 | If the change touches… | it is not done until… |
@@ -92,6 +104,7 @@ those periodically. There is one database and it is production's — see
 | `packages/db` (schema, migrations) | `packages/db/src/schema.test.ts` states the invariant; CI applies the migration to an empty database; if it touches existing rows, a rehearsal on a copy of real data is described in the PR |
 | Identity, membership, tags | the negative case is tested: the wrong Principal, the untagged case, the sibling Instance that has not joined, the stale token after rotation |
 | Auth, origins, credentials | `src/auth/trusted-origins.test.ts` or a sibling covers it, and a foreign `Origin` is shown to get 403 |
+| Credits (a purse, a code, a transfer) | the books balance: a case shows the purse is the sum of its ledger, and the production smoke still ends a run with the purse where it started |
 | `src/sharednet/server-client.ts` (Dashboard BFF) | the projection passes the contract validator in a `server-client.test.ts` case driven by the Drizzle stub |
 | `src/components`, `app/` | a component test asserts the visible behaviour by role/text; nullable fields (a null tag, an empty room) render |
 | `packages/cli` | `cli.test.ts` asserts the exact requests sent and that no local-only value leaks; `test:e2e:v1` and `test:package:cli` still pass |
