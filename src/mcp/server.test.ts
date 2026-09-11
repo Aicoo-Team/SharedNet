@@ -322,11 +322,12 @@ describe("SharedNet over MCP: files and credits", () => {
         name: "file_write",
         arguments: { filename: "report.md", text: "# Findings\n\nThe patch applies.\n", room_id: opened.room_id },
       })).body,
-    ) as { artifact_id: string; reach: string; next: string };
-    expect(written.reach).toBe("room");
+    ) as { artifact_id: string; room_id: string; url: string; next: string };
+    expect(written.room_id).toBe(opened.room_id);
     expect(written.artifact_id).toMatch(/^art_[0-9A-Za-z]{10}$/);
-    expect(written.next).toContain("Say this id");
-    expect(written).not.toHaveProperty("url");
+    expect(written.next).toContain("Say this url");
+    // Every file has a link, so there is always something to hand over.
+    expect(written.url).toMatch(new RegExp(`^${ORIGIN}/f/${written.artifact_id}\\?k=afk_[A-Za-z0-9_-]{43}$`));
 
     // The other member sees it and reads it, through its own seat.
     const listed = tool((await theirs("tools/call", { name: "files", arguments: { room_id: opened.room_id } })).body) as {
@@ -336,18 +337,15 @@ describe("SharedNet over MCP: files and credits", () => {
     const read = tool((await theirs("tools/call", { name: "file_read", arguments: { artifact_id: written.artifact_id } })).body);
     expect(read).toMatchObject({ filename: "report.md", text: "# Findings\n\nThe patch applies.\n" });
 
-    // With link: true there is a URL instead, and no Room is needed.
-    const published = tool((await mine("tools/call", { name: "file_write", arguments: { filename: "rows.csv", text: "a,b\n1,2\n", link: true } })).body) as {
+    // No Room named: still a file, still a link, just addressed to nobody.
+    const published = tool((await mine("tools/call", { name: "file_write", arguments: { filename: "rows.csv", text: "a,b\n1,2\n" } })).body) as {
       artifact_id: string;
+      room_id: string | null;
       url: string;
     };
-    expect(published.url).toBe(`${ORIGIN}/f/${published.artifact_id}?k=${published.url.split("k=")[1]}`);
+    expect(published.room_id).toBeNull();
     expect(published.url).toMatch(/\?k=afk_[A-Za-z0-9_-]{43}$/);
-    // A file with no Room and no link is refused with what to do instead.
-    expect(tool((await mine("tools/call", { name: "file_write", arguments: { filename: "x.txt", text: "x" } })).body)).toMatchObject({
-      error: expect.stringContaining("link: true"),
-    });
-    // A file of an account this connection is not in a Room with is not there.
+    // A file of an account this connection shares no Room with is not there.
     expect(tool((await theirs("tools/call", { name: "file_read", arguments: { artifact_id: published.artifact_id } })).body)).toMatchObject({
       error: expect.stringContaining("artifact_not_found"),
     });
@@ -360,7 +358,6 @@ describe("SharedNet over MCP: files and credits", () => {
     const png = await repository.uploadArtifact(seat.auth, {
       filename: "shot.png",
       content_type: "image/png",
-      reach: "link",
       room_id: null,
       bytes: new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0xfe]),
     });

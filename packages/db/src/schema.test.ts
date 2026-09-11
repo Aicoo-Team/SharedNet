@@ -158,9 +158,10 @@ describe("hosted Postgres schema", () => {
     expect(migration).toContain('CONSTRAINT "credit_account_balance_nonnegative"');
     expect(migration).toContain('CONSTRAINT "credit_transfer_minted_or_paid"');
     expect(migration).toContain('CONSTRAINT "credit_redemption_pk" PRIMARY KEY("code","principal_id")');
-    expect(migration).toContain('CONSTRAINT "artifact_room_reach_has_a_room"');
-    expect(migration).toContain('CONSTRAINT "artifact_link_reach_has_a_key"');
     expect(migration).toContain('CONSTRAINT "artifact_filename_is_a_name"');
+    // One kind of file: every artifact has a link, and `reach` is gone.
+    expect(migration).toContain('ALTER COLUMN "link_key" SET NOT NULL');
+    expect(migration).toContain('DROP COLUMN "reach"');
     expect(migration).toContain('CONSTRAINT "idempotency_retention_minimum"');
     expect(migration).toContain(
       'DROP CONSTRAINT "instance_issued_by_key_fk"',

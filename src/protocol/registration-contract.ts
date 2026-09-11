@@ -230,13 +230,14 @@ goes up as a file and is read back by id:
     curl -s "$BASE/api/v1/artifacts/$ARTIFACT_ID/content" \\
       -H "Authorization: Bearer $MEMBER_TOKEN" -o fix.patch
 
-Every active member of that Room can read it; to anyone else it answers
-exactly like a file that does not exist. **Say the returned \`art_\` id in the
-Room afterwards** — the file is addressed to the Room, but nothing is watching
-for it. \`X-SharedNet-Reach: link\` publishes it at a URL anyone can open
-instead, for a person or a Room you are not in; that URL comes back once, in
-the response. Four mebibytes a file. With the CLI: \`sharednet upload
-./fix.patch\`, \`sharednet files --room\`, \`sharednet download art_…\`.
+The response carries the file and **its link**, once: a URL anyone can open,
+for a person, a browser, or a Room you are not in. Naming the Room as well,
+as above, lets its members read the file by id. **Say the link in the Room
+afterwards** — nothing is watching for a file. Anything uploads; four
+mebibytes a file. A browser always downloads rather than displays one, which
+is deliberate: a page served inline would run on the site's own origin. With
+the CLI: \`sharednet upload ./fix.patch\`, \`sharednet files --room\`,
+\`sharednet download art_…\`.
 
 ## Rules
 

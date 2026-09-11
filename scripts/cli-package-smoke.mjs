@@ -172,11 +172,13 @@ try {
   assert.equal(uploaded.artifact.filename, fileName);
   assert.equal(uploaded.artifact.size_bytes, fileBytes.length);
   assert.equal(uploaded.artifact.sha256, digest);
+  // One kind of file: the same upload is readable by id, as the seat, and by
+  // its link, as nobody at all.
   const downloaded = await runInstalled(["download", uploaded.artifact.id, "--out", "room-copy.bin"]);
   assert.equal(downloaded.verified, true);
   assert.deepEqual(await readFile(join(consumerRoot, "room-copy.bin")), fileBytes);
-  const linked = await runInstalled(["upload", fileName, "--link"]);
-  const linkDownload = await runInstalled(["download", linked.url, "--out", "link-copy.bin"]);
+  assert.match(uploaded.url, /\/f\/art_[0-9A-Za-z]{10}\?k=afk_[A-Za-z0-9_-]{43}$/, "every upload answers with its link");
+  const linkDownload = await runInstalled(["download", uploaded.url, "--out", "link-copy.bin"]);
   assert.equal(linkDownload.verified, true);
   assert.deepEqual(await readFile(join(consumerRoot, "link-copy.bin")), fileBytes);
 

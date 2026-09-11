@@ -22,7 +22,6 @@ import {
   parseCreateRoomRequest,
   parseArtifactContentType,
   parseArtifactFilename,
-  parseArtifactReach,
   type ArtifactId,
   type ArtifactQuery,
   ARTIFACT_ID_PATTERN,
@@ -345,7 +344,6 @@ function parseInboxQuery(url: URL): { after: InboxPosition | null; limit: number
 function parseUploadHeaders(request: Request): {
   filename: string;
   content_type: string;
-  reach: "room" | "link" | "private";
   room_id: `rom_${string}` | null;
 } {
   const encodedFilename = request.headers.get("x-sharednet-filename*");
@@ -359,15 +357,11 @@ function parseUploadHeaders(request: Request): {
     }
   }
   const filename = parseArtifactFilename(filenameValue);
-  const reach = parseArtifactReach(request.headers.get("x-sharednet-reach"));
   const room = request.headers.get("x-sharednet-room");
-  const roomId = room === null || room === "" ? null : parsePublicId(room, "rom");
-  if (reach === "room" && roomId === null) throw new ProtocolRequestError("validation_failed");
   return {
     filename,
     content_type: parseArtifactContentType(request.headers.get("content-type")),
-    reach,
-    room_id: roomId,
+    room_id: room === null || room === "" ? null : parsePublicId(room, "rom"),
   };
 }
 
@@ -774,12 +768,8 @@ export async function handleRequest(
         201,
         async () => {
           const { artifact, link_key: linkKey } = await repository.uploadArtifact(auth, { ...input, bytes: body });
-          return {
-            artifact,
-            ...(linkKey === null
-              ? {}
-              : { link_key: linkKey, url: new URL(`/f/${artifact.id}?k=${linkKey}`, url.origin).toString() }),
-          };
+          // The link comes back exactly once, with the file it opens.
+          return { artifact, link_key: linkKey, url: new URL(`/f/${artifact.id}?k=${linkKey}`, url.origin).toString() };
         },
       );
     }

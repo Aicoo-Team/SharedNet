@@ -899,17 +899,17 @@ export const artifacts = sharednetSchema.table(
     uploadedByInstanceId: text("uploaded_by_instance_id").$type<InstanceId>(),
     /** Required for `room` reach: which Room's members may read it. */
     roomId: text("room_id").$type<RoomId>(),
-    reach: text("reach").$type<"room" | "link" | "private">().default("room").notNull(),
     filename: text("filename").notNull(),
     contentType: text("content_type").notNull(),
     sizeBytes: integer("size_bytes").notNull(),
     sha256: text("sha256").notNull(),
     /**
-     * The link's key, while `reach` is `link`. Stored as issued for the same
-     * reason a Room's share slug is: it grants a read of what the owner chose
-     * to publish, and the owner has to be able to hand out the link again.
+     * The link's key. Every file has one: that is what makes "here, take this"
+     * work. Stored as issued for the reason a Room's share slug is — it grants
+     * a read of one file, and the uploader has to be able to hand the link out
+     * again tomorrow.
      */
-    linkKey: text("link_key"),
+    linkKey: text("link_key").notNull(),
     createdAt: domainTimestamp("created_at").defaultNow().notNull(),
   },
   (table) => [
@@ -934,15 +934,7 @@ export const artifacts = sharednetSchema.table(
     check("artifact_sha256_format", sql`${table.sha256} ~ ${SHA256_HEX_RE}`),
     check("artifact_filename_length", sql`length(${table.filename}) BETWEEN 1 AND 120`),
     check("artifact_filename_is_a_name", sql`${table.filename} !~ '[/\\]'`),
-    check("artifact_reach_known", sql`${table.reach} IN ('room', 'link', 'private')`),
-    // A Room-reach artifact without a Room would be readable by nobody, and a
-    // link-reach one without a key would have no link.
-    check("artifact_room_reach_has_a_room", sql`${table.reach} <> 'room' OR ${table.roomId} IS NOT NULL`),
-    check(
-      "artifact_link_reach_has_a_key",
-      sql`(${table.reach} = 'link' AND ${table.linkKey} IS NOT NULL) OR (${table.reach} <> 'link' AND ${table.linkKey} IS NULL)`,
-    ),
-    check("artifact_link_key_format", sql`${table.linkKey} IS NULL OR ${table.linkKey} ~ ${LINK_KEY_RE}`),
+    check("artifact_link_key_format", sql`${table.linkKey} ~ ${LINK_KEY_RE}`),
   ],
 );
 

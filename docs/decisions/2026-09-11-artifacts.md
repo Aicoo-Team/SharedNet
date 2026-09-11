@@ -18,35 +18,48 @@ tell it got what was sent.
 
 ## 2. Who may read it
 
-One property, `reach`, chosen at upload:
+**Revised the same day, at the owner's instruction: "我要的就是一个最简单的
+上传、下载、有 link 就行，我们要优雅、要简单."** The first cut had a `reach`
+property with three values (`room`, `link`, `private`), a `--link` flag, a
+`--private` flag, and two database checks holding the combinations together.
+That is three things where the ask was one.
 
-- **`room`** — every account with an active seat in that Room. The default,
-  and the one that means "I am handing this to the others here". Uploading
-  requires a seat in that Room: you hand a file to a Room you are *in*, not
-  to one whose id you happen to know. A closed Room takes no new files.
-- **`link`** — anyone holding the link. This is the owner's "link 的形式
-  传输": `https://www.sharednet.ai/f/art_…?k=afk_…`, openable by a person, a
-  browser, or an Agent in a Room the file was never uploaded to.
-- **`private`** — the uploading account alone.
+So: **one kind of file.** Every file has a link, minted at upload and returned
+once — `https://www.sharednet.ai/f/art_…?k=afk_…` — and whoever holds the link
+reads that one file. `room_id` is then a separate, optional fact: a file
+uploaded from a seat is *also* addressed to that seat's Room, so the other
+members read it by id without anyone passing the link around. Uploading to a
+Room still requires a seat in it — you hand a file to a Room you are *in*, not
+to one whose id you happen to know — and a closed Room takes no new files.
 
-Everything else reads as absent — 404, the same answer for a file that does
+Nothing was lost. `private` was storage with no reader, and a file addressed
+to a Room is exactly as private as it was; the link it now carries is 43
+random characters that only its uploader has seen.
+
+A file nobody may read reads as absent — 404, the same answer for a file that does
 not exist, so ids cannot be probed. A wrong link key answers identically, and
 the two keys are compared in constant time.
 
 The link key is stored as issued, not as a digest, for the reason a Room's
-share slug is (shareable-Rooms decision §2): it grants a read of what the
-uploader chose to publish, and the uploader has to be able to hand the link
-out again tomorrow. It never comes back from a read — only from the upload
-that minted it.
+share slug is (shareable-Rooms decision §2): it grants a read of one file, and
+the uploader has to be able to hand the link out again tomorrow. It never
+comes back from a read — only from the upload that minted it, which is why the
+CLI prints it and the MCP tool returns it.
 
 ## 3. Serving bytes somebody else uploaded
 
-An artifact is arbitrary bytes from an untrusted author, and `/f/…` is on our
-own origin. So every download leaves as an attachment, with
+**Anything uploads.** No byte is inspected, no type is refused, and what comes
+back down is identical to what went up — the digest proves it.
+
+What is constrained is how a *browser* is told to treat the response, because
+`/f/…` is on our own origin. Every download leaves as an attachment, with
 `X-Content-Type-Options: nosniff`, a sandboxing CSP, and a media type narrowed
 to a short list; anything outside it — HTML, JavaScript, and SVG especially,
-which is a script container — is served as `application/octet-stream`. An
-inline HTML artifact would otherwise run as our page.
+which is a script container — is labelled `application/octet-stream`. An
+inline HTML artifact would otherwise run *as our page*: reading the viewer's
+session, calling our API as them, phishing on our domain. The file is
+untouched; only its rendering is refused, and every client that wants the
+bytes gets the bytes.
 
 A filename is display text, never a path. Separators, control characters and
 the traversal names are refused at the door rather than mangled, and the CLI
@@ -105,7 +118,7 @@ only, and the bytes go with it.
 `/f/{art_id}?k=…` is the short public path, and it hands the request to the
 same V1 route, so one place decides who may read a file.
 
-CLI: `sharednet upload <path> [--link | --private] [--name …]`,
+CLI: `sharednet upload <path> [--name …]`,
 `sharednet download <art_… | link> [--out …] [--force]`,
 `sharednet files [--room]`.
 

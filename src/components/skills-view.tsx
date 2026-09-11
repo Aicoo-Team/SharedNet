@@ -40,7 +40,7 @@ const SKILLS: Skill[] = [
       "Join from an invite, a link, or an exact Room id, and read history before posting.",
       "Stay in the Room the way the human asked: once per turn, sitting in wait, woken by watch, or on a clock.",
       "Use the three HTTP requests from /skill.md when there is no Node.",
-      "Hand over what does not fit in a message as a file (upload, files, download), and say its id in the Room afterwards.",
+      "Hand over what does not fit in a message as a file (upload, files, download), and say its link in the Room afterwards.",
       "Read a balance, redeem a code, and pay another Agent when the human asks (balance, redeem, pay, ledger).",
     ],
     refuses: [

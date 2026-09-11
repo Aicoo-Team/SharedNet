@@ -1923,15 +1923,17 @@ describe("artifacts: a file an Agent hands to the Room", () => {
     expect(artifact).toMatchObject({
       filename: "fix.patch",
       content_type: "text/plain",
-      reach: "room",
       room_id: roomId,
       size_bytes: patch.length,
       uploaded_by_instance_id: (owner as { instance: { id: string } }).instance.id,
     });
     expect(artifact.sha256).toMatch(/^[0-9a-f]{64}$/);
     expect(artifact.id).toMatch(/^art_[0-9A-Za-z]{10}$/);
-    // No link exists for a Room file, so none is handed out.
-    expect(await json(created)).toEqual({ artifact });
+    // Every file has a link, handed back exactly once, with the file it opens.
+    expect(createdBody.link_key).toMatch(/^afk_[A-Za-z0-9_-]{43}$/);
+    expect(createdBody.url).toBe(`http://127.0.0.1:3001/f/${artifact.id}?k=${createdBody.link_key}`);
+    // And a read never hands the key out again.
+    expect(await json(await request(store, `/api/v1/artifacts/${artifact.id}`, { headers: apiHeaders({}, OWNER) }))).toEqual({ artifact });
 
     // The other member reads the bytes, as an attachment and nothing else.
     const content = await request(store, `/api/v1/artifacts/${artifact.id}/content`, {
@@ -1956,7 +1958,7 @@ describe("artifacts: a file an Agent hands to the Room", () => {
     expect((await request(store, `/api/v1/artifacts/${artifact.id}`, { headers: apiHeaders({}, OWNER) })).status).toBe(404);
   });
 
-  it("refuses to hand a file to a Room the caller does not sit in, or to a closed one", async () => {
+  it("refuses to address a file to a Room the caller does not sit in, or to a closed one", async () => {
     const store = artifactStore();
     const { owner, roomId } = await sharedRoom(store);
 
@@ -1976,20 +1978,20 @@ describe("artifacts: a file an Agent hands to the Room", () => {
     expect((await json(closed)).error.code).toBe("room_closed");
   });
 
-  it("opens a link file by its key alone, with no account, and refuses a wrong key the same way as a missing file", async () => {
+  it("opens a file by its link alone, with no account, and refuses a wrong key the same way as a missing file", async () => {
     const store = artifactStore();
     const { owner } = await sharedRoom(store);
 
+    // No Room named: still a file, still a link, addressed to nobody.
     const created = await upload(store, owner.token as string, "a,b\n1,2\n", {
       "content-type": "text/csv",
       "x-sharednet-filename": "rows.csv",
-      "x-sharednet-reach": "link",
     });
     expect(created.status).toBe(201);
     const body = await json(created);
     expect(body.link_key).toMatch(/^afk_[A-Za-z0-9_-]{43}$/);
     expect(body.url).toBe(`http://127.0.0.1:3001/f/${body.artifact.id}?k=${body.link_key}`);
-    expect(body.artifact.reach).toBe("link");
+    expect(body.artifact.room_id).toBeNull();
 
     const opened = await request(store, `/api/v1/artifacts/${body.artifact.id}/content?k=${body.link_key}`);
     expect(opened.status).toBe(200);
@@ -2000,13 +2002,12 @@ describe("artifacts: a file an Agent hands to the Room", () => {
     expect(wrong.status).toBe(404);
     expect((await json(wrong)).error.code).toBe("artifact_not_found");
     expect((await request(store, `/api/v1/artifacts/${body.artifact.id}/content?k=nonsense`)).status).toBe(404);
-    // A Room file has no link, so its key cannot be guessed into existence.
-    const roomFile = await json(
-      await upload(store, owner.token as string, "x", { "x-sharednet-filename": "x.txt", "x-sharednet-room": (await sharedRoom(store)).roomId }),
-    );
-    expect((await request(store, `/api/v1/artifacts/${roomFile.artifact.id}/content?k=afk_${"y".repeat(43)}`)).status).toBe(404);
-    // And a reader with the key still cannot reach the account's other files.
+    // One file's key opens that file and nothing else, not even the same account's next one.
+    const other = await json(await upload(store, owner.token as string, "x", { "x-sharednet-filename": "x.txt" }));
+    expect((await request(store, `/api/v1/artifacts/${other.artifact.id}/content?k=${body.link_key}`)).status).toBe(404);
+    // And a reader holding a key is still nobody: it cannot list or inspect.
     expect((await request(store, `/api/v1/artifacts/${body.artifact.id}`)).status).toBe(401);
+    expect((await request(store, "/api/v1/artifacts")).status).toBe(401);
   });
 
   it("decodes the explicit UTF-8 filename header and preserves literal percent names", async () => {
@@ -2065,9 +2066,9 @@ describe("artifacts: a file an Agent hands to the Room", () => {
     }
     expect((await upload(store, owner.token as string, "x", bad)).status).toBe(422);
     expect((await upload(store, owner.token as string, "", { ...bad, "x-sharednet-filename": "empty.txt" })).status).toBe(422);
-    // Reach `room` needs a Room; reach `link` does not want one.
-    expect((await upload(store, owner.token as string, "x", { "x-sharednet-filename": "x.txt" })).status).toBe(422);
-    expect((await upload(store, owner.token as string, "x", { ...bad, "x-sharednet-filename": "x.txt", "x-sharednet-reach": "everyone" })).status).toBe(422);
+    // A Room is optional; a malformed one is not.
+    expect((await upload(store, owner.token as string, "x", { "x-sharednet-filename": "x.txt" })).status).toBe(201);
+    expect((await upload(store, owner.token as string, "x", { "x-sharednet-filename": "x.txt", "x-sharednet-room": "not-a-room" })).status).toBe(400);
 
     const tooBig = new Uint8Array(4 * 1024 * 1024 + 1);
     tooBig.fill(65);
@@ -2083,11 +2084,11 @@ describe("artifacts: a file an Agent hands to the Room", () => {
     for (const filename of names) {
       expect((await upload(store, owner.token as string, filename, { "x-sharednet-filename": filename, "x-sharednet-room": roomId })).status).toBe(201);
     }
-    // A private file of the owner's, which the member must not see.
-    await upload(store, owner.token as string, "secret", { "x-sharednet-filename": "private.txt", "x-sharednet-reach": "private" });
+    // A file of the owner's with no Room: the member must not see it.
+    await upload(store, owner.token as string, "mine", { "x-sharednet-filename": "mine.txt" });
 
     const ownerList = await json(await request(store, "/api/v1/artifacts", { headers: apiHeaders({}, OWNER) }));
-    expect(ownerList.items.map((item: { filename: string }) => item.filename)).toEqual(["private.txt", "three.txt", "two.txt", "one.txt"]);
+    expect(ownerList.items.map((item: { filename: string }) => item.filename)).toEqual(["mine.txt", "three.txt", "two.txt", "one.txt"]);
     const memberList = await json(await request(store, "/api/v1/artifacts", { headers: { authorization: `Bearer ${member.token}` } }));
     expect(memberList.items.map((item: { filename: string }) => item.filename)).toEqual(["three.txt", "two.txt", "one.txt"]);
     const paged = await json(await request(store, "/api/v1/artifacts?limit=2", { headers: { authorization: `Bearer ${member.token}` } }));
@@ -2171,7 +2172,7 @@ describe("artifacts: a file an Agent hands to the Room", () => {
     const staleAuth = (await store.authenticateInstance(guest.member_token))!;
     const login = await store.startCliLogin({ label: "late upload", seats: [guest.member_token] });
     await store.approveCliLogin({ code: login.user_code, principalId: ownerAuth.principalId });
-    const uploaded = await store.uploadArtifact(staleAuth, { filename: "late.txt", reach: "private", room_id: null, content_type: "text/plain", bytes: new TextEncoder().encode("late") });
+    const uploaded = await store.uploadArtifact(staleAuth, { filename: "late.txt", room_id: null, content_type: "text/plain", bytes: new TextEncoder().encode("late") });
     expect(uploaded.artifact.principal_id).toBe(ownerAuth.principalId);
     expect(await store.artifactUsage(ownerAuth)).toMatchObject({ bytes: 4, count: 1 });
     expect((await store.readArtifact(ownerAuth, uploaded.artifact.id)).artifact.id).toBe(uploaded.artifact.id);

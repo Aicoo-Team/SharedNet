@@ -95,7 +95,7 @@ const INVITE_TOKEN_PATTERN = /^rit_[A-Za-z0-9_-]{43}$/;
 const WAIT_MAX_SECONDS = 25;
 
 const VALUE_OPTIONS = new Set(["name", "token", "timeout", "reply-to", "min", "on", "run", "max-runs", "max-failures", "as", "claim", "agent", "after", "before", "limit", "order", "last", "from-instance", "from-agent", "grep", "memo", "out"]);
-const FLAG_OPTIONS = new Set(["hook", "private", "reply", "room", "link", "force"]);
+const FLAG_OPTIONS = new Set(["hook", "private", "reply", "room", "force"]);
 
 function parseGuestArguments(args: string[]): ParsedGuestArguments {
   const options = new Map<string, string | true>();
@@ -1299,7 +1299,6 @@ type ArtifactShape = {
   content_type: string;
   size_bytes: number;
   sha256: string;
-  reach: "room" | "link" | "private";
   room_id: string | null;
 };
 
@@ -1314,13 +1313,10 @@ function safeBasename(value: string): string {
 
 async function upload(args: string[], dependencies: GuestDependencies): Promise<unknown> {
   const parsed = parseGuestArguments(args);
-  assertOnlyOptions(parsed, ["name", "room", "link", "private", "as"]);
+  assertOnlyOptions(parsed, ["name", "as"]);
   const path = parsed.positionals[0];
   if (parsed.positionals.length !== 1 || !path) {
-    throw localError("invalid_arguments", "Usage: sharednet upload <path> [--name <filename>] [--link | --private] [--as <i_…>]");
-  }
-  if (parsed.options.has("link") && parsed.options.has("private")) {
-    throw localError("invalid_option", "Pass at most one of --link and --private.");
+    throw localError("invalid_arguments", "Usage: sharednet upload <path> [--name <filename>] [--as <i_…>]");
   }
   const resolved = resolvePath(dependencies.cwd, path);
   let bytes: Buffer;
@@ -1331,29 +1327,17 @@ async function upload(args: string[], dependencies: GuestDependencies): Promise<
   }
   if (bytes.byteLength === 0) throw localError("file_empty", "That file is empty.");
   const filename = safeBasename(stringOption(parsed, "name") ?? resolved);
-  const reach = parsed.options.has("link") ? "link" : parsed.options.has("private") ? "private" : "room";
   const { client, token, seat } = await creditCredential(dependencies, stringOption(parsed, "as"));
-  if (reach === "room" && seat === null) {
-    throw localError(
-      "not_in_a_room",
-      "This directory is not in a Room, so there is nobody to hand the file to. Join one, or pass --link for a link anyone can open, or --private to keep it.",
-    );
-  }
-  return client.request(
-    "POST",
-    "/artifacts",
-    token,
-    bytes,
-    {
-      "content-type": contentTypeFor(filename),
-      ...(/[^\x20-\x7e]/.test(filename)
-        ? { "x-sharednet-filename*": `UTF-8''${encodeURIComponent(filename)}` }
-        : { "x-sharednet-filename": filename }),
-      "x-sharednet-reach": reach,
-      ...(reach === "room" && seat ? { "x-sharednet-room": seat.room_id } : {}),
-      "idempotency-key": randomUUID(),
-    },
-  );
+  // Every file comes back with a link. A directory that holds a seat also
+  // hands the file to that Room, so the others can read it by id.
+  return client.request("POST", "/artifacts", token, bytes, {
+    "content-type": contentTypeFor(filename),
+    ...(/[^\x20-\x7e]/.test(filename)
+      ? { "x-sharednet-filename*": `UTF-8''${encodeURIComponent(filename)}` }
+      : { "x-sharednet-filename": filename }),
+    ...(seat === null ? {} : { "x-sharednet-room": seat.room_id }),
+    "idempotency-key": randomUUID(),
+  });
 }
 
 async function download(args: string[], dependencies: GuestDependencies): Promise<unknown> {
