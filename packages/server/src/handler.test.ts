@@ -1744,6 +1744,52 @@ describe("credits: a purse per Principal, a ledger of every movement", () => {
     expect(paid.transfer.to_principal_id).toBe((await store.principalForAccount("bob"))!.id);
   });
 
+  it("keeps one payment replay across guest claim and refuses a changed body", async () => {
+    const store = creditStore();
+    await post(store, "/api/v1/credits/redeem", ALICE, { code: "HACK-2026" });
+    const alice = await seat(store, ALICE);
+    const bob = await seat(store, BOB);
+    const aliceAuth = await store.authenticateInstance(alice.token);
+    const { room } = await store.createRoom(aliceAuth!, { name: "Replay after claim" });
+    const invite = await store.createRoomInvite({ roomId: room.id, principalId: aliceAuth!.principalId });
+    const guest = await store.joinRoomWithInvite(invite.token, room.id, { name: "payer" });
+    await post(store, "/api/v1/credits/transfers", ALICE, { to: guest.membership.instance_id, amount: 20 }, { "idempotency-key": crypto.randomUUID() });
+    const key = crypto.randomUUID();
+    const body = { to: alice.principalId, amount: 7 };
+    const first = await post(store, "/api/v1/credits/transfers", guest.member_token, body, { "idempotency-key": key });
+    const firstText = await first.text();
+    expect(first.status).toBe(201);
+    const login = await store.startCliLogin({ label: "payer", seats: [guest.member_token] });
+    await store.approveCliLogin({ code: login.user_code, principalId: (await store.principalForAccount("bob"))!.id });
+
+    const replay = await post(store, "/api/v1/credits/transfers", guest.member_token, body, { "idempotency-key": key });
+    expect(replay.status).toBe(201);
+    expect(replay.headers.get("idempotency-replayed")).toBe("true");
+    expect(await replay.text()).toBe(firstText);
+    const conflict = await post(store, "/api/v1/credits/transfers", guest.member_token, { ...body, amount: 8 }, { "idempotency-key": key });
+    expect(conflict.status).toBe(409);
+    expect((await json(conflict)).error.code).toBe("idempotency_conflict");
+    expect((await json(await request(store, "/api/v1/credits", { headers: apiHeaders({}, BOB) }))).credits.balance).toBe(13);
+
+    // A second Instance of the same account owns a separate replay namespace.
+    const independent = await post(store, "/api/v1/credits/transfers", bob.token, body, { "idempotency-key": key });
+    expect(independent.status).toBe(201);
+    expect(independent.headers.get("idempotency-replayed")).toBeNull();
+    expect((await json(await request(store, "/api/v1/credits", { headers: apiHeaders({}, BOB) }))).credits.balance).toBe(6);
+  });
+
+  it("retains the Principal namespace for account-key idempotency", async () => {
+    const store = creditStore();
+    const alice = (await store.authenticateApiKey(ALICE))!;
+    const bob = (await store.authenticateApiKey(BOB))!;
+    const key = crypto.randomUUID();
+    const scope = { principalId: alice.principalId, credentialClass: alice.kind, actorId: alice.actorId, operationId: "scope-contract", key };
+    const first = await store.executeIdempotent(scope, "same-body", async () => ({ status: 201, body: "first Principal" }));
+    const second = await store.executeIdempotent({ ...scope, principalId: bob.principalId }, "same-body", async () => ({ status: 201, body: "second Principal" }));
+    expect(first).toMatchObject({ replayed: false, body: "first Principal" });
+    expect(second).toMatchObject({ replayed: false, body: "second Principal" });
+  });
+
   it("pays by Principal, Agent or Instance id, exactly once per key, never more than the purse holds, never to itself", async () => {
     const store = creditStore();
     await post(store, "/api/v1/credits/redeem", ALICE, { code: "HACK-2026" });

@@ -309,7 +309,10 @@ function projectMessage(
  * hold a NUL byte, and the parameter is sent as text.
  */
 function idempotencyLockKey(scope: IdempotencyScope): string {
-  return [scope.principalId, scope.credentialClass, scope.actorId, scope.operationId, scope.key].join("\u001f");
+  // An Instance keeps its replay history when a guest is claimed. Its globally
+  // unique actor id owns this namespace; the Principal only owns the purse.
+  const principal = scope.credentialClass === "instance" ? "" : scope.principalId;
+  return [principal, scope.credentialClass, scope.actorId, scope.operationId, scope.key].join("\u001f");
 }
 
 function projectTransfer(row: typeof creditTransfers.$inferSelect): CreditTransfer {
@@ -1927,6 +1930,24 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
       if (state === "expired") throw new RepositoryError(410, "login_expired", "CLI login has expired.");
       if (state === "denied") throw new RepositoryError(410, "login_denied", "CLI login was denied.");
       if (state !== "pending") throw new RepositoryError(410, "login_consumed", "CLI login was already used.");
+      // Keep the login row locked from the state check through approval: the
+      // same code cannot be consumed by a second account while we wait. Read
+      // every seat only to discover the complete identity lock set, then take
+      // it once in global order before deciding which guests still qualify.
+      const candidates = record.bindInstanceIds.length === 0
+        ? []
+        : await this.executor()
+            .select({ principal: principals })
+            .from(instances)
+            .innerJoin(principals, eq(principals.id, instances.principalId))
+            .where(inArray(instances.id, record.bindInstanceIds));
+      const lockedIdentities = new Set<PrincipalId>([
+        input.principalId,
+        ...candidates.flatMap(({ principal }) => principal.mergedIntoPrincipalId
+          ? [principal.id, principal.mergedIntoPrincipalId]
+          : [principal.id]),
+      ]);
+      await this.lockIdentities([...lockedIdentities]);
       const [account] = await this.executor()
         .select()
         .from(principals)
@@ -1946,9 +1967,12 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
         const anonymous = row?.principal;
         if (!anonymous || anonymous.id === account.id) continue;
         if (anonymous.authUserId !== null || anonymous.mergedIntoPrincipalId !== null) continue;
-        // The same identity lock a payment takes, in the same order: a claim
-        // and a payment that touch these Principals serialize rather than race.
-        await this.lockIdentities([anonymous.id, account.id]);
+        // Another login may have claimed this seat while we waited for the
+        // locks. Eligibility comes from the current joined rows above, never
+        // from the discovery snapshot. Do not extend the lock set mid-claim.
+        if (!lockedIdentities.has(anonymous.id)) {
+          throw new RepositoryError(409, "credits_identity_moved", "The account behind one of these ids changed just now; try again.");
+        }
         // Binding: every Instance of the anonymous Principal moves under the
         // account's Principal. Memberships, messages, Rooms and Decisions carry
         // the Instance's Principal beside its id and follow by ON UPDATE CASCADE.
@@ -2084,7 +2108,6 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
   ): Promise<IdempotencyResult> {
     try {
       return await this.inTransaction(async () => {
-        const now = this.now();
         // The scope is held for the whole transaction before anything is read
         // or done. Two requests that share a key would otherwise both find no
         // record, both run the operation, and the loser would surface whatever
@@ -2095,19 +2118,16 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
         // on commit or rollback; a hash collision only serializes two unrelated
         // keys for a moment.
         await this.executor().execute(sql`SELECT pg_advisory_xact_lock(hashtext(${idempotencyLockKey(scope)}))`);
+        const now = this.now();
         await this.executor()
           .delete(idempotencyRecords)
           .where(lte(idempotencyRecords.expiresAt, now));
-        const existing = await this.findIdempotencyRecord(scope);
-        if (existing && existing.expiresAt > now) {
-          return this.replayIdempotency(existing, fingerprint);
-        }
-        if (existing) {
-          await this.deleteIdempotencyRecord(scope);
-        }
+        const existing = await this.findIdempotencyRecord(scope, this.executor(), now);
+        if (existing) return this.replayIdempotency(existing, fingerprint);
 
         const result = await operation();
         const record: typeof idempotencyRecords.$inferInsert = {
+          // Historical metadata, not the replay namespace for an Instance.
           principalId: scope.principalId,
           credentialClass: scope.credentialClass,
           actorId: scope.actorId,
@@ -2155,18 +2175,19 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
       const payerRaw = auth.principalId;
       const payeeRaw = await this.purseBehind(input.to);
       if (payeeRaw === null) throw new RepositoryError(404, "payee_not_found", "No Principal, Agent or Instance with that id.");
-      await this.lockIdentities([payerRaw, payeeRaw, await this.canonicalPrincipal(payerRaw)]);
-      // Under the lock the mapping is settled: re-resolve both sides.
+      const lockedIdentities = new Set([payerRaw, payeeRaw, await this.canonicalPrincipal(payerRaw)]);
+      await this.lockIdentities([...lockedIdentities]);
+      // Re-resolve after locking. A claim may have moved either side since
+      // discovery; taking that newly discovered owner's lock here could go
+      // backwards in the global order and deadlock. Refuse before any writes
+      // or additional locks so the caller can retry the same idempotency key.
       const payer = await this.canonicalPrincipal(payerRaw);
       const payee = await this.purseBehind(input.to);
       if (payee === null) throw new RepositoryError(404, "payee_not_found", "No Principal, Agent or Instance with that id.");
-      if (payee === payer) throw new RepositoryError(422, "transfer_to_self", "A transfer to your own Principal moves nothing.");
-      // A claim that landed between the two reads moved an identity we did not
-      // lock. Refusing is the honest answer; the caller retries with its key.
-      await this.lockIdentities([payer, payee]);
-      if ((await this.canonicalPrincipal(payer)) !== payer || (await this.purseBehind(input.to)) !== payee) {
+      if (!lockedIdentities.has(payer) || !lockedIdentities.has(payee)) {
         throw new RepositoryError(409, "credits_identity_moved", "The account behind one of these ids changed just now; try again.");
       }
+      if (payee === payer) throw new RepositoryError(422, "transfer_to_self", "A transfer to your own Principal moves nothing.");
       await this.ensurePurses([payer, payee]);
       await this.lockPurses([payer, payee]);
       const [debited] = await this.executor()
@@ -2307,9 +2328,9 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
   /**
    * The identity lock. Credits and account claims both move value between
    * Principals, and a claim can change which Principal an id means while a
-   * payment is deciding. Every such transaction takes one advisory lock per
-   * Principal it touches, in ascending id order, so they serialize instead of
-   * racing, and none of them can deadlock against another: the order is the
+   * payment is deciding. Every such transaction collects its complete identity
+   * set, then takes one advisory lock per Principal in ascending id order, so
+   * they serialize instead of racing or deadlocking: the order is the
    * same for everyone. Advisory locks last to the end of the transaction and
    * are released on commit or rollback.
    */
@@ -2595,35 +2616,27 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
   private async findIdempotencyRecord(
     scope: IdempotencyScope,
     database: SharedNetDatabase = this.executor(),
+    now: Date = this.now(),
   ): Promise<typeof idempotencyRecords.$inferSelect | undefined> {
     const [record] = await database
       .select()
       .from(idempotencyRecords)
       .where(
         and(
-          eq(idempotencyRecords.principalId, scope.principalId),
+          scope.credentialClass === "instance" ? undefined : eq(idempotencyRecords.principalId, scope.principalId),
           eq(idempotencyRecords.credentialClass, scope.credentialClass),
           eq(idempotencyRecords.actorId, scope.actorId),
           eq(idempotencyRecords.operationId, scope.operationId),
           eq(idempotencyRecords.idempotencyKey, scope.key),
+          gt(idempotencyRecords.expiresAt, now),
         ),
       )
+      // Older versions could create a row on each side of a claim. Preserve
+      // those rows and always choose the first unexpired result, including
+      // its fingerprint. A later conflicting row cannot authorize a retry.
+      .orderBy(asc(idempotencyRecords.createdAt), asc(idempotencyRecords.principalId))
       .limit(1);
     return record;
-  }
-
-  private async deleteIdempotencyRecord(scope: IdempotencyScope): Promise<void> {
-    await this.executor()
-      .delete(idempotencyRecords)
-      .where(
-        and(
-          eq(idempotencyRecords.principalId, scope.principalId),
-          eq(idempotencyRecords.credentialClass, scope.credentialClass),
-          eq(idempotencyRecords.actorId, scope.actorId),
-          eq(idempotencyRecords.operationId, scope.operationId),
-          eq(idempotencyRecords.idempotencyKey, scope.key),
-        ),
-      );
   }
 
   private replayIdempotency(

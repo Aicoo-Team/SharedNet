@@ -208,8 +208,9 @@ function membershipKey(roomId: RoomId, instanceId: InstanceId): string {
 }
 
 function idempotencyKey(scope: IdempotencyScope): string {
+  // A guest claim changes the purse's owner, never the Instance's retry scope.
   return [
-    scope.principalId,
+    scope.credentialClass === "instance" ? "" : scope.principalId,
     scope.credentialClass,
     scope.actorId,
     scope.operationId,
