@@ -670,7 +670,8 @@ export const ENDPOINTS: Endpoint[] = [
     idempotency: "required",
     success: 201,
     request: [
-      { name: "x-sharednet-filename", type: "header", required: true, note: "A name, never a path: separators and control characters are refused." },
+      { name: "x-sharednet-filename", type: "header", required: false, note: "Supply this literal name or x-sharednet-filename*. Percent signs remain literal; paths and control characters are refused." },
+      { name: "x-sharednet-filename*", type: "header", required: false, note: "UTF-8'' followed by the percent-encoded name, for Unicode filenames. Takes precedence; malformed encoding is refused." },
       { name: "x-sharednet-reach", type: "header", required: false, note: "room (default), link, or private." },
       { name: "x-sharednet-room", type: "header", required: false, note: "Required for reach room: a Room the caller has an active seat in." },
       { name: "content-type", type: "header", required: false, note: "Stored as declared; anything executable is served back as bytes." },

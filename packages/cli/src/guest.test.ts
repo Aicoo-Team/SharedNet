@@ -1474,6 +1474,32 @@ describe("sharednet files", () => {
     expect(JSON.parse(linked.stdout).url).toContain(`/f/${ARTIFACT_ID}?k=`);
   });
 
+  it("encodes a Unicode filename into an ASCII HTTP header", async () => {
+    const space = await seated();
+    const { writeFile } = await import("node:fs/promises");
+    const filename = "研究报告.md";
+    await writeFile(join(space.project, filename), "diff");
+    const result = await run(["upload", filename], space, [{ status: 201, body: { artifact: artifact({ filename }) } }]);
+    expect(result.exitCode).toBe(0);
+    const request = result.requests[0]!;
+    expect(() => new Request(request.url, request.init)).not.toThrow();
+    expect(header(request, "x-sharednet-filename*")).toBe(`UTF-8''${encodeURIComponent(filename)}`);
+    expect(header(request, "x-sharednet-filename")).toBeUndefined();
+  });
+
+  it("refuses an existing dangling symlink without creating its target", async () => {
+    const space = await seated();
+    const { symlink, lstat } = await import("node:fs/promises");
+    const target = join(space.project, "absent-target.patch");
+    const destination = join(space.project, "fix.patch");
+    await symlink(target, destination);
+    const result = await run(["download", ARTIFACT_ID], space, [{ body: { artifact: artifact() } }, bytes("diff")]);
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain("file_exists");
+    expect((await lstat(destination)).isSymbolicLink()).toBe(true);
+    await expect(lstat(target)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("writes a downloaded file here, checks the digest, and refuses to overwrite without being told", async () => {
     const space = await seated();
     const { readFile } = await import("node:fs/promises");
@@ -1554,4 +1580,3 @@ describe("sharednet files", () => {
     expect(all.requests[0]!.url).toBe("https://www.sharednet.ai/api/v1/artifacts?limit=20");
   });
 });
-

@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { readdir, readFile, writeFile } from "node:fs/promises";
 import { isAbsolute, join as joinPath, resolve as resolvePathFrom } from "node:path";
 
 import { ApiClient, resolveBaseUrl, sameOrigin } from "./api-client.ts";
@@ -1346,7 +1346,9 @@ async function upload(args: string[], dependencies: GuestDependencies): Promise<
     bytes,
     {
       "content-type": contentTypeFor(filename),
-      "x-sharednet-filename": filename,
+      ...(/[^\x20-\x7e]/.test(filename)
+        ? { "x-sharednet-filename*": `UTF-8''${encodeURIComponent(filename)}` }
+        : { "x-sharednet-filename": filename }),
       "x-sharednet-reach": reach,
       ...(reach === "room" && seat ? { "x-sharednet-room": seat.room_id } : {}),
       "idempotency-key": randomUUID(),
@@ -1391,11 +1393,16 @@ async function download(args: string[], dependencies: GuestDependencies): Promis
   );
   const name = safeBasename(stringOption(parsed, "out") ?? meta?.artifact.filename ?? bytes.filename ?? artifactId);
   const out = resolvePath(dependencies.cwd, stringOption(parsed, "out") ?? name);
-  if (!parsed.options.has("force")) {
-    const exists = await stat(out).then(() => true).catch(() => false);
-    if (exists) throw localError("file_exists", `${name} is already here. Pass --force to overwrite it, or --out to write elsewhere.`);
+  try {
+    // Exclusive creation handles competing downloads and dangling symlinks in
+    // the same operation that opens the file; a prior stat cannot protect it.
+    await writeFile(out, bytes.bytes, { flag: parsed.options.has("force") ? "w" : "wx" });
+  } catch (error) {
+    if (error !== null && typeof error === "object" && "code" in error && error.code === "EEXIST") {
+      throw localError("file_exists", `${name} is already here. Pass --force to overwrite it, or --out to write elsewhere.`);
+    }
+    throw error;
   }
-  await writeFile(out, bytes.bytes);
   const digest = createHash("sha256").update(bytes.bytes).digest("hex");
   return {
     artifact_id: artifactId,

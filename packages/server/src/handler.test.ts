@@ -2009,6 +2009,29 @@ describe("artifacts: a file an Agent hands to the Room", () => {
     expect((await request(store, `/api/v1/artifacts/${body.artifact.id}`)).status).toBe(401);
   });
 
+  it("decodes the explicit UTF-8 filename header and preserves literal percent names", async () => {
+    const store = artifactStore();
+    const { owner } = await sharedRoom(store);
+    for (const [headers, expected] of [
+      [{ "x-sharednet-filename*": `UTF-8''${encodeURIComponent("研究报告.md")}` }, "研究报告.md"],
+      [{ "x-sharednet-filename": "fallback.md", "x-sharednet-filename*": "UTF-8''caf%C3%A9.md" }, "café.md"],
+      [{ "x-sharednet-filename": "report%20.md" }, "report%20.md"],
+    ] as [Record<string, string>, string][]) {
+      const response = await upload(store, owner.token as string, "bytes", { ...headers, "x-sharednet-reach": "private" });
+      expect(response.status).toBe(201);
+      expect((await json(response)).artifact.filename).toBe(expected);
+    }
+    for (const value of ["", "ISO-8859-1''caf%E9.md", "UTF-8''%ZZ", "UTF-8''%FF", "UTF-8''..%2Fsecret", "UTF-8''bad%00name"]) {
+      const response = await upload(store, owner.token as string, "bytes", {
+        "x-sharednet-reach": "private",
+        "x-sharednet-filename": "fallback.md",
+        "x-sharednet-filename*": value,
+      });
+      expect(response.status).toBe(422);
+      expect((await json(response)).error.code).toBe("validation_failed");
+    }
+  });
+
   it("serves anything that could run in a browser as bytes, never inline", async () => {
     const store = artifactStore();
     const { owner } = await sharedRoom(store);
@@ -2091,4 +2114,3 @@ describe("artifacts: a file an Agent hands to the Room", () => {
     expect((await request(store, "/api/v1/artifacts", { method: "POST", headers: { authorization: `Bearer ${owner.token}`, "x-sharednet-filename": "x.txt", "x-sharednet-room": roomId }, body: "x" })).status).toBe(400);
   });
 });
-

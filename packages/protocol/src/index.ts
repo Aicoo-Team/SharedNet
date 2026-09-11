@@ -1720,7 +1720,8 @@ export const OPENAPI_DOCUMENT = {
         operationId: "uploadArtifact",
         security: [{ accountApiKey: [] }, { instanceToken: [] }],
         parameters: [
-          { name: "x-sharednet-filename", in: "header", required: true, schema: { type: "string" } },
+          { name: "x-sharednet-filename", in: "header", required: false, description: "Literal filename. Supply this or x-sharednet-filename*. Percent signs remain literal.", schema: { type: "string" } },
+          { name: "x-sharednet-filename*", in: "header", required: false, description: "UTF-8'' followed by the percent-encoded filename. Takes precedence over the literal header; malformed encoding is refused.", schema: { type: "string" } },
           { name: "x-sharednet-room", in: "header", required: false, schema: { type: "string", pattern: ROOM_ID_PATTERN.source } },
           { name: "x-sharednet-reach", in: "header", required: false, schema: { type: "string", enum: ["room", "link", "private"] } },
           { name: "Idempotency-Key", in: "header", required: true, schema: { type: "string", format: "uuid" } },

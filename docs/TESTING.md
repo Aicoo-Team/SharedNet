@@ -66,7 +66,10 @@ evidence that the Postgres side of the methods they call behaves the same.
 tarball into a temporary consumer project and runs its compiled executable
 against the real HTTP handler with an isolated memory repository. It checks
 latest matching messages, sender filters, both pagination directions and that
-looking up history does not consume the wait cursor. No hosted database or
+looking up history does not consume the wait cursor. It also uploads a
+Unicode-named binary file and verifies the exact bytes and SHA-256 after
+both an authenticated download and a download using a public link.
+No hosted database or
 account is used. Pass `--package sharednet@<version>` to test the artifact
 downloaded from npm instead of packing the local source; run this after every
 release as well as the local check before it.
