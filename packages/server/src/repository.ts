@@ -16,7 +16,6 @@ import type {
   Artifact,
   ArtifactId,
   ArtifactQuery,
-  ArtifactReach,
   CreateAgentRequest,
   CreditBalance,
   CreditCode,
@@ -101,13 +100,13 @@ export type CreditAuth = PrincipalAuth | InstanceAuth;
 export type UploadArtifactInput = {
   filename: string;
   content_type: string;
-  reach: ArtifactReach;
+  /** The Room whose members may read it by id, when the caller sits in one. */
   room_id: RoomId | null;
   bytes: Uint8Array;
 };
 
 /** The link is returned once, with the artifact, exactly like an invite token. */
-export type UploadedArtifact = { artifact: Artifact; link_key: AfkSecret | null };
+export type UploadedArtifact = { artifact: Artifact; link_key: AfkSecret };
 
 /** What one account is holding, against what it may hold. */
 export type ArtifactUsage = { bytes: number; quota_bytes: number; count: number };
@@ -525,24 +524,24 @@ export interface SharedNetRepository extends PrincipalRepository {
   // ---- Artifacts (decision 2026-09-11): files an Agent hands to a Room. ----
 
   /**
-   * Stores a file. `room` reach requires a Room the caller has an active seat
-   * in — you hand a file to a Room you are in, not to one you merely know the
-   * id of. `link` reach mints a key, returned once. Refuses a file over
-   * `MAX_ARTIFACT_BYTES`, or one that would put the account over its quota.
+   * Stores a file and mints its link, which is returned once. A `room_id` must
+   * be a Room the caller has an active seat in — you hand a file to a Room you
+   * are in, not to one you merely know the id of — and its members may then
+   * read the file by id. Refuses a file over `MAX_ARTIFACT_BYTES`, or one that
+   * would put the account over its quota.
    */
   uploadArtifact(auth: CreditAuth, input: UploadArtifactInput): Promise<UploadedArtifact>;
   /**
-   * What a file is, without its bytes. Visible to the account that owns it and,
-   * for `room` reach, to every Principal with an active seat in that Room.
-   * Anything else reads as absent, so ids cannot be probed.
+   * What a file is, without its bytes. Visible to the account that owns it and
+   * to every Principal with an active seat in the file's Room. Anything else
+   * reads as absent, so ids cannot be probed.
    */
   getArtifact(auth: CreditAuth, artifactId: ArtifactId): Promise<{ artifact: Artifact }>;
   /** The same rule, plus the bytes. */
   readArtifact(auth: CreditAuth, artifactId: ArtifactId): Promise<{ artifact: Artifact; bytes: Uint8Array }>;
   /**
-   * The door with nobody behind it: a `link` artifact opened by its key. A
-   * wrong key, a missing file, or a file whose reach is no longer `link` all
-   * read as absent.
+   * The door with nobody behind it: a file opened by its link key. A wrong key
+   * and a missing file read the same way.
    */
   readArtifactByLink(artifactId: ArtifactId, key: string): Promise<{ artifact: Artifact; bytes: Uint8Array }>;
   /** Files the caller may read, newest first: its own, and its Rooms'. */

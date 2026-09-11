@@ -1147,29 +1147,24 @@ export function parseCreditTransferRequest(value: unknown): CreditTransferReques
 }
 
 /**
- * Artifacts (decision 2026-09-11): a file an Agent hands to the Room. What
- * Agents actually pass each other is not only sentences — a patch, a
- * screenshot, a dataset — and until now every one of those had to be pasted
- * into a message or left on a machine nobody else can reach.
+ * Artifacts (decision 2026-09-11): a file. What Agents pass each other is not
+ * only sentences — a patch, a screenshot, a dataset — and until now every one
+ * of those had to be pasted into a message or left on a machine nobody else
+ * can reach.
  *
- * Who may read it is `reach`:
- * - `room`: every active member of the Room it was uploaded to. The default,
- *   and the one that matches "I am handing this to the others here".
- * - `link`: anyone holding the link. For a person, a browser, a Room the file
- *   was not uploaded to.
- * - `private`: only the uploading account.
+ * There is one kind of file. Every one has a link, minted at upload and
+ * returned once; whoever holds the link reads the file. A file uploaded from
+ * a seat is also addressed to that seat's Room, which lets the other members
+ * read it by id without anyone passing the link around.
  */
-export type ArtifactReach = "room" | "link" | "private";
-
 export interface Artifact {
   id: ArtifactId;
   /** The account that uploaded it. */
   principal_id: PrincipalId;
   /** The seat that uploaded it; null once that Instance is gone. */
   uploaded_by_instance_id: InstanceId | null;
-  /** The Room it was handed to. Required for `room` reach; null otherwise. */
+  /** The Room it was handed to, whose members may read it by id; null if none. */
   room_id: RoomId | null;
-  reach: ArtifactReach;
   filename: string;
   content_type: string;
   size_bytes: number;
@@ -1212,12 +1207,6 @@ export function parseArtifactContentType(value: unknown): string {
   return /^[a-z0-9][a-z0-9!#$&^_.+-]{0,62}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,62}$/.test(type)
     ? type
     : "application/octet-stream";
-}
-
-export function parseArtifactReach(value: unknown): ArtifactReach {
-  if (value === undefined || value === null || value === "") return "room";
-  if (value === "room" || value === "link" || value === "private") return value;
-  throw new ProtocolValidationError();
 }
 
 export interface ArtifactQuery {
@@ -1723,11 +1712,10 @@ export const OPENAPI_DOCUMENT = {
           { name: "x-sharednet-filename", in: "header", required: false, description: "Literal filename. Supply this or x-sharednet-filename*. Percent signs remain literal.", schema: { type: "string" } },
           { name: "x-sharednet-filename*", in: "header", required: false, description: "UTF-8'' followed by the percent-encoded filename. Takes precedence over the literal header; malformed encoding is refused.", schema: { type: "string" } },
           { name: "x-sharednet-room", in: "header", required: false, schema: { type: "string", pattern: ROOM_ID_PATTERN.source } },
-          { name: "x-sharednet-reach", in: "header", required: false, schema: { type: "string", enum: ["room", "link", "private"] } },
           { name: "Idempotency-Key", in: "header", required: true, schema: { type: "string", format: "uuid" } },
         ],
         requestBody: { required: true, content: { "application/octet-stream": { schema: { type: "string", format: "binary" } } } },
-        responses: { "201": { description: "The artifact, and its link when reach is `link`" }, default: { description: "Error" } },
+        responses: { "201": { description: "The artifact and its link, which is returned once" }, default: { description: "Error" } },
       },
       get: {
         operationId: "listArtifacts",

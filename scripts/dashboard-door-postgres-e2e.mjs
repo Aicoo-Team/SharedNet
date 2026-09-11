@@ -685,15 +685,14 @@ const patch = bytesOf("--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n");
 const handed = await repository.uploadArtifact(owner.auth, {
   filename: "fix.patch",
   content_type: "text/plain",
-  reach: "room",
   room_id: second.id,
   bytes: patch,
 });
 assert.match(handed.artifact.id, /^art_[0-9A-Za-z]{10}$/);
-assert.equal(handed.link_key, null, "a Room file has no link");
+assert.match(handed.link_key, /^afk_[A-Za-z0-9_-]{43}$/, "every file has a link");
 assert.deepEqual(
-  [handed.artifact.size_bytes, handed.artifact.room_id, handed.artifact.reach, handed.artifact.uploaded_by_instance_id],
-  [patch.byteLength, second.id, "room", owner.instance.id],
+  [handed.artifact.size_bytes, handed.artifact.room_id, handed.artifact.uploaded_by_instance_id],
+  [patch.byteLength, second.id, owner.instance.id],
 );
 assert.equal(handed.artifact.sha256, createHash("sha256").update(patch).digest("hex"));
 // The bytes come back exactly, through the member's own seat.
@@ -711,22 +710,23 @@ await assert.rejects(repository.getArtifact(outsiderKey, handed.artifact.id), { 
 await assert.rejects(repository.readArtifact(outsiderKey, handed.artifact.id), { code: "artifact_not_found", status: 404 });
 // Handing a file to a Room you do not sit in is refused as an absent Room.
 await assert.rejects(
-  repository.uploadArtifact(outsiderKey, { filename: "x.txt", content_type: "text/plain", reach: "room", room_id: second.id, bytes: bytesOf("x") }),
+  repository.uploadArtifact(outsiderKey, { filename: "x.txt", content_type: "text/plain", room_id: second.id, bytes: bytesOf("x") }),
   { code: "room_not_found", status: 404 },
 );
-// A link file: opened by its key alone, refused by a wrong one the same way.
+// Opened by its key alone; a wrong key, and another file's key, both refused the same way.
 const published = await repository.uploadArtifact(owner.auth, {
   filename: "rows.csv",
   content_type: "text/csv",
-  reach: "link",
   room_id: null,
   bytes: bytesOf("a,b\n1,2\n"),
 });
 assert.match(published.link_key, /^afk_[A-Za-z0-9_-]{43}$/);
+assert.equal(published.artifact.room_id, null, "a file needs no Room");
 const opened = await repository.readArtifactByLink(published.artifact.id, published.link_key);
 assert.equal(new TextDecoder().decode(opened.bytes), "a,b\n1,2\n");
+assert.equal(new TextDecoder().decode((await repository.readArtifactByLink(handed.artifact.id, handed.link_key)).bytes).length, patch.byteLength);
 await assert.rejects(repository.readArtifactByLink(published.artifact.id, `afk_${"z".repeat(43)}`), { code: "artifact_not_found", status: 404 });
-await assert.rejects(repository.readArtifactByLink(handed.artifact.id, published.link_key), { code: "artifact_not_found" }, "a Room file has no link to open");
+await assert.rejects(repository.readArtifactByLink(handed.artifact.id, published.link_key), { code: "artifact_not_found" }, "one key opens one file");
 // A read never hands the key back out.
 assert.equal("link_key" in (await repository.getArtifact(owner.auth, published.artifact.id)).artifact, false);
 // Listing: the owner sees both, the member only the Room's.
@@ -742,11 +742,11 @@ const usage = await repository.artifactUsage(owner.auth);
 assert.equal(usage.count, 2);
 assert.equal(usage.bytes, handed.artifact.size_bytes + published.artifact.size_bytes);
 await assert.rejects(
-  repository.uploadArtifact(owner.auth, { filename: "empty.txt", content_type: "text/plain", reach: "link", room_id: null, bytes: new Uint8Array() }),
+  repository.uploadArtifact(owner.auth, { filename: "empty.txt", content_type: "text/plain", room_id: null, bytes: new Uint8Array() }),
   { code: "validation_failed", status: 422 },
 );
 await assert.rejects(
-  repository.uploadArtifact(owner.auth, { filename: "big.bin", content_type: "application/octet-stream", reach: "link", room_id: null, bytes: new Uint8Array(4 * 1024 * 1024 + 1) }),
+  repository.uploadArtifact(owner.auth, { filename: "big.bin", content_type: "application/octet-stream", room_id: null, bytes: new Uint8Array(4 * 1024 * 1024 + 1) }),
   { code: "artifact_too_large", status: 413 },
 );
 // Only the account that uploaded it may remove it; the bytes go with it.
@@ -757,7 +757,7 @@ const { rows: [orphans] } = await pool.query(`select count(*)::int as count from
 assert.equal(orphans.count, 0, "removing a file removes its bytes");
 // Closing a Room stops new files being handed to it.
 await assert.rejects(
-  repository.uploadArtifact(owner.auth, { filename: "late.txt", content_type: "text/plain", reach: "room", room_id: room.id, bytes: bytesOf("late") }),
+  repository.uploadArtifact(owner.auth, { filename: "late.txt", content_type: "text/plain", room_id: room.id, bytes: bytesOf("late") }),
   { code: "room_closed", status: 409 },
 );
 

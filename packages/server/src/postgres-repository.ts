@@ -329,7 +329,6 @@ function projectArtifact(row: typeof artifacts.$inferSelect): Artifact {
     principal_id: row.principalId,
     uploaded_by_instance_id: row.uploadedByInstanceId,
     room_id: row.roomId,
-    reach: row.reach,
     filename: row.filename,
     content_type: row.contentType,
     size_bytes: row.sizeBytes,
@@ -2196,8 +2195,7 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
       if (!locked.has(principalId)) {
         throw new RepositoryError(409, "credits_identity_moved", "The account behind one of these ids changed just now; try again.");
       }
-      if (input.reach === "room") {
-        if (input.room_id === null) throw new RepositoryError(422, "validation_failed", "Request is invalid.");
+      if (input.room_id !== null) {
         // You hand a file to a Room you are in, not to one you know the id of.
         const [seat] = await this.executor()
           .select({ instanceId: roomMembers.instanceId })
@@ -2220,15 +2218,15 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
       if (held.bytes + input.bytes.byteLength > ARTIFACT_QUOTA_BYTES) {
         throw new RepositoryError(409, "artifact_quota_reached", "This account is holding as many bytes as it may.");
       }
-      const linkKey = input.reach === "link" ? generateSecret("afk") : null;
+      // Every file has a link: that is what makes handing one over work.
+      const linkKey = generateSecret("afk");
       const [row] = await this.executor()
         .insert(artifacts)
         .values({
           id: generatePublicId("art"),
           principalId,
           uploadedByInstanceId: auth.kind === "instance" ? auth.instanceId : null,
-          roomId: input.reach === "room" ? input.room_id : (input.room_id ?? null),
-          reach: input.reach,
+          roomId: input.room_id,
           filename: input.filename,
           contentType: input.content_type,
           sizeBytes: input.bytes.byteLength,
@@ -2261,7 +2259,7 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
     const row = found ? { ...found.artifact, principalId: found.owner ?? found.artifact.principalId } : null;
     // A wrong key reads exactly like a missing file, and the comparison of the
     // two keys is constant-time so a near-miss cannot be measured.
-    if (!row || row.reach !== "link" || row.linkKey === null || !secureDigestEquals(digestSecret(row.linkKey), digestSecret(key))) {
+    if (!row || !secureDigestEquals(digestSecret(row.linkKey), digestSecret(key))) {
       throw new RepositoryError(404, "artifact_not_found", "File was not found.");
     }
     return { artifact: projectArtifact(row), bytes: await this.bytesOf(row.id) };
@@ -2271,7 +2269,7 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
     const principalId = await this.canonicalPrincipal(auth.principalId);
     const readable = or(
       inArray(artifacts.principalId, this.artifactOwnersOf(principalId)),
-      and(eq(artifacts.reach, "room"), inArray(artifacts.roomId, this.roomsSeatedIn(principalId))),
+      inArray(artifacts.roomId, this.roomsSeatedIn(principalId)),
     );
     const scoped = input.room_id === null ? readable : and(readable, eq(artifacts.roomId, input.room_id));
     let boundary: { createdAt: Date; id: ArtifactId } | null = null;
@@ -2364,7 +2362,7 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
     const row = found ? { ...found.artifact, principalId: found.owner ?? found.artifact.principalId } : null;
     if (!row) throw new RepositoryError(404, "artifact_not_found", "File was not found.");
     if (row.principalId === principalId) return row;
-    if (row.reach === "room" && row.roomId !== null) {
+    if (row.roomId !== null) {
       const [seat] = await this.executor()
         .select({ instanceId: roomMembers.instanceId })
         .from(roomMembers)

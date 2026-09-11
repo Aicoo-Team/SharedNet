@@ -1409,7 +1409,6 @@ describe("sharednet files", () => {
       principal_id: "p_AbCdEfGhIj",
       uploaded_by_instance_id: MEMBER_ID,
       room_id: ROOM_ID,
-      reach: "room",
       filename: "fix.patch",
       content_type: "text/plain",
       size_bytes: 4,
@@ -1433,45 +1432,44 @@ describe("sharednet files", () => {
     };
   }
 
-  it("hands a file to this directory's Room, as bytes with the name in a header", async () => {
+  it("uploads bytes with the name in a header, addressed to this directory's Room, and hands back the link", async () => {
     const space = await seated();
     const { writeFile } = await import("node:fs/promises");
     await writeFile(join(space.project, "fix.patch"), "diff");
 
-    const result = await run(["upload", "fix.patch", "--json"], space, [{ status: 201, body: { artifact: artifact() } }]);
+    const result = await run(["upload", "fix.patch", "--json"], space, [
+      { status: 201, body: { artifact: artifact(), link_key: LINK_KEY, url: `https://www.sharednet.ai/f/${ARTIFACT_ID}?k=${LINK_KEY}` } },
+    ]);
 
     expect([result.exitCode, result.stderr]).toEqual([0, ""]);
     const request = result.requests[0]!;
     expect(request.url).toBe("https://www.sharednet.ai/api/v1/artifacts");
     expect(header(request, "x-sharednet-filename")).toBe("fix.patch");
     expect(header(request, "x-sharednet-room")).toBe(ROOM_ID);
-    expect(header(request, "x-sharednet-reach")).toBe("room");
     expect(header(request, "content-type")).toBe("text/plain");
     expect(header(request, "idempotency-key")).toMatch(/^[0-9a-f-]{36}$/);
     // The bytes go up as bytes, not as JSON or base64.
     expect(Buffer.from(request.init.body as Uint8Array).toString()).toBe("diff");
-    expect(JSON.parse(result.stdout).artifact.id).toBe(ARTIFACT_ID);
+    // One kind of file: there is always a link to hand over.
+    expect(JSON.parse(result.stdout)).toMatchObject({ url: `https://www.sharednet.ai/f/${ARTIFACT_ID}?k=${LINK_KEY}` });
   });
 
-  it("takes --link for a file anyone can open, and refuses to guess when there is no Room", async () => {
+  it("uploads from a directory that is in no Room: the file is addressed to nobody and still has a link", async () => {
     const space = await workspace();
     const { mkdir, writeFile } = await import("node:fs/promises");
     await mkdir(space.project, { recursive: true });
     await writeFile(join(space.project, "rows.csv"), "a,b\n");
 
-    // No Room and no flag: the CLI says what to do instead of picking for you.
-    const guessed = await run(["upload", "rows.csv"], space, [], { SHAREDNET_API_KEY: `snk_${"K".repeat(43)}` });
-    expect(guessed.exitCode).toBe(2);
-    expect(guessed.stderr).toContain("not_in_a_room");
-    expect(guessed.requests).toHaveLength(0);
+    const result = await run(
+      ["upload", "rows.csv", "--json"],
+      space,
+      [{ status: 201, body: { artifact: artifact({ room_id: null, filename: "rows.csv" }), link_key: LINK_KEY, url: `https://www.sharednet.ai/f/${ARTIFACT_ID}?k=${LINK_KEY}` } }],
+      { SHAREDNET_API_KEY: `snk_${"K".repeat(43)}` },
+    );
 
-    const linked = await run(["upload", "rows.csv", "--link", "--json"], space, [
-      { status: 201, body: { artifact: artifact({ reach: "link", room_id: null, filename: "rows.csv" }), link_key: LINK_KEY, url: `https://www.sharednet.ai/f/${ARTIFACT_ID}?k=${LINK_KEY}` } },
-    ], { SHAREDNET_API_KEY: `snk_${"K".repeat(43)}` });
-    expect(linked.exitCode).toBe(0);
-    expect(header(linked.requests[0]!, "x-sharednet-reach")).toBe("link");
-    expect(header(linked.requests[0]!, "x-sharednet-room")).toBeUndefined();
-    expect(JSON.parse(linked.stdout).url).toContain(`/f/${ARTIFACT_ID}?k=`);
+    expect([result.exitCode, result.stderr]).toEqual([0, ""]);
+    expect(header(result.requests[0]!, "x-sharednet-room")).toBeUndefined();
+    expect(JSON.parse(result.stdout).url).toContain(`/f/${ARTIFACT_ID}?k=`);
   });
 
   it("encodes a Unicode filename into an ASCII HTTP header", async () => {

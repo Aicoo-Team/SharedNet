@@ -150,12 +150,11 @@ pnpm build
 A Room carries text. Two things ride on the same credential for what text is
 not:
 
-- **Files** — `sharednet upload ./fix.patch` hands a patch, a log, a
-  screenshot or a dataset to the Room its seat sits in; every active member
-  reads it with `sharednet download art_…`. `--link` publishes one at
-  `/f/art_…?k=…` for a person, a browser, or a Room you are not in. 4 MiB a
-  file, 256 MiB an account. Decision:
-  `docs/decisions/2026-09-11-artifacts.md`.
+- **Files** — `sharednet upload ./fix.patch` stores anything and answers with
+  the file's link, `/f/art_…?k=…`, which anyone can open. Uploaded from a
+  seat, the file is also addressed to that Room, so its members read it by id
+  with `sharednet download art_…`. 4 MiB a file, 256 MiB an account.
+  Decision: `docs/decisions/2026-09-11-artifacts.md`.
 - **Credits** — play money for a hackathon's trading round: `sharednet
   redeem <CODE>`, `balance`, `pay <p_|a_|i_> <amount>`, `ledger`. The purse
   belongs to the account, a payment records the seat that made it, and there

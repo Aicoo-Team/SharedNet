@@ -252,7 +252,7 @@ export class MemorySharedNetRepository implements SharedNetRepository {
   private readonly creditCodes = new Map<string, CreditCode>();
   private readonly creditRedemptions = new Set<string>();
   /** Artifacts: what each file is, its bytes, and the key of its link. */
-  private readonly artifacts = new Map<ArtifactId, Artifact & { linkKey: AfkSecret | null }>();
+  private readonly artifacts = new Map<ArtifactId, Artifact & { linkKey: AfkSecret }>();
   private readonly artifactBytes = new Map<ArtifactId, Uint8Array>();
 
   constructor(options: MemoryRepositoryOptions = {}) {
@@ -1633,8 +1633,7 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     if (input.bytes.byteLength > MAX_ARTIFACT_BYTES) {
       throw new RepositoryError(413, "artifact_too_large", "File is larger than this service accepts.");
     }
-    if (input.reach === "room") {
-      if (input.room_id === null) throw new RepositoryError(422, "validation_failed", "Request is invalid.");
+    if (input.room_id !== null) {
       // You hand a file to a Room you are in, not to one you know the id of.
       const seated = [...this.memberships.values()].some(
         (membership) =>
@@ -1650,13 +1649,13 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     if (held.bytes + input.bytes.byteLength > ARTIFACT_QUOTA_BYTES) {
       throw new RepositoryError(409, "artifact_quota_reached", "This account is holding as many bytes as it may.");
     }
-    const linkKey = input.reach === "link" ? generateSecret("afk") : null;
-    const artifact: Artifact & { linkKey: AfkSecret | null } = {
+    // Every file has a link: that is what makes handing one over work.
+    const linkKey = generateSecret("afk");
+    const artifact: Artifact & { linkKey: AfkSecret } = {
       id: generatePublicId("art"),
       principal_id: principalId,
       uploaded_by_instance_id: auth.kind === "instance" ? auth.instanceId : null,
-      room_id: input.reach === "room" ? input.room_id : (input.room_id ?? null),
-      reach: input.reach,
+      room_id: input.room_id,
       filename: input.filename,
       content_type: input.content_type,
       size_bytes: input.bytes.byteLength,
@@ -1681,7 +1680,7 @@ export class MemorySharedNetRepository implements SharedNetRepository {
   async readArtifactByLink(artifactId: ArtifactId, key: string): Promise<{ artifact: Artifact; bytes: Uint8Array }> {
     const record = this.artifacts.get(artifactId);
     // A wrong key reads exactly like a missing file: the comparison is constant-time.
-    if (!record || record.reach !== "link" || record.linkKey === null || !secureDigestEquals(digestSecret(record.linkKey), digestSecret(key))) {
+    if (!record || !secureDigestEquals(digestSecret(record.linkKey), digestSecret(key))) {
       throw new RepositoryError(404, "artifact_not_found", "File was not found.");
     }
     return { artifact: this.projectArtifact(record), bytes: this.artifactBytes.get(record.id) ?? new Uint8Array() };
@@ -1731,7 +1730,7 @@ export class MemorySharedNetRepository implements SharedNetRepository {
   private canRead(principalId: PrincipalId, record: Artifact): boolean {
     principalId = this.artifactOwner(principalId);
     if (this.artifactOwner(record.principal_id) === principalId) return true;
-    if (record.reach !== "room" || record.room_id === null) return false;
+    if (record.room_id === null) return false;
     return [...this.memberships.values()].some(
       (membership) =>
         membership.room_id === record.room_id &&
@@ -1740,7 +1739,7 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     );
   }
 
-  private artifactVisibleTo(principalId: PrincipalId, artifactId: ArtifactId): Artifact & { linkKey: AfkSecret | null } {
+  private artifactVisibleTo(principalId: PrincipalId, artifactId: ArtifactId): Artifact & { linkKey: AfkSecret } {
     const record = this.artifacts.get(artifactId);
     if (!record || !this.canRead(principalId, record)) {
       throw new RepositoryError(404, "artifact_not_found", "File was not found.");
@@ -1749,7 +1748,7 @@ export class MemorySharedNetRepository implements SharedNetRepository {
   }
 
   /** The key never leaves through a read: it is handed out once, at upload. */
-  private projectArtifact(record: Artifact & { linkKey: AfkSecret | null }): Artifact {
+  private projectArtifact(record: Artifact & { linkKey: AfkSecret }): Artifact {
     const { linkKey: _linkKey, ...artifact } = record;
     return { ...artifact, principal_id: this.artifactOwner(artifact.principal_id) };
   }

@@ -399,7 +399,6 @@ export function createSharedNetMcpServer(subject: McpSubject, deps: SharedNetMcp
             filename: artifact.filename,
             content_type: artifact.content_type,
             size_bytes: artifact.size_bytes,
-            reach: artifact.reach,
             room_id: artifact.room_id,
             created_at: artifact.created_at,
           })),
@@ -446,28 +445,22 @@ export function createSharedNetMcpServer(subject: McpSubject, deps: SharedNetMcp
     {
       title: "Hand a file to a Room",
       description:
-        "Puts text in a Room as a file, for what does not belong in a message: a patch, a report, a log. Every active member of that Room can read it. With link: true it is published at a URL anyone can open instead, which is how you hand something to a person or to a Room you are not in. Say the returned id or url in the Room afterwards — nobody is watching for the file.",
+        "Puts text somewhere as a file, for what does not belong in a message: a patch, a report, a log. Every file comes back with a URL anyone can open, which is how you hand it to a person. Name a room_id as well and that Room's members can read it by id. Say the URL in the Room afterwards — nobody is watching for the file.",
       inputSchema: z.object({
         filename: z.string().min(1).max(120),
         text: z.string().min(1).max(MAX_TEXT_FILE_BYTES),
         room_id: ROOM_ID.optional(),
-        link: z.boolean().optional(),
       }),
       annotations: { title: "Hand a file to a Room", ...WRITES },
     },
-    async ({ filename, text, room_id, link }) => {
+    async ({ filename, text, room_id }) => {
       try {
         const s = await seat();
         const bytes = new TextEncoder().encode(text);
         if (bytes.byteLength > MAX_ARTIFACT_BYTES) return failure(new Error("artifact_too_large: that text is too large to store."));
-        const reach = link ? "link" : "room";
-        if (reach === "room" && !room_id) {
-          return failure(new Error("validation_failed: name a room_id, or pass link: true for a file anyone can open."));
-        }
         const uploaded = await repository.uploadArtifact(s.auth, {
           filename,
           content_type: filename.toLowerCase().endsWith(".md") ? "text/markdown" : filename.toLowerCase().endsWith(".json") ? "application/json" : "text/plain",
-          reach,
           room_id: (room_id as RoomId | undefined) ?? null,
           bytes,
         });
@@ -475,12 +468,9 @@ export function createSharedNetMcpServer(subject: McpSubject, deps: SharedNetMcp
           artifact_id: uploaded.artifact.id,
           filename: uploaded.artifact.filename,
           size_bytes: uploaded.artifact.size_bytes,
-          reach: uploaded.artifact.reach,
           room_id: uploaded.artifact.room_id,
-          ...(uploaded.link_key === null
-            ? {}
-            : { url: `${deps.origin.replace(/\/+$/, "")}/f/${uploaded.artifact.id}?k=${uploaded.link_key}` }),
-          next: "Say this id (or url) in the Room, so the others know it is there.",
+          url: `${deps.origin.replace(/\/+$/, "")}/f/${uploaded.artifact.id}?k=${uploaded.link_key}`,
+          next: "Say this url in the Room, so the others know the file is there.",
         });
       } catch (error) {
         return failure(error);

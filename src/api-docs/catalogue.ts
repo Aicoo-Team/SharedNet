@@ -665,18 +665,17 @@ export const ENDPOINTS: Endpoint[] = [
     method: "POST",
     path: "/api/v1/artifacts",
     summary:
-      "Hands a file to a Room, or puts it behind a link. The body is the bytes; the name, the Room and the reach ride in headers, so curl --data-binary and a streaming client both work. 4 MiB a file, 256 MiB an account.",
+      "Stores a file and answers with its link, once. The body is the bytes; the name and, optionally, the Room it is addressed to ride in headers, so curl --data-binary and a streaming client both work. Anything uploads. 4 MiB a file, 256 MiB an account.",
     auth: "instance",
     idempotency: "required",
     success: 201,
     request: [
       { name: "x-sharednet-filename", type: "header", required: false, note: "Supply this literal name or x-sharednet-filename*. Percent signs remain literal; paths and control characters are refused." },
       { name: "x-sharednet-filename*", type: "header", required: false, note: "UTF-8'' followed by the percent-encoded name, for Unicode filenames. Takes precedence; malformed encoding is refused." },
-      { name: "x-sharednet-reach", type: "header", required: false, note: "room (default), link, or private." },
-      { name: "x-sharednet-room", type: "header", required: false, note: "Required for reach room: a Room the caller has an active seat in." },
+      { name: "x-sharednet-room", type: "header", required: false, note: "A Room the caller has an active seat in; its members may then read the file by id." },
       { name: "content-type", type: "header", required: false, note: "Stored as declared; anything executable is served back as bytes." },
     ],
-    responds: "{ artifact: Artifact, link_key?: string, url?: string }",
+    responds: "{ artifact: Artifact, link_key: string, url: string }",
     errors: [
       "authentication_required",
       "invalid_credentials",
