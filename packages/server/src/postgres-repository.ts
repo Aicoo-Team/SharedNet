@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 
 import { defaultKeyHasher } from "@better-auth/api-key";
 import { and, asc, count, desc, eq, gt, ilike, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
@@ -7,6 +7,8 @@ import { and, asc, count, desc, eq, gt, ilike, inArray, isNull, lt, lte, or, sql
 import {
   cliLogins,
   agents,
+  artifactBytes,
+  artifacts,
   creditAccounts,
   creditCodes,
   creditRedemptions,
@@ -39,6 +41,12 @@ import {
   generateSecret,
   SHR_SECRET_PATTERN,
   type ShrSecret,
+  type AfkSecret,
+  type Artifact,
+  type ArtifactId,
+  type ArtifactQuery,
+  ARTIFACT_QUOTA_BYTES,
+  MAX_ARTIFACT_BYTES,
   type CreditBalance,
   type CreditCode,
   type CreditTransfer,
@@ -78,7 +86,7 @@ import {
   type SharedNetRepository,
   type StoredHttpResult,
 } from "./repository.ts";
-import { sharedRoomsEdges, type CreditAuth, type CreditLedgerQuery, type CreditRedemption, type CreditsOverview, type DecisionAnswer, type DecisionOverview, type McpClient, type McpSeat, type NetworkView, type RoomOverview, type RoomView, type SeatOverview, type SharedRoomView } from "./repository.ts";
+import { sharedRoomsEdges, type ArtifactUsage, type UploadArtifactInput, type UploadedArtifact, type CreditAuth, type CreditLedgerQuery, type CreditRedemption, type CreditsOverview, type DecisionAnswer, type DecisionOverview, type McpClient, type McpSeat, type NetworkView, type RoomOverview, type RoomView, type SeatOverview, type SharedRoomView } from "./repository.ts";
 import { mcpLocalInstanceKey, runtimeKindForMcp } from "./memory-repository.ts";
 import type {
   AddRoomMembersRequest,
@@ -313,6 +321,21 @@ function idempotencyLockKey(scope: IdempotencyScope): string {
   // unique actor id owns this namespace; the Principal only owns the purse.
   const principal = scope.credentialClass === "instance" ? "" : scope.principalId;
   return [principal, scope.credentialClass, scope.actorId, scope.operationId, scope.key].join("\u001f");
+}
+
+function projectArtifact(row: typeof artifacts.$inferSelect): Artifact {
+  return {
+    id: row.id,
+    principal_id: row.principalId,
+    uploaded_by_instance_id: row.uploadedByInstanceId,
+    room_id: row.roomId,
+    reach: row.reach,
+    filename: row.filename,
+    content_type: row.contentType,
+    size_bytes: row.sizeBytes,
+    sha256: row.sha256,
+    created_at: timestamp(row.createdAt),
+  };
 }
 
 function projectTransfer(row: typeof creditTransfers.$inferSelect): CreditTransfer {
@@ -2150,6 +2173,179 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
       if (!winner) throw error;
       return this.replayIdempotency(winner, fingerprint);
     }
+  }
+
+  // ---- Artifacts: files an Agent hands to a Room. ----
+
+  async uploadArtifact(auth: CreditAuth, input: UploadArtifactInput): Promise<UploadedArtifact> {
+    if (input.bytes.byteLength === 0) throw new RepositoryError(422, "validation_failed", "Request is invalid.");
+    if (input.bytes.byteLength > MAX_ARTIFACT_BYTES) {
+      throw new RepositoryError(413, "artifact_too_large", "File is larger than this service accepts.");
+    }
+    if (input.reach === "room") {
+      if (input.room_id === null) throw new RepositoryError(422, "validation_failed", "Request is invalid.");
+      // You hand a file to a Room you are in, not to one you know the id of.
+      const [seat] = await this.executor()
+        .select({ instanceId: roomMembers.instanceId })
+        .from(roomMembers)
+        .where(
+          and(
+            eq(roomMembers.roomId, input.room_id),
+            eq(roomMembers.principalId, auth.principalId),
+            eq(roomMembers.state, "active"),
+          ),
+        )
+        .limit(1);
+      if (!seat) throw new RepositoryError(404, "room_not_found", "Room was not found.");
+      const room = await this.roomById(input.room_id);
+      if (room.state === "closed") throw new RepositoryError(409, "room_closed", "Room is closed.");
+    }
+    return this.inTransaction(async () => {
+      // The quota is read and the row written in one transaction, so two
+      // uploads racing cannot both squeeze past the last free byte.
+      const held = await this.usageOf(auth.principalId, true);
+      if (held.bytes + input.bytes.byteLength > ARTIFACT_QUOTA_BYTES) {
+        throw new RepositoryError(409, "artifact_quota_reached", "This account is holding as many bytes as it may.");
+      }
+      const linkKey = input.reach === "link" ? generateSecret("afk") : null;
+      const [row] = await this.executor()
+        .insert(artifacts)
+        .values({
+          id: generatePublicId("art"),
+          principalId: auth.principalId,
+          uploadedByInstanceId: auth.kind === "instance" ? auth.instanceId : null,
+          roomId: input.reach === "room" ? input.room_id : (input.room_id ?? null),
+          reach: input.reach,
+          filename: input.filename,
+          contentType: input.content_type,
+          sizeBytes: input.bytes.byteLength,
+          sha256: createHash("sha256").update(input.bytes).digest("hex"),
+          linkKey,
+          createdAt: this.now(),
+        })
+        .returning();
+      if (!row) throw new RepositoryError(500, "internal_error", "Upload failed.");
+      await this.executor().insert(artifactBytes).values({ artifactId: row.id, bytes: Buffer.from(input.bytes) });
+      return { artifact: projectArtifact(row), link_key: linkKey };
+    });
+  }
+
+  async getArtifact(auth: CreditAuth, artifactId: ArtifactId): Promise<{ artifact: Artifact }> {
+    return { artifact: projectArtifact(await this.artifactVisibleTo(auth.principalId, artifactId)) };
+  }
+
+  async readArtifact(auth: CreditAuth, artifactId: ArtifactId): Promise<{ artifact: Artifact; bytes: Uint8Array }> {
+    const row = await this.artifactVisibleTo(auth.principalId, artifactId);
+    return { artifact: projectArtifact(row), bytes: await this.bytesOf(row.id) };
+  }
+
+  async readArtifactByLink(artifactId: ArtifactId, key: string): Promise<{ artifact: Artifact; bytes: Uint8Array }> {
+    const [row] = await this.executor().select().from(artifacts).where(eq(artifacts.id, artifactId)).limit(1);
+    // A wrong key reads exactly like a missing file, and the comparison of the
+    // two keys is constant-time so a near-miss cannot be measured.
+    if (!row || row.reach !== "link" || row.linkKey === null || !secureDigestEquals(digestSecret(row.linkKey), digestSecret(key))) {
+      throw new RepositoryError(404, "artifact_not_found", "File was not found.");
+    }
+    return { artifact: projectArtifact(row), bytes: await this.bytesOf(row.id) };
+  }
+
+  async listArtifacts(auth: CreditAuth, input: ArtifactQuery): Promise<Page<Artifact>> {
+    const readable = or(
+      eq(artifacts.principalId, auth.principalId),
+      and(eq(artifacts.reach, "room"), inArray(artifacts.roomId, this.roomsSeatedIn(auth.principalId))),
+    );
+    const scoped = input.room_id === null ? readable : and(readable, eq(artifacts.roomId, input.room_id));
+    let boundary: { createdAt: Date; id: ArtifactId } | null = null;
+    if (input.before !== null) {
+      const [row] = await this.executor()
+        .select({ createdAt: artifacts.createdAt, id: artifacts.id })
+        .from(artifacts)
+        .where(and(eq(artifacts.id, input.before), scoped))
+        .limit(1);
+      if (!row) throw new RepositoryError(400, "invalid_cursor", "Cursor is invalid.");
+      boundary = row;
+    }
+    const rows = await this.executor()
+      .select()
+      .from(artifacts)
+      .where(
+        boundary === null
+          ? scoped
+          : and(
+              scoped,
+              or(
+                lt(artifacts.createdAt, boundary.createdAt),
+                and(eq(artifacts.createdAt, boundary.createdAt), lt(artifacts.id, boundary.id)),
+              ),
+            ),
+      )
+      .orderBy(desc(artifacts.createdAt), desc(artifacts.id))
+      .limit(input.limit + 1);
+    const hasMore = rows.length > input.limit;
+    const items = rows.slice(0, input.limit).map(projectArtifact);
+    return { items, next_cursor: hasMore ? items[items.length - 1]!.id : null, has_more: hasMore };
+  }
+
+  async artifactUsage(auth: CreditAuth): Promise<ArtifactUsage> {
+    return this.usageOf(auth.principalId);
+  }
+
+  async deleteArtifact(auth: CreditAuth, artifactId: ArtifactId): Promise<{ artifact: Artifact }> {
+    const [row] = await this.executor()
+      .delete(artifacts)
+      .where(and(eq(artifacts.id, artifactId), eq(artifacts.principalId, auth.principalId)))
+      .returning();
+    // Only the account that uploaded it; to anyone else it is not there at all.
+    if (!row) throw new RepositoryError(404, "artifact_not_found", "File was not found.");
+    return { artifact: projectArtifact(row) };
+  }
+
+  /** The Rooms a Principal has an active seat in, as a subquery. */
+  private roomsSeatedIn(principalId: PrincipalId) {
+    return this.executor()
+      .select({ roomId: roomMembers.roomId })
+      .from(roomMembers)
+      .where(and(eq(roomMembers.principalId, principalId), eq(roomMembers.state, "active")));
+  }
+
+  private async usageOf(principalId: PrincipalId, forUpdate = false): Promise<ArtifactUsage> {
+    const query = this.executor()
+      .select({
+        bytes: sql<string>`coalesce(sum(${artifacts.sizeBytes}), 0)`,
+        count: sql<string>`count(*)`,
+      })
+      .from(artifacts)
+      .where(eq(artifacts.principalId, principalId));
+    if (forUpdate) {
+      // Serialize this account's uploads against each other, and nothing else.
+      await this.executor().execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`artifacts:${principalId}`}))`);
+    }
+    const [row] = await query;
+    return { bytes: Number(row?.bytes ?? 0), quota_bytes: ARTIFACT_QUOTA_BYTES, count: Number(row?.count ?? 0) };
+  }
+
+  private async bytesOf(artifactId: ArtifactId): Promise<Uint8Array> {
+    const [row] = await this.executor()
+      .select({ bytes: artifactBytes.bytes })
+      .from(artifactBytes)
+      .where(eq(artifactBytes.artifactId, artifactId))
+      .limit(1);
+    return row ? new Uint8Array(row.bytes) : new Uint8Array();
+  }
+
+  private async artifactVisibleTo(principalId: PrincipalId, artifactId: ArtifactId): Promise<typeof artifacts.$inferSelect> {
+    const [row] = await this.executor().select().from(artifacts).where(eq(artifacts.id, artifactId)).limit(1);
+    if (!row) throw new RepositoryError(404, "artifact_not_found", "File was not found.");
+    if (row.principalId === principalId) return row;
+    if (row.reach === "room" && row.roomId !== null) {
+      const [seat] = await this.executor()
+        .select({ instanceId: roomMembers.instanceId })
+        .from(roomMembers)
+        .where(and(eq(roomMembers.roomId, row.roomId), eq(roomMembers.principalId, principalId), eq(roomMembers.state, "active")))
+        .limit(1);
+      if (seat) return row;
+    }
+    throw new RepositoryError(404, "artifact_not_found", "File was not found.");
   }
 
   // ---- Credits: a purse per Principal, a ledger of every movement. ----

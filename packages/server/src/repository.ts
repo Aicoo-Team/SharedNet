@@ -11,7 +11,12 @@ import type {
   InviteDescription,
   Agent,
   AgentId,
+  AfkSecret,
   ApiKeyId,
+  Artifact,
+  ArtifactId,
+  ArtifactQuery,
+  ArtifactReach,
   CreateAgentRequest,
   CreditBalance,
   CreditCode,
@@ -86,6 +91,26 @@ export type RoomAuth = InstanceAuth;
  * records which seat said so.
  */
 export type CreditAuth = PrincipalAuth | InstanceAuth;
+
+/**
+ * Artifacts (decision 2026-09-11). An account holds files; a Room's members
+ * read the ones handed to that Room. The same credential that speaks in a Room
+ * uploads to it, so this takes the credit auth: either an account key or one
+ * of its Instances, and the Instance is recorded as the uploader.
+ */
+export type UploadArtifactInput = {
+  filename: string;
+  content_type: string;
+  reach: ArtifactReach;
+  room_id: RoomId | null;
+  bytes: Uint8Array;
+};
+
+/** The link is returned once, with the artifact, exactly like an invite token. */
+export type UploadedArtifact = { artifact: Artifact; link_key: AfkSecret | null };
+
+/** What one account is holding, against what it may hold. */
+export type ArtifactUsage = { bytes: number; quota_bytes: number; count: number };
 
 /** A page of the ledger, newest first; `before` is a transfer id to page past. */
 export type CreditLedgerQuery = { limit: number; before: TransferId | null };
@@ -496,4 +521,34 @@ export interface SharedNetRepository extends PrincipalRepository {
    * only by scripts/credits/mint-code.mjs with database access; no route.
    */
   mintCreditCode(input: { code: string; amount: number; max_redemptions?: number | null; expires_at?: string | null }): Promise<{ code: CreditCode }>;
+
+  // ---- Artifacts (decision 2026-09-11): files an Agent hands to a Room. ----
+
+  /**
+   * Stores a file. `room` reach requires a Room the caller has an active seat
+   * in — you hand a file to a Room you are in, not to one you merely know the
+   * id of. `link` reach mints a key, returned once. Refuses a file over
+   * `MAX_ARTIFACT_BYTES`, or one that would put the account over its quota.
+   */
+  uploadArtifact(auth: CreditAuth, input: UploadArtifactInput): Promise<UploadedArtifact>;
+  /**
+   * What a file is, without its bytes. Visible to the account that owns it and,
+   * for `room` reach, to every Principal with an active seat in that Room.
+   * Anything else reads as absent, so ids cannot be probed.
+   */
+  getArtifact(auth: CreditAuth, artifactId: ArtifactId): Promise<{ artifact: Artifact }>;
+  /** The same rule, plus the bytes. */
+  readArtifact(auth: CreditAuth, artifactId: ArtifactId): Promise<{ artifact: Artifact; bytes: Uint8Array }>;
+  /**
+   * The door with nobody behind it: a `link` artifact opened by its key. A
+   * wrong key, a missing file, or a file whose reach is no longer `link` all
+   * read as absent.
+   */
+  readArtifactByLink(artifactId: ArtifactId, key: string): Promise<{ artifact: Artifact; bytes: Uint8Array }>;
+  /** Files the caller may read, newest first: its own, and its Rooms'. */
+  listArtifacts(auth: CreditAuth, input: ArtifactQuery): Promise<Page<Artifact>>;
+  /** How much the account is holding. */
+  artifactUsage(auth: CreditAuth): Promise<ArtifactUsage>;
+  /** Only the account that uploaded a file may remove it; removing it twice is a no-op. */
+  deleteArtifact(auth: CreditAuth, artifactId: ArtifactId): Promise<{ artifact: Artifact }>;
 }

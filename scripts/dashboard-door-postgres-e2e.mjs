@@ -678,5 +678,88 @@ await pool.query(`update sharednet.credit_code set expires_at = now() - interval
 assert.equal((await repository.redeemCredits(owner.auth, "SOON")).granted, 0, "a settled redemption stays settled after the code expires");
 await assert.rejects(repository.redeemCredits(visitor.auth, "SOON"), { code: "credit_code_expired" }, "someone who never redeemed it is told it expired");
 
+// ---- Artifacts: a file handed to a Room, on real SQL. ----
+const bytesOf = (text) => new TextEncoder().encode(text);
+const patch = bytesOf("--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n");
+// `second` is the Room both accounts sit in by now.
+const handed = await repository.uploadArtifact(owner.auth, {
+  filename: "fix.patch",
+  content_type: "text/plain",
+  reach: "room",
+  room_id: second.id,
+  bytes: patch,
+});
+assert.match(handed.artifact.id, /^art_[0-9A-Za-z]{10}$/);
+assert.equal(handed.link_key, null, "a Room file has no link");
+assert.deepEqual(
+  [handed.artifact.size_bytes, handed.artifact.room_id, handed.artifact.reach, handed.artifact.uploaded_by_instance_id],
+  [patch.byteLength, second.id, "room", owner.instance.id],
+);
+assert.equal(handed.artifact.sha256, createHash("sha256").update(patch).digest("hex"));
+// The bytes come back exactly, through the member's own seat.
+const readBack = await repository.readArtifact(visitor.auth, handed.artifact.id);
+assert.deepEqual([...readBack.bytes], [...patch], "the bytes survive the round trip");
+// A Room this account does not sit in is not readable, and reads as absent.
+const outsiderKey = await repository.authenticateApiKey(await (async () => {
+  const key = `snk_${Buffer.from(randomUUID() + randomUUID()).toString("base64url").slice(0, 43)}`;
+  const userId = `u_${randomUUID()}`;
+  await pool.query(`insert into sharednet_auth."user" (id, name, email, email_verified, created_at, updated_at) values ($1, $2, $3, false, now(), now())`, [userId, "outsider", `outsider-${userId}@example.test`]);
+  await pool.query(`insert into sharednet_auth.apikey (id, name, reference_id, key, enabled, created_at, updated_at) values ($1, $2, $3, $4, true, now(), now())`, [`key_${randomUUID().replace(/-/g, "").slice(0, 10)}`, "outsider", userId, await defaultKeyHasher(key)]);
+  return key;
+})());
+await assert.rejects(repository.getArtifact(outsiderKey, handed.artifact.id), { code: "artifact_not_found", status: 404 });
+await assert.rejects(repository.readArtifact(outsiderKey, handed.artifact.id), { code: "artifact_not_found", status: 404 });
+// Handing a file to a Room you do not sit in is refused as an absent Room.
+await assert.rejects(
+  repository.uploadArtifact(outsiderKey, { filename: "x.txt", content_type: "text/plain", reach: "room", room_id: second.id, bytes: bytesOf("x") }),
+  { code: "room_not_found", status: 404 },
+);
+// A link file: opened by its key alone, refused by a wrong one the same way.
+const published = await repository.uploadArtifact(owner.auth, {
+  filename: "rows.csv",
+  content_type: "text/csv",
+  reach: "link",
+  room_id: null,
+  bytes: bytesOf("a,b\n1,2\n"),
+});
+assert.match(published.link_key, /^afk_[A-Za-z0-9_-]{43}$/);
+const opened = await repository.readArtifactByLink(published.artifact.id, published.link_key);
+assert.equal(new TextDecoder().decode(opened.bytes), "a,b\n1,2\n");
+await assert.rejects(repository.readArtifactByLink(published.artifact.id, `afk_${"z".repeat(43)}`), { code: "artifact_not_found", status: 404 });
+await assert.rejects(repository.readArtifactByLink(handed.artifact.id, published.link_key), { code: "artifact_not_found" }, "a Room file has no link to open");
+// A read never hands the key back out.
+assert.equal("link_key" in (await repository.getArtifact(owner.auth, published.artifact.id)).artifact, false);
+// Listing: the owner sees both, the member only the Room's.
+assert.deepEqual((await repository.listArtifacts(owner.auth, { room_id: null, before: null, limit: 50 })).items.map((a) => a.filename), ["rows.csv", "fix.patch"]);
+assert.deepEqual((await repository.listArtifacts(visitor.auth, { room_id: null, before: null, limit: 50 })).items.map((a) => a.filename), ["fix.patch"]);
+assert.deepEqual((await repository.listArtifacts(outsiderKey, { room_id: null, before: null, limit: 50 })).items, []);
+const firstPage = await repository.listArtifacts(owner.auth, { room_id: null, before: null, limit: 1 });
+assert.equal(firstPage.has_more, true);
+assert.deepEqual((await repository.listArtifacts(owner.auth, { room_id: null, before: firstPage.next_cursor, limit: 50 })).items.map((a) => a.filename), ["fix.patch"]);
+await assert.rejects(repository.listArtifacts(owner.auth, { room_id: null, before: "art_nowhere01", limit: 10 }), { code: "invalid_cursor" });
+// Usage counts what this account holds, and the empty and oversized are refused.
+const usage = await repository.artifactUsage(owner.auth);
+assert.equal(usage.count, 2);
+assert.equal(usage.bytes, handed.artifact.size_bytes + published.artifact.size_bytes);
+await assert.rejects(
+  repository.uploadArtifact(owner.auth, { filename: "empty.txt", content_type: "text/plain", reach: "link", room_id: null, bytes: new Uint8Array() }),
+  { code: "validation_failed", status: 422 },
+);
+await assert.rejects(
+  repository.uploadArtifact(owner.auth, { filename: "big.bin", content_type: "application/octet-stream", reach: "link", room_id: null, bytes: new Uint8Array(4 * 1024 * 1024 + 1) }),
+  { code: "artifact_too_large", status: 413 },
+);
+// Only the account that uploaded it may remove it; the bytes go with it.
+await assert.rejects(repository.deleteArtifact(visitor.auth, handed.artifact.id), { code: "artifact_not_found", status: 404 });
+assert.equal((await repository.deleteArtifact(owner.auth, handed.artifact.id)).artifact.id, handed.artifact.id);
+await assert.rejects(repository.readArtifact(owner.auth, handed.artifact.id), { code: "artifact_not_found" });
+const { rows: [orphans] } = await pool.query(`select count(*)::int as count from sharednet.artifact_bytes where artifact_id = $1`, [handed.artifact.id]);
+assert.equal(orphans.count, 0, "removing a file removes its bytes");
+// Closing a Room stops new files being handed to it.
+await assert.rejects(
+  repository.uploadArtifact(owner.auth, { filename: "late.txt", content_type: "text/plain", reach: "room", room_id: room.id, bytes: bytesOf("late") }),
+  { code: "room_closed", status: 409 },
+);
+
 await pool.end();
 console.log(JSON.stringify({ status: "passed", room: room.id, scheduled: scheduled.room.id}));

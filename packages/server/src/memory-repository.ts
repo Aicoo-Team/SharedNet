@@ -20,6 +20,12 @@ import {
   type Agent,
   type AgentId,
   type ApiKeyId,
+  type AfkSecret,
+  type Artifact,
+  type ArtifactId,
+  type ArtifactQuery,
+  ARTIFACT_QUOTA_BYTES,
+  MAX_ARTIFACT_BYTES,
   type CreateAgentRequest,
   type CreditBalance,
   type CreditCode,
@@ -46,7 +52,7 @@ import {
   type ShrSecret,
   type StartInstanceRequest,
 } from "../../protocol/src/index.ts";
-import { sharedRoomsEdges, type CreditAuth, type CreditLedgerQuery, type CreditRedemption, type CreditsOverview, type DecisionAnswer, type DecisionOverview, type McpClient, type McpSeat, type NetworkView, type RoomOverview, type RoomView, type SeatOverview, type SharedRoomView } from "./repository.ts";
+import { sharedRoomsEdges, type ArtifactUsage, type CreditAuth, type CreditLedgerQuery, type CreditRedemption, type CreditsOverview, type DecisionAnswer, type DecisionOverview, type McpClient, type McpSeat, type NetworkView, type RoomOverview, type RoomView, type SeatOverview, type SharedRoomView, type UploadArtifactInput, type UploadedArtifact } from "./repository.ts";
 import type {
   AddRoomMembersRequest,
   Admission,
@@ -245,6 +251,9 @@ export class MemorySharedNetRepository implements SharedNetRepository {
   private readonly creditTransfers: CreditTransfer[] = [];
   private readonly creditCodes = new Map<string, CreditCode>();
   private readonly creditRedemptions = new Set<string>();
+  /** Artifacts: what each file is, its bytes, and the key of its link. */
+  private readonly artifacts = new Map<ArtifactId, Artifact & { linkKey: AfkSecret | null }>();
+  private readonly artifactBytes = new Map<ArtifactId, Uint8Array>();
 
   constructor(options: MemoryRepositoryOptions = {}) {
     this.now = options.now ?? (() => new Date());
@@ -1612,6 +1621,134 @@ export class MemorySharedNetRepository implements SharedNetRepository {
   private projectRoom(room: RoomRecord): Room {
     const { nextSequence: _nextSequence, shareToken: _shareToken, ...projected } = room;
     return { ...projected, creator_agent_id: this.tagOf(room.creator_instance_id) };
+  }
+
+  // ---- Artifacts: files an Agent hands to a Room. ----
+
+  async uploadArtifact(auth: CreditAuth, input: UploadArtifactInput): Promise<UploadedArtifact> {
+    if (input.bytes.byteLength === 0) {
+      throw new RepositoryError(422, "validation_failed", "Request is invalid.");
+    }
+    if (input.bytes.byteLength > MAX_ARTIFACT_BYTES) {
+      throw new RepositoryError(413, "artifact_too_large", "File is larger than this service accepts.");
+    }
+    if (input.reach === "room") {
+      if (input.room_id === null) throw new RepositoryError(422, "validation_failed", "Request is invalid.");
+      // You hand a file to a Room you are in, not to one you know the id of.
+      const seated = [...this.memberships.values()].some(
+        (membership) =>
+          membership.room_id === input.room_id &&
+          membership.state === "active" &&
+          this.instances.get(membership.instance_id)?.principal_id === auth.principalId,
+      );
+      if (!seated) throw new RepositoryError(404, "room_not_found", "Room was not found.");
+      const room = this.rooms.get(input.room_id);
+      if (room?.state === "closed") throw new RepositoryError(409, "room_closed", "Room is closed.");
+    }
+    const held = this.usageOf(auth.principalId);
+    if (held.bytes + input.bytes.byteLength > ARTIFACT_QUOTA_BYTES) {
+      throw new RepositoryError(409, "artifact_quota_reached", "This account is holding as many bytes as it may.");
+    }
+    const linkKey = input.reach === "link" ? generateSecret("afk") : null;
+    const artifact: Artifact & { linkKey: AfkSecret | null } = {
+      id: generatePublicId("art"),
+      principal_id: auth.principalId,
+      uploaded_by_instance_id: auth.kind === "instance" ? auth.instanceId : null,
+      room_id: input.reach === "room" ? input.room_id : (input.room_id ?? null),
+      reach: input.reach,
+      filename: input.filename,
+      content_type: input.content_type,
+      size_bytes: input.bytes.byteLength,
+      sha256: createHash("sha256").update(input.bytes).digest("hex"),
+      created_at: this.timestamp(),
+      linkKey,
+    };
+    this.artifacts.set(artifact.id, artifact);
+    this.artifactBytes.set(artifact.id, new Uint8Array(input.bytes));
+    return { artifact: this.projectArtifact(artifact), link_key: linkKey };
+  }
+
+  async getArtifact(auth: CreditAuth, artifactId: ArtifactId): Promise<{ artifact: Artifact }> {
+    return { artifact: this.projectArtifact(this.artifactVisibleTo(auth.principalId, artifactId)) };
+  }
+
+  async readArtifact(auth: CreditAuth, artifactId: ArtifactId): Promise<{ artifact: Artifact; bytes: Uint8Array }> {
+    const record = this.artifactVisibleTo(auth.principalId, artifactId);
+    return { artifact: this.projectArtifact(record), bytes: this.artifactBytes.get(record.id) ?? new Uint8Array() };
+  }
+
+  async readArtifactByLink(artifactId: ArtifactId, key: string): Promise<{ artifact: Artifact; bytes: Uint8Array }> {
+    const record = this.artifacts.get(artifactId);
+    // A wrong key reads exactly like a missing file: the comparison is constant-time.
+    if (!record || record.reach !== "link" || record.linkKey === null || !secureDigestEquals(digestSecret(record.linkKey), digestSecret(key))) {
+      throw new RepositoryError(404, "artifact_not_found", "File was not found.");
+    }
+    return { artifact: this.projectArtifact(record), bytes: this.artifactBytes.get(record.id) ?? new Uint8Array() };
+  }
+
+  async listArtifacts(auth: CreditAuth, input: ArtifactQuery): Promise<Page<Artifact>> {
+    const mine = [...this.artifacts.values()]
+      .filter((record) => this.canRead(auth.principalId, record))
+      .filter((record) => (input.room_id === null ? true : record.room_id === input.room_id))
+      .sort((left, right) => right.created_at.localeCompare(left.created_at) || right.id.localeCompare(left.id));
+    const start = input.before === null ? 0 : mine.findIndex((record) => record.id === input.before) + 1;
+    if (input.before !== null && start === 0) throw new RepositoryError(400, "invalid_cursor", "Cursor is invalid.");
+    const page = mine.slice(start, start + input.limit);
+    const hasMore = start + input.limit < mine.length;
+    return {
+      items: page.map((record) => this.projectArtifact(record)),
+      next_cursor: hasMore ? (page[page.length - 1]!.id as string) : null,
+      has_more: hasMore,
+    };
+  }
+
+  async artifactUsage(auth: CreditAuth): Promise<ArtifactUsage> {
+    return this.usageOf(auth.principalId);
+  }
+
+  async deleteArtifact(auth: CreditAuth, artifactId: ArtifactId): Promise<{ artifact: Artifact }> {
+    const record = this.artifacts.get(artifactId);
+    // Only the account that uploaded it; to anyone else it is not there at all.
+    if (!record || record.principal_id !== auth.principalId) {
+      throw new RepositoryError(404, "artifact_not_found", "File was not found.");
+    }
+    this.artifacts.delete(artifactId);
+    this.artifactBytes.delete(artifactId);
+    return { artifact: this.projectArtifact(record) };
+  }
+
+  private usageOf(principalId: PrincipalId): ArtifactUsage {
+    const mine = [...this.artifacts.values()].filter((record) => record.principal_id === principalId);
+    return {
+      bytes: mine.reduce((sum, record) => sum + record.size_bytes, 0),
+      quota_bytes: ARTIFACT_QUOTA_BYTES,
+      count: mine.length,
+    };
+  }
+
+  private canRead(principalId: PrincipalId, record: Artifact): boolean {
+    if (record.principal_id === principalId) return true;
+    if (record.reach !== "room" || record.room_id === null) return false;
+    return [...this.memberships.values()].some(
+      (membership) =>
+        membership.room_id === record.room_id &&
+        membership.state === "active" &&
+        this.instances.get(membership.instance_id)?.principal_id === principalId,
+    );
+  }
+
+  private artifactVisibleTo(principalId: PrincipalId, artifactId: ArtifactId): Artifact & { linkKey: AfkSecret | null } {
+    const record = this.artifacts.get(artifactId);
+    if (!record || !this.canRead(principalId, record)) {
+      throw new RepositoryError(404, "artifact_not_found", "File was not found.");
+    }
+    return record;
+  }
+
+  /** The key never leaves through a read: it is handed out once, at upload. */
+  private projectArtifact(record: Artifact & { linkKey: AfkSecret | null }): Artifact {
+    const { linkKey: _linkKey, ...artifact } = record;
+    return artifact;
   }
 
   // ---- Credits: a purse per Principal, a ledger of every movement. ----

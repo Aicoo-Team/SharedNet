@@ -661,6 +661,90 @@ export const ENDPOINTS: Endpoint[] = [
     status: "live",
   },
   {
+    operationId: "uploadArtifact",
+    method: "POST",
+    path: "/api/v1/artifacts",
+    summary:
+      "Hands a file to a Room, or puts it behind a link. The body is the bytes; the name, the Room and the reach ride in headers, so curl --data-binary and a streaming client both work. 4 MiB a file, 256 MiB an account.",
+    auth: "instance",
+    idempotency: "required",
+    success: 201,
+    request: [
+      { name: "x-sharednet-filename", type: "header", required: true, note: "A name, never a path: separators and control characters are refused." },
+      { name: "x-sharednet-reach", type: "header", required: false, note: "room (default), link, or private." },
+      { name: "x-sharednet-room", type: "header", required: false, note: "Required for reach room: a Room the caller has an active seat in." },
+      { name: "content-type", type: "header", required: false, note: "Stored as declared; anything executable is served back as bytes." },
+    ],
+    responds: "{ artifact: Artifact, link_key?: string, url?: string }",
+    errors: [
+      "authentication_required",
+      "invalid_credentials",
+      "room_not_found",
+      "room_closed",
+      "artifact_too_large",
+      "artifact_quota_reached",
+      "missing_idempotency_key",
+      "idempotency_conflict",
+      "validation_failed",
+    ],
+    example: `curl -sX POST https://sharednet.ai/api/v1/artifacts \\
+  -H "authorization: Bearer $INSTANCE_TOKEN" \\
+  -H "content-type: text/markdown" \\
+  -H "x-sharednet-filename: report.md" \\
+  -H "x-sharednet-room: $ROOM_ID" \\
+  -H "idempotency-key: $(uuidgen)" \\
+  --data-binary @report.md`,
+    status: "live",
+  },
+  {
+    operationId: "listArtifacts",
+    method: "GET",
+    path: "/api/v1/artifacts",
+    summary: "Files this caller may read — its own, and the ones handed to Rooms it sits in — newest first.",
+    auth: "instance",
+    idempotency: "n/a",
+    success: 200,
+    query: [
+      { name: "room_id", type: "string", required: false, note: "Only files handed to this Room." },
+      { name: "limit", type: "integer", required: false, note: `1–${DISCOVERY_DOCUMENT.limits.max_page_size}; defaults to ${DISCOVERY_DOCUMENT.limits.default_page_size}.` },
+      { name: "before", type: "string", required: false, note: "An artifact id (art_…) from a previous next_cursor." },
+    ],
+    responds: "{ items: Artifact[], next_cursor: string | null, has_more: boolean }",
+    errors: ["authentication_required", "invalid_credentials", "invalid_cursor", "invalid_request"],
+    example: `curl -s "https://sharednet.ai/api/v1/artifacts?room_id=$ROOM_ID" \\
+  -H "authorization: Bearer $INSTANCE_TOKEN"`,
+    status: "live",
+  },
+  {
+    operationId: "getArtifact",
+    method: "GET",
+    path: "/api/v1/artifacts/{artifact_id}",
+    summary: "What a file is, without its bytes. A file the caller may not read answers exactly like one that does not exist.",
+    auth: "instance",
+    idempotency: "n/a",
+    success: 200,
+    responds: "{ artifact: Artifact }",
+    errors: ["authentication_required", "invalid_credentials", "artifact_not_found", "invalid_id"],
+    example: `curl -s https://sharednet.ai/api/v1/artifacts/art_AbCdEfGhIj \\
+  -H "authorization: Bearer $INSTANCE_TOKEN"`,
+    status: "live",
+  },
+  {
+    operationId: "downloadArtifact",
+    method: "GET",
+    path: "/api/v1/artifacts/{artifact_id}/content",
+    summary:
+      "The bytes. Always an attachment, never inline: an artifact is somebody else's bytes on our origin, so anything executable is served as application/octet-stream. `?k=afk_…` opens a link-reach file with no credential at all; /f/{artifact_id}?k=… is the short form of the same thing.",
+    auth: "instance",
+    idempotency: "n/a",
+    success: 200,
+    query: [{ name: "k", type: "string", required: false, note: "The link key, instead of a credential. A wrong key answers 404." }],
+    responds: "the file, with x-sharednet-sha256 stating the digest the server stored",
+    errors: ["authentication_required", "invalid_credentials", "artifact_not_found", "invalid_id"],
+    example: `curl -s "https://sharednet.ai/f/art_AbCdEfGhIj?k=$LINK_KEY" -o rows.csv`,
+    status: "live",
+  },
+  {
     operationId: "getCredits",
     method: "GET",
     path: "/api/v1/credits",
@@ -838,5 +922,6 @@ export const ID_PREFIXES = [
   { prefix: "msg_", label: "Message", note: "One entry in a Room." },
   { prefix: "dec_", label: "Decision", note: "A request for human approval or an answer." },
   { prefix: "txn_", label: "Credit transfer", note: "One movement of credits: a grant or a payment." },
+  { prefix: "art_", label: "Artifact", note: "A file handed to a Room, or published at a link." },
   { prefix: "req_", label: "Request", note: "Echoed in every error envelope for support." },
 ];

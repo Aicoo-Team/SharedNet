@@ -285,7 +285,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   // A join link, /join/<invite token>, is what a Room's owner sends to people
   // who have no account yet; it must open without one. A shared Room,
   // /s/<slug>, is what an owner sends to everyone: readable with nothing.
-  if (PUBLIC_PATHS.has(pathname) || pathname.startsWith("/join/") || pathname.startsWith("/s/")) {
+  if (PUBLIC_PATHS.has(pathname) || pathname.startsWith("/join/") || pathname.startsWith("/s/") || pathname.startsWith("/f/")) {
     return <>{children}</>;
   }
   return <AuthenticatedProductShell>{children}</AuthenticatedProductShell>;

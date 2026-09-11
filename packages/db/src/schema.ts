@@ -3,6 +3,7 @@ import {
   bigint,
   boolean,
   check,
+  customType,
   foreignKey,
   index,
   integer,
@@ -25,6 +26,7 @@ import type {
   InviteId,
   MemberId,
   MessageId,
+  ArtifactId,
   PrincipalId,
   RoomId,
   TransferId,
@@ -49,6 +51,8 @@ const INVITE_ID_RE = sql.raw("'^inv_[0-9A-Za-z]{10}$'");
 const SHA256_HEX_RE = sql.raw("'^[0-9a-f]{64}$'");
 const SHARE_TOKEN_RE = sql.raw("'^shr_[A-Za-z0-9_-]{43}$'");
 const TRANSFER_ID_RE = sql.raw("'^txn_[0-9A-Za-z]{10}$'");
+const ARTIFACT_ID_RE = sql.raw("'^art_[0-9A-Za-z]{10}$'");
+const LINK_KEY_RE = sql.raw("'^afk_[A-Za-z0-9_-]{43}$'");
 const CREDIT_CODE_RE = sql.raw("'^[A-Z0-9][A-Z0-9-]{2,31}$'");
 
 export const principals = sharednetSchema.table(
@@ -881,6 +885,87 @@ export const creditRedemptions = sharednetSchema.table(
   ],
 );
 
+/**
+ * An artifact: a file an Agent handed to a Room (decision 2026-09-11). The
+ * metadata and the bytes are separate tables, because listing files must not
+ * drag megabytes through the connection.
+ */
+export const artifacts = sharednetSchema.table(
+  "artifact",
+  {
+    id: text("id").$type<ArtifactId>().primaryKey(),
+    principalId: text("principal_id").$type<PrincipalId>().notNull(),
+    /** The seat that uploaded it; kept as history, cleared if the Instance goes. */
+    uploadedByInstanceId: text("uploaded_by_instance_id").$type<InstanceId>(),
+    /** Required for `room` reach: which Room's members may read it. */
+    roomId: text("room_id").$type<RoomId>(),
+    reach: text("reach").$type<"room" | "link" | "private">().default("room").notNull(),
+    filename: text("filename").notNull(),
+    contentType: text("content_type").notNull(),
+    sizeBytes: integer("size_bytes").notNull(),
+    sha256: text("sha256").notNull(),
+    /**
+     * The link's key, while `reach` is `link`. Stored as issued for the same
+     * reason a Room's share slug is: it grants a read of what the owner chose
+     * to publish, and the owner has to be able to hand out the link again.
+     */
+    linkKey: text("link_key"),
+    createdAt: domainTimestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [
+    unique("artifact_link_key_unique").on(table.linkKey),
+    foreignKey({
+      name: "artifact_principal_fk",
+      columns: [table.principalId],
+      foreignColumns: [principals.id],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "artifact_instance_fk",
+      columns: [table.uploadedByInstanceId],
+      foreignColumns: [instances.id],
+    })
+      .onDelete("set null")
+      .onUpdate("cascade"),
+    foreignKey({ name: "artifact_room_fk", columns: [table.roomId], foreignColumns: [rooms.id] }).onDelete("cascade"),
+    index("artifact_principal_created_at_idx").on(table.principalId, table.createdAt),
+    index("artifact_room_created_at_idx").on(table.roomId, table.createdAt),
+    check("artifact_id_format", sql`${table.id} ~ ${ARTIFACT_ID_RE}`),
+    check("artifact_size_positive", sql`${table.sizeBytes} > 0`),
+    check("artifact_sha256_format", sql`${table.sha256} ~ ${SHA256_HEX_RE}`),
+    check("artifact_filename_length", sql`length(${table.filename}) BETWEEN 1 AND 120`),
+    check("artifact_filename_is_a_name", sql`${table.filename} !~ '[/\\]'`),
+    check("artifact_reach_known", sql`${table.reach} IN ('room', 'link', 'private')`),
+    // A Room-reach artifact without a Room would be readable by nobody, and a
+    // link-reach one without a key would have no link.
+    check("artifact_room_reach_has_a_room", sql`${table.reach} <> 'room' OR ${table.roomId} IS NOT NULL`),
+    check(
+      "artifact_link_reach_has_a_key",
+      sql`(${table.reach} = 'link' AND ${table.linkKey} IS NOT NULL) OR (${table.reach} <> 'link' AND ${table.linkKey} IS NULL)`,
+    ),
+    check("artifact_link_key_format", sql`${table.linkKey} IS NULL OR ${table.linkKey} ~ ${LINK_KEY_RE}`),
+  ],
+);
+
+/**
+ * The bytes. In the database on purpose, for now: it works in every
+ * environment the project already has, including CI, and it needs no vendor
+ * token. `ArtifactStore` is the seam to move this to object storage later.
+ */
+export const artifactBytes = sharednetSchema.table(
+  "artifact_bytes",
+  {
+    artifactId: text("artifact_id").$type<ArtifactId>().primaryKey(),
+    bytes: customType<{ data: Buffer; driverData: Buffer }>({ dataType: () => "bytea" })("bytes").notNull(),
+  },
+  (table) => [
+    foreignKey({
+      name: "artifact_bytes_artifact_fk",
+      columns: [table.artifactId],
+      foreignColumns: [artifacts.id],
+    }).onDelete("cascade"),
+  ],
+);
+
 export const databaseSchema = {
   principals,
   agents,
@@ -898,4 +983,6 @@ export const databaseSchema = {
   creditCodes,
   creditTransfers,
   creditRedemptions,
+  artifacts,
+  artifactBytes,
 } as const;

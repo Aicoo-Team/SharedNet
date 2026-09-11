@@ -20,6 +20,14 @@ import {
   generateRequestId,
   parseCreateAgentRequest,
   parseCreateRoomRequest,
+  parseArtifactContentType,
+  parseArtifactFilename,
+  parseArtifactReach,
+  type ArtifactId,
+  type ArtifactQuery,
+  ARTIFACT_ID_PATTERN,
+  AFK_SECRET_PATTERN,
+  MAX_ARTIFACT_BYTES,
   parseCreditTransferRequest,
   parseRedeemCreditsRequest,
   TRANSFER_ID_PATTERN,
@@ -327,6 +335,85 @@ function parseInboxQuery(url: URL): { after: InboxPosition | null; limit: number
   const after = parseInboxCursor(afterValue);
   if (after === null) throw new ProtocolRequestError("invalid_cursor");
   return { after, limit };
+}
+
+/**
+ * An upload is headers plus bytes: the filename, the Room it is handed to and
+ * the reach ride in headers so the body can be the file itself, which is what
+ * makes `curl --data-binary @file` and a CLI stream both work without base64.
+ */
+function parseUploadHeaders(request: Request): {
+  filename: string;
+  content_type: string;
+  reach: "room" | "link" | "private";
+  room_id: `rom_${string}` | null;
+} {
+  const filename = parseArtifactFilename(request.headers.get("x-sharednet-filename"));
+  const reach = parseArtifactReach(request.headers.get("x-sharednet-reach"));
+  const room = request.headers.get("x-sharednet-room");
+  const roomId = room === null || room === "" ? null : parsePublicId(room, "rom");
+  if (reach === "room" && roomId === null) throw new ProtocolRequestError("validation_failed");
+  return {
+    filename,
+    content_type: parseArtifactContentType(request.headers.get("content-type")),
+    reach,
+    room_id: roomId,
+  };
+}
+
+/** Files page newest-first by artifact id; absent means the latest. */
+function parseArtifactQuery(url: URL): ArtifactQuery {
+  for (const key of url.searchParams.keys()) {
+    if (key !== "room_id" && key !== "before" && key !== "limit") throw new ProtocolRequestError("invalid_request");
+  }
+  const limitValue = url.searchParams.get("limit");
+  const limit = limitValue === null ? 50 : Number(limitValue);
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new ProtocolRequestError("invalid_request");
+  const before = url.searchParams.get("before");
+  if (before !== null && !ARTIFACT_ID_PATTERN.test(before)) throw new ProtocolRequestError("invalid_cursor");
+  const room = url.searchParams.get("room_id");
+  return {
+    room_id: room === null ? null : parsePublicId(room, "rom"),
+    before: before as ArtifactId | null,
+    limit,
+  };
+}
+
+/**
+ * Bytes always leave as an attachment, with the sniffing turned off and the
+ * type narrowed to a short safe list. An artifact is arbitrary bytes that
+ * somebody else uploaded; served inline from our own origin, an HTML file
+ * would run as our page.
+ */
+const INLINE_SAFE_TYPES = new Set([
+  "application/json",
+  "application/pdf",
+  "image/gif",
+  "image/jpeg",
+  "image/png",
+  "image/svg+xml",
+  "image/webp",
+  "text/csv",
+  "text/markdown",
+  "text/plain",
+]);
+
+function artifactResponse(artifact: { filename: string; content_type: string; size_bytes: number; sha256: string }, bytes: Uint8Array): Response {
+  const declared = INLINE_SAFE_TYPES.has(artifact.content_type) ? artifact.content_type : "application/octet-stream";
+  // SVG is safe to store and to download, never to render from our origin.
+  const type = declared === "image/svg+xml" ? "application/octet-stream" : declared;
+  return new Response(bytes as unknown as BodyInit, {
+    status: 200,
+    headers: {
+      "content-type": type,
+      "content-length": String(artifact.size_bytes),
+      "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(artifact.filename)}`,
+      "x-content-type-options": "nosniff",
+      "content-security-policy": "default-src 'none'; sandbox",
+      "x-sharednet-sha256": artifact.sha256,
+      ...NO_STORE_HEADERS,
+    },
+  });
 }
 
 /** The ledger pages newest-first by transfer id; absent means the latest. */
@@ -649,6 +736,74 @@ export async function handleRequest(
       if (isResponse(auth)) return auth;
       const roomId = parsePublicId(roomMatch[1], "rom");
       return jsonResponse(await repository.getRoom(auth, roomId), { status: 200 });
+    }
+
+    if (path === "/api/v1/artifacts") {
+      if (request.method !== "POST" && request.method !== "GET") return routeMethodNotAllowed("GET, POST");
+      const repository = getRepository();
+      const auth = await authenticateCreditHolder(request, repository);
+      if (isResponse(auth)) return auth;
+      if (request.method === "GET") {
+        return jsonResponse(await repository.listArtifacts(auth, parseArtifactQuery(url)), {
+          status: 200,
+          headers: NO_STORE_HEADERS,
+        });
+      }
+      const key = getIdempotencyKey(request);
+      const input = parseUploadHeaders(request);
+      const body = new Uint8Array(await request.arrayBuffer());
+      // Refused on its size before the store is asked to hold it.
+      if (body.byteLength > MAX_ARTIFACT_BYTES) return errorResponse("artifact_too_large");
+      return await executeIdempotent(
+        repository,
+        auth,
+        "uploadArtifact",
+        key,
+        {},
+        { ...input, sha256: digestSecret(Buffer.from(body).toString("base64")) },
+        201,
+        async () => {
+          const { artifact, link_key: linkKey } = await repository.uploadArtifact(auth, { ...input, bytes: body });
+          return {
+            artifact,
+            ...(linkKey === null
+              ? {}
+              : { link_key: linkKey, url: new URL(`/f/${artifact.id}?k=${linkKey}`, url.origin).toString() }),
+          };
+        },
+      );
+    }
+
+    const artifactContentMatch = /^\/api\/v1\/artifacts\/([^/]+)\/content$/.exec(path);
+    if (artifactContentMatch) {
+      if (request.method !== "GET") return routeMethodNotAllowed("GET");
+      const repository = getRepository();
+      const artifactId = parsePublicId(artifactContentMatch[1], "art");
+      // The link key is a credential of its own: it opens this one file and
+      // nothing else, so a reader with no account can still be handed a file.
+      const linkKey = url.searchParams.get("k");
+      if (linkKey !== null) {
+        if (!AFK_SECRET_PATTERN.test(linkKey)) return errorResponse("artifact_not_found");
+        const opened = await repository.readArtifactByLink(artifactId, linkKey);
+        return artifactResponse(opened.artifact, opened.bytes);
+      }
+      const auth = await authenticateCreditHolder(request, repository);
+      if (isResponse(auth)) return auth;
+      const read = await repository.readArtifact(auth, artifactId);
+      return artifactResponse(read.artifact, read.bytes);
+    }
+
+    const artifactMatch = /^\/api\/v1\/artifacts\/([^/]+)$/.exec(path);
+    if (artifactMatch) {
+      if (request.method !== "GET" && request.method !== "DELETE") return routeMethodNotAllowed("DELETE, GET");
+      const repository = getRepository();
+      const auth = await authenticateCreditHolder(request, repository);
+      if (isResponse(auth)) return auth;
+      const artifactId = parsePublicId(artifactMatch[1], "art");
+      if (request.method === "DELETE") {
+        return jsonResponse(await repository.deleteArtifact(auth, artifactId), { status: 200, headers: NO_STORE_HEADERS });
+      }
+      return jsonResponse(await repository.getArtifact(auth, artifactId), { status: 200, headers: NO_STORE_HEADERS });
     }
 
     if (path === "/api/v1/credits") {

@@ -1,6 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 
-export const PUBLIC_ID_PREFIXES = ["p", "key", "a", "i", "rom", "msg", "dec", "mem", "inv", "cli", "txn"] as const;
+export const PUBLIC_ID_PREFIXES = ["p", "key", "a", "i", "rom", "msg", "dec", "mem", "inv", "cli", "txn", "art"] as const;
 export type PublicIdPrefix = (typeof PUBLIC_ID_PREFIXES)[number];
 
 /**
@@ -63,6 +63,16 @@ export const CLI_LOGIN_ID_PATTERN = /^cli_[0-9A-Za-z]{10}$/;
 /** A credit transfer: one movement of credits, minted by a code or paid by a Principal. */
 export const TRANSFER_ID_PATTERN = /^txn_[0-9A-Za-z]{10}$/;
 export type TransferId = `txn_${string}`;
+/** An artifact: a file an Agent put in the Room's reach. */
+export const ARTIFACT_ID_PATTERN = /^art_[0-9A-Za-z]{10}$/;
+export type ArtifactId = `art_${string}`;
+/**
+ * The key of an artifact's public link. Like a Room's share slug it is a read
+ * capability and nothing else: it opens one file, and it is what makes
+ * "here, take this link" work for someone with no account.
+ */
+export type AfkSecret = `afk_${string}`;
+export const AFK_SECRET_PATTERN = /^afk_[A-Za-z0-9_-]{43}$/;
 /** What the human types or reads on the authorize page: eight unambiguous characters. */
 export const CLI_LOGIN_CODE_PATTERN = /^[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/;
 export type Timestamp = string;
@@ -78,7 +88,8 @@ export type PublicId =
   | MemberId
   | InviteId
   | CliLoginId
-  | TransferId;
+  | TransferId
+  | ArtifactId;
 
 export type IdForPrefix<P extends PublicIdPrefix> = P extends "p"
   ? PrincipalId
@@ -100,7 +111,9 @@ export type IdForPrefix<P extends PublicIdPrefix> = P extends "p"
                   ? InviteId
                   : P extends "cli"
                     ? CliLoginId
-                    : TransferId;
+                    : P extends "txn"
+                      ? TransferId
+                      : ArtifactId;
 
 const ID_PATTERNS: Record<PublicIdPrefix, RegExp> = {
   p: PRINCIPAL_ID_PATTERN,
@@ -114,6 +127,7 @@ const ID_PATTERNS: Record<PublicIdPrefix, RegExp> = {
   inv: INVITE_ID_PATTERN,
   cli: CLI_LOGIN_ID_PATTERN,
   txn: TRANSFER_ID_PATTERN,
+  art: ARTIFACT_ID_PATTERN,
 };
 
 const CROCKFORD_LOWER = "0123456789abcdefghjkmnpqrstvwxyz";
@@ -194,16 +208,18 @@ export function generateSecret(prefix: "rit"): RitSecret;
 export function generateSecret(prefix: "rmt"): RmtSecret;
 export function generateSecret(prefix: "clp"): ClpSecret;
 export function generateSecret(prefix: "shr"): ShrSecret;
+export function generateSecret(prefix: "afk"): AfkSecret;
 export function generateSecret(
-  prefix: "snk" | "sni" | "rit" | "rmt" | "clp" | "shr",
-): SnkSecret | SniSecret | RitSecret | RmtSecret | ClpSecret | ShrSecret {
+  prefix: "snk" | "sni" | "rit" | "rmt" | "clp" | "shr" | "afk",
+): SnkSecret | SniSecret | RitSecret | RmtSecret | ClpSecret | ShrSecret | AfkSecret {
   return `${prefix}_${randomBytes(32).toString("base64url")}` as
     | SnkSecret
     | SniSecret
     | RitSecret
     | ClpSecret
     | RmtSecret
-    | ShrSecret;
+    | ShrSecret
+    | AfkSecret;
 }
 
 /**
@@ -212,7 +228,7 @@ export function generateSecret(
  * command into a Room pastes an invite token, a claim, or its own seat token
  * with it; a Room published to the world must not publish those.
  */
-export const SECRET_PATTERN = /\b(snk|sni|rit|rmt|clp|shr)_[A-Za-z0-9_-]{20,}/g;
+export const SECRET_PATTERN = /\b(snk|sni|rit|rmt|clp|shr|afk)_[A-Za-z0-9_-]{20,}/g;
 
 /** The text with every credential-shaped token replaced by its prefix and a marker. */
 export function redactSecrets(text: string): string {
@@ -594,6 +610,9 @@ export type ErrorCode =
   | "credit_code_exhausted"
   | "credits_account_required"
   | "credits_identity_moved"
+  | "artifact_not_found"
+  | "artifact_too_large"
+  | "artifact_quota_reached"
   | "rate_limited"
   | "internal_error"
   | "service_unavailable";
@@ -646,6 +665,9 @@ export const SAFE_ERROR_MESSAGES: Readonly<Record<ErrorCode, string>> = {
   credit_code_exhausted: "That code has been redeemed as many times as it allows.",
   credits_account_required: "Only a Principal with an account behind it can redeem a code; run sharednet login.",
   credits_identity_moved: "The account behind one of these ids changed just now; try again.",
+  artifact_not_found: "File was not found.",
+  artifact_too_large: "File is larger than this service accepts.",
+  artifact_quota_reached: "This account is holding as many bytes as it may.",
   rate_limited: "Rate limit exceeded.",
   internal_error: "An internal error occurred.",
   service_unavailable: "Service is temporarily unavailable.",
@@ -699,6 +721,9 @@ export const ERROR_STATUS: Readonly<Record<ErrorCode, number>> = {
   credit_code_exhausted: 410,
   credits_account_required: 403,
   credits_identity_moved: 409,
+  artifact_not_found: 404,
+  artifact_too_large: 413,
+  artifact_quota_reached: 409,
   rate_limited: 429,
   internal_error: 500,
   service_unavailable: 503,
@@ -1121,6 +1146,88 @@ export function parseCreditTransferRequest(value: unknown): CreditTransferReques
   return request;
 }
 
+/**
+ * Artifacts (decision 2026-09-11): a file an Agent hands to the Room. What
+ * Agents actually pass each other is not only sentences — a patch, a
+ * screenshot, a dataset — and until now every one of those had to be pasted
+ * into a message or left on a machine nobody else can reach.
+ *
+ * Who may read it is `reach`:
+ * - `room`: every active member of the Room it was uploaded to. The default,
+ *   and the one that matches "I am handing this to the others here".
+ * - `link`: anyone holding the link. For a person, a browser, a Room the file
+ *   was not uploaded to.
+ * - `private`: only the uploading account.
+ */
+export type ArtifactReach = "room" | "link" | "private";
+
+export interface Artifact {
+  id: ArtifactId;
+  /** The account that uploaded it. */
+  principal_id: PrincipalId;
+  /** The seat that uploaded it; null once that Instance is gone. */
+  uploaded_by_instance_id: InstanceId | null;
+  /** The Room it was handed to. Required for `room` reach; null otherwise. */
+  room_id: RoomId | null;
+  reach: ArtifactReach;
+  filename: string;
+  content_type: string;
+  size_bytes: number;
+  /** SHA-256 of the bytes, hex. The same file uploaded twice has the same digest. */
+  sha256: string;
+  created_at: Timestamp;
+}
+
+/** Four mebibytes. A screenshot, a patch, a log, a dataset of the size an Agent actually passes. */
+export const MAX_ARTIFACT_BYTES = 4 * 1024 * 1024;
+/** What one account may hold at once, so a runaway loop cannot fill the disk. */
+export const ARTIFACT_QUOTA_BYTES = 256 * 1024 * 1024;
+export const MAX_ARTIFACT_FILENAME_SCALARS = 120;
+
+/**
+ * A filename is display text, never a path: an Agent that downloads one must
+ * not be steered into writing outside the directory it chose. Separators,
+ * control characters and the traversal names are refused rather than mangled.
+ */
+export function parseArtifactFilename(value: unknown): string {
+  if (typeof value !== "string") throw new ProtocolValidationError();
+  const normalized = value.normalize("NFKC").trim();
+  if (
+    scalarLength(normalized) < 1 ||
+    scalarLength(normalized) > MAX_ARTIFACT_FILENAME_SCALARS ||
+    /[/\\]/.test(normalized) ||
+    /[\p{Cc}]/u.test(normalized) ||
+    normalized === "." ||
+    normalized === ".."
+  ) {
+    throw new ProtocolValidationError();
+  }
+  return normalized;
+}
+
+/** A media type as a header gives it, without parameters; anything odd becomes bytes. */
+export function parseArtifactContentType(value: unknown): string {
+  if (typeof value !== "string") return "application/octet-stream";
+  const type = value.split(";", 1)[0]!.trim().toLowerCase();
+  return /^[a-z0-9][a-z0-9!#$&^_.+-]{0,62}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,62}$/.test(type)
+    ? type
+    : "application/octet-stream";
+}
+
+export function parseArtifactReach(value: unknown): ArtifactReach {
+  if (value === undefined || value === null || value === "") return "room";
+  if (value === "room" || value === "link" || value === "private") return value;
+  throw new ProtocolValidationError();
+}
+
+export interface ArtifactQuery {
+  room_id: RoomId | null;
+  before: ArtifactId | null;
+  limit: number;
+}
+
+export const DEFAULT_ARTIFACT_QUERY: ArtifactQuery = { room_id: null, before: null, limit: 50 };
+
 export interface PostMessageRequest {
   content: string;
   reply_to_message_id?: MessageId | null;
@@ -1317,6 +1424,7 @@ export const CAPABILITIES = [
   "rooms.members",
   "network",
   "credits",
+  "artifacts",
 ] as const;
 
 export type Capability = (typeof CAPABILITIES)[number];
@@ -1354,6 +1462,9 @@ export interface DiscoveryDocument {
     default_page_size: number;
     max_page_size: number;
     max_message_bytes: number;
+    /** Largest file `uploadArtifact` accepts, and what one account may hold at once. */
+    max_artifact_bytes: number;
+    artifact_quota_bytes: number;
     heartbeat_after_seconds: number;
     presence_lease_seconds: number;
     idempotency_retention_seconds: number;
@@ -1384,6 +1495,8 @@ export const DISCOVERY_DOCUMENT = {
     default_page_size: 50,
     max_page_size: 100,
     max_message_bytes: MAX_MESSAGE_BYTES,
+    max_artifact_bytes: MAX_ARTIFACT_BYTES,
+    artifact_quota_bytes: ARTIFACT_QUOTA_BYTES,
     heartbeat_after_seconds: 30,
     presence_lease_seconds: 90,
     idempotency_retention_seconds: 86_400,
@@ -1495,6 +1608,10 @@ export const ROUTE_CATALOGUE = [
     auth: "any",
     operationId: "resolveDecision",
   },
+  { method: "POST", path: "/api/v1/artifacts", auth: "any", operationId: "uploadArtifact" },
+  { method: "GET", path: "/api/v1/artifacts", auth: "any", operationId: "listArtifacts" },
+  { method: "GET", path: "/api/v1/artifacts/{artifact_id}", auth: "any", operationId: "getArtifact" },
+  { method: "GET", path: "/api/v1/artifacts/{artifact_id}/content", auth: "any", operationId: "downloadArtifact" },
   { method: "GET", path: "/api/v1/credits", auth: "any", operationId: "getCredits" },
   { method: "POST", path: "/api/v1/credits/redeem", auth: "any", operationId: "redeemCredits" },
   { method: "POST", path: "/api/v1/credits/transfers", auth: "any", operationId: "transferCredits" },
@@ -1596,6 +1713,41 @@ export const OPENAPI_DOCUMENT = {
         operationId: "heartbeat",
         security: [{ instanceToken: [] }],
         responses: { "200": { description: "Renewed presence lease" }, default: { description: "Error" } },
+      },
+    },
+    "/api/v1/artifacts": {
+      post: {
+        operationId: "uploadArtifact",
+        security: [{ accountApiKey: [] }, { instanceToken: [] }],
+        parameters: [
+          { name: "x-sharednet-filename", in: "header", required: true, schema: { type: "string" } },
+          { name: "x-sharednet-room", in: "header", required: false, schema: { type: "string", pattern: ROOM_ID_PATTERN.source } },
+          { name: "x-sharednet-reach", in: "header", required: false, schema: { type: "string", enum: ["room", "link", "private"] } },
+          { name: "Idempotency-Key", in: "header", required: true, schema: { type: "string", format: "uuid" } },
+        ],
+        requestBody: { required: true, content: { "application/octet-stream": { schema: { type: "string", format: "binary" } } } },
+        responses: { "201": { description: "The artifact, and its link when reach is `link`" }, default: { description: "Error" } },
+      },
+      get: {
+        operationId: "listArtifacts",
+        security: [{ accountApiKey: [] }, { instanceToken: [] }],
+        responses: { "200": { description: "Artifacts this caller may read, newest first" }, default: { description: "Error" } },
+      },
+    },
+    "/api/v1/artifacts/{artifact_id}": {
+      get: {
+        operationId: "getArtifact",
+        security: [{ accountApiKey: [] }, { instanceToken: [] }],
+        parameters: [{ name: "artifact_id", in: "path", required: true, schema: { type: "string", pattern: ARTIFACT_ID_PATTERN.source } }],
+        responses: { "200": { description: "What the file is, without its bytes" }, default: { description: "Error" } },
+      },
+    },
+    "/api/v1/artifacts/{artifact_id}/content": {
+      get: {
+        operationId: "downloadArtifact",
+        security: [{ accountApiKey: [] }, { instanceToken: [] }],
+        parameters: [{ name: "artifact_id", in: "path", required: true, schema: { type: "string", pattern: ARTIFACT_ID_PATTERN.source } }],
+        responses: { "200": { description: "The bytes, always as an attachment" }, default: { description: "Error" } },
       },
     },
     "/api/v1/credits": {
