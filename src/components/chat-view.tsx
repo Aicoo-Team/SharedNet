@@ -214,11 +214,20 @@ export function ChatView() {
   const [menu, setMenu] = useState<RoomMenuState | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const menuTriggerRef = useRef<HTMLElement | null>(null);
-  const [shareOpen, setShareOpen] = useState(false);
+  /**
+   * Which Room the Share dialog is about. Held explicitly rather than read off
+   * the selected Room: the menu can be opened on a Room that is not the one on
+   * screen, and selecting it is a separate, slower thing.
+   */
+  const [share, setShare] = useState<{ name: string; roomId: RoomId } | null>(null);
   const [shareBusy, setShareBusy] = useState(false);
   const [shareError, setShareError] = useState<string | null>(null);
-  /** The slug the share response carried, until the refreshed detail carries it too. */
-  const [shareToken, setShareToken] = useState<string | null>(null);
+  /**
+   * The slug the share response carried, until the refreshed detail carries it
+   * too — tagged with the Room it belongs to, so a link minted for one Room can
+   * never be shown, or copied, under another.
+   */
+  const [shareToken, setShareToken] = useState<{ roomId: RoomId; token: string } | null>(null);
   const [shareCopyState, setShareCopyState] = useState<CopyState>("idle");
   const shareDialogRef = useRef<HTMLDialogElement>(null);
   const [removingMemberId, setRemovingMemberId] = useState<string | null>(null);
@@ -279,19 +288,19 @@ export function ChatView() {
     [detail, network],
   );
 
+  // Selecting a Room closes the members panel. It deliberately does not touch
+  // the Share dialog: sharing a Room from the list selects that Room as a side
+  // effect, and clearing here closed the dialog the click had just opened.
   useEffect(() => {
     setMembersOpen(false);
-    setShareOpen(false);
-    setShareToken(null);
-    setShareError(null);
   }, [selectedRoomId]);
 
   useEffect(() => {
     const dialog = shareDialogRef.current;
     if (!dialog) return;
-    if (shareOpen && !dialog.open) dialog.showModal();
-    if (!shareOpen && dialog.open) dialog.close();
-  }, [shareOpen]);
+    if (share !== null && !dialog.open) dialog.showModal();
+    if (share === null && dialog.open) dialog.close();
+  }, [share]);
 
   // The menu closes on Escape, on a click anywhere else, and when the window
   // moves under it. Its first item takes focus, so the keyboard can drive it.
@@ -484,7 +493,7 @@ export function ChatView() {
     setShareError(null);
     try {
       const { token } = await shareRoom(roomId);
-      setShareToken(token);
+      setShareToken({ roomId, token });
       setShareCopyState("idle");
     } catch (cause) {
       setShareError(explain("Could not create the link", cause));
@@ -506,6 +515,14 @@ export function ChatView() {
     } finally {
       setShareBusy(false);
     }
+  }
+
+  /** Forgets the target and its link together, so nothing survives into the next Room. */
+  function closeShare() {
+    setShare(null);
+    setShareToken(null);
+    setShareError(null);
+    setShareCopyState("idle");
   }
 
   async function copyShareLink(link: string) {
@@ -1043,12 +1060,15 @@ export function ChatView() {
             <>
               <button
                 onClick={() => {
-                  const { roomId } = menu;
+                  const { roomId, name } = menu;
                   closeMenu();
+                  // Show the Room too, since the dialog is about it — but the
+                  // dialog's own subject is this id, not whatever is selected.
                   selectRoom(roomId);
                   setShareError(null);
                   setShareCopyState("idle");
-                  setShareOpen(true);
+                  setShareToken(null);
+                  setShare({ name, roomId });
                 }}
                 onKeyDown={menuItemKeyDown}
                 role="menuitem"
@@ -1098,19 +1118,25 @@ export function ChatView() {
         className="room-handoff-dialog"
         onCancel={(event) => {
           event.preventDefault();
-          setShareOpen(false);
+          closeShare();
         }}
-        onClose={() => setShareOpen(false)}
+        onClose={() => closeShare()}
         ref={shareDialogRef}
       >
         <header>
           <p>Share</p>
-          <h2 id="room-share-title">{`Share ${detail?.room.name ?? selectedSummary?.name ?? "this Room"}`}</h2>
+          <h2 id="room-share-title">{`Share ${share?.name ?? "this Room"}`}</h2>
         </header>
-        {shareOpen && detail && selectedRoomId !== null ? (() => {
-          const token = shareToken ?? detail.room.sharing?.token ?? null;
+        {share !== null ? (() => {
+          // Everything below is about `share.roomId`, never about the selected
+          // Room: its detail may still be loading, or be another Room's.
+          const targetRoomId = share.roomId;
+          const targetDetail = detail?.room.room_id === targetRoomId ? detail : null;
+          const targetRow = rooms.find((room) => room.room_id === targetRoomId);
+          const token = shareToken?.roomId === targetRoomId ? shareToken.token : (targetDetail?.room.sharing?.token ?? null);
           const link = token === null ? null : `${currentOrigin().replace(/\/+$/, "")}/s/${token}`;
-          const shared = detail.room.sharing !== null || shareToken !== null;
+          const sharedSince = targetDetail?.room.sharing?.since ?? targetRow?.shared_since ?? null;
+          const shared = sharedSince !== null || token !== null;
           return (
             <>
               <p>
@@ -1124,12 +1150,12 @@ export function ChatView() {
                     <code className="room-canonical-id">{link}</code>
                   </p>
                   <InviteQr caption="Scan to open the Room" label="Public link QR code" link={link} />
-                  {detail.room.sharing ? (
-                    <p className="room-invite-note">{`Public since ${readableTime(detail.room.sharing.since)}.`}</p>
+                  {sharedSince !== null ? (
+                    <p className="room-invite-note">{`Public since ${readableTime(sharedSince)}.`}</p>
                   ) : null}
                 </section>
               ) : shared ? (
-                <p className="room-invite-note">This Room is public. Reopen it from the list to see its link.</p>
+                <p className="room-invite-note">This Room is public. Its link is still loading; leave this open a moment.</p>
               ) : null}
               {shareError ? (
                 <p className="room-copy-state room-copy-error" role="alert">
@@ -1145,7 +1171,7 @@ export function ChatView() {
                 </p>
               ) : null}
               <div className="room-handoff-actions">
-                <button onClick={() => setShareOpen(false)} type="button">
+                <button onClick={() => closeShare()} type="button">
                   Close
                 </button>
                 {shared ? (
@@ -1153,7 +1179,7 @@ export function ChatView() {
                     <button
                       className="room-close"
                       disabled={shareBusy}
-                      onClick={() => void handleUnshareRoom(selectedRoomId)}
+                      onClick={() => void handleUnshareRoom(targetRoomId)}
                       type="button"
                     >
                       {shareBusy ? "Stopping…" : "Stop sharing"}
@@ -1168,7 +1194,7 @@ export function ChatView() {
                   <button
                     className="room-copy-button"
                     disabled={shareBusy}
-                    onClick={() => void handleShareRoom(selectedRoomId)}
+                    onClick={() => void handleShareRoom(targetRoomId)}
                     type="button"
                   >
                     {shareBusy ? "Creating link…" : "Create public link"}

@@ -58,6 +58,7 @@ const ORIGINAL_SHOW_MODAL = Object.getOwnPropertyDescriptor(
   window.HTMLDialogElement.prototype,
   "showModal",
 );
+const ORIGINAL_CLOSE = Object.getOwnPropertyDescriptor(window.HTMLDialogElement.prototype, "close");
 
 const roomSummary: RoomSummary = {
   description: "Coordinate the production launch",
@@ -327,10 +328,16 @@ describe("SharedNet Rooms", () => {
         this.setAttribute("open", "");
       },
     });
+    Object.defineProperty(window.HTMLDialogElement.prototype, "close", {
+      configurable: true,
+      value(this: HTMLDialogElement) { this.removeAttribute("open"); },
+    });
   });
 
   afterEach(() => {
     cleanup();
+    if (ORIGINAL_CLOSE) Object.defineProperty(window.HTMLDialogElement.prototype, "close", ORIGINAL_CLOSE);
+    else Reflect.deleteProperty(window.HTMLDialogElement.prototype, "close");
     vi.unstubAllGlobals();
     if (ORIGINAL_SHOW_MODAL) {
       Object.defineProperty(
@@ -341,6 +348,63 @@ describe("SharedNet Rooms", () => {
     } else {
       Reflect.deleteProperty(window.HTMLDialogElement.prototype, "showModal");
     }
+  });
+
+  it("keeps Share open when it was asked for on a Room that was not the open one", async () => {
+    const view = renderChat();
+    fireEvent.click(within(await openRoomMenu(secondRoomSummary.name)).getByRole("menuitem", { name: "Share…" }));
+    expect(view.state.selectRoom).toHaveBeenCalledWith(SECOND_ROOM_ID);
+
+    // The real provider selects immediately, then loads that Room's detail.
+    contextMocks.useSharedNet.mockReturnValue(makeState({ selectedRoomId: SECOND_ROOM_ID, selectedRoom: null }));
+    view.rerender(<ChatView />);
+    contextMocks.useSharedNet.mockReturnValue(makeState({
+      selectedRoomId: SECOND_ROOM_ID,
+      selectedRoom: {
+        ...roomDetail,
+        room: { ...roomDetail.room, room_id: SECOND_ROOM_ID, name: secondRoomSummary.name, status: "closed" },
+      },
+    }));
+    view.rerender(<ChatView />);
+
+    expect(await screen.findByRole("dialog", { name: `Share ${secondRoomSummary.name}` })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Create public link" })).toBeVisible();
+  });
+
+  it("never shows one Room's public link under another Room", async () => {
+    // The first Room is shared and its link is known.
+    const view = renderChat({
+      rooms: [{ ...roomSummary, shared_since: EARLIER }, { ...secondRoomSummary, shared_since: null }],
+      selectedRoom: { ...roomDetail, room: { ...roomDetail.room, sharing: { since: EARLIER, token: SHARE_TOKEN } } },
+    });
+    fireEvent.click(within(await openRoomMenu()).getByRole("menuitem", { name: "Shared · manage link" }));
+    const first = await screen.findByRole("dialog", { name: `Share ${roomSummary.name}` });
+    expect(within(first).getByText(`http://localhost:3000/s/${SHARE_TOKEN}`)).toBeVisible();
+    fireEvent.click(within(first).getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    // The second Room is not shared. Its dialog must offer to create a link,
+    // and must not carry the first Room's slug into view or onto the clipboard.
+    fireEvent.click(within(await openRoomMenu(secondRoomSummary.name)).getByRole("menuitem", { name: "Share…" }));
+    const second = await screen.findByRole("dialog", { name: `Share ${secondRoomSummary.name}` });
+    expect(within(second).getByRole("button", { name: "Create public link" })).toBeVisible();
+    expect(within(second).queryByText(new RegExp(SHARE_TOKEN))).toBeNull();
+    expect(within(second).queryByRole("button", { name: "Copy link" })).toBeNull();
+    expect(document.body.textContent).not.toContain(SHARE_TOKEN);
+
+    // A shared Room whose detail has not arrived says so, rather than showing
+    // whatever link was last in hand.
+    contextMocks.useSharedNet.mockReturnValue(
+      makeState({
+        rooms: [{ ...roomSummary, shared_since: EARLIER }, { ...secondRoomSummary, shared_since: NOW }],
+        selectedRoomId: SECOND_ROOM_ID,
+        selectedRoom: null,
+      }),
+    );
+    view.rerender(<ChatView />);
+    const waiting = await screen.findByRole("dialog", { name: `Share ${secondRoomSummary.name}` });
+    expect(within(waiting).getByText(/Its link is still loading/)).toBeVisible();
+    expect(document.body.textContent).not.toContain(SHARE_TOKEN);
   });
 
   it("lets the Rooms sidebar be resized from a divider that drives the workspace grid", () => {
