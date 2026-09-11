@@ -254,6 +254,8 @@ export class MemorySharedNetRepository implements SharedNetRepository {
   /** Artifacts: what each file is, its bytes, and the key of its link. */
   private readonly artifacts = new Map<ArtifactId, Artifact & { linkKey: AfkSecret }>();
   private readonly artifactBytes = new Map<ArtifactId, Uint8Array>();
+  /** `principal\0instance` → the name that account gave that seat. */
+  private readonly instanceAliases = new Map<string, string>();
 
   constructor(options: MemoryRepositoryOptions = {}) {
     this.now = options.now ?? (() => new Date());
@@ -395,8 +397,43 @@ export class MemorySharedNetRepository implements SharedNetRepository {
 
   async getRoomForPrincipal(principalId: PrincipalId, roomId: RoomId): Promise<RoomView> {
     const room = this.roomVisibleTo(principalId, roomId);
+    const log = this.roomLog(room);
+    const seats = new Set([
+      ...log.memberships.map((member) => member.instance_id),
+      ...log.messages.map((message) => message.sender_instance_id),
+    ]);
+    const aliases: Record<InstanceId, string> = {};
+    for (const instanceId of seats) {
+      const alias = this.instanceAliases.get(`${principalId}\0${instanceId}`);
+      if (alias !== undefined) aliases[instanceId] = alias;
+    }
     // The link is the owner's to hand out; a seated Principal sees only that one exists.
-    return { ...this.roomLog(room), share_token: room.principal_id === principalId ? room.shareToken : null };
+    return { ...log, share_token: room.principal_id === principalId ? room.shareToken : null, aliases };
+  }
+
+  async setInstanceAlias(principalId: PrincipalId, instanceId: InstanceId, alias: string | null): Promise<{ instance_id: InstanceId; alias: string | null }> {
+    const instance = this.instances.get(instanceId);
+    // A seat this account cannot see does not exist as far as it is concerned,
+    // so naming one cannot be used to discover that an id is real.
+    const visible =
+      instance !== undefined &&
+      (instance.principal_id === principalId ||
+        [...this.memberships.values()].some(
+          (membership) =>
+            membership.state === "active" &&
+            membership.instance_id === instanceId &&
+            [...this.memberships.values()].some(
+              (mine) =>
+                mine.room_id === membership.room_id &&
+                mine.state === "active" &&
+                this.instances.get(mine.instance_id)?.principal_id === principalId,
+            ),
+        ));
+    if (!visible) throw new RepositoryError(404, "instance_not_found", "Instance was not found.");
+    const key = `${principalId}\0${instanceId}`;
+    if (alias === null) this.instanceAliases.delete(key);
+    else this.instanceAliases.set(key, alias);
+    return { instance_id: instanceId, alias };
   }
 
   async scheduleRoom(
@@ -450,7 +487,7 @@ export class MemorySharedNetRepository implements SharedNetRepository {
   }
 
   /** Every seat and every message of a Room, in order: what both the owner's page and the public one read. */
-  private roomLog(room: RoomRecord): Omit<RoomView, "share_token"> {
+  private roomLog(room: RoomRecord): Omit<RoomView, "aliases" | "share_token"> {
     const memberships = [...this.memberships.values()]
       .filter((membership) => membership.room_id === room.id)
       .sort((a, b) => a.joined_at.localeCompare(b.joined_at))

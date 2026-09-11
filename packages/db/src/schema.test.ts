@@ -64,6 +64,7 @@ describe("hosted Postgres schema", () => {
       "creditRedemptions",
       "artifacts",
       "artifactBytes",
+      "instanceAliases",
     ]);
   });
 
@@ -162,6 +163,7 @@ describe("hosted Postgres schema", () => {
     // One kind of file: every artifact has a link, and `reach` is gone.
     expect(migration).toContain('ALTER COLUMN "link_key" SET NOT NULL');
     expect(migration).toContain('DROP COLUMN "reach"');
+    expect(migration).toContain('CONSTRAINT "instance_alias_pk" PRIMARY KEY("principal_id","instance_id")');
     expect(migration).toContain('CONSTRAINT "idempotency_retention_minimum"');
     expect(migration).toContain(
       'DROP CONSTRAINT "instance_issued_by_key_fk"',

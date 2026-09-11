@@ -1180,6 +1180,25 @@ export const ARTIFACT_QUOTA_BYTES = 256 * 1024 * 1024;
 export const MAX_ARTIFACT_FILENAME_SCALARS = 120;
 
 /**
+ * The name one account gives a seat it can see (decision 2026-09-11). Display
+ * text and nothing more: it never addresses anything, and it is only ever
+ * shown to the account that wrote it.
+ */
+export const MAX_INSTANCE_ALIAS_SCALARS = 48;
+
+/** An empty alias is how a name is taken back off, so it parses to null. */
+export function parseInstanceAlias(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "string") throw new ProtocolValidationError();
+  const normalized = value.normalize("NFKC").trim();
+  if (normalized === "") return null;
+  if (scalarLength(normalized) > MAX_INSTANCE_ALIAS_SCALARS || /[\p{Cc}]/u.test(normalized)) {
+    throw new ProtocolValidationError();
+  }
+  return normalized;
+}
+
+/**
  * A filename is display text, never a path: an Agent that downloads one must
  * not be steered into writing outside the directory it chose. Separators,
  * control characters and the traversal names are refused rather than mangled.

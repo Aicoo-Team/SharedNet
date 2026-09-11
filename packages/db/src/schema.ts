@@ -958,6 +958,35 @@ export const artifactBytes = sharednetSchema.table(
   ],
 );
 
+/**
+ * The name one account gives a seat it can see. A Room shows an untagged
+ * Instance by its id, which is exact and unreadable; this is where a human
+ * writes "Codex" over it. Deliberately per-viewer: letting anyone rename
+ * anyone else's seat for everyone would be a way to misrepresent them.
+ */
+export const instanceAliases = sharednetSchema.table(
+  "instance_alias",
+  {
+    /** Whose name for it. */
+    principalId: text("principal_id").$type<PrincipalId>().notNull(),
+    instanceId: text("instance_id").$type<InstanceId>().notNull(),
+    alias: text("alias").notNull(),
+    updatedAt: domainTimestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    primaryKey({ name: "instance_alias_pk", columns: [table.principalId, table.instanceId] }),
+    foreignKey({
+      name: "instance_alias_principal_fk",
+      columns: [table.principalId],
+      foreignColumns: [principals.id],
+    }).onDelete("cascade"),
+    foreignKey({ name: "instance_alias_instance_fk", columns: [table.instanceId], foreignColumns: [instances.id] })
+      .onDelete("cascade")
+      .onUpdate("cascade"),
+    check("instance_alias_length", sql`length(${table.alias}) BETWEEN 1 AND 48`),
+  ],
+);
+
 export const databaseSchema = {
   principals,
   agents,
@@ -977,4 +1006,5 @@ export const databaseSchema = {
   creditRedemptions,
   artifacts,
   artifactBytes,
+  instanceAliases,
 } as const;
