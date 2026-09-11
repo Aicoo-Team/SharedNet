@@ -29,7 +29,7 @@ import {
   isCliClaimProjection,
   isCreateRoomInviteResponse,
   isRemoveRoomMemberResponse,
-  isInstanceAliasResponse,
+  isSeatNameResponse,
   isShareRoomResponse,
   isUnshareRoomResponse,
   type CliClaimProjection,
@@ -71,8 +71,11 @@ type SharedNetContextValue = {
   selectRoom: (roomId: RoomId) => void;
   selectedRoom: RoomDetail | null;
   selectedRoomId: RoomId | null;
-  /** Name a seat for this account alone; an empty name takes it back off. */
-  nameSeat: (instanceId: string, alias: string | null) => Promise<string | null>;
+  /**
+   * Name a seat: your own takes a nickname the whole Room sees, anyone else's
+   * takes a note only this account sees. An empty name takes it back off.
+   */
+  nameSeat: (instanceId: string, name: string | null) => Promise<string | null>;
   /** Publish a Room this account owns at a public link; the slug comes back with the Room. */
   shareRoom: (roomId: RoomId) => Promise<ShareRoomResponse>;
   status: SharedNetStatus;
@@ -427,23 +430,23 @@ export function SharedNetProvider({ children }: { children: ReactNode }) {
   );
 
   const nameSeat = useCallback(
-    async (instanceId: string, alias: string | null) => {
+    async (instanceId: string, name: string | null) => {
       const mutationController = mutationAbortControllerRef.current;
       if (!mountedRef.current || mutationController === null || mutationController.signal.aborted) {
         throw mutationUnavailableError();
       }
       const named = await requestJson(
-        `/api/sharednet/instances/${encodeURIComponent(instanceId)}/alias`,
-        isInstanceAliasResponse,
+        `/api/sharednet/instances/${encodeURIComponent(instanceId)}/name`,
+        isSeatNameResponse,
         {
-          body: JSON.stringify({ alias }),
+          body: JSON.stringify({ name }),
           headers: { "content-type": "application/json" },
           method: "PUT",
           signal: mutationController.signal,
         },
       );
       await refresh();
-      return named.alias;
+      return named.name;
     },
     [refresh],
   );

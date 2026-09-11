@@ -764,23 +764,41 @@ await assert.rejects(
 const { checkArtifactIdentity } = await import("./artifact-identity-postgres-checks.mjs");
 await checkArtifactIdentity({ repository, pool, owner, visitor, account, raceGuest, gate, controlledRepository, waitForDatabaseLock, handleRequest });
 
-// ---- Naming a seat: this account's name for it, on real SQL. ----
+// ---- Naming a seat, on real SQL: a note on someone else's, a nickname on your own. ----
 // `second` holds the owner's seat and the visitor's private seat by now.
-assert.deepEqual((await repository.getRoomForPrincipal(owner.principalId, second.id)).aliases, {});
-await repository.setInstanceAlias(owner.principalId, privateSeat.instance.id, "Kai");
-assert.deepEqual((await repository.getRoomForPrincipal(owner.principalId, second.id)).aliases, { [privateSeat.instance.id]: "Kai" });
-// The other account sees its own names, which is none.
-assert.deepEqual((await repository.getRoomForPrincipal(visitor.principalId, second.id)).aliases, {});
+const roomAs = (principalId) => repository.getRoomForPrincipal(principalId, second.id);
+assert.deepEqual((await roomAs(owner.principalId)).aliases, {});
+// Someone else's seat: a note, and only the account that wrote it sees one.
+assert.deepEqual(await repository.nameSeat(owner.principalId, privateSeat.instance.id, "Kai"), {
+  instance_id: privateSeat.instance.id,
+  name: "Kai",
+  scope: "note",
+});
+assert.deepEqual((await roomAs(owner.principalId)).aliases, { [privateSeat.instance.id]: "Kai" });
+assert.deepEqual((await roomAs(visitor.principalId)).aliases, {});
 // Naming again replaces; naming with nothing forgets.
-await repository.setInstanceAlias(owner.principalId, privateSeat.instance.id, "Kai 2");
-assert.deepEqual((await repository.getRoomForPrincipal(owner.principalId, second.id)).aliases, { [privateSeat.instance.id]: "Kai 2" });
-assert.equal((await repository.setInstanceAlias(owner.principalId, privateSeat.instance.id, null)).alias, null);
-assert.deepEqual((await repository.getRoomForPrincipal(owner.principalId, second.id)).aliases, {});
-// An account may always name its own seat; a seat it shares no Room with is absent.
-assert.equal((await repository.setInstanceAlias(owner.principalId, owner.instance.id, "Mine")).alias, "Mine");
-await assert.rejects(repository.setInstanceAlias(owner.principalId, "i_nowhere0001", "Nope"), { code: "instance_not_found", status: 404 });
+await repository.nameSeat(owner.principalId, privateSeat.instance.id, "Kai 2");
+assert.deepEqual((await roomAs(owner.principalId)).aliases, { [privateSeat.instance.id]: "Kai 2" });
+assert.equal((await repository.nameSeat(owner.principalId, privateSeat.instance.id, null)).name, null);
+assert.deepEqual((await roomAs(owner.principalId)).aliases, {});
+// Your own seat: a nickname, which every member of the Room reads off the seat.
+const nickname = await repository.nameSeat(owner.principalId, owner.instance.id, "Xisen");
+assert.deepEqual(nickname, { instance_id: owner.instance.id, name: "Xisen", scope: "nickname" });
+assert.deepEqual((await roomAs(owner.principalId)).aliases, {}, "a nickname is not a note");
+for (const principalId of [owner.principalId, visitor.principalId]) {
+  const seen = (await roomAs(principalId)).memberships.find((member) => member.instance_id === owner.instance.id);
+  assert.equal(seen.name, "Xisen", "everyone in the Room reads the nickname off the seat");
+}
+assert.equal((await repository.nameSeat(owner.principalId, owner.instance.id, null)).name, null);
+assert.equal(
+  (await roomAs(visitor.principalId)).memberships.find((member) => member.instance_id === owner.instance.id).name,
+  null,
+  "and it comes back off for everyone too",
+);
+// A seat this account shares no Room with is absent, so naming cannot probe ids.
+await assert.rejects(repository.nameSeat(owner.principalId, "i_nowhere0001", "Nope"), { code: "instance_not_found", status: 404 });
 const unseen = await repository.startInstance(await repository.authenticateApiKey(visitorKey), { runtime_kind: "codex", cli_version: "0.1.8" });
-await assert.rejects(repository.setInstanceAlias(owner.principalId, unseen.instance.id, "Nope"), { code: "instance_not_found", status: 404 });
+await assert.rejects(repository.nameSeat(owner.principalId, unseen.instance.id, "Nope"), { code: "instance_not_found", status: 404 });
 
 await pool.end();
 console.log(JSON.stringify({ status: "passed", room: room.id, scheduled: scheduled.room.id}));

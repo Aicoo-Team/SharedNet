@@ -3093,11 +3093,33 @@ body:has(.product-window) {
   padding: 4px 8px 6px;
 }
 
-/* A seat's name, renamed in place: double-click, or Enter / F2 when focused. */
+/*
+ * A seat's name, renamed in place: double-click, or Enter / F2 when focused.
+ * Nothing shows until the hand is on it — the pencil and the underline arrive
+ * on hover and on focus, so a Room that nobody is renaming looks exactly as
+ * it did before there was any renaming.
+ */
 .room-message-sender[role="button"],
 .room-member-name[role="button"] {
   border-bottom: 1px dashed transparent;
   cursor: text;
+}
+
+.room-message-sender[role="button"]::after,
+.room-member-name[role="button"]::after {
+  color: var(--sn-muted);
+  content: "✎";
+  font-size: 0.85em;
+  margin-left: 4px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.room-message-sender[role="button"]:hover::after,
+.room-message-sender[role="button"]:focus-visible::after,
+.room-member-name[role="button"]:hover::after,
+.room-member-name[role="button"]:focus-visible::after {
+  opacity: 1;
 }
 
 .room-message-sender[role="button"]:hover,

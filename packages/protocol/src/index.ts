@@ -1180,19 +1180,19 @@ export const ARTIFACT_QUOTA_BYTES = 256 * 1024 * 1024;
 export const MAX_ARTIFACT_FILENAME_SCALARS = 120;
 
 /**
- * The name one account gives a seat it can see (decision 2026-09-11). Display
- * text and nothing more: it never addresses anything, and it is only ever
- * shown to the account that wrote it.
+ * A seat's name (decision 2026-09-11): the nickname its own account gave it,
+ * or the note someone else wrote on it. Display text and nothing more — it
+ * never addresses anything, and the Instance id stays exactly what it was.
  */
-export const MAX_INSTANCE_ALIAS_SCALARS = 48;
+export const MAX_SEAT_NAME_SCALARS = 48;
 
-/** An empty alias is how a name is taken back off, so it parses to null. */
-export function parseInstanceAlias(value: unknown): string | null {
+/** An empty name is how one is taken back off, so it parses to null. */
+export function parseSeatName(value: unknown): string | null {
   if (value === null || value === undefined) return null;
   if (typeof value !== "string") throw new ProtocolValidationError();
   const normalized = value.normalize("NFKC").trim();
   if (normalized === "") return null;
-  if (scalarLength(normalized) > MAX_INSTANCE_ALIAS_SCALARS || /[\p{Cc}]/u.test(normalized)) {
+  if (scalarLength(normalized) > MAX_SEAT_NAME_SCALARS || /[\p{Cc}]/u.test(normalized)) {
     throw new ProtocolValidationError();
   }
   return normalized;

@@ -88,7 +88,7 @@ const actor = {
 };
 
 const roomDetail = {
-  aliases: {},
+  notes: {},
   memberships: [
     {
       agent_id: AGENT_ID,

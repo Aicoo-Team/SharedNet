@@ -52,7 +52,7 @@ import {
   type ShrSecret,
   type StartInstanceRequest,
 } from "../../protocol/src/index.ts";
-import { sharedRoomsEdges, type ArtifactUsage, type CreditAuth, type CreditLedgerQuery, type CreditRedemption, type CreditsOverview, type DecisionAnswer, type DecisionOverview, type McpClient, type McpSeat, type NetworkView, type RoomOverview, type RoomView, type SeatOverview, type SharedRoomView, type UploadArtifactInput, type UploadedArtifact } from "./repository.ts";
+import { sharedRoomsEdges, type SeatName, type ArtifactUsage, type CreditAuth, type CreditLedgerQuery, type CreditRedemption, type CreditsOverview, type DecisionAnswer, type DecisionOverview, type McpClient, type McpSeat, type NetworkView, type RoomOverview, type RoomView, type SeatOverview, type SharedRoomView, type UploadArtifactInput, type UploadedArtifact } from "./repository.ts";
 import type {
   AddRoomMembersRequest,
   Admission,
@@ -411,14 +411,21 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     return { ...log, share_token: room.principal_id === principalId ? room.shareToken : null, aliases };
   }
 
-  async setInstanceAlias(principalId: PrincipalId, instanceId: InstanceId, alias: string | null): Promise<{ instance_id: InstanceId; alias: string | null }> {
+  async nameSeat(principalId: PrincipalId, instanceId: InstanceId, name: string | null): Promise<SeatName> {
     const instance = this.instances.get(instanceId);
+    // Your own seat's name is the name it goes by: everyone in its Rooms sees
+    // it, because it is your name for yourself.
+    if (instance !== undefined && instance.principal_id === principalId) {
+      instance.display_name = name;
+      // A note you once left on your own seat would now sit under its nickname.
+      this.instanceAliases.delete(`${principalId}\0${instanceId}`);
+      return { instance_id: instanceId, name, scope: "nickname" };
+    }
     // A seat this account cannot see does not exist as far as it is concerned,
     // so naming one cannot be used to discover that an id is real.
     const visible =
       instance !== undefined &&
-      (instance.principal_id === principalId ||
-        [...this.memberships.values()].some(
+      ([...this.memberships.values()].some(
           (membership) =>
             membership.state === "active" &&
             membership.instance_id === instanceId &&
@@ -430,10 +437,11 @@ export class MemorySharedNetRepository implements SharedNetRepository {
             ),
         ));
     if (!visible) throw new RepositoryError(404, "instance_not_found", "Instance was not found.");
+    // Someone else's seat: a note, for this account's eyes only.
     const key = `${principalId}\0${instanceId}`;
-    if (alias === null) this.instanceAliases.delete(key);
-    else this.instanceAliases.set(key, alias);
-    return { instance_id: instanceId, alias };
+    if (name === null) this.instanceAliases.delete(key);
+    else this.instanceAliases.set(key, name);
+    return { instance_id: instanceId, name, scope: "note" };
   }
 
   async scheduleRoom(

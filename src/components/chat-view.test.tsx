@@ -89,7 +89,7 @@ const secondRoomSummary: RoomSummary = {
 };
 
 const roomDetail: RoomDetail = {
-  aliases: {},
+  notes: {},
   memberships: [
     {
       agent_id: AGENT_ID,
@@ -1098,13 +1098,13 @@ describe("SharedNet Rooms", () => {
 
 describe("naming a seat", () => {
   /** The Room as it arrives with one seat already named by this account. */
-  function named(alias: string) {
-    return { ...roomDetail, aliases: { [SECOND_INSTANCE_ID]: alias } };
+  function noted(note: string) {
+    return { ...roomDetail, notes: { [SECOND_INSTANCE_ID]: note } };
   }
 
   /** The renameable label for a seat: a button, not the id printed on the card. */
   function seatName(label: string) {
-    return screen.getAllByRole("button", { name: `${label}. Double-click to name this seat` })[0]!;
+    return screen.getAllByRole("button", { name: `${label}. Double-click to note who this is, for you alone` })[0]!;
   }
 
   it("shows the tag until the seat is named, then the name, wherever that seat speaks", () => {
@@ -1112,9 +1112,9 @@ describe("naming a seat", () => {
     expect(seatName(SECOND_AGENT_ID)).toBeVisible();
 
     cleanup();
-    renderChat({ selectedRoom: named("Kai") });
+    renderChat({ selectedRoom: noted("Kai") });
     expect(seatName("Kai")).toBeVisible();
-    expect(screen.queryByRole("button", { name: `${SECOND_AGENT_ID}. Double-click to name this seat` })).toBeNull();
+    expect(screen.queryByRole("button", { name: `${SECOND_AGENT_ID}. Double-click to note who this is, for you alone` })).toBeNull();
     // The Instance id is still on the message's card; only the label changed.
     expect(screen.getAllByText(SECOND_INSTANCE_ID).length).toBeGreaterThan(0);
   });
@@ -1123,7 +1123,7 @@ describe("naming a seat", () => {
     const { state } = renderChat();
 
     fireEvent.doubleClick(seatName(SECOND_AGENT_ID));
-    const field = screen.getByRole("textbox", { name: `Name for ${SECOND_INSTANCE_ID}` });
+    const field = screen.getByRole("textbox", { name: `Your note for ${SECOND_INSTANCE_ID}` });
     // Nothing was named yet, so the box starts empty rather than with the tag.
     expect(field).toHaveValue("");
     fireEvent.change(field, { target: { value: "  Kai  " } });
@@ -1133,18 +1133,18 @@ describe("naming a seat", () => {
   });
 
   it("starts from the name a seat already has", () => {
-    renderChat({ selectedRoom: named("Kai") });
+    renderChat({ selectedRoom: noted("Kai") });
 
     fireEvent.doubleClick(seatName("Kai"));
 
-    expect(screen.getByRole("textbox", { name: `Name for ${SECOND_INSTANCE_ID}` })).toHaveValue("Kai");
+    expect(screen.getByRole("textbox", { name: `Your note for ${SECOND_INSTANCE_ID}` })).toHaveValue("Kai");
   });
 
   it("opens from the keyboard, cancels on Escape without saving, and takes the name off when emptied", async () => {
-    const { state } = renderChat({ selectedRoom: named("Kai") });
+    const { state } = renderChat({ selectedRoom: noted("Kai") });
 
     fireEvent.keyDown(seatName("Kai"), { key: "F2" });
-    const field = screen.getByRole("textbox", { name: `Name for ${SECOND_INSTANCE_ID}` });
+    const field = screen.getByRole("textbox", { name: `Your note for ${SECOND_INSTANCE_ID}` });
     fireEvent.change(field, { target: { value: "Something else" } });
     fireEvent.keyDown(field, { key: "Escape" });
     expect(screen.queryByRole("textbox")).toBeNull();
@@ -1152,7 +1152,7 @@ describe("naming a seat", () => {
 
     // Emptying it is how a name is taken back off.
     fireEvent.keyDown(seatName("Kai"), { key: "Enter" });
-    const again = screen.getByRole("textbox", { name: `Name for ${SECOND_INSTANCE_ID}` });
+    const again = screen.getByRole("textbox", { name: `Your note for ${SECOND_INSTANCE_ID}` });
     fireEvent.change(again, { target: { value: "   " } });
     fireEvent.blur(again);
     await waitFor(() => expect(state.nameSeat).toHaveBeenCalledWith(SECOND_INSTANCE_ID, null));
@@ -1162,10 +1162,10 @@ describe("naming a seat", () => {
     const nameSeat = vi.fn(async () => {
       throw new Error("offline");
     });
-    renderChat({ nameSeat, selectedRoom: named("Kai") });
+    renderChat({ nameSeat, selectedRoom: noted("Kai") });
 
     fireEvent.doubleClick(seatName("Kai"));
-    const field = screen.getByRole("textbox", { name: `Name for ${SECOND_INSTANCE_ID}` });
+    const field = screen.getByRole("textbox", { name: `Your note for ${SECOND_INSTANCE_ID}` });
     fireEvent.change(field, { target: { value: "Kai 2" } });
     fireEvent.keyDown(field, { key: "Enter" });
 
@@ -1175,13 +1175,37 @@ describe("naming a seat", () => {
   });
 
   it("asks the server for nothing when the name is committed unchanged", async () => {
-    const { state } = renderChat({ selectedRoom: named("Kai") });
+    const { state } = renderChat({ selectedRoom: noted("Kai") });
 
     fireEvent.doubleClick(seatName("Kai"));
-    fireEvent.keyDown(screen.getByRole("textbox", { name: `Name for ${SECOND_INSTANCE_ID}` }), { key: "Enter" });
+    fireEvent.keyDown(screen.getByRole("textbox", { name: `Your note for ${SECOND_INSTANCE_ID}` }), { key: "Enter" });
 
     await waitFor(() => expect(screen.queryByRole("textbox")).toBeNull());
     expect(state.nameSeat).not.toHaveBeenCalled();
+  });
+
+  it("renames my own seat as a nickname, which the Room sees, rather than as a note", async () => {
+    const mine = {
+      ...roomDetail,
+      memberships: roomDetail.memberships.map((member) =>
+        member.instance_id === INSTANCE_ID ? { ...member, name: "Xisen" } : member,
+      ),
+    };
+    const { state } = renderChat({ principal: { ...networkProjection.principal, principal_id: PRINCIPAL_ID }, selectedRoom: mine });
+
+    // My own seat already shows the nickname on its membership, not a note.
+    const own = screen.getAllByRole("button", { name: "Xisen. Double-click to rename yourself in this Room" })[0]!;
+    expect(own).toBeVisible();
+    expect(own).toHaveAttribute("title", expect.stringContaining("Everyone in the Room sees it"));
+
+    fireEvent.doubleClick(own);
+    const field = screen.getByRole("textbox", { name: "Your name in this Room" });
+    // It starts from the nickname it already has.
+    expect(field).toHaveValue("Xisen");
+    fireEvent.change(field, { target: { value: "Xisen W" } });
+    fireEvent.keyDown(field, { key: "Enter" });
+
+    await waitFor(() => expect(state.nameSeat).toHaveBeenCalledWith(INSTANCE_ID, "Xisen W"));
   });
 
   it("names a seat from the members panel too", async () => {
@@ -1189,8 +1213,8 @@ describe("naming a seat", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Room actions" }));
     const members = screen.getByRole("list", { name: "Room members" });
-    fireEvent.doubleClick(within(members).getByRole("button", { name: "Reviewer. Double-click to name this seat" }));
-    const field = screen.getByRole("textbox", { name: `Name for ${SECOND_INSTANCE_ID}` });
+    fireEvent.doubleClick(within(members).getByRole("button", { name: "Reviewer. Double-click to note who this is, for you alone" }));
+    const field = screen.getByRole("textbox", { name: `Your note for ${SECOND_INSTANCE_ID}` });
     fireEvent.change(field, { target: { value: "Kai" } });
     fireEvent.keyDown(field, { key: "Enter" });
 

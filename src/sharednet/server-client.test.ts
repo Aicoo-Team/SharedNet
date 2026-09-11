@@ -678,38 +678,48 @@ describe("SharedNetServerClient is one door onto the domain", () => {
     expect((await client.getSharedRoom(token)).room.status).toBe("closed");
   });
 
-  it("names a seat for one account only, refuses a seat it cannot see, and forgets the name when emptied", async () => {
+  it("gives your own seat a nickname the Room sees, and someone else's a note only you see", async () => {
     const { repository, client, auth, roomId, room, instance } = await seededRoom();
     const visitor = await seatFor(repository, "auth-user-2", "key-2");
     await repository.joinRoom(visitor.auth, room.id);
     await repository.postMessage(visitor.auth, room.id, { content: "second" });
 
     // Until it is named, the Room carries no name for that seat.
-    expect((await client.getRoom(ACCOUNT, roomId)).aliases).toEqual({});
+    expect((await client.getRoom(ACCOUNT, roomId)).notes).toEqual({});
 
-    const named = await client.setInstanceAlias(ACCOUNT, visitor.instance.id as never, "Kai");
-    expect(named).toEqual({ alias: "Kai", instance_id: visitor.instance.id });
-    expect((await client.getRoom(ACCOUNT, roomId)).aliases).toEqual({ [visitor.instance.id]: "Kai" });
+    const named = await client.nameSeat(ACCOUNT, visitor.instance.id as never, "Kai");
+    expect(named).toEqual({ instance_id: visitor.instance.id, name: "Kai", scope: "note" });
+    expect((await client.getRoom(ACCOUNT, roomId)).notes).toEqual({ [visitor.instance.id]: "Kai" });
     // It is this account's name and nobody else's: the other side sees none.
-    expect((await client.getRoom("auth-user-2", roomId)).aliases).toEqual({});
+    expect((await client.getRoom("auth-user-2", roomId)).notes).toEqual({});
     // Naming again replaces it; naming with nothing forgets it.
-    expect((await client.setInstanceAlias(ACCOUNT, visitor.instance.id as never, "Kai 2")).alias).toBe("Kai 2");
-    expect((await client.getRoom(ACCOUNT, roomId)).aliases).toEqual({ [visitor.instance.id]: "Kai 2" });
-    expect((await client.setInstanceAlias(ACCOUNT, visitor.instance.id as never, null)).alias).toBeNull();
-    expect((await client.getRoom(ACCOUNT, roomId)).aliases).toEqual({});
+    expect((await client.nameSeat(ACCOUNT, visitor.instance.id as never, "Kai 2")).name).toBe("Kai 2");
+    expect((await client.getRoom(ACCOUNT, roomId)).notes).toEqual({ [visitor.instance.id]: "Kai 2" });
+    expect((await client.nameSeat(ACCOUNT, visitor.instance.id as never, null)).name).toBeNull();
+    expect((await client.getRoom(ACCOUNT, roomId)).notes).toEqual({});
 
-    // An account may name its own seat.
-    expect((await client.setInstanceAlias(ACCOUNT, instance.id as never, "Mine")).alias).toBe("Mine");
-    expect((await client.getRoom(ACCOUNT, roomId)).aliases).toEqual({ [instance.id]: "Mine" });
+    // Naming your own seat is a nickname instead: it is not a note, and the
+    // whole Room sees it — including the account that did not write it.
+    const nickname = await client.nameSeat(ACCOUNT, instance.id as never, "Xisen");
+    expect(nickname).toEqual({ instance_id: instance.id, name: "Xisen", scope: "nickname" });
+    expect((await client.getRoom(ACCOUNT, roomId)).notes).toEqual({});
+    const asMe = await client.getRoom(ACCOUNT, roomId);
+    const asThem = await client.getRoom("auth-user-2", roomId);
+    for (const seen of [asMe, asThem]) {
+      expect(seen.memberships.find((member) => member.instance_id === instance.id)?.name).toBe("Xisen");
+    }
+    // And it comes back off the same way.
+    expect((await client.nameSeat(ACCOUNT, instance.id as never, null)).name).toBeNull();
+    expect((await client.getRoom("auth-user-2", roomId)).memberships.find((member) => member.instance_id === instance.id)?.name).toBeNull();
 
     // A seat this account shares no Room with reads as absent, so naming one
     // cannot be used to find out whether an Instance id is real.
     const stranger = await seatFor(repository, "auth-user-2", "key-2");
-    await expect(client.setInstanceAlias(ACCOUNT, stranger.instance.id as never, "Nope")).rejects.toMatchObject({
+    await expect(client.nameSeat(ACCOUNT, stranger.instance.id as never, "Nope")).rejects.toMatchObject({
       code: "instance_not_found",
       status: 404,
     });
-    await expect(client.setInstanceAlias(ACCOUNT, "i_nowhere0001" as never, "Nope")).rejects.toMatchObject({
+    await expect(client.nameSeat(ACCOUNT, "i_nowhere0001" as never, "Nope")).rejects.toMatchObject({
       code: "instance_not_found",
       status: 404,
     });
