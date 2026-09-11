@@ -140,6 +140,9 @@ function AccountControl({ account }: Readonly<{ account: Account }>) {
                 : "Principal unavailable"}
           </p>
           {signOutError ? <p className="rail-account-error" role="alert">{signOutError}</p> : null}
+          <Link className="rail-account-link" href="/credits" onClick={() => setOpen(false)}>
+            Credits
+          </Link>
           <button disabled={signingOut} onClick={() => void signOut()} type="button">
             {signingOut ? "Signing out" : "Sign out"}
           </button>

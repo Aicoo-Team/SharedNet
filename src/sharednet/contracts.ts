@@ -277,6 +277,40 @@ export type NetworkProjection = {
   principal: PrincipalProjection;
 };
 
+/**
+ * One movement of credits as the account reads it (decision 2026-09-11):
+ * granted by a code, sent to someone, or received from someone.
+ */
+export type CreditTransferProjection = {
+  /** For a payment: what the payer typed, a Principal, Agent or Instance id. */
+  addressed_to: string | null;
+  amount: number;
+  /** The seat that paid, when a seat did. */
+  by_instance_id: InstanceId | null;
+  /** For a grant: the code. */
+  code: string | null;
+  /** The other purse: the payer of a received transfer, the payee of a sent one; null for a grant. */
+  counterparty: PrincipalId | null;
+  created_at: string;
+  direction: "granted" | "received" | "sent";
+  memo: string | null;
+  room_id: RoomId | null;
+  transfer_id: string;
+};
+
+export type CreditsProjection = {
+  balance: number;
+  granted: number;
+  principal_id: PrincipalId;
+  received: number;
+  sent: number;
+  /** The latest transfers touching this purse, newest first. */
+  transfers: CreditTransferProjection[];
+};
+
+/** `granted` is what this redemption added: 0 when the account had already redeemed the code. */
+export type RedeemCreditsResponse = { credits: CreditsProjection; granted: number };
+
 export type ProvisionAccountResponse = {
   principal_id: PrincipalId;
 };
@@ -896,6 +930,49 @@ export function isNetworkProjection(value: unknown): value is NetworkProjection 
     isArrayOf(value.instances, isInstanceProjection) &&
     isArrayOf(value.edges, isNetworkEdge)
   );
+}
+
+function isCreditTransferProjection(value: unknown): value is CreditTransferProjection {
+  return (
+    hasExactKeys(value, [
+      "addressed_to",
+      "amount",
+      "by_instance_id",
+      "code",
+      "counterparty",
+      "created_at",
+      "direction",
+      "memo",
+      "room_id",
+      "transfer_id",
+    ]) &&
+    isNullable(value.addressed_to, isNonEmptyString) &&
+    isPositiveInteger(value.amount) &&
+    isNullable(value.by_instance_id, isInstanceId) &&
+    isNullable(value.code, isNonEmptyString) &&
+    isNullable(value.counterparty, isPrincipalId) &&
+    isTimestamp(value.created_at) &&
+    (value.direction === "granted" || value.direction === "received" || value.direction === "sent") &&
+    isNullable(value.memo, isString) &&
+    isNullable(value.room_id, isIdentifier) &&
+    isNonEmptyString(value.transfer_id)
+  );
+}
+
+export function isCreditsProjection(value: unknown): value is CreditsProjection {
+  return (
+    hasExactKeys(value, ["balance", "granted", "principal_id", "received", "sent", "transfers"]) &&
+    isNonNegativeInteger(value.balance) &&
+    isNonNegativeInteger(value.granted) &&
+    isPrincipalId(value.principal_id) &&
+    isNonNegativeInteger(value.received) &&
+    isNonNegativeInteger(value.sent) &&
+    isArrayOf(value.transfers, isCreditTransferProjection)
+  );
+}
+
+export function isRedeemCreditsResponse(value: unknown): value is RedeemCreditsResponse {
+  return hasExactKeys(value, ["credits", "granted"]) && isCreditsProjection(value.credits) && isNonNegativeInteger(value.granted);
 }
 
 export function isProvisionAccountResponse(

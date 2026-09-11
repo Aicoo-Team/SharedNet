@@ -7,6 +7,10 @@ import { and, asc, count, desc, eq, gt, ilike, inArray, isNull, lt, lte, or, sql
 import {
   cliLogins,
   agents,
+  creditAccounts,
+  creditCodes,
+  creditRedemptions,
+  creditTransfers,
   apiKey,
   decisions,
   idempotencyRecords,
@@ -35,6 +39,11 @@ import {
   generateSecret,
   SHR_SECRET_PATTERN,
   type ShrSecret,
+  type CreditBalance,
+  type CreditCode,
+  type CreditTransfer,
+  type CreditTransferRequest,
+  type TransferId,
   presenceFor,
   type Agent,
   type AgentId,
@@ -69,7 +78,7 @@ import {
   type SharedNetRepository,
   type StoredHttpResult,
 } from "./repository.ts";
-import { sharedRoomsEdges, type DecisionAnswer, type DecisionOverview, type McpClient, type McpSeat, type NetworkView, type RoomOverview, type RoomView, type SeatOverview, type SharedRoomView } from "./repository.ts";
+import { sharedRoomsEdges, type CreditAuth, type CreditLedgerQuery, type CreditRedemption, type CreditsOverview, type DecisionAnswer, type DecisionOverview, type McpClient, type McpSeat, type NetworkView, type RoomOverview, type RoomView, type SeatOverview, type SharedRoomView } from "./repository.ts";
 import { mcpLocalInstanceKey, runtimeKindForMcp } from "./memory-repository.ts";
 import type {
   AddRoomMembersRequest,
@@ -290,6 +299,42 @@ function projectMessage(
     type: "message",
     content: row.content,
     reply_to_message_id: row.replyToMessageId,
+    created_at: timestamp(row.createdAt),
+  };
+}
+
+/**
+ * One string per idempotency scope, for the advisory lock that serializes it.
+ * The separator is a unit separator rather than a NUL: PostgreSQL text cannot
+ * hold a NUL byte, and the parameter is sent as text.
+ */
+function idempotencyLockKey(scope: IdempotencyScope): string {
+  return [scope.principalId, scope.credentialClass, scope.actorId, scope.operationId, scope.key].join("\u001f");
+}
+
+function projectTransfer(row: typeof creditTransfers.$inferSelect): CreditTransfer {
+  return {
+    id: row.id,
+    from_principal_id: row.fromPrincipalId,
+    to_principal_id: row.toPrincipalId,
+    amount: row.amount,
+    memo: row.memo,
+    room_id: row.roomId,
+    by_instance_id: row.byInstanceId,
+    addressed_to: row.addressedTo,
+    code: row.code,
+    created_at: timestamp(row.createdAt),
+  };
+}
+
+function projectCreditCode(row: typeof creditCodes.$inferSelect): CreditCode {
+  return {
+    code: row.code,
+    amount: row.amount,
+    max_redemptions: row.maxRedemptions,
+    redeemed_count: row.redeemedCount,
+    expires_at: row.expiresAt ? timestamp(row.expiresAt) : null,
+    active: row.active,
     created_at: timestamp(row.createdAt),
   };
 }
@@ -1901,6 +1946,9 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
         const anonymous = row?.principal;
         if (!anonymous || anonymous.id === account.id) continue;
         if (anonymous.authUserId !== null || anonymous.mergedIntoPrincipalId !== null) continue;
+        // The same identity lock a payment takes, in the same order: a claim
+        // and a payment that touch these Principals serialize rather than race.
+        await this.lockIdentities([anonymous.id, account.id]);
         // Binding: every Instance of the anonymous Principal moves under the
         // account's Principal. Memberships, messages, Rooms and Decisions carry
         // the Instance's Principal beside its id and follow by ON UPDATE CASCADE.
@@ -1912,6 +1960,10 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
           .update(principals)
           .set({ mergedIntoPrincipalId: account.id })
           .where(eq(principals.id, anonymous.id));
+        // Credits follow the Instances. An anonymous seat may hold credits it
+        // was paid before its human logged in; without this the purse would be
+        // stranded on a Principal nothing acts as any more.
+        await this.moveCreditPurse(anonymous.id, account.id);
         bound.push(anonymous.id);
       }
       const now = this.now();
@@ -2033,6 +2085,16 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
     try {
       return await this.inTransaction(async () => {
         const now = this.now();
+        // The scope is held for the whole transaction before anything is read
+        // or done. Two requests that share a key would otherwise both find no
+        // record, both run the operation, and the loser would surface whatever
+        // the now-changed world says — for a payment, `insufficient_credits`
+        // for money that its own twin had already moved — instead of replaying
+        // the one response the key promises. Blocking here makes the loser wait
+        // and then replay. Advisory locks are transaction-scoped and released
+        // on commit or rollback; a hash collision only serializes two unrelated
+        // keys for a moment.
+        await this.executor().execute(sql`SELECT pg_advisory_xact_lock(hashtext(${idempotencyLockKey(scope)}))`);
         await this.executor()
           .delete(idempotencyRecords)
           .where(lte(idempotencyRecords.expiresAt, now));
@@ -2068,6 +2130,342 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
       if (!winner) throw error;
       return this.replayIdempotency(winner, fingerprint);
     }
+  }
+
+  // ---- Credits: a purse per Principal, a ledger of every movement. ----
+
+  async getCredits(auth: CreditAuth): Promise<{ credits: CreditBalance }> {
+    return { credits: await this.purseOf(auth.principalId) };
+  }
+
+  async redeemCredits(auth: CreditAuth, code: string): Promise<CreditRedemption> {
+    return this.redeem(auth.principalId, code);
+  }
+
+  async transferCredits(auth: CreditAuth, input: CreditTransferRequest): Promise<{ transfer: CreditTransfer; credits: CreditBalance }> {
+    if (input.room_id !== undefined && input.room_id !== null) await this.roomById(input.room_id);
+    // One transaction: identities are locked and only then resolved, so a
+    // claim finishing mid-payment cannot leave either side pointing at a purse
+    // nothing spends from; the debit is then a conditional UPDATE, so two
+    // payments racing for one purse cannot both pass a check they read a
+    // moment earlier.
+    const { transfer, payer } = await this.inTransaction(async () => {
+      // Read first without locking, to know which identities are in play, then
+      // lock every one of them — the raw ids and where they currently point.
+      const payerRaw = auth.principalId;
+      const payeeRaw = await this.purseBehind(input.to);
+      if (payeeRaw === null) throw new RepositoryError(404, "payee_not_found", "No Principal, Agent or Instance with that id.");
+      await this.lockIdentities([payerRaw, payeeRaw, await this.canonicalPrincipal(payerRaw)]);
+      // Under the lock the mapping is settled: re-resolve both sides.
+      const payer = await this.canonicalPrincipal(payerRaw);
+      const payee = await this.purseBehind(input.to);
+      if (payee === null) throw new RepositoryError(404, "payee_not_found", "No Principal, Agent or Instance with that id.");
+      if (payee === payer) throw new RepositoryError(422, "transfer_to_self", "A transfer to your own Principal moves nothing.");
+      // A claim that landed between the two reads moved an identity we did not
+      // lock. Refusing is the honest answer; the caller retries with its key.
+      await this.lockIdentities([payer, payee]);
+      if ((await this.canonicalPrincipal(payer)) !== payer || (await this.purseBehind(input.to)) !== payee) {
+        throw new RepositoryError(409, "credits_identity_moved", "The account behind one of these ids changed just now; try again.");
+      }
+      await this.ensurePurses([payer, payee]);
+      await this.lockPurses([payer, payee]);
+      const [debited] = await this.executor()
+        .update(creditAccounts)
+        .set({ balance: sql`${creditAccounts.balance} - ${input.amount}`, updatedAt: this.now() })
+        .where(and(eq(creditAccounts.principalId, payer), sql`${creditAccounts.balance} >= ${input.amount}`))
+        .returning({ balance: creditAccounts.balance });
+      if (!debited) throw new RepositoryError(409, "insufficient_credits", "The purse does not hold that many credits.");
+      await this.executor()
+        .update(creditAccounts)
+        .set({ balance: sql`${creditAccounts.balance} + ${input.amount}`, updatedAt: this.now() })
+        .where(eq(creditAccounts.principalId, payee));
+      const [row] = await this.executor()
+        .insert(creditTransfers)
+        .values({
+          id: generatePublicId("txn"),
+          fromPrincipalId: payer,
+          toPrincipalId: payee,
+          amount: input.amount,
+          memo: input.memo ?? null,
+          roomId: input.room_id ?? null,
+          byInstanceId: auth.kind === "instance" ? auth.instanceId : null,
+          addressedTo: input.to,
+          code: null,
+          createdAt: this.now(),
+        })
+        .returning();
+      if (!row) throw new RepositoryError(500, "internal_error", "Transfer failed.");
+      return { transfer: projectTransfer(row), payer };
+    });
+    return { transfer, credits: await this.purseOf(payer) };
+  }
+
+  async listCreditTransfers(auth: CreditAuth, input: CreditLedgerQuery): Promise<Page<CreditTransfer>> {
+    return this.ledgerOf(auth.principalId, input);
+  }
+
+  async mintCreditCode(input: { code: string; amount: number; max_redemptions?: number | null; expires_at?: string | null }): Promise<{ code: CreditCode }> {
+    const [row] = await this.executor()
+      .insert(creditCodes)
+      .values({
+        code: input.code,
+        amount: input.amount,
+        maxRedemptions: input.max_redemptions ?? null,
+        redeemedCount: 0,
+        expiresAt: input.expires_at ? new Date(input.expires_at) : null,
+        active: true,
+        createdAt: this.now(),
+      })
+      .returning();
+    if (!row) throw new RepositoryError(500, "internal_error", "Code could not be minted.");
+    return { code: projectCreditCode(row) };
+  }
+
+  async creditsForPrincipal(principalId: PrincipalId): Promise<CreditsOverview> {
+    await this.requirePrincipalRow(principalId);
+    return { credits: await this.purseOf(principalId), transfers: (await this.ledgerOf(principalId, { limit: 100, before: null })).items };
+  }
+
+  async redeemCreditsForPrincipal(principalId: PrincipalId, code: string): Promise<CreditRedemption> {
+    await this.requirePrincipalRow(principalId);
+    return this.redeem(principalId, code);
+  }
+
+  private async requirePrincipalRow(principalId: PrincipalId): Promise<PrincipalRow> {
+    const [row] = await this.executor().select().from(principals).where(eq(principals.id, principalId)).limit(1);
+    if (!row) throw new RepositoryError(404, "principal_not_found", "Principal was not found.");
+    return row;
+  }
+
+  /**
+   * Moves one purse into another, as part of binding an anonymous Principal
+   * into an account (identity model: history follows the Instance). The move
+   * is a ledger row like any other, so "balance is the sum of the ledger"
+   * still holds on both sides, and the account can see where it came from.
+   */
+  private async moveCreditPurse(fromPrincipalId: PrincipalId, toPrincipalId: PrincipalId): Promise<void> {
+    // Lock first, read second. Reading the balance before taking the lock
+    // meant a payment that committed while this waited was spent twice: the
+    // old figure was moved across and the old purse zeroed, conjuring the
+    // difference out of nothing and breaking "balance is the sum of the ledger".
+    await this.ensurePurses([fromPrincipalId, toPrincipalId]);
+    await this.lockPurses([fromPrincipalId, toPrincipalId]);
+    const [purse] = await this.executor()
+      .select({ balance: creditAccounts.balance })
+      .from(creditAccounts)
+      .where(eq(creditAccounts.principalId, fromPrincipalId))
+      .limit(1);
+    const amount = purse?.balance ?? 0;
+    if (amount <= 0) return;
+    await this.executor()
+      .update(creditAccounts)
+      .set({ balance: 0, updatedAt: this.now() })
+      .where(eq(creditAccounts.principalId, fromPrincipalId));
+    await this.executor()
+      .update(creditAccounts)
+      .set({ balance: sql`${creditAccounts.balance} + ${amount}`, updatedAt: this.now() })
+      .where(eq(creditAccounts.principalId, toPrincipalId));
+    await this.executor().insert(creditTransfers).values({
+      id: generatePublicId("txn"),
+      fromPrincipalId,
+      toPrincipalId,
+      amount,
+      memo: "Bound into this account by sharednet login",
+      roomId: null,
+      byInstanceId: null,
+      addressedTo: toPrincipalId,
+      code: null,
+      createdAt: this.now(),
+    });
+  }
+
+  /**
+   * A purse row exists for everyone who ever moved credits; balance 0 until
+   * then. Inserted in id order for the same reason the locks are taken in id
+   * order: two transactions creating the same pair must agree on a sequence.
+   */
+  private async ensurePurses(principalIds: PrincipalId[]): Promise<void> {
+    const ordered = [...new Set(principalIds)].sort();
+    await this.executor()
+      .insert(creditAccounts)
+      .values(ordered.map((principalId) => ({ principalId, balance: 0, updatedAt: this.now() })))
+      .onConflictDoNothing();
+  }
+
+  /** Locks the named purses for this transaction, always in ascending id order. */
+  private async lockPurses(principalIds: PrincipalId[]): Promise<void> {
+    for (const principalId of [...new Set(principalIds)].sort()) {
+      await this.executor()
+        .select({ principalId: creditAccounts.principalId })
+        .from(creditAccounts)
+        .where(eq(creditAccounts.principalId, principalId))
+        .for("update")
+        .limit(1);
+    }
+  }
+
+  /**
+   * The identity lock. Credits and account claims both move value between
+   * Principals, and a claim can change which Principal an id means while a
+   * payment is deciding. Every such transaction takes one advisory lock per
+   * Principal it touches, in ascending id order, so they serialize instead of
+   * racing, and none of them can deadlock against another: the order is the
+   * same for everyone. Advisory locks last to the end of the transaction and
+   * are released on commit or rollback.
+   */
+  private async lockIdentities(principalIds: Array<PrincipalId | null | undefined>): Promise<void> {
+    const ordered = [...new Set(principalIds.filter((id): id is PrincipalId => Boolean(id)))].sort();
+    for (const principalId of ordered) {
+      await this.executor().execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`credits:${principalId}`}))`);
+    }
+  }
+
+  /** Follows a bound Principal to the account it was bound into; anything else is itself. */
+  private async canonicalPrincipal(principalId: PrincipalId): Promise<PrincipalId> {
+    const [row] = await this.executor()
+      .select({ mergedInto: principals.mergedIntoPrincipalId })
+      .from(principals)
+      .where(eq(principals.id, principalId))
+      .limit(1);
+    return (row?.mergedInto as PrincipalId | undefined) ?? principalId;
+  }
+
+  /** The Principal whose purse an id names: a Principal's own, an Agent's owner, an Instance's owner. */
+  private async purseBehind(id: string): Promise<PrincipalId | null> {
+    if (id.startsWith("p_")) {
+      const [row] = await this.executor()
+        .select({ id: principals.id, mergedInto: principals.mergedIntoPrincipalId })
+        .from(principals)
+        .where(eq(principals.id, id as PrincipalId))
+        .limit(1);
+      return row ? (row.mergedInto ?? row.id) : null;
+    }
+    if (id.startsWith("a_")) {
+      const [row] = await this.executor().select({ principalId: agents.principalId }).from(agents).where(eq(agents.id, id as AgentId)).limit(1);
+      // A claim repoints Instances but not Agent tags, so a tag can still name
+      // the Principal it was created under after that Principal was bound.
+      return row ? this.canonicalPrincipal(row.principalId) : null;
+    }
+    if (id.startsWith("i_")) {
+      const [row] = await this.executor().select({ principalId: instances.principalId }).from(instances).where(eq(instances.id, id as InstanceId)).limit(1);
+      return row ? this.canonicalPrincipal(row.principalId) : null;
+    }
+    return null;
+  }
+
+  private async purseOf(principalId: PrincipalId): Promise<CreditBalance> {
+    const [account] = await this.executor()
+      .select({ balance: creditAccounts.balance })
+      .from(creditAccounts)
+      .where(eq(creditAccounts.principalId, principalId))
+      .limit(1);
+    const [sums] = await this.executor()
+      .select({
+        granted: sql<string>`coalesce(sum(case when ${creditTransfers.toPrincipalId} = ${principalId} and ${creditTransfers.fromPrincipalId} is null then ${creditTransfers.amount} else 0 end), 0)`,
+        received: sql<string>`coalesce(sum(case when ${creditTransfers.toPrincipalId} = ${principalId} and ${creditTransfers.fromPrincipalId} is not null then ${creditTransfers.amount} else 0 end), 0)`,
+        sent: sql<string>`coalesce(sum(case when ${creditTransfers.fromPrincipalId} = ${principalId} then ${creditTransfers.amount} else 0 end), 0)`,
+      })
+      .from(creditTransfers)
+      .where(or(eq(creditTransfers.toPrincipalId, principalId), eq(creditTransfers.fromPrincipalId, principalId)));
+    return {
+      principal_id: principalId,
+      balance: account?.balance ?? 0,
+      granted: Number(sums?.granted ?? 0),
+      sent: Number(sums?.sent ?? 0),
+      received: Number(sums?.received ?? 0),
+    };
+  }
+
+  private async ledgerOf(principalId: PrincipalId, input: CreditLedgerQuery): Promise<Page<CreditTransfer>> {
+    const mine = or(eq(creditTransfers.toPrincipalId, principalId), eq(creditTransfers.fromPrincipalId, principalId));
+    let boundary: { createdAt: Date; id: TransferId } | null = null;
+    if (input.before !== null) {
+      const [row] = await this.executor()
+        .select({ createdAt: creditTransfers.createdAt, id: creditTransfers.id })
+        .from(creditTransfers)
+        .where(and(eq(creditTransfers.id, input.before), mine))
+        .limit(1);
+      if (!row) throw new RepositoryError(400, "invalid_cursor", "Cursor is invalid.");
+      boundary = row;
+    }
+    const rows = await this.executor()
+      .select()
+      .from(creditTransfers)
+      .where(
+        boundary === null
+          ? mine
+          : and(
+              mine,
+              or(
+                lt(creditTransfers.createdAt, boundary.createdAt),
+                and(eq(creditTransfers.createdAt, boundary.createdAt), lt(creditTransfers.id, boundary.id)),
+              ),
+            ),
+      )
+      .orderBy(desc(creditTransfers.createdAt), desc(creditTransfers.id))
+      .limit(input.limit + 1);
+    const hasMore = rows.length > input.limit;
+    const items = rows.slice(0, input.limit).map(projectTransfer);
+    return { items, next_cursor: hasMore ? items[items.length - 1]!.id : null, has_more: hasMore };
+  }
+
+  private async redeem(principalId: PrincipalId, code: string): Promise<CreditRedemption> {
+    return this.inTransaction(async () => {
+      await this.lockIdentities([principalId]);
+      // The code row is locked for the whole redemption, so a cap of N is N.
+      const [grant] = await this.executor().select().from(creditCodes).where(eq(creditCodes.code, code)).for("update").limit(1);
+      if (!grant || !grant.active) throw new RepositoryError(404, "credit_code_not_found", "That code grants nothing.");
+      // What this Principal already redeemed is settled history: a retry answers
+      // the same way for good, even once the code itself has expired or filled up.
+      const [already] = await this.executor()
+        .select({ transferId: creditRedemptions.transferId })
+        .from(creditRedemptions)
+        .where(and(eq(creditRedemptions.code, code), eq(creditRedemptions.principalId, principalId)))
+        .limit(1);
+      if (already) return { credits: await this.purseOf(principalId), granted: 0, transfer: null };
+      if (grant.expiresAt !== null && grant.expiresAt.getTime() <= this.now().getTime()) {
+        throw new RepositoryError(410, "credit_code_expired", "That code has expired.");
+      }
+      // An anonymous Principal is free to create, so a code it could redeem would be an infinite purse.
+      const [principal] = await this.executor()
+        .select({ authUserId: principals.authUserId })
+        .from(principals)
+        .where(eq(principals.id, principalId))
+        .limit(1);
+      if (!principal?.authUserId) {
+        throw new RepositoryError(403, "credits_account_required", "Only a Principal with an account behind it can redeem a code; run sharednet login.");
+      }
+      if (grant.maxRedemptions !== null && grant.redeemedCount >= grant.maxRedemptions) {
+        throw new RepositoryError(410, "credit_code_exhausted", "That code has been redeemed as many times as it allows.");
+      }
+      await this.executor()
+        .update(creditCodes)
+        .set({ redeemedCount: sql`${creditCodes.redeemedCount} + 1` })
+        .where(eq(creditCodes.code, code));
+      await this.ensurePurses([principalId]);
+      await this.executor()
+        .update(creditAccounts)
+        .set({ balance: sql`${creditAccounts.balance} + ${grant.amount}`, updatedAt: this.now() })
+        .where(eq(creditAccounts.principalId, principalId));
+      const [row] = await this.executor()
+        .insert(creditTransfers)
+        .values({
+          id: generatePublicId("txn"),
+          fromPrincipalId: null,
+          toPrincipalId: principalId,
+          amount: grant.amount,
+          memo: null,
+          roomId: null,
+          byInstanceId: null,
+          addressedTo: principalId,
+          code,
+          createdAt: this.now(),
+        })
+        .returning();
+      if (!row) throw new RepositoryError(500, "internal_error", "Redemption failed.");
+      await this.executor().insert(creditRedemptions).values({ code, principalId, transferId: row.id, createdAt: this.now() });
+      return { credits: await this.purseOf(principalId), granted: grant.amount, transfer: projectTransfer(row) };
+    });
   }
 
   private executor(): SharedNetDatabase {

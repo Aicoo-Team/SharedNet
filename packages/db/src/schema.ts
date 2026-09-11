@@ -1,5 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
+  bigint,
+  boolean,
   check,
   foreignKey,
   index,
@@ -25,6 +27,7 @@ import type {
   MessageId,
   PrincipalId,
   RoomId,
+  TransferId,
 } from "../../protocol/src/index.ts";
 import { authUser } from "./auth-schema.ts";
 
@@ -45,6 +48,8 @@ const MEMBER_ID_RE = sql.raw("'^mem_[0-9A-Za-z]{10}$'");
 const INVITE_ID_RE = sql.raw("'^inv_[0-9A-Za-z]{10}$'");
 const SHA256_HEX_RE = sql.raw("'^[0-9a-f]{64}$'");
 const SHARE_TOKEN_RE = sql.raw("'^shr_[A-Za-z0-9_-]{43}$'");
+const TRANSFER_ID_RE = sql.raw("'^txn_[0-9A-Za-z]{10}$'");
+const CREDIT_CODE_RE = sql.raw("'^[A-Z0-9][A-Z0-9-]{2,31}$'");
 
 export const principals = sharednetSchema.table(
   "principal",
@@ -749,6 +754,133 @@ export const instanceCursors = sharednetSchema.table(
   ],
 );
 
+/**
+ * Credits (decision 2026-09-11): play money for a hackathon's trading round.
+ * The purse belongs to the Principal; every movement of value, minted or
+ * paid, is one row in `credit_transfer`, and the account row is the running
+ * total the debit is checked against in the same transaction.
+ */
+export const creditAccounts = sharednetSchema.table(
+  "credit_account",
+  {
+    principalId: text("principal_id").$type<PrincipalId>().primaryKey(),
+    balance: bigint("balance", { mode: "number" }).default(0).notNull(),
+    updatedAt: domainTimestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    foreignKey({
+      name: "credit_account_principal_fk",
+      columns: [table.principalId],
+      foreignColumns: [principals.id],
+    }).onDelete("cascade"),
+    check("credit_account_balance_nonnegative", sql`${table.balance} >= 0`),
+  ],
+);
+
+/** A grant code an operator minted; never a value in the repository. */
+export const creditCodes = sharednetSchema.table(
+  "credit_code",
+  {
+    code: text("code").primaryKey(),
+    amount: bigint("amount", { mode: "number" }).notNull(),
+    /** Null: unlimited. */
+    maxRedemptions: integer("max_redemptions"),
+    redeemedCount: integer("redeemed_count").default(0).notNull(),
+    expiresAt: domainTimestamp("expires_at"),
+    active: boolean("active").default(true).notNull(),
+    createdAt: domainTimestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [
+    check("credit_code_format", sql`${table.code} ~ ${CREDIT_CODE_RE}`),
+    check("credit_code_amount_positive", sql`${table.amount} > 0`),
+    check("credit_code_redemptions_nonnegative", sql`${table.redeemedCount} >= 0`),
+    check(
+      "credit_code_redemptions_within_max",
+      sql`${table.maxRedemptions} IS NULL OR ${table.redeemedCount} <= ${table.maxRedemptions}`,
+    ),
+  ],
+);
+
+export const creditTransfers = sharednetSchema.table(
+  "credit_transfer",
+  {
+    id: text("id").$type<TransferId>().primaryKey(),
+    /** Null when minted by a code redemption. */
+    fromPrincipalId: text("from_principal_id").$type<PrincipalId>(),
+    toPrincipalId: text("to_principal_id").$type<PrincipalId>().notNull(),
+    amount: bigint("amount", { mode: "number" }).notNull(),
+    memo: text("memo"),
+    roomId: text("room_id").$type<RoomId>(),
+    /** The seat that said pay; null for a redemption or an account-key payment. */
+    byInstanceId: text("by_instance_id").$type<InstanceId>(),
+    /** What the payer typed; resolved to `to_principal_id` at the time. */
+    addressedTo: text("addressed_to").notNull(),
+    /** For a redemption: the code. */
+    code: text("code"),
+    createdAt: domainTimestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [
+    foreignKey({
+      name: "credit_transfer_from_principal_fk",
+      columns: [table.fromPrincipalId],
+      foreignColumns: [principals.id],
+    }),
+    foreignKey({
+      name: "credit_transfer_to_principal_fk",
+      columns: [table.toPrincipalId],
+      foreignColumns: [principals.id],
+    }),
+    foreignKey({ name: "credit_transfer_room_fk", columns: [table.roomId], foreignColumns: [rooms.id] }).onDelete(
+      "set null",
+    ),
+    foreignKey({
+      name: "credit_transfer_by_instance_fk",
+      columns: [table.byInstanceId],
+      foreignColumns: [instances.id],
+    })
+      .onDelete("set null")
+      .onUpdate("cascade"),
+    foreignKey({ name: "credit_transfer_code_fk", columns: [table.code], foreignColumns: [creditCodes.code] }),
+    index("credit_transfer_from_created_at_idx").on(table.fromPrincipalId, table.createdAt),
+    index("credit_transfer_to_created_at_idx").on(table.toPrincipalId, table.createdAt),
+    check("credit_transfer_id_format", sql`${table.id} ~ ${TRANSFER_ID_RE}`),
+    check("credit_transfer_amount_positive", sql`${table.amount} > 0`),
+    check(
+      "credit_transfer_minted_or_paid",
+      sql`(${table.fromPrincipalId} IS NULL AND ${table.code} IS NOT NULL)
+          OR (${table.fromPrincipalId} IS NOT NULL AND ${table.code} IS NULL)`,
+    ),
+    check("credit_transfer_memo_length", sql`${table.memo} IS NULL OR length(${table.memo}) <= 200`),
+  ],
+);
+
+/** One redemption per code per Principal: the scarcity the whole thing rests on. */
+export const creditRedemptions = sharednetSchema.table(
+  "credit_redemption",
+  {
+    code: text("code").notNull(),
+    principalId: text("principal_id").$type<PrincipalId>().notNull(),
+    transferId: text("transfer_id").$type<TransferId>().notNull(),
+    createdAt: domainTimestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [
+    primaryKey({ name: "credit_redemption_pk", columns: [table.code, table.principalId] }),
+    foreignKey({ name: "credit_redemption_code_fk", columns: [table.code], foreignColumns: [creditCodes.code] }).onDelete(
+      "cascade",
+    ),
+    foreignKey({
+      name: "credit_redemption_principal_fk",
+      columns: [table.principalId],
+      foreignColumns: [principals.id],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "credit_redemption_transfer_fk",
+      columns: [table.transferId],
+      foreignColumns: [creditTransfers.id],
+    }),
+  ],
+);
+
 export const databaseSchema = {
   principals,
   agents,
@@ -762,4 +894,8 @@ export const databaseSchema = {
   idempotencyRecords,
   cliLogins,
   instanceCursors,
+  creditAccounts,
+  creditCodes,
+  creditTransfers,
+  creditRedemptions,
 } as const;

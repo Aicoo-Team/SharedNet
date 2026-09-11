@@ -99,6 +99,13 @@
       "when": 1789060739021,
       "tag": "0013_shared_rooms",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1789071976194,
+      "tag": "0014_credits",
+      "breakpoints": true
     }
   ]
 }
