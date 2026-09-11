@@ -2113,4 +2113,68 @@ describe("artifacts: a file an Agent hands to the Room", () => {
     expect((await json(conflict)).error.code).toBe("idempotency_conflict");
     expect((await request(store, "/api/v1/artifacts", { method: "POST", headers: { authorization: `Bearer ${owner.token}`, "x-sharednet-filename": "x.txt", "x-sharednet-room": roomId }, body: "x" })).status).toBe(400);
   });
+  it("keeps every guest file manageable by the claiming account, including the original upload replay", async () => {
+    const store = artifactStore();
+    const { ownerAuth, memberAuth, roomId } = await sharedRoom(store);
+    const { token } = await store.createRoomInvite({ roomId: roomId as `rom_${string}`, principalId: ownerAuth.principalId });
+    const guest = await store.joinRoomWithInvite(token, roomId as `rom_${string}`, { name: "file author", runtime: { kind: "curl" } });
+    const guestAuth = (await store.authenticateInstance(guest.member_token))!;
+    const files = [];
+    for (const reach of ["private", "room", "link"] as const) {
+      const headers = {
+        authorization: `Bearer ${guest.member_token}`,
+        "idempotency-key": crypto.randomUUID(),
+        "x-sharednet-filename": `${reach}.txt`,
+        "x-sharednet-reach": reach,
+        ...(reach === "room" ? { "x-sharednet-room": roomId } : {}),
+      };
+      const response = await request(store, "/api/v1/artifacts", { method: "POST", headers, body: "guest file" });
+      expect(response.status).toBe(201);
+      const body = await response.text();
+      const decoded = JSON.parse(body) as { artifact: { id: `art_${string}` }; link_key?: string };
+      files.push({ reach, headers, body, ...decoded });
+    }
+    expect(await store.artifactUsage(guestAuth)).toMatchObject({ bytes: 30, count: 3 });
+    const login = await store.startCliLogin({ label: "file author", seats: [guest.member_token] });
+    await store.approveCliLogin({ code: login.user_code, principalId: ownerAuth.principalId });
+    const claimed = (await store.authenticateInstance(guest.member_token))!;
+    expect(claimed.principalId).toBe(ownerAuth.principalId);
+    expect(await store.artifactUsage(claimed)).toMatchObject({ bytes: 30, count: 3 });
+    expect((await store.listArtifacts(claimed, { room_id: null, before: null, limit: 50 })).items).toHaveLength(3);
+    for (const file of files) {
+      const read = await store.readArtifact(claimed, file.artifact.id);
+      expect(new TextDecoder().decode(read.bytes)).toBe("guest file");
+      expect(read.artifact.principal_id).toBe(ownerAuth.principalId);
+      await expect(store.deleteArtifact(memberAuth, file.artifact.id)).rejects.toMatchObject({ code: "artifact_not_found" });
+      if (file.reach !== "room") await expect(store.readArtifact(memberAuth, file.artifact.id)).rejects.toMatchObject({ code: "artifact_not_found" });
+      const replay = await request(store, "/api/v1/artifacts", { method: "POST", headers: file.headers, body: "guest file" });
+      expect(replay.status).toBe(201);
+      expect(replay.headers.get("idempotency-replayed")).toBe("true");
+      expect(await replay.text()).toBe(file.body);
+      const conflict = await request(store, "/api/v1/artifacts", { method: "POST", headers: file.headers, body: "changed" });
+      expect(conflict.status).toBe(409);
+      expect((await json(conflict)).error.code).toBe("idempotency_conflict");
+    }
+    expect(await store.artifactUsage(claimed)).toMatchObject({ bytes: 30, count: 3 });
+    for (const file of files) {
+      expect((await store.deleteArtifact(claimed, file.artifact.id)).artifact.principal_id).toBe(ownerAuth.principalId);
+      if (file.link_key) await expect(store.readArtifactByLink(file.artifact.id, file.link_key)).rejects.toMatchObject({ code: "artifact_not_found" });
+    }
+    expect(await store.artifactUsage(claimed)).toMatchObject({ bytes: 0, count: 0 });
+  });
+
+  it("charges an upload authenticated before a finished guest claim to the current account", async () => {
+    const store = artifactStore();
+    const { ownerAuth, roomId } = await sharedRoom(store);
+    const { token } = await store.createRoomInvite({ roomId: roomId as `rom_${string}`, principalId: ownerAuth.principalId });
+    const guest = await store.joinRoomWithInvite(token, roomId as `rom_${string}`, { name: "late upload", runtime: { kind: "curl" } });
+    const staleAuth = (await store.authenticateInstance(guest.member_token))!;
+    const login = await store.startCliLogin({ label: "late upload", seats: [guest.member_token] });
+    await store.approveCliLogin({ code: login.user_code, principalId: ownerAuth.principalId });
+    const uploaded = await store.uploadArtifact(staleAuth, { filename: "late.txt", reach: "private", room_id: null, content_type: "text/plain", bytes: new TextEncoder().encode("late") });
+    expect(uploaded.artifact.principal_id).toBe(ownerAuth.principalId);
+    expect(await store.artifactUsage(ownerAuth)).toMatchObject({ bytes: 4, count: 1 });
+    expect((await store.readArtifact(ownerAuth, uploaded.artifact.id)).artifact.id).toBe(uploaded.artifact.id);
+  });
+
 });

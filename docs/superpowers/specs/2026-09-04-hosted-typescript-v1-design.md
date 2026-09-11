@@ -57,6 +57,27 @@ V1 explicitly excludes:
 - deterministic IDs derived from names, email addresses, provider IDs, machines, or workspace paths;
 - the current Python API, Python CLI, SQLite, local API daemon, launchd service, and Console/BFF credential model in the active product path.
 
+
+**Amended 2026-09-11 — bounded artifacts and claim ownership.** The binary
+artifact exclusion above is superseded by the [artifact
+decision](../../decisions/2026-09-11-artifacts.md): raw-body uploads and
+attachment downloads, with `room`, `link` or `private` reach, are included.
+Hosted object storage remains deferred; metadata and bytes live in PostgreSQL
+with a 4 MiB file limit and a 256 MiB account upload quota.
+
+Artifact authorization, listing, deletion, usage and fresh projections resolve
+the stored uploader Principal through its permanent guest-claim merge mapping.
+This applies to rows created before the correction as well as later uploads.
+A claim preserves all files even if combined holdings exceed quota; further
+uploads require enough free space. Uploads use the same complete sorted
+identity-lock set as claims, re-resolve ownership after locking, and then
+serialize quota checks under the effective account. Ownership moving outside
+the discovered set returns `409 credits_identity_moved` before any write;
+the same key can be retried. The stable Instance idempotency rule in §7.8 also
+applies to uploads: claim never rewrites or duplicates an original response.
+See [the ownership decision](../../decisions/2026-09-11-artifact-claim-ownership.md)
+for recovery and concurrency details.
+
 ## 3. Deployment architecture
 
 V1 uses one Vercel project and one public origin:
