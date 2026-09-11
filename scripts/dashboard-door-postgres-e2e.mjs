@@ -761,5 +761,8 @@ await assert.rejects(
   { code: "room_closed", status: 409 },
 );
 
+const { checkArtifactIdentity } = await import("./artifact-identity-postgres-checks.mjs");
+await checkArtifactIdentity({ repository, pool, owner, visitor, account, raceGuest, gate, controlledRepository, waitForDatabaseLock, handleRequest });
+
 await pool.end();
 console.log(JSON.stringify({ status: "passed", room: room.id, scheduled: scheduled.room.id}));

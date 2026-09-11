@@ -1626,6 +1626,7 @@ export class MemorySharedNetRepository implements SharedNetRepository {
   // ---- Artifacts: files an Agent hands to a Room. ----
 
   async uploadArtifact(auth: CreditAuth, input: UploadArtifactInput): Promise<UploadedArtifact> {
+    const principalId = this.artifactOwner(auth.principalId);
     if (input.bytes.byteLength === 0) {
       throw new RepositoryError(422, "validation_failed", "Request is invalid.");
     }
@@ -1639,20 +1640,20 @@ export class MemorySharedNetRepository implements SharedNetRepository {
         (membership) =>
           membership.room_id === input.room_id &&
           membership.state === "active" &&
-          this.instances.get(membership.instance_id)?.principal_id === auth.principalId,
+          this.instances.get(membership.instance_id)?.principal_id === principalId,
       );
       if (!seated) throw new RepositoryError(404, "room_not_found", "Room was not found.");
       const room = this.rooms.get(input.room_id);
       if (room?.state === "closed") throw new RepositoryError(409, "room_closed", "Room is closed.");
     }
-    const held = this.usageOf(auth.principalId);
+    const held = this.usageOf(principalId);
     if (held.bytes + input.bytes.byteLength > ARTIFACT_QUOTA_BYTES) {
       throw new RepositoryError(409, "artifact_quota_reached", "This account is holding as many bytes as it may.");
     }
     const linkKey = input.reach === "link" ? generateSecret("afk") : null;
     const artifact: Artifact & { linkKey: AfkSecret | null } = {
       id: generatePublicId("art"),
-      principal_id: auth.principalId,
+      principal_id: principalId,
       uploaded_by_instance_id: auth.kind === "instance" ? auth.instanceId : null,
       room_id: input.reach === "room" ? input.room_id : (input.room_id ?? null),
       reach: input.reach,
@@ -1709,7 +1710,7 @@ export class MemorySharedNetRepository implements SharedNetRepository {
   async deleteArtifact(auth: CreditAuth, artifactId: ArtifactId): Promise<{ artifact: Artifact }> {
     const record = this.artifacts.get(artifactId);
     // Only the account that uploaded it; to anyone else it is not there at all.
-    if (!record || record.principal_id !== auth.principalId) {
+    if (!record || this.artifactOwner(record.principal_id) !== this.artifactOwner(auth.principalId)) {
       throw new RepositoryError(404, "artifact_not_found", "File was not found.");
     }
     this.artifacts.delete(artifactId);
@@ -1718,7 +1719,8 @@ export class MemorySharedNetRepository implements SharedNetRepository {
   }
 
   private usageOf(principalId: PrincipalId): ArtifactUsage {
-    const mine = [...this.artifacts.values()].filter((record) => record.principal_id === principalId);
+    const owner = this.artifactOwner(principalId);
+    const mine = [...this.artifacts.values()].filter((record) => this.artifactOwner(record.principal_id) === owner);
     return {
       bytes: mine.reduce((sum, record) => sum + record.size_bytes, 0),
       quota_bytes: ARTIFACT_QUOTA_BYTES,
@@ -1727,7 +1729,8 @@ export class MemorySharedNetRepository implements SharedNetRepository {
   }
 
   private canRead(principalId: PrincipalId, record: Artifact): boolean {
-    if (record.principal_id === principalId) return true;
+    principalId = this.artifactOwner(principalId);
+    if (this.artifactOwner(record.principal_id) === principalId) return true;
     if (record.reach !== "room" || record.room_id === null) return false;
     return [...this.memberships.values()].some(
       (membership) =>
@@ -1748,7 +1751,12 @@ export class MemorySharedNetRepository implements SharedNetRepository {
   /** The key never leaves through a read: it is handed out once, at upload. */
   private projectArtifact(record: Artifact & { linkKey: AfkSecret | null }): Artifact {
     const { linkKey: _linkKey, ...artifact } = record;
-    return artifact;
+    return { ...artifact, principal_id: this.artifactOwner(artifact.principal_id) };
+  }
+
+  /** Retired guest rows remain recoverable through the permanent claim mapping. */
+  private artifactOwner(principalId: PrincipalId): PrincipalId {
+    return this.mergedPrincipals.get(principalId) ?? principalId;
   }
 
   // ---- Credits: a purse per Principal, a ledger of every movement. ----

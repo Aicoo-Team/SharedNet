@@ -2007,6 +2007,9 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
           .update(principals)
           .set({ mergedIntoPrincipalId: account.id })
           .where(eq(principals.id, anonymous.id));
+        // Artifact ownership follows this permanent merge pointer at read and
+        // quota time; no file or original idempotent response is rewritten.
+        // Uploads hold these same identity locks before reading account usage.
         // Credits follow the Instances. An anonymous seat may hold credits it
         // was paid before its human logged in; without this the purse would be
         // stranded on a Principal nothing acts as any more.
@@ -2182,28 +2185,38 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
     if (input.bytes.byteLength > MAX_ARTIFACT_BYTES) {
       throw new RepositoryError(413, "artifact_too_large", "File is larger than this service accepts.");
     }
-    if (input.reach === "room") {
-      if (input.room_id === null) throw new RepositoryError(422, "validation_failed", "Request is invalid.");
-      // You hand a file to a Room you are in, not to one you know the id of.
-      const [seat] = await this.executor()
-        .select({ instanceId: roomMembers.instanceId })
-        .from(roomMembers)
-        .where(
-          and(
-            eq(roomMembers.roomId, input.room_id),
-            eq(roomMembers.principalId, auth.principalId),
-            eq(roomMembers.state, "active"),
-          ),
-        )
-        .limit(1);
-      if (!seat) throw new RepositoryError(404, "room_not_found", "Room was not found.");
-      const room = await this.roomById(input.room_id);
-      if (room.state === "closed") throw new RepositoryError(409, "room_closed", "Room is closed.");
-    }
     return this.inTransaction(async () => {
+      // The same identity locks used by claims stabilize both the uploader and
+      // its effective account before quota is read. Never add a new identity
+      // lock after discovery: the ordering must match a multi-seat claim.
+      const discoveredOwner = await this.canonicalPrincipal(auth.principalId);
+      const locked = new Set([auth.principalId, discoveredOwner]);
+      await this.lockIdentities([...locked]);
+      const principalId = await this.canonicalPrincipal(auth.principalId);
+      if (!locked.has(principalId)) {
+        throw new RepositoryError(409, "credits_identity_moved", "The account behind one of these ids changed just now; try again.");
+      }
+      if (input.reach === "room") {
+        if (input.room_id === null) throw new RepositoryError(422, "validation_failed", "Request is invalid.");
+        // You hand a file to a Room you are in, not to one you know the id of.
+        const [seat] = await this.executor()
+          .select({ instanceId: roomMembers.instanceId })
+          .from(roomMembers)
+          .where(
+            and(
+              eq(roomMembers.roomId, input.room_id),
+              eq(roomMembers.principalId, principalId),
+              eq(roomMembers.state, "active"),
+            ),
+          )
+          .limit(1);
+        if (!seat) throw new RepositoryError(404, "room_not_found", "Room was not found.");
+        const room = await this.roomById(input.room_id);
+        if (room.state === "closed") throw new RepositoryError(409, "room_closed", "Room is closed.");
+      }
       // The quota is read and the row written in one transaction, so two
       // uploads racing cannot both squeeze past the last free byte.
-      const held = await this.usageOf(auth.principalId, true);
+      const held = await this.usageOf(principalId, true);
       if (held.bytes + input.bytes.byteLength > ARTIFACT_QUOTA_BYTES) {
         throw new RepositoryError(409, "artifact_quota_reached", "This account is holding as many bytes as it may.");
       }
@@ -2212,7 +2225,7 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
         .insert(artifacts)
         .values({
           id: generatePublicId("art"),
-          principalId: auth.principalId,
+          principalId,
           uploadedByInstanceId: auth.kind === "instance" ? auth.instanceId : null,
           roomId: input.reach === "room" ? input.room_id : (input.room_id ?? null),
           reach: input.reach,
@@ -2240,7 +2253,12 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
   }
 
   async readArtifactByLink(artifactId: ArtifactId, key: string): Promise<{ artifact: Artifact; bytes: Uint8Array }> {
-    const [row] = await this.executor().select().from(artifacts).where(eq(artifacts.id, artifactId)).limit(1);
+    const [found] = await this.executor()
+      .select({ artifact: artifacts, owner: principals.mergedIntoPrincipalId })
+      .from(artifacts)
+      .innerJoin(principals, eq(principals.id, artifacts.principalId))
+      .where(eq(artifacts.id, artifactId)).limit(1);
+    const row = found ? { ...found.artifact, principalId: found.owner ?? found.artifact.principalId } : null;
     // A wrong key reads exactly like a missing file, and the comparison of the
     // two keys is constant-time so a near-miss cannot be measured.
     if (!row || row.reach !== "link" || row.linkKey === null || !secureDigestEquals(digestSecret(row.linkKey), digestSecret(key))) {
@@ -2250,9 +2268,10 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
   }
 
   async listArtifacts(auth: CreditAuth, input: ArtifactQuery): Promise<Page<Artifact>> {
+    const principalId = await this.canonicalPrincipal(auth.principalId);
     const readable = or(
-      eq(artifacts.principalId, auth.principalId),
-      and(eq(artifacts.reach, "room"), inArray(artifacts.roomId, this.roomsSeatedIn(auth.principalId))),
+      inArray(artifacts.principalId, this.artifactOwnersOf(principalId)),
+      and(eq(artifacts.reach, "room"), inArray(artifacts.roomId, this.roomsSeatedIn(principalId))),
     );
     const scoped = input.room_id === null ? readable : and(readable, eq(artifacts.roomId, input.room_id));
     let boundary: { createdAt: Date; id: ArtifactId } | null = null;
@@ -2266,8 +2285,9 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
       boundary = row;
     }
     const rows = await this.executor()
-      .select()
+      .select({ artifact: artifacts, owner: principals.mergedIntoPrincipalId })
       .from(artifacts)
+      .innerJoin(principals, eq(principals.id, artifacts.principalId))
       .where(
         boundary === null
           ? scoped
@@ -2282,22 +2302,23 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
       .orderBy(desc(artifacts.createdAt), desc(artifacts.id))
       .limit(input.limit + 1);
     const hasMore = rows.length > input.limit;
-    const items = rows.slice(0, input.limit).map(projectArtifact);
+    const items = rows.slice(0, input.limit).map(({ artifact, owner }) => projectArtifact({ ...artifact, principalId: owner ?? artifact.principalId }));
     return { items, next_cursor: hasMore ? items[items.length - 1]!.id : null, has_more: hasMore };
   }
 
   async artifactUsage(auth: CreditAuth): Promise<ArtifactUsage> {
-    return this.usageOf(auth.principalId);
+    return this.usageOf(await this.canonicalPrincipal(auth.principalId));
   }
 
   async deleteArtifact(auth: CreditAuth, artifactId: ArtifactId): Promise<{ artifact: Artifact }> {
+    const principalId = await this.canonicalPrincipal(auth.principalId);
     const [row] = await this.executor()
       .delete(artifacts)
-      .where(and(eq(artifacts.id, artifactId), eq(artifacts.principalId, auth.principalId)))
+      .where(and(eq(artifacts.id, artifactId), inArray(artifacts.principalId, this.artifactOwnersOf(principalId))))
       .returning();
     // Only the account that uploaded it; to anyone else it is not there at all.
     if (!row) throw new RepositoryError(404, "artifact_not_found", "File was not found.");
-    return { artifact: projectArtifact(row) };
+    return { artifact: projectArtifact({ ...row, principalId }) };
   }
 
   /** The Rooms a Principal has an active seat in, as a subquery. */
@@ -2315,7 +2336,7 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
         count: sql<string>`count(*)`,
       })
       .from(artifacts)
-      .where(eq(artifacts.principalId, principalId));
+      .where(inArray(artifacts.principalId, this.artifactOwnersOf(principalId)));
     if (forUpdate) {
       // Serialize this account's uploads against each other, and nothing else.
       await this.executor().execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`artifacts:${principalId}`}))`);
@@ -2334,7 +2355,13 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
   }
 
   private async artifactVisibleTo(principalId: PrincipalId, artifactId: ArtifactId): Promise<typeof artifacts.$inferSelect> {
-    const [row] = await this.executor().select().from(artifacts).where(eq(artifacts.id, artifactId)).limit(1);
+    principalId = await this.canonicalPrincipal(principalId);
+    const [found] = await this.executor()
+      .select({ artifact: artifacts, owner: principals.mergedIntoPrincipalId })
+      .from(artifacts)
+      .innerJoin(principals, eq(principals.id, artifacts.principalId))
+      .where(eq(artifacts.id, artifactId)).limit(1);
+    const row = found ? { ...found.artifact, principalId: found.owner ?? found.artifact.principalId } : null;
     if (!row) throw new RepositoryError(404, "artifact_not_found", "File was not found.");
     if (row.principalId === principalId) return row;
     if (row.reach === "room" && row.roomId !== null) {
@@ -2346,6 +2373,12 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
       if (seat) return row;
     }
     throw new RepositoryError(404, "artifact_not_found", "File was not found.");
+  }
+
+  /** Includes old artifact rows stranded by claims made before this fix. */
+  private artifactOwnersOf(principalId: PrincipalId) {
+    return this.executor().select({ id: principals.id }).from(principals)
+      .where(or(eq(principals.id, principalId), eq(principals.mergedIntoPrincipalId, principalId)));
   }
 
   // ---- Credits: a purse per Principal, a ledger of every movement. ----
@@ -2524,7 +2557,7 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
   /**
    * The identity lock. Credits and account claims both move value between
    * Principals, and a claim can change which Principal an id means while a
-   * payment is deciding. Every such transaction collects its complete identity
+   * payment or artifact upload is deciding. Every such transaction collects its complete identity
    * set, then takes one advisory lock per Principal in ascending id order, so
    * they serialize instead of racing or deadlocking: the order is the
    * same for everyone. Advisory locks last to the end of the transaction and
