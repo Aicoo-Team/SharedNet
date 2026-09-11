@@ -50,7 +50,27 @@ describe("SharedNet over MCP", () => {
     const call = rpc(handler, chatgpt);
     const listed = await call("tools/list", {});
     const names = (listed.body.result!.tools as Array<{ name: string }>).map((t) => t.name).sort();
-    expect(names).toEqual(["accept", "deny", "fetch", "join", "read", "requests", "room_create", "room_invite", "rooms", "say", "search", "wait", "whoami"]);
+    expect(names).toEqual([
+      "accept",
+      "credits",
+      "deny",
+      "fetch",
+      "file_read",
+      "file_write",
+      "files",
+      "join",
+      "pay",
+      "read",
+      "redeem_credits",
+      "requests",
+      "room_create",
+      "room_invite",
+      "rooms",
+      "say",
+      "search",
+      "wait",
+      "whoami",
+    ]);
 
     const who = tool((await call("tools/call", { name: "whoami", arguments: {} })).body) as Record<string, string>;
     expect(who.principal_id).toMatch(/^p_/);
@@ -271,3 +291,111 @@ describe("SharedNet over MCP", () => {
     expect(parseInviteText("nothing here")).toEqual({ roomId: null, token: null });
   });
 });
+
+describe("SharedNet over MCP: files and credits", () => {
+  const chatgpt = { userId: "auth-user-1", client: { id: "client_chatgpt", label: "ChatGPT" } };
+  const claude = { userId: "auth-user-2", client: { id: "client_claude", label: "Claude" } };
+
+  function world() {
+    const repository = new MemorySharedNetRepository({
+      accounts: [{ authUserId: "auth-user-1", displayName: "Xisen" }, { authUserId: "auth-user-2" }],
+      creditCodes: [{ code: "HACK100", amount: 100, max_redemptions: 2 }],
+    });
+    const handler = createMcpHandler((context) =>
+      createSharedNetMcpServer(context.authInfo!.extra as typeof chatgpt, { repository, origin: ORIGIN, sleep: async () => {}, now: () => Date.now() }),
+    );
+    return { repository, handler };
+  }
+
+  it("hands a file to a Room, reads it back as text, and lists it for the other member", async () => {
+    const { handler } = world();
+    const mine = rpc(handler, chatgpt);
+    const theirs = rpc(handler, claude);
+    const opened = tool(
+      (await mine("tools/call", { name: "room_create", arguments: { name: "Handover" } })).body,
+    ) as { room_id: string };
+    const invite = tool((await mine("tools/call", { name: "room_invite", arguments: { room_id: opened.room_id } })).body) as { for_agents: string };
+    expect(tool((await theirs("tools/call", { name: "join", arguments: { invite: invite.for_agents } })).body)).toMatchObject({ room_id: opened.room_id });
+
+    const written = tool(
+      (await mine("tools/call", {
+        name: "file_write",
+        arguments: { filename: "report.md", text: "# Findings\n\nThe patch applies.\n", room_id: opened.room_id },
+      })).body,
+    ) as { artifact_id: string; reach: string; next: string };
+    expect(written.reach).toBe("room");
+    expect(written.artifact_id).toMatch(/^art_[0-9A-Za-z]{10}$/);
+    expect(written.next).toContain("Say this id");
+    expect(written).not.toHaveProperty("url");
+
+    // The other member sees it and reads it, through its own seat.
+    const listed = tool((await theirs("tools/call", { name: "files", arguments: { room_id: opened.room_id } })).body) as {
+      files: Array<{ artifact_id: string; filename: string; size_bytes: number }>;
+    };
+    expect(listed.files.map((file) => file.filename)).toEqual(["report.md"]);
+    const read = tool((await theirs("tools/call", { name: "file_read", arguments: { artifact_id: written.artifact_id } })).body);
+    expect(read).toMatchObject({ filename: "report.md", text: "# Findings\n\nThe patch applies.\n" });
+
+    // With link: true there is a URL instead, and no Room is needed.
+    const published = tool((await mine("tools/call", { name: "file_write", arguments: { filename: "rows.csv", text: "a,b\n1,2\n", link: true } })).body) as {
+      artifact_id: string;
+      url: string;
+    };
+    expect(published.url).toBe(`${ORIGIN}/f/${published.artifact_id}?k=${published.url.split("k=")[1]}`);
+    expect(published.url).toMatch(/\?k=afk_[A-Za-z0-9_-]{43}$/);
+    // A file with no Room and no link is refused with what to do instead.
+    expect(tool((await mine("tools/call", { name: "file_write", arguments: { filename: "x.txt", text: "x" } })).body)).toMatchObject({
+      error: expect.stringContaining("link: true"),
+    });
+    // A file of an account this connection is not in a Room with is not there.
+    expect(tool((await theirs("tools/call", { name: "file_read", arguments: { artifact_id: published.artifact_id } })).body)).toMatchObject({
+      error: expect.stringContaining("artifact_not_found"),
+    });
+  });
+
+  it("describes rather than returns what is not text, and never guesses at bytes", async () => {
+    const { handler, repository } = world();
+    const mine = rpc(handler, chatgpt);
+    const seat = await repository.mcpSeat(chatgpt.userId, chatgpt.client);
+    const png = await repository.uploadArtifact(seat.auth, {
+      filename: "shot.png",
+      content_type: "image/png",
+      reach: "link",
+      room_id: null,
+      bytes: new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0xfe]),
+    });
+
+    const read = tool((await mine("tools/call", { name: "file_read", arguments: { artifact_id: png.artifact.id } })).body);
+    expect(read).toMatchObject({ filename: "shot.png", text: null, reason: expect.stringContaining("not UTF-8") });
+  });
+
+  it("reads the purse, redeems once, and pays another account", async () => {
+    const { handler, repository } = world();
+    const mine = rpc(handler, chatgpt);
+    const theirs = rpc(handler, claude);
+    const theirSeat = await repository.mcpSeat(claude.userId, claude.client);
+
+    expect(tool((await mine("tools/call", { name: "credits", arguments: {} })).body)).toMatchObject({ balance: 0, granted: 0 });
+    expect(tool((await mine("tools/call", { name: "redeem_credits", arguments: { code: "hack100" } })).body)).toEqual({ granted: 100, balance: 100 });
+    // A retry grants nothing and is not an error.
+    expect(tool((await mine("tools/call", { name: "redeem_credits", arguments: { code: "HACK100" } })).body)).toEqual({ granted: 0, balance: 100 });
+
+    const paid = tool((await mine("tools/call", { name: "pay", arguments: { to: theirSeat.instance.id, amount: 25, memo: "map tiles" } })).body) as {
+      transfer_id: string;
+      balance: number;
+    };
+    expect(paid).toMatchObject({ amount: 25, to: theirSeat.principal.id, balance: 75 });
+    expect(paid.transfer_id).toMatch(/^txn_[0-9A-Za-z]{10}$/);
+    expect(tool((await theirs("tools/call", { name: "credits", arguments: {} })).body)).toMatchObject({ balance: 25, received: 25 });
+
+    // Over the purse, and to itself, are refused in the domain's own words.
+    expect(tool((await mine("tools/call", { name: "pay", arguments: { to: theirSeat.instance.id, amount: 1000 } })).body)).toMatchObject({
+      error: expect.stringContaining("insufficient_credits"),
+    });
+    const ownSeat = await repository.mcpSeat(chatgpt.userId, chatgpt.client);
+    expect(tool((await mine("tools/call", { name: "pay", arguments: { to: ownSeat.instance.id, amount: 1 } })).body)).toMatchObject({
+      error: expect.stringContaining("transfer_to_self"),
+    });
+  });
+});
+

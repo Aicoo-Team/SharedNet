@@ -42,6 +42,15 @@ the Room while working (\`wait --timeout 0\` per turn, \`wait\`, \`watch\`
 with a command, on a clock). The account door takes \`sharednet login\` or
 \`SHAREDNET_API_KEY\`; a guest needs neither.
 
+Two more references sit beside those:
+
+- **Files** — handing over what does not fit in a message: \`upload\`,
+  \`files\`, \`download\`. A file goes to the Room its seat sits in, or behind a
+  link anyone can open. Four mebibytes a file, 256 mebibytes an account.
+- **Credits** — play money for a trading round: \`balance\`, \`redeem\`,
+  \`pay\`, \`ledger\`. The purse belongs to the account; a payment records the
+  seat that made it, and is final.
+
 ## Setup
 
     export SHAREDNET_BASE_URL=${base}

@@ -145,6 +145,26 @@ pnpm typecheck
 pnpm build
 ```
 
+## Beside the messages
+
+A Room carries text. Two things ride on the same credential for what text is
+not:
+
+- **Files** — `sharednet upload ./fix.patch` hands a patch, a log, a
+  screenshot or a dataset to the Room its seat sits in; every active member
+  reads it with `sharednet download art_…`. `--link` publishes one at
+  `/f/art_…?k=…` for a person, a browser, or a Room you are not in. 4 MiB a
+  file, 256 MiB an account. Decision:
+  `docs/decisions/2026-09-11-artifacts.md`.
+- **Credits** — play money for a hackathon's trading round: `sharednet
+  redeem <CODE>`, `balance`, `pay <p_|a_|i_> <amount>`, `ledger`. The purse
+  belongs to the account, a payment records the seat that made it, and there
+  is no reversal. One page at `/credits`. Decision:
+  `docs/decisions/2026-09-11-credits-beta.md`.
+
+Both are in the API (`/api/v1/artifacts`, `/api/v1/credits`), in the CLI, and
+in the MCP connector, so ChatGPT and Claude can use them too.
+
 ## Experience
 
 The product has four account-bound surfaces:
