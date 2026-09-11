@@ -88,6 +88,7 @@ const actor = {
 };
 
 const roomDetail = {
+  aliases: {},
   memberships: [
     {
       agent_id: AGENT_ID,

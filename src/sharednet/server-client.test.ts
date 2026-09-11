@@ -678,6 +678,43 @@ describe("SharedNetServerClient is one door onto the domain", () => {
     expect((await client.getSharedRoom(token)).room.status).toBe("closed");
   });
 
+  it("names a seat for one account only, refuses a seat it cannot see, and forgets the name when emptied", async () => {
+    const { repository, client, auth, roomId, room, instance } = await seededRoom();
+    const visitor = await seatFor(repository, "auth-user-2", "key-2");
+    await repository.joinRoom(visitor.auth, room.id);
+    await repository.postMessage(visitor.auth, room.id, { content: "second" });
+
+    // Until it is named, the Room carries no name for that seat.
+    expect((await client.getRoom(ACCOUNT, roomId)).aliases).toEqual({});
+
+    const named = await client.setInstanceAlias(ACCOUNT, visitor.instance.id as never, "Kai");
+    expect(named).toEqual({ alias: "Kai", instance_id: visitor.instance.id });
+    expect((await client.getRoom(ACCOUNT, roomId)).aliases).toEqual({ [visitor.instance.id]: "Kai" });
+    // It is this account's name and nobody else's: the other side sees none.
+    expect((await client.getRoom("auth-user-2", roomId)).aliases).toEqual({});
+    // Naming again replaces it; naming with nothing forgets it.
+    expect((await client.setInstanceAlias(ACCOUNT, visitor.instance.id as never, "Kai 2")).alias).toBe("Kai 2");
+    expect((await client.getRoom(ACCOUNT, roomId)).aliases).toEqual({ [visitor.instance.id]: "Kai 2" });
+    expect((await client.setInstanceAlias(ACCOUNT, visitor.instance.id as never, null)).alias).toBeNull();
+    expect((await client.getRoom(ACCOUNT, roomId)).aliases).toEqual({});
+
+    // An account may name its own seat.
+    expect((await client.setInstanceAlias(ACCOUNT, instance.id as never, "Mine")).alias).toBe("Mine");
+    expect((await client.getRoom(ACCOUNT, roomId)).aliases).toEqual({ [instance.id]: "Mine" });
+
+    // A seat this account shares no Room with reads as absent, so naming one
+    // cannot be used to find out whether an Instance id is real.
+    const stranger = await seatFor(repository, "auth-user-2", "key-2");
+    await expect(client.setInstanceAlias(ACCOUNT, stranger.instance.id as never, "Nope")).rejects.toMatchObject({
+      code: "instance_not_found",
+      status: 404,
+    });
+    await expect(client.setInstanceAlias(ACCOUNT, "i_nowhere0001" as never, "Nope")).rejects.toMatchObject({
+      code: "instance_not_found",
+      status: 404,
+    });
+  });
+
   it("reports pairing as retired rather than pretending to claim one", async () => {
     const client = new SharedNetServerClient(new MemorySharedNetRepository({ accounts: [{ authUserId: ACCOUNT }] }));
     await expect(client.claimPairing(ACCOUNT, "pair_x" as never)).rejects.toMatchObject({ code: "pairing_unsupported", status: 410 });

@@ -27,6 +27,7 @@ import {
   type CliClaimProjection,
   type CliLoginProjection,
   type CreditsProjection,
+  type InstanceAliasResponse,
   type CreditTransferProjection,
   type RedeemCreditsResponse,
   type RuntimeSummary,
@@ -576,11 +577,23 @@ export class SharedNetServerClient {
     const principal = await this.requirePrincipal(authUserId);
     const detail = await this.domain(() => this.repository().getRoomForPrincipal(principal.id, roomId as never));
     return {
+      aliases: detail.aliases,
       memberships: detail.memberships.map(membershipProjection),
       messages: detail.messages.map(messageProjection),
       next_cursor: cursor(detail.latest_sequence),
       room: roomProjection(detail.room, detail.room.created_at, detail.share_token),
     };
+  }
+
+  /**
+   * Names a seat for this account alone. An empty name takes it back off. A
+   * seat this account cannot see answers as absent, so this cannot be used to
+   * find out whether an Instance id is real.
+   */
+  async setInstanceAlias(authUserId: string, instanceId: InstanceId, alias: string | null): Promise<InstanceAliasResponse> {
+    const principal = await this.requirePrincipal(authUserId);
+    const named = await this.domain(() => this.repository().setInstanceAlias(principal.id, instanceId as never, alias));
+    return { alias: named.alias, instance_id: named.instance_id as InstanceId };
   }
 
   /** Publish a Room this account owns at a public link; the slug comes back with the Room, every time it is asked for. */

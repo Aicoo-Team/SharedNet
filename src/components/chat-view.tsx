@@ -124,11 +124,107 @@ function describeAdmission(membership: RoomMembership): string {
   }
 }
 
-/** Who said it, the way a human reads it: the seat's name, else its tag, else its Instance id. */
-function senderLabel(sender: RoomMessage["sender"]): string {
+/**
+ * Who said it, the way a human reads it: the name this account gave the seat,
+ * else the seat's own name, else its tag, else its Instance id.
+ */
+function senderLabel(sender: RoomMessage["sender"], aliases: Record<string, string> = {}): string {
+  const instanceId = senderInstanceId(sender);
+  if (instanceId && aliases[instanceId]) return aliases[instanceId]!;
   if ("name" in sender && sender.name) return sender.name;
   if (sender.agent_id) return sender.agent_id;
-  return senderInstanceId(sender) ?? sender.principal_id;
+  return instanceId ?? sender.principal_id;
+}
+
+/**
+ * A seat's name, renamed in place. Double-click it, or focus it and press
+ * Enter or F2. The name is this account's own: it is what this Dashboard
+ * shows, and nobody else ever sees it, so naming a seat cannot be used to
+ * misrepresent whose it is.
+ */
+function SeatName({
+  className,
+  instanceId,
+  label,
+  named,
+  rename,
+}: Readonly<{
+  className: string;
+  instanceId: string | undefined;
+  label: string;
+  /** True when `label` is a name this account wrote, rather than an id or a tag. */
+  named: boolean;
+  rename: (instanceId: string, alias: string | null) => Promise<unknown>;
+}>) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  const settledRef = useRef(false);
+
+  if (instanceId === undefined) return <strong className={className}>{label}</strong>;
+
+  function begin() {
+    settledRef.current = false;
+    setFailed(false);
+    setDraft(named ? label : "");
+  }
+
+  async function commit(value: string | null) {
+    if (settledRef.current) return;
+    settledRef.current = true;
+    setDraft(null);
+    const next = value === null ? null : value.normalize("NFKC").trim() || null;
+    // Nothing to do when the name is what it already was.
+    if (next === (named ? label : null)) return;
+    try {
+      await rename(instanceId!, next);
+    } catch {
+      setFailed(true);
+    }
+  }
+
+  if (draft !== null) {
+    return (
+      <input
+        aria-label={`Name for ${instanceId}`}
+        autoFocus
+        className={`${className} room-seat-name-input`}
+        maxLength={48}
+        onBlur={() => void commit(draft)}
+        onChange={(event) => setDraft(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            void commit(draft);
+          }
+          if (event.key === "Escape") {
+            event.preventDefault();
+            settledRef.current = true;
+            setDraft(null);
+          }
+        }}
+        placeholder={instanceId}
+        value={draft}
+      />
+    );
+  }
+
+  return (
+    <strong
+      aria-label={failed ? `${label} — that name could not be saved` : `${label}. Double-click to name this seat`}
+      className={failed ? `${className} room-seat-name-failed` : className}
+      onDoubleClick={begin}
+      onKeyDown={(event) => {
+        if (event.key !== "Enter" && event.key !== "F2") return;
+        event.preventDefault();
+        begin();
+      }}
+      role="button"
+      tabIndex={0}
+      title={failed ? "That name could not be saved. Try again." : `${instanceId} — double-click to name this seat. Only you see the name.`}
+    >
+      {label}
+    </strong>
+  );
 }
 
 function senderInstanceId(sender: RoomMessage["sender"]): string | undefined {
@@ -188,6 +284,7 @@ export function ChatView() {
     error,
     network,
     principal,
+    nameSeat,
     removeMember,
     rooms,
     selectRoom,
@@ -810,11 +907,18 @@ export function ChatView() {
                         data-presence={member.presence}
                       >
                         <header>
-                          <strong>
-                            {member.membership.kind === "guest"
-                              ? member.membership.name
-                              : (member.agent?.diagnostic_label ?? "Room Agent")}
-                          </strong>
+                          <SeatName
+                            className="room-member-name"
+                            instanceId={member.membership.instance_id}
+                            label={
+                              detail.aliases[member.membership.instance_id] ??
+                              (member.membership.kind === "guest"
+                                ? (member.membership.name ?? member.membership.instance_id)
+                                : (member.agent?.diagnostic_label ?? "Room Agent"))
+                            }
+                            named={Boolean(detail.aliases[member.membership.instance_id])}
+                            rename={nameSeat}
+                          />
                           <span>
                             {member.presence === "online"
                               ? "Online"
@@ -954,7 +1058,13 @@ export function ChatView() {
                       </details>
                       <div className="room-message-body">
                         <header>
-                          <strong className="room-message-sender">{senderLabel(message.sender)}</strong>
+                          <SeatName
+                            className="room-message-sender"
+                            instanceId={senderInstanceId(message.sender)}
+                            label={senderLabel(message.sender, detail.aliases)}
+                            named={Boolean(senderInstanceId(message.sender) && detail.aliases[senderInstanceId(message.sender)!])}
+                            rename={nameSeat}
+                          />
                           <code className="room-message-instance">{senderInstanceId(message.sender) ?? ""}</code>
                           {"name" in message.sender ? (
                             <em className="room-message-anonymous">Anonymous</em>

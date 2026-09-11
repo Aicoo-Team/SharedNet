@@ -7,6 +7,7 @@ const { authGetSession, sharedNetClient } = vi.hoisted(() => ({
     createRoom: vi.fn(),
     createRoomInvite: vi.fn(),
     revokeRoomInvite: vi.fn(),
+    setInstanceAlias: vi.fn(),
     shareRoom: vi.fn(),
     unshareRoom: vi.fn(),
     getSharedRoom: vi.fn(),
@@ -43,6 +44,7 @@ import { POST as mintInvite } from "../../app/api/sharednet/rooms/[roomId]/invit
 import { DELETE as revokeInvite } from "../../app/api/sharednet/rooms/[roomId]/invites/[inviteId]/route";
 import { DELETE as unshareRoom, POST as shareRoom } from "../../app/api/sharednet/rooms/[roomId]/share/route";
 import { GET as readSharedRoom } from "../../app/api/sharednet/shared/[token]/route";
+import { PUT as nameSeat } from "../../app/api/sharednet/instances/[instanceId]/alias/route";
 import { GET as getNetwork } from "../../app/api/sharednet/network/route";
 import { GET as listDecisions } from "../../app/api/sharednet/decisions/route";
 import { PATCH as resolveDecision } from "../../app/api/sharednet/decisions/[decisionId]/route";
@@ -753,6 +755,64 @@ describe("sharing a Room: the owner's mutation, and the one route with nobody be
     const gone = await readSharedRoom(anonymous, { params: Promise.resolve({ token: SLUG }) });
     expect(gone.status).toBe(404);
     expect(await gone.json()).toMatchObject({ error: { code: "room_not_found" } });
+  });
+});
+
+describe("naming a seat, for this account's eyes only", () => {
+  const INSTANCE = "i_xQqH1Bafyt";
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    authGetSession.mockResolvedValue({ user: { id: AUTH_USER_ID } });
+  });
+
+  it("puts the name through for the signed-in account, from our own page only", async () => {
+    sharedNetClient.setInstanceAlias.mockResolvedValue({ alias: "Kai", instance_id: INSTANCE });
+
+    const named = await nameSeat(request({ alias: "  Kai  " }, "PUT", `/api/sharednet/instances/${INSTANCE}/alias`), {
+      params: Promise.resolve({ instanceId: INSTANCE }),
+    });
+    expect(named.status).toBe(200);
+    expect(await named.json()).toEqual({ alias: "Kai", instance_id: INSTANCE });
+    // The protocol trims and normalises before the domain ever sees it.
+    expect(sharedNetClient.setInstanceAlias).toHaveBeenCalledWith(AUTH_USER_ID, INSTANCE, "Kai");
+
+    // An empty name is how one is taken back off.
+    sharedNetClient.setInstanceAlias.mockResolvedValue({ alias: null, instance_id: INSTANCE });
+    await nameSeat(request({ alias: "" }, "PUT", `/api/sharednet/instances/${INSTANCE}/alias`), {
+      params: Promise.resolve({ instanceId: INSTANCE }),
+    });
+    expect(sharedNetClient.setInstanceAlias).toHaveBeenLastCalledWith(AUTH_USER_ID, INSTANCE, null);
+
+    const foreign = new Request(`http://localhost/api/sharednet/instances/${INSTANCE}/alias`, {
+      body: JSON.stringify({ alias: "Kai" }),
+      headers: { "content-type": "application/json", cookie: "better-auth.session_token=test", origin: "https://evil.example" },
+      method: "PUT",
+    });
+    expect((await nameSeat(foreign, { params: Promise.resolve({ instanceId: INSTANCE }) })).status).toBe(403);
+
+    authGetSession.mockResolvedValue(null);
+    const signedOut = await nameSeat(request({ alias: "Kai" }, "PUT", `/api/sharednet/instances/${INSTANCE}/alias`), {
+      params: Promise.resolve({ instanceId: INSTANCE }),
+    });
+    expect(signedOut.status).toBe(401);
+    expect(sharedNetClient.setInstanceAlias).toHaveBeenCalledTimes(2);
+  });
+
+  it("refuses a name that is not one, and an id that is not an Instance, before the domain is asked", async () => {
+    for (const body of [{ alias: "x".repeat(49) }, { alias: "line\nbreak" }, { alias: 7 }, { notAlias: "Kai" }]) {
+      const refused = await nameSeat(request(body, "PUT", `/api/sharednet/instances/${INSTANCE}/alias`), {
+        params: Promise.resolve({ instanceId: INSTANCE }),
+      });
+      expect(refused.status).toBe(400);
+    }
+    for (const id of ["p_7CPHtWFsFn", "i_short", "../../etc"]) {
+      const refused = await nameSeat(request({ alias: "Kai" }, "PUT", "/api/sharednet/instances/x/alias"), {
+        params: Promise.resolve({ instanceId: id }),
+      });
+      expect(refused.status).toBe(400);
+    }
+    expect(sharedNetClient.setInstanceAlias).not.toHaveBeenCalled();
   });
 });
 

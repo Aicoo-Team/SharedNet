@@ -29,6 +29,7 @@ import {
   isCliClaimProjection,
   isCreateRoomInviteResponse,
   isRemoveRoomMemberResponse,
+  isInstanceAliasResponse,
   isShareRoomResponse,
   isUnshareRoomResponse,
   type CliClaimProjection,
@@ -70,6 +71,8 @@ type SharedNetContextValue = {
   selectRoom: (roomId: RoomId) => void;
   selectedRoom: RoomDetail | null;
   selectedRoomId: RoomId | null;
+  /** Name a seat for this account alone; an empty name takes it back off. */
+  nameSeat: (instanceId: string, alias: string | null) => Promise<string | null>;
   /** Publish a Room this account owns at a public link; the slug comes back with the Room. */
   shareRoom: (roomId: RoomId) => Promise<ShareRoomResponse>;
   status: SharedNetStatus;
@@ -423,6 +426,28 @@ export function SharedNetProvider({ children }: { children: ReactNode }) {
     [refresh],
   );
 
+  const nameSeat = useCallback(
+    async (instanceId: string, alias: string | null) => {
+      const mutationController = mutationAbortControllerRef.current;
+      if (!mountedRef.current || mutationController === null || mutationController.signal.aborted) {
+        throw mutationUnavailableError();
+      }
+      const named = await requestJson(
+        `/api/sharednet/instances/${encodeURIComponent(instanceId)}/alias`,
+        isInstanceAliasResponse,
+        {
+          body: JSON.stringify({ alias }),
+          headers: { "content-type": "application/json" },
+          method: "PUT",
+          signal: mutationController.signal,
+        },
+      );
+      await refresh();
+      return named.alias;
+    },
+    [refresh],
+  );
+
   const shareRoom = useCallback(
     async (roomId: RoomId) => {
       const mutationController = mutationAbortControllerRef.current;
@@ -579,6 +604,7 @@ export function SharedNetProvider({ children }: { children: ReactNode }) {
       createRoom,
       decisions,
       error,
+      nameSeat,
       network,
       principal,
       refresh,
@@ -600,6 +626,7 @@ export function SharedNetProvider({ children }: { children: ReactNode }) {
       createRoom,
       decisions,
       error,
+      nameSeat,
       network,
       principal,
       refresh,

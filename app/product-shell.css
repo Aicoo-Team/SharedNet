@@ -3093,3 +3093,38 @@ body:has(.product-window) {
   padding: 4px 8px 6px;
 }
 
+/* A seat's name, renamed in place: double-click, or Enter / F2 when focused. */
+.room-message-sender[role="button"],
+.room-member-name[role="button"] {
+  border-bottom: 1px dashed transparent;
+  cursor: text;
+}
+
+.room-message-sender[role="button"]:hover,
+.room-message-sender[role="button"]:focus-visible,
+.room-member-name[role="button"]:hover,
+.room-member-name[role="button"]:focus-visible {
+  border-bottom-color: var(--sn-columbia);
+  outline: none;
+}
+
+.room-seat-name-failed {
+  border-bottom: 1px dashed var(--sn-red) !important;
+  color: var(--sn-red);
+}
+
+.product-window .room-seat-name-input {
+  background: var(--sn-paper);
+  border: 1px solid var(--sn-atlantic);
+  border-radius: 4px;
+  color: var(--sn-ink);
+  font: inherit;
+  max-width: 220px;
+  padding: 1px 5px;
+}
+
+.room-member-name {
+  font-size: 12px;
+  font-weight: 650;
+}
+
