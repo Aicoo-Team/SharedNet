@@ -39,11 +39,15 @@ describe("what a chat client sees", () => {
   it("lists tools whose schemas a strict client can read", async () => {
     const list = await post(handler(), { jsonrpc: "2.0", id: 2, method: "tools/list" });
     const tools = (list.body.result?.tools ?? []) as Array<{ name: string; description?: string; inputSchema: Record<string, unknown>; annotations?: Record<string, unknown> }>;
-    expect(tools).toHaveLength(13);
+    expect(tools).toHaveLength(19);
     // Every tool says whether it only reads, so a chat client can auto-approve the safe ones.
     const byName = new Map(tools.map((t) => [t.name, t.annotations ?? {}]));
-    for (const name of ["whoami", "rooms", "read", "wait", "requests", "search", "fetch"]) expect(byName.get(name)).toMatchObject({ readOnlyHint: true });
-    for (const name of ["room_create", "room_invite", "join", "say", "accept", "deny"]) expect(byName.get(name)).toMatchObject({ readOnlyHint: false, destructiveHint: false });
+    for (const name of ["whoami", "rooms", "read", "wait", "requests", "search", "fetch", "files", "file_read", "credits"]) {
+      expect(byName.get(name)).toMatchObject({ readOnlyHint: true });
+    }
+    for (const name of ["room_create", "room_invite", "join", "say", "accept", "deny", "file_write", "redeem_credits", "pay"]) {
+      expect(byName.get(name)).toMatchObject({ readOnlyHint: false, destructiveHint: false });
+    }
     for (const tool of tools) {
       expect(tool.inputSchema.type, `${tool.name} schema: ${JSON.stringify(tool.inputSchema)}`).toBe("object");
       expect(tool.inputSchema).toHaveProperty("properties");
