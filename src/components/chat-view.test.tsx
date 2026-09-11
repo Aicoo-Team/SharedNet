@@ -89,6 +89,7 @@ const secondRoomSummary: RoomSummary = {
 };
 
 const roomDetail: RoomDetail = {
+  aliases: {},
   memberships: [
     {
       agent_id: AGENT_ID,
@@ -284,6 +285,7 @@ function makeState(overrides: Partial<SharedNetState> = {}): SharedNetState {
     refresh: vi.fn(async () => undefined),
     removeMember: vi.fn(async () => ({ ...roomDetail.memberships[0]!, status: "left" as const })),
     resolveDecision: vi.fn(async () => undefined),
+    nameSeat: vi.fn(async (_instanceId: string, alias: string | null) => alias),
     rooms: [roomSummary, secondRoomSummary],
     selectRoom: vi.fn(),
     selectedRoom: roomDetail,
@@ -1091,5 +1093,107 @@ describe("SharedNet Rooms", () => {
     expect(screen.queryByText(/Agent work/i)).toBeNull();
     expect(screen.queryByText(/tokens/i)).toBeNull();
     expect(screen.queryByText(/recruit/i)).toBeNull();
+  });
+});
+
+describe("naming a seat", () => {
+  /** The Room as it arrives with one seat already named by this account. */
+  function named(alias: string) {
+    return { ...roomDetail, aliases: { [SECOND_INSTANCE_ID]: alias } };
+  }
+
+  /** The renameable label for a seat: a button, not the id printed on the card. */
+  function seatName(label: string) {
+    return screen.getAllByRole("button", { name: `${label}. Double-click to name this seat` })[0]!;
+  }
+
+  it("shows the tag until the seat is named, then the name, wherever that seat speaks", () => {
+    renderChat();
+    expect(seatName(SECOND_AGENT_ID)).toBeVisible();
+
+    cleanup();
+    renderChat({ selectedRoom: named("Kai") });
+    expect(seatName("Kai")).toBeVisible();
+    expect(screen.queryByRole("button", { name: `${SECOND_AGENT_ID}. Double-click to name this seat` })).toBeNull();
+    // The Instance id is still on the message's card; only the label changed.
+    expect(screen.getAllByText(SECOND_INSTANCE_ID).length).toBeGreaterThan(0);
+  });
+
+  it("names a seat on double-click, trimming what was typed", async () => {
+    const { state } = renderChat();
+
+    fireEvent.doubleClick(seatName(SECOND_AGENT_ID));
+    const field = screen.getByRole("textbox", { name: `Name for ${SECOND_INSTANCE_ID}` });
+    // Nothing was named yet, so the box starts empty rather than with the tag.
+    expect(field).toHaveValue("");
+    fireEvent.change(field, { target: { value: "  Kai  " } });
+    fireEvent.keyDown(field, { key: "Enter" });
+
+    await waitFor(() => expect(state.nameSeat).toHaveBeenCalledWith(SECOND_INSTANCE_ID, "Kai"));
+  });
+
+  it("starts from the name a seat already has", () => {
+    renderChat({ selectedRoom: named("Kai") });
+
+    fireEvent.doubleClick(seatName("Kai"));
+
+    expect(screen.getByRole("textbox", { name: `Name for ${SECOND_INSTANCE_ID}` })).toHaveValue("Kai");
+  });
+
+  it("opens from the keyboard, cancels on Escape without saving, and takes the name off when emptied", async () => {
+    const { state } = renderChat({ selectedRoom: named("Kai") });
+
+    fireEvent.keyDown(seatName("Kai"), { key: "F2" });
+    const field = screen.getByRole("textbox", { name: `Name for ${SECOND_INSTANCE_ID}` });
+    fireEvent.change(field, { target: { value: "Something else" } });
+    fireEvent.keyDown(field, { key: "Escape" });
+    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(state.nameSeat).not.toHaveBeenCalled();
+
+    // Emptying it is how a name is taken back off.
+    fireEvent.keyDown(seatName("Kai"), { key: "Enter" });
+    const again = screen.getByRole("textbox", { name: `Name for ${SECOND_INSTANCE_ID}` });
+    fireEvent.change(again, { target: { value: "   " } });
+    fireEvent.blur(again);
+    await waitFor(() => expect(state.nameSeat).toHaveBeenCalledWith(SECOND_INSTANCE_ID, null));
+  });
+
+  it("says so on the seat when a name could not be saved", async () => {
+    const nameSeat = vi.fn(async () => {
+      throw new Error("offline");
+    });
+    renderChat({ nameSeat, selectedRoom: named("Kai") });
+
+    fireEvent.doubleClick(seatName("Kai"));
+    const field = screen.getByRole("textbox", { name: `Name for ${SECOND_INSTANCE_ID}` });
+    fireEvent.change(field, { target: { value: "Kai 2" } });
+    fireEvent.keyDown(field, { key: "Enter" });
+
+    await waitFor(() =>
+      expect(screen.getAllByTitle("That name could not be saved. Try again.").length).toBeGreaterThan(0),
+    );
+  });
+
+  it("asks the server for nothing when the name is committed unchanged", async () => {
+    const { state } = renderChat({ selectedRoom: named("Kai") });
+
+    fireEvent.doubleClick(seatName("Kai"));
+    fireEvent.keyDown(screen.getByRole("textbox", { name: `Name for ${SECOND_INSTANCE_ID}` }), { key: "Enter" });
+
+    await waitFor(() => expect(screen.queryByRole("textbox")).toBeNull());
+    expect(state.nameSeat).not.toHaveBeenCalled();
+  });
+
+  it("names a seat from the members panel too", async () => {
+    const { state } = renderChat({ network: networkProjection });
+
+    fireEvent.click(screen.getByRole("button", { name: "Room actions" }));
+    const members = screen.getByRole("list", { name: "Room members" });
+    fireEvent.doubleClick(within(members).getByRole("button", { name: "Reviewer. Double-click to name this seat" }));
+    const field = screen.getByRole("textbox", { name: `Name for ${SECOND_INSTANCE_ID}` });
+    fireEvent.change(field, { target: { value: "Kai" } });
+    fireEvent.keyDown(field, { key: "Enter" });
+
+    await waitFor(() => expect(state.nameSeat).toHaveBeenCalledWith(SECOND_INSTANCE_ID, "Kai"));
   });
 });

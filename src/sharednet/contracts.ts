@@ -237,11 +237,20 @@ export type RoomMessage = {
 };
 
 export type RoomDetail = {
+  /**
+   * What this account calls the seats in this Room, by Instance id. A name is
+   * the viewer's own: it is shown to them and to nobody else, so nothing here
+   * can be used to misrepresent whose seat it is.
+   */
+  aliases: Record<string, string>;
   memberships: RoomMembership[];
   messages: RoomMessage[];
   next_cursor: RoomCursor;
   room: RoomProjection;
 };
+
+/** What naming a seat answers: the seat, and the name now on it. */
+export type InstanceAliasResponse = { alias: string | null; instance_id: InstanceId };
 
 export type DecisionProjection = {
   consequence: string | null;
@@ -864,9 +873,18 @@ export function isRoomMessage(value: unknown): value is RoomMessage {
   );
 }
 
+export function isInstanceAliasResponse(value: unknown): value is InstanceAliasResponse {
+  return (
+    hasExactKeys(value, ["alias", "instance_id"]) &&
+    isNullable(value.alias, isNonEmptyString) &&
+    isInstanceId(value.instance_id)
+  );
+}
+
 export function isRoomDetail(value: unknown): value is RoomDetail {
   return (
-    hasExactKeys(value, ["room", "memberships", "messages", "next_cursor"]) &&
+    hasExactKeys(value, ["aliases", "room", "memberships", "messages", "next_cursor"]) &&
+    isStringRecord(value.aliases) &&
     isRoomProjection(value.room) &&
     isArrayOf(value.memberships, isRoomMembership) &&
     isArrayOf(value.messages, isRoomMessage) &&

@@ -220,6 +220,11 @@ export type RoomView = {
   messages: Message[];
   latest_sequence: number;
   share_token: ShrSecret | null;
+  /**
+   * The names this account has given the seats in this Room. Per-viewer, so
+   * they travel with the reader and never with the Room.
+   */
+  aliases: Record<InstanceId, string>;
 };
 
 /**
@@ -304,6 +309,13 @@ export interface PrincipalRepository {
   networkForPrincipal(principalId: PrincipalId): Promise<NetworkView>;
   /** The named Instances with their Rooms; unknown ids are left out. */
   seatsOf(instanceIds: InstanceId[]): Promise<{ seats: SeatOverview[] }>;
+  /**
+   * Names a seat, for this account's eyes only. `alias` null takes the name
+   * back off. Only a seat this account can already see may be named — its own,
+   * or one it shares a Room with — so an alias cannot be used to find out
+   * whether an Instance id exists.
+   */
+  setInstanceAlias(principalId: PrincipalId, instanceId: InstanceId, alias: string | null): Promise<{ instance_id: InstanceId; alias: string | null }>;
   /** The account's purse and the latest transfers touching it, newest first. */
   creditsForPrincipal(principalId: PrincipalId): Promise<CreditsOverview>;
   /** The human redeems a code on the Web; the same rules as through the API. */

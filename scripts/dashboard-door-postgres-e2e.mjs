@@ -764,5 +764,23 @@ await assert.rejects(
 const { checkArtifactIdentity } = await import("./artifact-identity-postgres-checks.mjs");
 await checkArtifactIdentity({ repository, pool, owner, visitor, account, raceGuest, gate, controlledRepository, waitForDatabaseLock, handleRequest });
 
+// ---- Naming a seat: this account's name for it, on real SQL. ----
+// `second` holds the owner's seat and the visitor's private seat by now.
+assert.deepEqual((await repository.getRoomForPrincipal(owner.principalId, second.id)).aliases, {});
+await repository.setInstanceAlias(owner.principalId, privateSeat.instance.id, "Kai");
+assert.deepEqual((await repository.getRoomForPrincipal(owner.principalId, second.id)).aliases, { [privateSeat.instance.id]: "Kai" });
+// The other account sees its own names, which is none.
+assert.deepEqual((await repository.getRoomForPrincipal(visitor.principalId, second.id)).aliases, {});
+// Naming again replaces; naming with nothing forgets.
+await repository.setInstanceAlias(owner.principalId, privateSeat.instance.id, "Kai 2");
+assert.deepEqual((await repository.getRoomForPrincipal(owner.principalId, second.id)).aliases, { [privateSeat.instance.id]: "Kai 2" });
+assert.equal((await repository.setInstanceAlias(owner.principalId, privateSeat.instance.id, null)).alias, null);
+assert.deepEqual((await repository.getRoomForPrincipal(owner.principalId, second.id)).aliases, {});
+// An account may always name its own seat; a seat it shares no Room with is absent.
+assert.equal((await repository.setInstanceAlias(owner.principalId, owner.instance.id, "Mine")).alias, "Mine");
+await assert.rejects(repository.setInstanceAlias(owner.principalId, "i_nowhere0001", "Nope"), { code: "instance_not_found", status: 404 });
+const unseen = await repository.startInstance(await repository.authenticateApiKey(visitorKey), { runtime_kind: "codex", cli_version: "0.1.8" });
+await assert.rejects(repository.setInstanceAlias(owner.principalId, unseen.instance.id, "Nope"), { code: "instance_not_found", status: 404 });
+
 await pool.end();
 console.log(JSON.stringify({ status: "passed", room: room.id, scheduled: scheduled.room.id}));

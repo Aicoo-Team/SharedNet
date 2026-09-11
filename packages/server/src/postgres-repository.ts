@@ -17,6 +17,7 @@ import {
   decisions,
   idempotencyRecords,
   instanceCursors,
+  instanceAliases,
   instances,
   messages,
   principals,
@@ -1407,8 +1408,60 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
 
   async getRoomForPrincipal(principalId: PrincipalId, roomId: RoomId): Promise<RoomView> {
     const room = await this.roomVisibleTo(principalId, roomId);
+    const log = await this.roomLog(room);
+    const seats = [
+      ...new Set([...log.memberships.map((member) => member.instance_id), ...log.messages.map((message) => message.sender_instance_id)]),
+    ];
+    const named = seats.length
+      ? await this.executor()
+          .select({ instanceId: instanceAliases.instanceId, alias: instanceAliases.alias })
+          .from(instanceAliases)
+          .where(and(eq(instanceAliases.principalId, principalId), inArray(instanceAliases.instanceId, seats)))
+      : [];
     // The link is the owner's to hand out; a seated Principal sees only that one exists.
-    return { ...(await this.roomLog(room)), share_token: room.principalId === principalId ? (room.shareToken as ShrSecret | null) : null };
+    return {
+      ...log,
+      share_token: room.principalId === principalId ? (room.shareToken as ShrSecret | null) : null,
+      aliases: Object.fromEntries(named.map((row) => [row.instanceId, row.alias])) as Record<InstanceId, string>,
+    };
+  }
+
+  async setInstanceAlias(principalId: PrincipalId, instanceId: InstanceId, alias: string | null): Promise<{ instance_id: InstanceId; alias: string | null }> {
+    // A seat this account cannot see does not exist as far as it is concerned,
+    // so naming one cannot be used to discover that an id is real.
+    const [own] = await this.executor()
+      .select({ id: instances.id })
+      .from(instances)
+      .where(and(eq(instances.id, instanceId), eq(instances.principalId, principalId)))
+      .limit(1);
+    if (!own) {
+      const [shared] = await this.executor()
+        .select({ id: roomMembers.instanceId })
+        .from(roomMembers)
+        .where(
+          and(
+            eq(roomMembers.instanceId, instanceId),
+            eq(roomMembers.state, "active"),
+            inArray(roomMembers.roomId, this.roomsSeatedIn(principalId)),
+          ),
+        )
+        .limit(1);
+      if (!shared) throw new RepositoryError(404, "instance_not_found", "Instance was not found.");
+    }
+    if (alias === null) {
+      await this.executor()
+        .delete(instanceAliases)
+        .where(and(eq(instanceAliases.principalId, principalId), eq(instanceAliases.instanceId, instanceId)));
+      return { instance_id: instanceId, alias: null };
+    }
+    await this.executor()
+      .insert(instanceAliases)
+      .values({ principalId, instanceId, alias, updatedAt: this.now() })
+      .onConflictDoUpdate({
+        target: [instanceAliases.principalId, instanceAliases.instanceId],
+        set: { alias, updatedAt: this.now() },
+      });
+    return { instance_id: instanceId, alias };
   }
 
   async shareRoom(principalId: PrincipalId, roomId: RoomId): Promise<{ room: Room; share_token: ShrSecret }> {
@@ -1461,7 +1514,7 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
   }
 
   /** Every seat and every message of a Room, in order: what both the owner's page and the public one read. */
-  private async roomLog(room: RoomRow): Promise<Omit<RoomView, "share_token">> {
+  private async roomLog(room: RoomRow): Promise<Omit<RoomView, "aliases" | "share_token">> {
     const rows = await this.executor()
       .select({
         message: messages,
