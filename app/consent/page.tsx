@@ -17,7 +17,8 @@ export const metadata: Metadata = {
  * brings unauthenticated people through /login first and back here.
  */
 export default async function ConsentPage() {
-  const session = await getAuth().api.getSession({ headers: await headers(), query: { disableRefresh: true } });
+  const requestHeaders = await headers();
+  const session = await getAuth().api.getSession({ headers: requestHeaders, query: { disableRefresh: true } });
   if (!session) redirect("/login");
   return (
     <Suspense fallback={null}>
