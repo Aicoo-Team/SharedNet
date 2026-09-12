@@ -11,8 +11,13 @@
 export const CANONICAL_ORIGIN = "https://www.sharednet.ai";
 
 export function siteUrl(): string {
+  // Production is the canonical origin, full stop. An environment variable
+  // decides where a *preview* thinks it lives; letting it decide in production
+  // is how a canonical ends up pointing at the apex, which 308s to here — a
+  // canonical that names a redirect is worse than none.
+  if (process.env.VERCEL_ENV === "production") return CANONICAL_ORIGIN;
   const configured = process.env.NEXT_PUBLIC_SHAREDNET_URL?.trim();
   if (configured) return configured.replace(/\/+$/, "");
-  const vercel = process.env.VERCEL_ENV === "production" ? null : process.env.VERCEL_URL?.trim();
-  return vercel ? `https://${vercel}` : CANONICAL_ORIGIN;
+  const preview = process.env.VERCEL_URL?.trim();
+  return preview ? `https://${preview}` : CANONICAL_ORIGIN;
 }

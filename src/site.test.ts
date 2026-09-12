@@ -5,10 +5,37 @@ import sitemap from "../app/sitemap";
 import { CANONICAL_ORIGIN, siteUrl } from "./site";
 
 describe("what a crawler is told", () => {
-  it("names one hostname, and it is the one the apex redirects to", () => {
+  it("names one hostname in production, whatever the environment says", () => {
     expect(CANONICAL_ORIGIN).toBe("https://www.sharednet.ai");
-    expect(siteUrl()).toMatch(/^https:\/\/[^/]+$/);
-    expect(siteUrl().endsWith("/")).toBe(false);
+    // Whatever it resolves to, it is an absolute origin with no trailing slash,
+    // because everything concatenates a path onto it.
+    expect(siteUrl()).toMatch(/^https?:\/\/[^/]+$/);
+
+    const before = { vercelEnv: process.env.VERCEL_ENV, configured: process.env.NEXT_PUBLIC_SHAREDNET_URL, vercelUrl: process.env.VERCEL_URL };
+    try {
+      // Production ignores the variable. A canonical that named the apex would
+      // be naming a URL that 308s to this one.
+      process.env.VERCEL_ENV = "production";
+      process.env.NEXT_PUBLIC_SHAREDNET_URL = "https://sharednet.ai";
+      expect(siteUrl()).toBe(CANONICAL_ORIGIN);
+
+      // A preview says where it actually is, so its canonicals point at itself
+      // rather than at production.
+      process.env.VERCEL_ENV = "preview";
+      process.env.NEXT_PUBLIC_SHAREDNET_URL = "https://preview.example/";
+      expect(siteUrl()).toBe("https://preview.example");
+      delete process.env.NEXT_PUBLIC_SHAREDNET_URL;
+      process.env.VERCEL_URL = "sharednet-abc123.vercel.app";
+      expect(siteUrl()).toBe("https://sharednet-abc123.vercel.app");
+      delete process.env.VERCEL_URL;
+      expect(siteUrl()).toBe(CANONICAL_ORIGIN);
+    } finally {
+      process.env.VERCEL_ENV = before.vercelEnv;
+      if (before.configured === undefined) delete process.env.NEXT_PUBLIC_SHAREDNET_URL;
+      else process.env.NEXT_PUBLIC_SHAREDNET_URL = before.configured;
+      if (before.vercelUrl === undefined) delete process.env.VERCEL_URL;
+      else process.env.VERCEL_URL = before.vercelUrl;
+    }
   });
 
   it("keeps crawlers out of file links and out of the signed-in product", () => {
