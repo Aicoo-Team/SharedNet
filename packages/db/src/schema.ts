@@ -52,6 +52,7 @@ const SHA256_HEX_RE = sql.raw("'^[0-9a-f]{64}$'");
 const SHARE_TOKEN_RE = sql.raw("'^shr_[A-Za-z0-9_-]{43}$'");
 const TRANSFER_ID_RE = sql.raw("'^txn_[0-9A-Za-z]{10}$'");
 const ARTIFACT_ID_RE = sql.raw("'^art_[0-9A-Za-z]{10}$'");
+const AVATAR_ID_RE = sql.raw("'^ava_[0-9A-Za-z]{10}$'");
 const LINK_KEY_RE = sql.raw("'^afk_[A-Za-z0-9_-]{43}$'");
 const CREDIT_CODE_RE = sql.raw("'^[A-Z0-9][A-Z0-9-]{2,31}$'");
 
@@ -987,6 +988,42 @@ export const instanceAliases = sharednetSchema.table(
   ],
 );
 
+/**
+ * A person's avatar, stored here rather than linked (decision 2026-09-12).
+ * Google hands back a `googleusercontent.com` URL; pointing an <img> at it
+ * makes every page view a request to Google, the URL rotates, and on a network
+ * that cannot reach Google the person simply has no face.
+ */
+export const userAvatars = sharednetSchema.table(
+  "user_avatar",
+  {
+    authUserId: text("auth_user_id").primaryKey(),
+    /** The public handle the image is served under; never the account's own id. */
+    avatarId: text("avatar_id").notNull(),
+    contentType: text("content_type").notNull(),
+    sizeBytes: integer("size_bytes").notNull(),
+    sha256: text("sha256").notNull(),
+    bytes: customType<{ data: Buffer; driverData: Buffer }>({ dataType: () => "bytea" })("bytes").notNull(),
+    /** Where it came from, so a later fetch can tell it is the same picture. */
+    sourceUrl: text("source_url").notNull(),
+    fetchedAt: domainTimestamp("fetched_at").defaultNow().notNull(),
+  },
+  (table) => [
+    unique("user_avatar_avatar_id_unique").on(table.avatarId),
+    foreignKey({
+      name: "user_avatar_user_fk",
+      columns: [table.authUserId],
+      foreignColumns: [authUser.id],
+    }).onDelete("cascade"),
+    check("user_avatar_id_format", sql`${table.avatarId} ~ ${AVATAR_ID_RE}`),
+    check("user_avatar_size_positive", sql`${table.sizeBytes} > 0`),
+    check("user_avatar_sha256_format", sql`${table.sha256} ~ ${SHA256_HEX_RE}`),
+    // Only the raster types an <img> needs. Never SVG: it is a script container,
+    // and this is the one route that serves somebody's bytes inline.
+    check("user_avatar_content_type_known", sql`${table.contentType} IN ('image/png', 'image/jpeg', 'image/webp')`),
+  ],
+);
+
 export const databaseSchema = {
   principals,
   agents,
@@ -1007,4 +1044,5 @@ export const databaseSchema = {
   artifacts,
   artifactBytes,
   instanceAliases,
+  userAvatars,
 } as const;

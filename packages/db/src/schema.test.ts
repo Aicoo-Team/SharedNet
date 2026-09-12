@@ -65,6 +65,7 @@ describe("hosted Postgres schema", () => {
       "artifacts",
       "artifactBytes",
       "instanceAliases",
+      "userAvatars",
     ]);
   });
 
@@ -160,6 +161,7 @@ describe("hosted Postgres schema", () => {
     expect(migration).toContain('CONSTRAINT "credit_transfer_minted_or_paid"');
     expect(migration).toContain('CONSTRAINT "credit_redemption_pk" PRIMARY KEY("code","principal_id")');
     expect(migration).toContain('CONSTRAINT "artifact_filename_is_a_name"');
+    expect(migration).toContain('CONSTRAINT "user_avatar_content_type_known"');
     // One kind of file: every artifact has a link, and `reach` is gone.
     expect(migration).toContain('ALTER COLUMN "link_key" SET NOT NULL');
     expect(migration).toContain('DROP COLUMN "reach"');
