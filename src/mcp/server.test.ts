@@ -1,6 +1,7 @@
 // @vitest-environment node
 
 import { createMcpHandler } from "@modelcontextprotocol/server";
+import { MCP_TOOL_NAMES } from "@/src/protocol/registration-contract";
 import { describe, expect, it } from "vitest";
 
 import type { InstanceId, PrincipalId, RoomId } from "@/packages/protocol/src/index.ts";
@@ -50,27 +51,9 @@ describe("SharedNet over MCP", () => {
     const call = rpc(handler, chatgpt);
     const listed = await call("tools/list", {});
     const names = (listed.body.result!.tools as Array<{ name: string }>).map((t) => t.name).sort();
-    expect(names).toEqual([
-      "accept",
-      "credits",
-      "deny",
-      "fetch",
-      "file_read",
-      "file_write",
-      "files",
-      "join",
-      "pay",
-      "read",
-      "redeem_credits",
-      "requests",
-      "room_create",
-      "room_invite",
-      "rooms",
-      "say",
-      "search",
-      "wait",
-      "whoami",
-    ]);
+    // The published protocol names every one of these, so the list lives with
+    // the documentation: a tool added here without a mention there fails twice.
+    expect(names).toEqual([...MCP_TOOL_NAMES].sort());
 
     const who = tool((await call("tools/call", { name: "whoami", arguments: {} })).body) as Record<string, string>;
     expect(who.principal_id).toMatch(/^p_/);

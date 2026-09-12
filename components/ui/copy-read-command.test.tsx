@@ -24,7 +24,7 @@ describe("CopyReadCommand", () => {
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(command));
     expect(screen.getByRole("button", { name: "Copied" })).toBeVisible();
     expect(screen.getByRole("status")).toHaveTextContent(
-      "Instruction copied to clipboard.",
+      "Copied to clipboard.",
     );
   });
 
@@ -38,5 +38,14 @@ describe("CopyReadCommand", () => {
 
     expect(await screen.findByRole("button", { name: "Retry" })).toBeVisible();
     expect(screen.getByRole("status")).toHaveTextContent("Copy failed");
+  });
+
+  it("drops the shell prompt for text that is not a command", () => {
+    const { container, rerender } = render(<CopyReadCommand command="sharednet whoami" />);
+    expect(container.textContent).toContain("$");
+
+    rerender(<CopyReadCommand command="https://sharednet.ai/api/mcp" lead={null} />);
+    expect(container.textContent).not.toContain("$");
+    expect(screen.getByText("https://sharednet.ai/api/mcp")).toBeTruthy();
   });
 });
