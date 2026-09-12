@@ -1,6 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 
-export const PUBLIC_ID_PREFIXES = ["p", "key", "a", "i", "rom", "msg", "dec", "mem", "inv", "cli", "txn", "art"] as const;
+export const PUBLIC_ID_PREFIXES = ["p", "key", "a", "i", "rom", "msg", "dec", "mem", "inv", "cli", "txn", "art", "ava"] as const;
 export type PublicIdPrefix = (typeof PUBLIC_ID_PREFIXES)[number];
 
 /**
@@ -66,6 +66,9 @@ export type TransferId = `txn_${string}`;
 /** An artifact: a file an Agent put in the Room's reach. */
 export const ARTIFACT_ID_PATTERN = /^art_[0-9A-Za-z]{10}$/;
 export type ArtifactId = `art_${string}`;
+/** An avatar: the public handle a person's picture is served under. */
+export const AVATAR_ID_PATTERN = /^ava_[0-9A-Za-z]{10}$/;
+export type AvatarId = `ava_${string}`;
 /**
  * The key of an artifact's public link. Like a Room's share slug it is a read
  * capability and nothing else: it opens one file, and it is what makes
@@ -89,7 +92,8 @@ export type PublicId =
   | InviteId
   | CliLoginId
   | TransferId
-  | ArtifactId;
+  | ArtifactId
+  | AvatarId;
 
 export type IdForPrefix<P extends PublicIdPrefix> = P extends "p"
   ? PrincipalId
@@ -113,7 +117,9 @@ export type IdForPrefix<P extends PublicIdPrefix> = P extends "p"
                     ? CliLoginId
                     : P extends "txn"
                       ? TransferId
-                      : ArtifactId;
+                      : P extends "art"
+                        ? ArtifactId
+                        : AvatarId;
 
 const ID_PATTERNS: Record<PublicIdPrefix, RegExp> = {
   p: PRINCIPAL_ID_PATTERN,
@@ -128,6 +134,7 @@ const ID_PATTERNS: Record<PublicIdPrefix, RegExp> = {
   cli: CLI_LOGIN_ID_PATTERN,
   txn: TRANSFER_ID_PATTERN,
   art: ARTIFACT_ID_PATTERN,
+  ava: AVATAR_ID_PATTERN,
 };
 
 const CROCKFORD_LOWER = "0123456789abcdefghjkmnpqrstvwxyz";

@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 
+import { eq } from "drizzle-orm";
+
 import { apiKey } from "@better-auth/api-key";
 import { cimd } from "@better-auth/cimd";
 import { fetchClientMetadataResource } from "@better-auth/cimd/node";
@@ -25,11 +27,12 @@ import {
   oauthResource,
 } from "../packages/db/src/auth-schema.ts";
 import { getDatabase } from "../packages/db/src/client.ts";
-import { principals } from "../packages/db/src/schema.ts";
+import { principals, userAvatars } from "../packages/db/src/schema.ts";
 import {
   generatePublicId,
   generateSecret,
 } from "../packages/protocol/src/index.ts";
+import { fetchAvatar, isFetchableAvatarUrl } from "../src/auth/avatar.ts";
 import { sendEmail } from "../src/auth/email.ts";
 import { buildVerificationEmail, withCallback } from "../src/auth/verification-email.ts";
 
@@ -175,7 +178,7 @@ export function mcpResourceUrl(baseURL: string): string {
 }
 
 export type CreateSharedNetAuthOptions = {
-  afterUserCreated?: (user: { id: string; name: string }) => Promise<void>;
+  afterUserCreated?: (user: { id: string; name: string; image?: string | null }) => Promise<void>;
   baseURL: string;
   database: AuthDatabase;
   oauthProxy?: { productionURL: string; secret?: string } | null;
@@ -324,6 +327,41 @@ export function createSharedNetAuth({
   });
 }
 
+/**
+ * Takes the picture a provider handed back and keeps it here, then points the
+ * account at our own copy. Nothing about it may fail a sign-up: a refusal, a
+ * timeout, or a picture that is not one of the three raster types all leave
+ * the person with no stored picture and a working account.
+ */
+async function storeAvatarForUser(user: { id: string; image?: string | null }) {
+  try {
+    if (!isFetchableAvatarUrl(user.image)) return;
+    const fetched = await fetchAvatar(user.image!);
+    if (fetched === null) return;
+    const database = getDatabase();
+    await database
+      .insert(userAvatars)
+      .values({
+        authUserId: user.id,
+        avatarId: fetched.avatarId,
+        contentType: fetched.contentType,
+        sizeBytes: fetched.sizeBytes,
+        sha256: fetched.sha256,
+        bytes: Buffer.from(fetched.bytes),
+        sourceUrl: fetched.sourceUrl,
+        fetchedAt: new Date(),
+      })
+      .onConflictDoNothing({ target: userAvatars.authUserId });
+    // The account now points at this origin, so no page view reaches Google.
+    await database
+      .update(authUser)
+      .set({ image: `/a/${fetched.avatarId}` })
+      .where(eq(authUser.id, user.id));
+  } catch {
+    console.error("SharedNet avatar was not stored; the account is unaffected.");
+  }
+}
+
 async function provisionPrincipalForUser(user: { id: string; name: string }) {
   try {
     await getDatabase()
@@ -345,7 +383,12 @@ async function provisionPrincipalForUser(user: { id: string; name: string }) {
 function createRuntimeAuth() {
   const usePostgres = hasPostgresEnvironment();
   return createSharedNetAuth({
-    afterUserCreated: usePostgres ? provisionPrincipalForUser : undefined,
+    afterUserCreated: usePostgres
+      ? async (user) => {
+          await provisionPrincipalForUser(user);
+          await storeAvatarForUser(user);
+        }
+      : undefined,
     baseURL: requiredEnvironment("BETTER_AUTH_URL"),
     database: resolveAuthDatabase(),
     oauthProxy: resolveOAuthProxy(process.env),
