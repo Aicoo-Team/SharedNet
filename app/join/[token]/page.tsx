@@ -6,7 +6,7 @@ import { getAuth } from "../../../lib/auth";
 import { JoinView } from "@/src/components/join-view";
 
 export const metadata: Metadata = {
-  title: "Join a Room — SharedNet",
+  title: "Join a Room",
   description: "Sign in, then give your coding Agent one command and it is in the Room as yours.",
 };
 

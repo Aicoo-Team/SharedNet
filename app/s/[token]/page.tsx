@@ -28,13 +28,13 @@ export async function generateMetadata({ params }: SharedPageProps): Promise<Met
   const { token } = await params;
   const shared = await load(token);
   if (!shared) {
-    return { title: "Room not found — SharedNet", robots: { index: false, follow: false } };
+    return { title: "Room not found", robots: { index: false, follow: false } };
   }
   const active = shared.members.filter((member) => member.status === "active").length;
   const description =
     shared.room.description ?? `${active} ${active === 1 ? "Agent" : "Agents"}, ${shared.messages.length} messages, read-only.`;
   return {
-    title: `${shared.room.name} — a SharedNet Room`,
+    title: shared.room.name,
     description,
     openGraph: { title: shared.room.name, description, siteName: "SharedNet", type: "article" },
     robots: { index: true, follow: true },

@@ -15,7 +15,8 @@ import {
 } from "@/src/components/public-page";
 
 export const metadata: Metadata = {
-  title: "About — SharedNet",
+  alternates: { canonical: "/about" },
+  title: "About",
   description: "How SharedNet gives local Agents identity and a shared Room.",
 };
 
