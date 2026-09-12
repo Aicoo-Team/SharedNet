@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ModernLoginSignup from "../../components/ui/modern-login-signup";
 
 const authClient = vi.hoisted(() => ({
-  signIn: { email: vi.fn() },
+  signIn: { email: vi.fn(), social: vi.fn() },
   signUp: { email: vi.fn() },
 }));
 
@@ -45,6 +45,10 @@ describe("ModernLoginSignup", () => {
     });
     authClient.signUp.email.mockResolvedValue({
       data: { token: null, user: null },
+      error: null,
+    });
+    authClient.signIn.social.mockResolvedValue({
+      data: { redirect: true, url: "https://accounts.google.com/o/oauth2/auth" },
       error: null,
     });
   });
@@ -196,6 +200,91 @@ describe("ModernLoginSignup", () => {
       "Sign-in service is unavailable. Try again after the server is ready.",
     );
     expect(navigation.replace).not.toHaveBeenCalled();
+  });
+
+  it("offers no Google button when the deployment has no Google client", () => {
+    render(<ModernLoginSignup />);
+    expect(screen.queryByRole("button", { name: /google/i })).not.toBeInTheDocument();
+  });
+
+  it("sends the requested page through the same guard the password path uses", async () => {
+    navigation.search = new URLSearchParams("next=/join/rom_AbCdEfGhIj");
+    render(<ModernLoginSignup google />);
+
+    fireEvent.click(screen.getByRole("button", { name: /sign in with google/i }));
+
+    await waitFor(() => expect(authClient.signIn.social).toHaveBeenCalledTimes(1));
+    expect(authClient.signIn.social).toHaveBeenCalledWith({
+      provider: "google",
+      callbackURL: "/join/rom_AbCdEfGhIj",
+      errorCallbackURL: "/login?next=%2Fjoin%2From_AbCdEfGhIj",
+    });
+  });
+
+  it("comes back to a bare /login when there was nowhere in particular to go", async () => {
+    render(<ModernLoginSignup google />);
+
+    fireEvent.click(screen.getByRole("button", { name: /sign in with google/i }));
+
+    await waitFor(() => expect(authClient.signIn.social).toHaveBeenCalledTimes(1));
+    expect(authClient.signIn.social.mock.calls[0]![0]).toMatchObject({
+      callbackURL: "/chat",
+      errorCallbackURL: "/login",
+    });
+  });
+
+  it("explains a Google account already attached to someone else", () => {
+    navigation.search = new URLSearchParams("error=account_already_linked_to_different_user");
+    render(<ModernLoginSignup google />);
+
+    expect(screen.getByRole("alert")).toHaveTextContent(/already linked to a different/i);
+  });
+
+  it("refuses to carry an off-site next through Google, on either leg", async () => {
+    navigation.search = new URLSearchParams("next=https://evil.example/steal");
+    render(<ModernLoginSignup google />);
+
+    fireEvent.click(screen.getByRole("button", { name: /sign in with google/i }));
+
+    await waitFor(() => expect(authClient.signIn.social).toHaveBeenCalledTimes(1));
+    expect(authClient.signIn.social.mock.calls[0]![0]).toMatchObject({
+      callbackURL: "/chat",
+      errorCallbackURL: "/login",
+    });
+  });
+
+  it("explains a Google round trip that came back unlinked, before anyone clicks", () => {
+    navigation.search = new URLSearchParams("error=account_not_linked");
+    render(<ModernLoginSignup google />);
+
+    expect(screen.getByRole("alert")).toHaveTextContent(/already uses this email address/i);
+  });
+
+  it("explains any other failed Google round trip without naming a code", () => {
+    navigation.search = new URLSearchParams("error=state_mismatch");
+    render(<ModernLoginSignup google />);
+
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent(/google sign-in did not complete/i);
+    expect(alert).not.toHaveTextContent("state_mismatch");
+  });
+
+  it("keeps the person on the page when the flow will not even start", async () => {
+    authClient.signIn.social.mockResolvedValue({
+      data: null,
+      error: { message: "Provider not found", status: 400 },
+    });
+    render(<ModernLoginSignup google />);
+
+    fireEvent.click(screen.getByRole("button", { name: /sign in with google/i }));
+
+    // The password path's copy ("check your details") is wrong here: there are
+    // no details to check, and the provider's own words are for the log.
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent(/google sign-in did not complete/i),
+    );
+    expect(screen.getByRole("alert")).not.toHaveTextContent("Provider not found");
+    expect(screen.getByRole("button", { name: /sign in with google/i })).not.toBeDisabled();
   });
 
   it("prevents duplicate submissions while authentication is pending", async () => {

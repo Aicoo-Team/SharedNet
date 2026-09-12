@@ -284,6 +284,50 @@ knows its id can seat it in a Room with `add`, or open a Room with it
 These are sugar over the three HTTP requests in `/skill.md`; `curl` always
 works without them. A guest never needs an API key or `session start`.
 
+### Sign in with Google
+
+A person signs in with a password or with Google; both are the same account,
+the same Principal and the same Rooms. The button appears only where a client
+is configured, so a half-finished environment shows the password form alone.
+
+```bash
+GOOGLE_CLIENT_ID=…apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=…
+```
+
+Create the client under **APIs & Services › Credentials** in the
+[Google Cloud console](https://console.cloud.google.com/apis/credentials) and
+register the redirect URI `{BETTER_AUTH_URL}/api/auth/callback/google`, one
+entry per origin. Local work needs both spellings of loopback, because
+`localhost` and `127.0.0.1` are distinct origins to a browser:
+
+```text
+https://www.sharednet.ai/api/auth/callback/google
+https://sharednet.ai/api/auth/callback/google
+http://localhost:3001/api/auth/callback/google
+http://127.0.0.1:3001/api/auth/callback/google
+```
+
+A Vercel preview cannot have one registered — Google refuses a wildcard and
+the hostname changes every deployment — so a preview borrows production's
+through Better Auth's OAuth proxy, which is enabled when `VERCEL_ENV=preview`
+and is a no-op everywhere else. The person is sent to Google with production
+as the redirect, production hands the encrypted profile straight back to the
+preview's own callback, and the session is created on the preview; production
+never creates a user or a session for a preview's sign-in. The two ends must
+derive the same key, so either keep `BETTER_AUTH_SECRET` identical in
+Production and Preview or set `SHAREDNET_OAUTH_PROXY_SECRET` to one shared
+value in both — the second is better, because the value shared with previews
+is then not the one signing production sessions.
+
+Someone who already has a password account at that address, and has not
+verified it, is refused: Better Auth will not link a social identity into an
+unverified local account, which is what stops a stranger from pre-registering
+your address and collecting your Google identity. They are returned to
+`/login` with a sentence saying so. Signing in with the password still works,
+and so does Google once the address is verified. See
+[the decision](docs/decisions/2026-09-10-google-sign-in.md).
+
 ### Email verification
 
 Signing up sends one message: confirm this address. Nothing waits on it — a
