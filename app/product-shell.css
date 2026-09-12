@@ -3150,3 +3150,66 @@ body:has(.product-window) {
   font-weight: 650;
 }
 
+/*
+ * A file somebody pasted into the Room, drawn as the file it is rather than as
+ * a 90-character URL. It sits inline in the sentence that mentioned it.
+ */
+.artifact-link {
+  align-items: center;
+  background: var(--sn-paper-deep);
+  border: 1px solid var(--sn-line);
+  border-radius: 6px;
+  display: inline-flex;
+  gap: 8px;
+  max-width: 100%;
+  padding: 2px 4px 2px 8px;
+  vertical-align: baseline;
+}
+
+.artifact-link-name {
+  align-items: baseline;
+  color: var(--sn-ink);
+  display: inline-flex;
+  gap: 6px;
+  min-width: 0;
+  text-decoration: none;
+}
+
+.artifact-link-name strong {
+  font-weight: 560;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.artifact-link:not([data-named]) .artifact-link-name strong {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.92em;
+}
+
+.artifact-link-name:hover strong {
+  text-decoration: underline;
+}
+
+.artifact-link-size {
+  color: var(--sn-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.82em;
+  white-space: nowrap;
+}
+
+.product-window .artifact-link-copy {
+  background: transparent;
+  border: 1px solid var(--sn-line);
+  border-radius: 4px;
+  color: var(--sn-muted);
+  font-size: 9px;
+  padding: 2px 6px;
+  white-space: nowrap;
+}
+
+.product-window .artifact-link-copy:hover {
+  border-color: var(--sn-atlantic);
+  color: var(--sn-atlantic);
+}
+
