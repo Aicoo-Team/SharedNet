@@ -1,5 +1,27 @@
 import type { NextConfig } from "next";
 
+import {
+  ANALYTICS_ASSETS_ORIGIN,
+  ANALYTICS_INGESTION_ORIGIN,
+  ANALYTICS_PROXY_PATH,
+} from "@/src/analytics/proxy";
+
+/**
+ * PostHog, served from our own origin. Content blockers filter `*.posthog.com`
+ * hard, and the people who run them are disproportionately the developers this
+ * product is for — measuring only the visitors without a blocker would be
+ * worse than not measuring. A rewrite is a proxy, so the browser sees one
+ * origin and the events still reach PostHog's US region.
+ *
+ * `/static` is split out because PostHog documents a separate asset host for
+ * it. Everything else — ingestion, feature flags, and the `/array/<key>`
+ * remote config — goes to the regional endpoint, which serves them all.
+ */
+const ANALYTICS_REWRITES = [
+  { source: `${ANALYTICS_PROXY_PATH}/static/:path*`, destination: `${ANALYTICS_ASSETS_ORIGIN}/static/:path*` },
+  { source: `${ANALYTICS_PROXY_PATH}/:path*`, destination: `${ANALYTICS_INGESTION_ORIGIN}/:path*` },
+];
+
 /**
  * OAuth discovery lives at the origin root by RFC 8414 and RFC 9728, while
  * Better Auth serves it under its own base path. An MCP client asks
@@ -34,11 +56,14 @@ const SECURITY_HEADERS = [
 const nextConfig: NextConfig = {
   allowedDevOrigins: ["127.0.0.1"],
   reactStrictMode: true,
+  // PostHog's ingestion endpoints care about the trailing slash they were
+  // given; Next's own normalising redirect would otherwise lose events.
+  skipTrailingSlashRedirect: true,
   async headers() {
     return [{ source: "/:path*", headers: SECURITY_HEADERS }];
   },
   async rewrites() {
-    return WELL_KNOWN_REWRITES;
+    return [...WELL_KNOWN_REWRITES, ...ANALYTICS_REWRITES];
   },
 };
 

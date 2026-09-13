@@ -4,6 +4,7 @@ import { FormEvent, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 import { authClient } from "../../lib/auth-client";
+import { capture } from "../../src/analytics/events";
 import { DEFAULT_POST_AUTH_PATH, safePostAuthPath } from "../../src/auth/redirect";
 import ParticlesComponent from "./particles-bg";
 
@@ -154,6 +155,8 @@ export default function ModernLoginSignup({ google = false }: ModernLoginSignupP
         setError(errorMessage(result.error, mode));
         return;
       }
+
+      capture(mode === "sign-in" ? "signed_in" : "signed_up");
 
       // Sent here by an MCP client (ChatGPT, Claude) mid-authorization: the
       // server answers the sign-in with where to resume, and the browser goes
