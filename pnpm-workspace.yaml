@@ -3,6 +3,9 @@ packages:
 
 allowBuilds:
   better-sqlite3: true
+  # posthog-js pulls core-js in; its only build script prints a funding
+  # notice, so there is nothing to run.
+  core-js: false
   esbuild: true
 minimumReleaseAgeExclude:
   - lucide-react@1.35.0
