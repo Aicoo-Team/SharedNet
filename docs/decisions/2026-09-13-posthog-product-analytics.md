@@ -40,6 +40,14 @@ smallest thing that does.
   record the contents of Rooms verbatim. What leaves the browser is a list
   somebody wrote down, in `src/analytics/events.ts`, and adding to it is a
   decision rather than a side effect of adding a button.
+- **Pageviews follow client-side navigation.** `capture_pageview:
+  "history_change"`, not `true`. `true` captures a pageview only when PostHog
+  starts, and the Dashboard is a single-page app — moving between `/chat`,
+  `/network` and `/decisions` never reloads — so it would have recorded the
+  page each session entered on and nothing after it. The library decides this
+  in `$d()`: `"history_change"` yields `{path: true}` and any other truthy
+  value yields `{}`, and the history handler only captures when `path` is set.
+  `posthog.test.ts` pins the value.
 - **Proxied through our own origin.** `/relay/*` rewrites to PostHog's US
   region in `next.config.ts`. Blockers filter `*.posthog.com` heavily and are
   most used by exactly the developer audience this product has, so the

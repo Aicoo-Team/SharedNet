@@ -59,7 +59,11 @@ export function analyticsOptions(): Partial<PostHogConfig> {
     // A person row only once someone is identified; anonymous browsing stays
     // anonymous, which is the only honest option without persistence anyway.
     person_profiles: "identified_only",
-    capture_pageview: true,
+    // `true` captures a pageview only when PostHog starts. The Dashboard is a
+    // single-page app — moving between /chat, /network and /decisions never
+    // reloads — so that would record the page someone entered on and nothing
+    // after it. "history_change" follows client-side navigation.
+    capture_pageview: "history_change",
     before_send: (event) => {
       if (!event) return event;
       return { ...event, properties: redactProperties(event.properties ?? {}) };

@@ -22,6 +22,11 @@ describe("what PostHog is allowed to do", () => {
     expect(analyticsOptions().person_profiles).toBe("identified_only");
   });
 
+  it("follows client-side navigation, since the Dashboard never reloads", () => {
+    // `true` would capture only the entry page of a single-page-app session.
+    expect(analyticsOptions().capture_pageview).toBe("history_change");
+  });
+
   it("sends through our own origin, not posthog.com", () => {
     expect(analyticsOptions().api_host).toBe(ANALYTICS_PROXY_PATH);
     expect(analyticsOptions().api_host).not.toContain("posthog.com");
