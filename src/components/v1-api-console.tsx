@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 
+import { capture } from "@/src/analytics/events";
+
 import {
   Eyebrow,
   FIELD,
@@ -188,6 +190,9 @@ export function V1ApiConsole() {
     setCreatedKey({ id, raw: key });
     resetAgentState();
     setKeyStatus("New API key created and loaded for this tab.");
+    // The step between signing in and having an Agent that can talk. Only that
+    // it happened — the key itself never leaves this tab.
+    capture("api_key_created");
   }
 
   async function copyApiKey() {

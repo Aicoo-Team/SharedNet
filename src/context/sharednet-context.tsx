@@ -11,6 +11,8 @@ import {
   useState,
 } from "react";
 
+import { identifyPrincipal } from "@/src/analytics/events";
+
 import {
   isDecisionProjection,
   isDecisionListResponse,
@@ -231,6 +233,10 @@ export function SharedNetProvider({ children }: { children: ReactNode }) {
       if (networkResult.status === "fulfilled") {
         setNetwork(networkResult.value);
         setPrincipal(networkResult.value.principal);
+        // The first moment this browser knows which Principal it is. Analytics
+        // is anonymous until here, and stitches to the same id the Agent-side
+        // events will carry.
+        identifyPrincipal(networkResult.value.principal.principal_id);
       }
       if (decisionsResult.status === "fulfilled") {
         setDecisions(decisionsResult.value.decisions);
