@@ -20,6 +20,11 @@ import { redactUrl } from "./redact";
  * record the contents of Rooms verbatim. Both are off, and named events are
  * sent instead, so what leaves the browser is a list somebody wrote down.
  *
+ * **Heatmaps stay on, redacted.** Whether they run is decided server-side
+ * when the client says nothing, so turning them off here would be a promise
+ * only this file keeps. `redactProperties` cannot see their URLs anyway —
+ * see `redactHeatmapData`.
+ *
  * **Through our own origin.** `api_host` points at a same-origin path that
  * `next.config.ts` rewrites to PostHog. Blockers filter `*.posthog.com`
  * heavily, and they are most used by exactly the developer audience this
@@ -36,6 +41,31 @@ export { ANALYTICS_PROXY_PATH, ANALYTICS_UI_HOST } from "./proxy";
  */
 const URLISH_PROPERTY = /(url|referrer|pathname|href)/i;
 
+/** The one payload whose URLs are object keys rather than property values. */
+const HEATMAP_PROPERTY = "$heatmap_data";
+
+/**
+ * A heatmap arrives as `{ [pageUrl]: [point, …] }`, so the URL is a *key* and
+ * the name-matching rule above walks straight past it. Redact the keys instead
+ * of switching heatmaps off: `redactUrl` leaves a clean URL byte-identical, so
+ * heatmaps keep working on the pages worth heatmapping, while `/join/rit_…`
+ * collapses into `/join/[token]`.
+ *
+ * Buckets are merged, not overwritten. Every visitor to a capability route
+ * redacts to the same key, and building this with `Object.fromEntries` would
+ * keep only the last one and drop every click before it.
+ */
+export function redactHeatmapData(value: unknown): unknown {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return value;
+
+  const merged: Record<string, unknown[]> = {};
+  for (const [url, points] of Object.entries(value as Record<string, unknown>)) {
+    const key = redactUrl(url);
+    merged[key] = [...(merged[key] ?? []), ...(Array.isArray(points) ? points : [points])];
+  }
+  return merged;
+}
+
 export function redactProperties(
   properties: Readonly<Record<string, unknown>>,
 ): Record<string, unknown> {
@@ -44,6 +74,9 @@ export function redactProperties(
     if (typeof value === "string" && URLISH_PROPERTY.test(key)) {
       redacted[key] = redactUrl(value);
     }
+  }
+  if (HEATMAP_PROPERTY in redacted) {
+    redacted[HEATMAP_PROPERTY] = redactHeatmapData(redacted[HEATMAP_PROPERTY]);
   }
   return redacted;
 }

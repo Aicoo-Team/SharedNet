@@ -62,6 +62,34 @@ describe("what leaves the browser with an event", () => {
     });
   });
 
+  it("redacts the URLs inside a heatmap, which are keys and not values", () => {
+    const redacted = redactProperties({
+      $heatmap_data: {
+        [`https://www.sharednet.ai/join/rit_${"E".repeat(43)}`]: [{ x: 1, y: 2 }],
+        "https://www.sharednet.ai/pricing": [{ x: 3, y: 4 }],
+      },
+    });
+
+    // The clean URL is untouched, which is what keeps heatmaps usable.
+    expect(Object.keys(redacted.$heatmap_data as object)).toEqual([
+      "https://www.sharednet.ai/join/[token]",
+      "https://www.sharednet.ai/pricing",
+    ]);
+    expect(JSON.stringify(redacted)).not.toContain("rit_");
+  });
+
+  it("merges heatmap buckets that redact alike, instead of dropping clicks", () => {
+    const redacted = redactProperties({
+      $heatmap_data: {
+        [`https://www.sharednet.ai/join/rit_${"E".repeat(43)}`]: [{ x: 1 }],
+        [`https://www.sharednet.ai/join/rit_${"F".repeat(43)}`]: [{ x: 2 }],
+      },
+    });
+
+    const data = redacted.$heatmap_data as Record<string, unknown[]>;
+    expect(data["https://www.sharednet.ai/join/[token]"]).toHaveLength(2);
+  });
+
   it("passes every event through the redactor before it is sent", () => {
     const beforeSend = analyticsOptions().before_send;
     expect(beforeSend).toBeTypeOf("function");
