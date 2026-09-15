@@ -37,11 +37,6 @@
     ".next/dev/types/**/*.ts"
   ],
   "exclude": [
-    "node_modules",
-    "app/network/page 2.tsx",
-    "app/page 2.tsx",
-    "src/components/chat-view 2.tsx",
-    "src/components/decisions-view 2.tsx",
-    "src/components/network-view 2.tsx"
+    "node_modules"
   ]
 }

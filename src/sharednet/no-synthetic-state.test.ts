@@ -12,14 +12,7 @@ import { describe, expect, it } from "vitest";
 const SOURCE_ROOTS = ["app", "src", "components", "lib"];
 const SOURCE_EXTENSIONS = new Set([".css", ".ts", ".tsx"]);
 const THIS_TEST = "src/sharednet/no-synthetic-state.test.ts";
-const PROTECTED_SOURCE_COPIES = new Set([
-  "app/globals 2.css",
-  "app/network/page 2.tsx",
-  "app/page 2.tsx",
-  "src/components/chat-view 2.tsx",
-  "src/components/decisions-view 2.tsx",
-  "src/components/network-view 2.tsx",
-]);
+const PROTECTED_SOURCE_COPIES = new Set<string>([]);
 const FORBIDDEN_TOKENS = [
   ["sharednet:", "network-console:v3"],
   ["SharedNet", "DemoProvider"],
