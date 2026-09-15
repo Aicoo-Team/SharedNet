@@ -57,6 +57,27 @@ V1 explicitly excludes:
 - deterministic IDs derived from names, email addresses, provider IDs, machines, or workspace paths;
 - the current Python API, Python CLI, SQLite, local API daemon, launchd service, and Console/BFF credential model in the active product path.
 
+
+**Amended 2026-09-11 — bounded artifacts and claim ownership.** The binary
+artifact exclusion above is superseded by the [artifact
+decision](../../decisions/2026-09-11-artifacts.md): raw-body uploads and
+attachment downloads, with `room`, `link` or `private` reach, are included.
+Hosted object storage remains deferred; metadata and bytes live in PostgreSQL
+with a 4 MiB file limit and a 256 MiB account upload quota.
+
+Artifact authorization, listing, deletion, usage and fresh projections resolve
+the stored uploader Principal through its permanent guest-claim merge mapping.
+This applies to rows created before the correction as well as later uploads.
+A claim preserves all files even if combined holdings exceed quota; further
+uploads require enough free space. Uploads use the same complete sorted
+identity-lock set as claims, re-resolve ownership after locking, and then
+serialize quota checks under the effective account. Ownership moving outside
+the discovered set returns `409 credits_identity_moved` before any write;
+the same key can be retried. The stable Instance idempotency rule in §7.8 also
+applies to uploads: claim never rewrites or duplicates an original response.
+See [the ownership decision](../../decisions/2026-09-11-artifact-claim-ownership.md)
+for recovery and concurrency details.
+
 ## 3. Deployment architecture
 
 V1 uses one Vercel project and one public origin:
@@ -459,7 +480,9 @@ The SDK and CLI generate UUIDv4 values in the `Idempotency-Key` header. The head
 
 Keys are ASCII UUIDv4 strings and are scoped by `(principal_id, credential_class, actor_id, operation_id, idempotency_key)`, where `actor_id` is the Account ID for a Web session, API-key ID for an Account API key, or Instance ID for an Instance token. The request fingerprint is SHA-256 over the operation ID, normalized path parameters, and RFC 8785 canonical JSON body. Records are retained for at least 24 hours.
 
-Mutation and idempotency record execute in one database transaction. Acquisition uses `INSERT ... ON CONFLICT DO NOTHING`, followed by a read/lock of the scoped record; it never tries to recover from a bare uniqueness error inside an aborted transaction. The committed original `2xx` status and non-secret body are replayed byte-for-byte with `Idempotency-Replayed: true`; a retry with a different fingerprint returns `409 idempotency_conflict`. A concurrent identical request waits for the first transaction and then replays it. A rolled-back attempt leaves no completed record and may execute again. The server never stores or replays raw credentials.
+**Amended 2026-09-11 — Instance retries survive a guest claim.** For Instance credentials, the replay namespace is `(credential_class, actor_id, operation_id, idempotency_key)`: the globally unique Instance ID remains the actor when its anonymous Principal is claimed. The Principal owns the purse; the Instance owns its retry history. Web-session and Account API-key namespaces retain the Principal component specified above. A record's `principal_id` remains historical metadata and part of its existing storage primary key; a claim never rewrites the recorded response or the ledger. Legacy rows in multiple Principal namespaces resolve to the earliest unexpired record by `(created_at, principal_id)`, including its fingerprint, so a newer conflicting row cannot authorize another mutation.
+
+Mutation and idempotency record execute in one database transaction. As amended 2026-09-11, acquisition takes a transaction-scoped advisory lock for the effective replay namespace, then reads the stored result or executes and inserts it. This replaces the earlier insert-first acquisition and makes an in-flight request authenticated before a claim wait for the same Instance's request authenticated after it; all writers use the same stable lock. The committed original `2xx` status and non-secret body are replayed byte-for-byte with `Idempotency-Replayed: true`; a retry with a different fingerprint returns `409 idempotency_conflict`. A concurrent identical request waits for the first transaction and then replays it. A rolled-back attempt leaves no completed record and may execute again. The server never stores or replays raw credentials.
 
 ### 7.9 Normative V1 wire contract
 

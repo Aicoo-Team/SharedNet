@@ -69,6 +69,45 @@ export class ApiClient {
     this.fetch = fetchImplementation;
   }
 
+  /**
+   * Fetches bytes rather than JSON: an artifact's content. The digest the
+   * server states travels beside them so the caller can check what it wrote.
+   */
+  async requestBytes(
+    path: string,
+    credential: string,
+  ): Promise<{ bytes: Uint8Array; filename: string | null; sha256: string | null }> {
+    let response: Response;
+    try {
+      response = await this.fetch(`${this.baseUrl}/api/v1${path}`, {
+        method: "GET",
+        headers: credential ? { authorization: `Bearer ${credential}` } : {},
+      });
+    } catch {
+      throw new CliError("service_unavailable", "The SharedNet service could not be reached.", 5);
+    }
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      let code = "request_failed";
+      let message = "SharedNet refused the request.";
+      try {
+        const parsed = JSON.parse(text) as { error?: { code?: string; message?: string } };
+        code = parsed.error?.code ?? code;
+        message = parsed.error?.message ?? message;
+      } catch {
+        /* A body that is not our error envelope tells us nothing more. */
+      }
+      throw new CliError(code, message, response.status >= 500 ? 5 : 4);
+    }
+    const disposition = response.headers.get("content-disposition") ?? "";
+    const named = /filename\*=UTF-8''([^;]+)/.exec(disposition);
+    return {
+      bytes: new Uint8Array(await response.arrayBuffer()),
+      filename: named ? decodeURIComponent(named[1]!) : null,
+      sha256: response.headers.get("x-sharednet-sha256"),
+    };
+  }
+
   async request<T>(
     method: string,
     path: string,
@@ -77,16 +116,18 @@ export class ApiClient {
     requestHeaders: Record<string, string> = {},
   ): Promise<T> {
     let response: Response;
+    // Bytes go up as they are; anything else is JSON.
+    const raw = body instanceof Uint8Array;
     try {
       response = await this.fetch(`${this.baseUrl}/api/v1${path}`, {
         method,
         headers: {
           // A public route is called with an empty credential and no header.
           ...(credential ? { authorization: `Bearer ${credential}` } : {}),
-          ...(body === undefined ? {} : { "content-type": "application/json" }),
+          ...(body === undefined || raw ? {} : { "content-type": "application/json" }),
           ...requestHeaders,
         },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        ...(body === undefined ? {} : { body: raw ? (body as unknown as BodyInit) : JSON.stringify(body) }),
       });
     } catch {
       throw new CliError(

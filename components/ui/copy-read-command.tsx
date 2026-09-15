@@ -4,7 +4,16 @@ import { useState } from "react";
 
 type CopyState = "idle" | "copied" | "failed";
 
-export function CopyReadCommand({ command }: Readonly<{ command: string }>) {
+/**
+ * `lead` is the sigil before the text. It defaults to a shell prompt, because
+ * every caller but one is handing over something to run; pass `null` for text
+ * that is not a command — an endpoint to paste into a dialog, say — so the box
+ * does not claim it is.
+ */
+export function CopyReadCommand({
+  command,
+  lead = "$",
+}: Readonly<{ command: string; lead?: string | null }>) {
   const [copyState, setCopyState] = useState<CopyState>("idle");
 
   async function copyCommand() {
@@ -17,13 +26,21 @@ export function CopyReadCommand({ command }: Readonly<{ command: string }>) {
   }
 
   return (
-    <div className="pointer-events-auto grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center overflow-hidden rounded-xl border border-[#002147]/25 bg-[oklch(98%_0.015_240/0.78)] text-left shadow-[0_18px_50px_rgba(0,33,71,0.12)] backdrop-blur-sm">
-      <span
-        aria-hidden="true"
-        className="px-4 font-mono text-base font-bold text-[#b45309] sm:px-5"
-      >
-        $
-      </span>
+    <div
+      className={`pointer-events-auto grid w-full items-center overflow-hidden rounded-xl border border-[#002147]/25 bg-[oklch(98%_0.015_240/0.78)] text-left shadow-[0_18px_50px_rgba(0,33,71,0.12)] backdrop-blur-sm ${
+        lead === null
+          ? "grid-cols-[minmax(0,1fr)_auto] pl-4 sm:pl-5"
+          : "grid-cols-[auto_minmax(0,1fr)_auto]"
+      }`}
+    >
+      {lead === null ? null : (
+        <span
+          aria-hidden="true"
+          className="px-4 font-mono text-base font-bold text-[#b45309] sm:px-5"
+        >
+          {lead}
+        </span>
+      )}
       <code className="overflow-hidden py-4 font-mono text-[clamp(0.72rem,1.4vw,0.92rem)] font-medium text-ellipsis whitespace-nowrap text-[#002147]">
         {command}
       </code>
@@ -40,7 +57,7 @@ export function CopyReadCommand({ command }: Readonly<{ command: string }>) {
       </button>
       <span aria-live="polite" className="sr-only" role="status">
         {copyState === "copied"
-          ? "Instruction copied to clipboard."
+          ? "Copied to clipboard."
           : copyState === "failed"
             ? "Copy failed. Try again."
             : ""}

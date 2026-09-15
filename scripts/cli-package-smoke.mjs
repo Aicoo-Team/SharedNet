@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -161,12 +162,32 @@ try {
   const unread = await runInstalled(["wait", "--timeout", "0"]);
   assert.deepEqual(unread.items.map((message) => message.sequence), [1, 2, 3, 4], "history lookups must not consume the wait cursor");
 
+  // Native fetch and real HTTP are essential here: a mocked fetch accepts
+  // Unicode headers and cannot expose an adapter that UTF-8-decodes raw bytes.
+  const fileName = "研究报告.bin";
+  const fileBytes = Buffer.from([0x00, 0xff, 0x80, 0xc3, 0x28, 0x0a, 0xfe]);
+  const digest = createHash("sha256").update(fileBytes).digest("hex");
+  await writeFile(join(consumerRoot, fileName), fileBytes);
+  const uploaded = await runInstalled(["upload", fileName]);
+  assert.equal(uploaded.artifact.filename, fileName);
+  assert.equal(uploaded.artifact.size_bytes, fileBytes.length);
+  assert.equal(uploaded.artifact.sha256, digest);
+  // One kind of file: the same upload is readable by id, as the seat, and by
+  // its link, as nobody at all.
+  const downloaded = await runInstalled(["download", uploaded.artifact.id, "--out", "room-copy.bin"]);
+  assert.equal(downloaded.verified, true);
+  assert.deepEqual(await readFile(join(consumerRoot, "room-copy.bin")), fileBytes);
+  assert.match(uploaded.url, /\/f\/art_[0-9A-Za-z]{10}\?k=afk_[A-Za-z0-9_-]{43}$/, "every upload answers with its link");
+  const linkDownload = await runInstalled(["download", uploaded.url, "--out", "link-copy.bin"]);
+  assert.equal(linkDownload.verified, true);
+  assert.deepEqual(await readFile(join(consumerRoot, "link-copy.bin")), fileBytes);
+
   process.stdout.write(
     "CLI package smoke passed (" +
       manifest[0].filename +
       ", " +
       packageFiles.size +
-      " files; installed retrieval and wait verified over HTTP).\n",
+      " files; installed retrieval, wait and Unicode binary files verified over HTTP).\n",
   );
 } finally {
   if (server) {

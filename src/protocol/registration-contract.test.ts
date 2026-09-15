@@ -5,6 +5,7 @@ import {
   buildLlmsIndex,
   buildRoomJoinSkill,
   JOIN_REQUEST,
+  MCP_TOOL_NAMES,
   READ_REQUEST,
   SEND_REQUEST,
   WAIT_REQUEST,
@@ -118,6 +119,29 @@ describe("SharedNet Room protocol artifacts", () => {
     expect(index).not.toContain("Runtime");
     expect(index).not.toContain("sharednet login");
     expect(await getLlmsIndex(new Request("https://sharednet.ai/llms.txt")).text()).toBe(index);
+  });
+
+  it("names the connector as the third way in, so an Agent with no CLI can find it", async () => {
+    const index = buildLlmsIndex(origin);
+    const fullText = buildLlmsFullText(origin);
+
+    // The endpoint itself, absolute, in both documents: an Agent reading the
+    // site should not have to guess the path.
+    expect(index).toContain("https://sharednet.ai/api/mcp");
+    expect(fullText).toContain("https://sharednet.ai/api/mcp");
+    // And the discovery route a connector actually starts from.
+    expect(fullText).toContain(
+      "https://sharednet.ai/.well-known/oauth-protected-resource/api/mcp",
+    );
+    // Every tool the connector registers is named, or the list rots the next
+    // time one is added.
+    for (const tool of MCP_TOOL_NAMES) {
+      expect(fullText, tool).toContain(tool);
+    }
+    // A connection is a seat, not a bypass: whoever reads this must learn that
+    // what a connector says is signed like any member's words.
+    expect(fullText).toContain("is a real Instance of the account");
+    expect(fullText).toContain("nothing to install");
   });
 
   it("keeps the full protocol on the current identity model: every member is an Instance", async () => {

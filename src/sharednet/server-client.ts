@@ -6,11 +6,14 @@ import {
   type DecisionAnswer,
   type DecisionOverview,
   RepositoryError,
+  type CreditsOverview,
   type SharedNetRepository,
+  type SharedRoomView,
 } from "@/packages/server/src/repository.ts";
 import {
   type Agent,
   type CliLogin,
+  type CreditTransfer,
   type Instance,
   type Message,
   type Principal,
@@ -18,10 +21,15 @@ import {
   type RoomInvite,
   type RoomMember,
   normalizeCliLoginCode,
+  redactSecrets,
 } from "@/packages/protocol/src/index.ts";
 import {
   type CliClaimProjection,
   type CliLoginProjection,
+  type CreditsProjection,
+  type SeatNameResponse,
+  type CreditTransferProjection,
+  type RedeemCreditsResponse,
   type RuntimeSummary,
   type CloseRoomResponse,
   type RemoveRoomMemberResponse,
@@ -43,6 +51,12 @@ import {
   type ProvisionAccountResponse,
   type RoomCursor,
   type RoomDetail,
+  type ShareRoomResponse,
+  type SharedActor,
+  type SharedMember,
+  type SharedMessage,
+  type SharedRoomProjection,
+  type UnshareRoomResponse,
   type RoomId,
   type RoomInviteProjection,
   type RoomListResponse,
@@ -206,7 +220,7 @@ function inviteProjection(invite: RoomInvite): RoomInviteProjection {
  * Who opened the Room. A Room scheduled from the Web has no creator Instance:
  * the Principal itself is the actor, so the projection carries no instance_id.
  */
-function roomProjection(room: Room, updatedAt: string): RoomProjection {
+function roomProjection(room: Room, updatedAt: string, shareToken: string | null = null): RoomProjection {
   return {
     access_policy: "anyone_with_id",
     created_at: room.created_at,
@@ -217,8 +231,98 @@ function roomProjection(room: Room, updatedAt: string): RoomProjection {
     description: room.description,
     name: room.name,
     room_id: room.id as RoomId,
+    sharing: room.shared_at === null ? null : { since: room.shared_at, token: shareToken },
     status: room.state,
     updated_at: updatedAt,
+  };
+}
+
+/** Four characters of a seat's id: enough to tell two sessions of one tag apart, not enough to address it. */
+function publicHandle(instanceId: string): string {
+  return instanceId.replace(/^i_/, "").slice(0, 4);
+}
+
+/**
+ * Text bound for the public page: credentials go, and so do Room ids. A Room
+ * id is the capability to join (identity model §8), and the commonest thing
+ * an Agent pastes into a Room is the join command for that very Room.
+ */
+function redactForPublic(text: string): string {
+  return redactSecrets(text).replace(/\brom_[0-9A-Za-z]{10}\b/g, "rom_[redacted]");
+}
+
+/**
+ * The public page's Room. Every id is left behind here: the Room id (which
+ * admits), the Instance ids (which can be added to Rooms), the Principal ids
+ * (which name accounts) and the message ids (which nobody reading needs).
+ * Credential-shaped tokens and Room ids an Agent pasted are redacted;
+ * everything else an Agent said is shown as it was said.
+ */
+function sharedRoomProjection(view: SharedRoomView): SharedRoomProjection {
+  const driverOf = new Map(view.memberships.map((member) => [member.instance_id, member.runtime_kind]));
+  const sequenceOf = new Map(view.messages.map((message) => [message.id, message.sequence]));
+  const actorOf = (instanceId: string, agentId: string | null, kind: "instance" | "guest", name: string | null): SharedActor => ({
+    driver: driverOf.get(instanceId as never) ?? "custom",
+    handle: publicHandle(instanceId),
+    kind: kind === "guest" ? "anonymous" : "account",
+    // The name a seat goes by is its own, whoever set it: a guest's word for
+    // itself, or the nickname its account gave it. The tag is the fallback.
+    label: name
+      ? redactForPublic(name)
+      : ((agentId && (view.agent_handles as Record<string, string>)[agentId]) || null),
+  });
+  return {
+    members: view.memberships.map((member): SharedMember => ({
+      ...actorOf(member.instance_id, member.agent_id, member.kind, member.name),
+      joined_at: member.joined_at,
+      status: member.state,
+    })),
+    messages: view.messages.map((message): SharedMessage => ({
+      content: redactForPublic(message.content),
+      created_at: message.created_at,
+      reply_to_sequence: message.reply_to_message_id === null ? null : (sequenceOf.get(message.reply_to_message_id) ?? null),
+      sender: actorOf(message.sender_instance_id, message.sender_agent_id, message.sender.kind, message.sender.name),
+      sequence: message.sequence,
+    })),
+    room: {
+      created_at: view.room.created_at,
+      description: view.room.description === null ? null : redactForPublic(view.room.description),
+      latest_sequence: view.latest_sequence,
+      name: view.room.name,
+      shared_at: view.room.shared_at ?? view.room.created_at,
+      status: view.room.state,
+    },
+  };
+}
+
+/** A transfer as one purse reads it: granted, sent, or received, with the other side named. */
+function creditTransferProjection(transfer: CreditTransfer, principalId: string): CreditTransferProjection {
+  const direction: CreditTransferProjection["direction"] =
+    transfer.from_principal_id === null ? "granted" : transfer.from_principal_id === principalId ? "sent" : "received";
+  return {
+    addressed_to: direction === "granted" ? null : transfer.addressed_to,
+    amount: transfer.amount,
+    by_instance_id: transfer.by_instance_id as InstanceId | null,
+    code: transfer.code,
+    counterparty:
+      direction === "granted" ? null : ((direction === "sent" ? transfer.to_principal_id : transfer.from_principal_id) as PrincipalId | null),
+    created_at: transfer.created_at,
+    direction,
+    memo: transfer.memo,
+    room_id: transfer.room_id as RoomId | null,
+    transfer_id: transfer.id,
+  };
+}
+
+function creditsProjection(overview: CreditsOverview): CreditsProjection {
+  const { credits, transfers } = overview;
+  return {
+    balance: credits.balance,
+    granted: credits.granted,
+    principal_id: credits.principal_id as PrincipalId,
+    received: credits.received,
+    sent: credits.sent,
+    transfers: transfers.map((transfer) => creditTransferProjection(transfer, credits.principal_id)),
   };
 }
 
@@ -361,7 +465,9 @@ export class SharedNetServerClient {
           member_count: active_member_count,
           name: room.name,
           owner_agent_ids: room.creator_agent_id ? [room.creator_agent_id as AgentId] : [],
+          owner_principal_id: room.principal_id as PrincipalId,
           room_id: room.id as RoomId,
+          shared_since: room.shared_at,
           status: room.state,
           updated_at: room.created_at,
         }),
@@ -396,7 +502,9 @@ export class SharedNetServerClient {
       member_count: 0,
       name: room.name,
       owner_agent_ids: [],
+      owner_principal_id: room.principal_id as PrincipalId,
       room_id: room.id as RoomId,
+      shared_since: room.shared_at,
       status: room.state,
       updated_at: room.created_at,
     };
@@ -473,11 +581,56 @@ export class SharedNetServerClient {
     const principal = await this.requirePrincipal(authUserId);
     const detail = await this.domain(() => this.repository().getRoomForPrincipal(principal.id, roomId as never));
     return {
+      notes: detail.aliases,
       memberships: detail.memberships.map(membershipProjection),
       messages: detail.messages.map(messageProjection),
       next_cursor: cursor(detail.latest_sequence),
-      room: roomProjection(detail.room, detail.room.created_at),
+      room: roomProjection(detail.room, detail.room.created_at, detail.share_token),
     };
+  }
+
+  /**
+   * Names a seat. Your own seat gets the name it goes by, which everyone in
+   * its Rooms sees; anyone else's gets a note only this account sees. An empty
+   * name takes it back off. A seat this account cannot see answers as absent,
+   * so this cannot be used to find out whether an Instance id is real.
+   */
+  async nameSeat(authUserId: string, instanceId: InstanceId, name: string | null): Promise<SeatNameResponse> {
+    const principal = await this.requirePrincipal(authUserId);
+    const named = await this.domain(() => this.repository().nameSeat(principal.id, instanceId as never, name));
+    return { instance_id: named.instance_id as InstanceId, name: named.name, scope: named.scope };
+  }
+
+  /** Publish a Room this account owns at a public link; the slug comes back with the Room, every time it is asked for. */
+  async shareRoom(authUserId: string, roomId: RoomId): Promise<ShareRoomResponse> {
+    const principal = await this.requirePrincipal(authUserId);
+    const { room, share_token } = await this.domain(() => this.repository().shareRoom(principal.id, roomId as never));
+    return { room: roomProjection(room, room.shared_at ?? room.created_at, share_token), token: share_token };
+  }
+
+  /** Stop publishing a Room this account owns; the link stops resolving at once. */
+  async unshareRoom(authUserId: string, roomId: RoomId): Promise<UnshareRoomResponse> {
+    const principal = await this.requirePrincipal(authUserId);
+    const { room } = await this.domain(() => this.repository().unshareRoom(principal.id, roomId as never));
+    return { room: roomProjection(room, room.closed_at ?? room.created_at) };
+  }
+
+  /** The account's purse and the latest transfers touching it. */
+  async getCredits(authUserId: string): Promise<CreditsProjection> {
+    const principal = await this.requirePrincipal(authUserId);
+    return creditsProjection(await this.domain(() => this.repository().creditsForPrincipal(principal.id)));
+  }
+
+  /** The human redeems a code for the account; a repeat grants 0 and is not an error. */
+  async redeemCredits(authUserId: string, code: string): Promise<RedeemCreditsResponse> {
+    const principal = await this.requirePrincipal(authUserId);
+    const { granted } = await this.domain(() => this.repository().redeemCreditsForPrincipal(principal.id, code));
+    return { credits: await this.getCredits(authUserId), granted };
+  }
+
+  /** What a share link opens, for anyone; no account is involved. */
+  async getSharedRoom(token: string): Promise<SharedRoomProjection> {
+    return sharedRoomProjection(await this.domain(() => this.repository().getSharedRoom(token)));
   }
 
   /**

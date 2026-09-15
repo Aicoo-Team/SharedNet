@@ -58,6 +58,7 @@ const ORIGINAL_SHOW_MODAL = Object.getOwnPropertyDescriptor(
   window.HTMLDialogElement.prototype,
   "showModal",
 );
+const ORIGINAL_CLOSE = Object.getOwnPropertyDescriptor(window.HTMLDialogElement.prototype, "close");
 
 const roomSummary: RoomSummary = {
   description: "Coordinate the production launch",
@@ -66,7 +67,9 @@ const roomSummary: RoomSummary = {
   member_count: 2,
   name: "Launch readiness",
   owner_agent_ids: [AGENT_ID],
+  owner_principal_id: PRINCIPAL_ID,
   room_id: ROOM_ID,
+  shared_since: null,
   status: "open",
   updated_at: NOW,
 };
@@ -78,12 +81,15 @@ const secondRoomSummary: RoomSummary = {
   member_count: 1,
   name: "Evidence review",
   owner_agent_ids: [SECOND_AGENT_ID],
+  owner_principal_id: PRINCIPAL_ID,
   room_id: SECOND_ROOM_ID,
+  shared_since: null,
   status: "closed",
   updated_at: EARLIER,
 };
 
 const roomDetail: RoomDetail = {
+  notes: {},
   memberships: [
     {
       agent_id: AGENT_ID,
@@ -166,10 +172,13 @@ const roomDetail: RoomDetail = {
     description: roomSummary.description,
     name: roomSummary.name,
     room_id: ROOM_ID,
+    sharing: null,
     status: "open",
     updated_at: NOW,
   },
 };
+
+const SHARE_TOKEN = `shr_${"s".repeat(43)}`;
 
 const networkProjection: NetworkProjection = {
   agents: [
@@ -276,11 +285,14 @@ function makeState(overrides: Partial<SharedNetState> = {}): SharedNetState {
     refresh: vi.fn(async () => undefined),
     removeMember: vi.fn(async () => ({ ...roomDetail.memberships[0]!, status: "left" as const })),
     resolveDecision: vi.fn(async () => undefined),
+    nameSeat: vi.fn(async (_instanceId: string, alias: string | null) => alias),
     rooms: [roomSummary, secondRoomSummary],
     selectRoom: vi.fn(),
     selectedRoom: roomDetail,
     selectedRoomId: ROOM_ID,
+    shareRoom: vi.fn(async () => ({ room: { ...roomDetail.room, sharing: { since: NOW, token: SHARE_TOKEN } }, token: SHARE_TOKEN })),
     status: "ready",
+    unshareRoom: vi.fn(async () => roomDetail.room),
     ...overrides,
   };
 }
@@ -289,6 +301,16 @@ function renderChat(overrides: Partial<SharedNetState> = {}) {
   const state = makeState(overrides);
   contextMocks.useSharedNet.mockReturnValue(state);
   return { state, ...render(<ChatView />) };
+}
+
+/**
+ * Right-clicks a Room in the list and returns its menu. Share, Invite and
+ * Close live there now: they apply to whichever Room the hand is on, not to
+ * whichever Room happens to be open.
+ */
+async function openRoomMenu(name: string = roomSummary.name) {
+  fireEvent.contextMenu(screen.getByRole("button", { name: `Open room ${name}` }));
+  return screen.findByRole("menu", { name: `Actions for ${name}` });
 }
 
 describe("SharedNet Rooms", () => {
@@ -308,10 +330,16 @@ describe("SharedNet Rooms", () => {
         this.setAttribute("open", "");
       },
     });
+    Object.defineProperty(window.HTMLDialogElement.prototype, "close", {
+      configurable: true,
+      value(this: HTMLDialogElement) { this.removeAttribute("open"); },
+    });
   });
 
   afterEach(() => {
     cleanup();
+    if (ORIGINAL_CLOSE) Object.defineProperty(window.HTMLDialogElement.prototype, "close", ORIGINAL_CLOSE);
+    else Reflect.deleteProperty(window.HTMLDialogElement.prototype, "close");
     vi.unstubAllGlobals();
     if (ORIGINAL_SHOW_MODAL) {
       Object.defineProperty(
@@ -322,6 +350,63 @@ describe("SharedNet Rooms", () => {
     } else {
       Reflect.deleteProperty(window.HTMLDialogElement.prototype, "showModal");
     }
+  });
+
+  it("keeps Share open when it was asked for on a Room that was not the open one", async () => {
+    const view = renderChat();
+    fireEvent.click(within(await openRoomMenu(secondRoomSummary.name)).getByRole("menuitem", { name: "Share…" }));
+    expect(view.state.selectRoom).toHaveBeenCalledWith(SECOND_ROOM_ID);
+
+    // The real provider selects immediately, then loads that Room's detail.
+    contextMocks.useSharedNet.mockReturnValue(makeState({ selectedRoomId: SECOND_ROOM_ID, selectedRoom: null }));
+    view.rerender(<ChatView />);
+    contextMocks.useSharedNet.mockReturnValue(makeState({
+      selectedRoomId: SECOND_ROOM_ID,
+      selectedRoom: {
+        ...roomDetail,
+        room: { ...roomDetail.room, room_id: SECOND_ROOM_ID, name: secondRoomSummary.name, status: "closed" },
+      },
+    }));
+    view.rerender(<ChatView />);
+
+    expect(await screen.findByRole("dialog", { name: `Share ${secondRoomSummary.name}` })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Create public link" })).toBeVisible();
+  });
+
+  it("never shows one Room's public link under another Room", async () => {
+    // The first Room is shared and its link is known.
+    const view = renderChat({
+      rooms: [{ ...roomSummary, shared_since: EARLIER }, { ...secondRoomSummary, shared_since: null }],
+      selectedRoom: { ...roomDetail, room: { ...roomDetail.room, sharing: { since: EARLIER, token: SHARE_TOKEN } } },
+    });
+    fireEvent.click(within(await openRoomMenu()).getByRole("menuitem", { name: "Shared · manage link" }));
+    const first = await screen.findByRole("dialog", { name: `Share ${roomSummary.name}` });
+    expect(within(first).getByText(`http://localhost:3000/s/${SHARE_TOKEN}`)).toBeVisible();
+    fireEvent.click(within(first).getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    // The second Room is not shared. Its dialog must offer to create a link,
+    // and must not carry the first Room's slug into view or onto the clipboard.
+    fireEvent.click(within(await openRoomMenu(secondRoomSummary.name)).getByRole("menuitem", { name: "Share…" }));
+    const second = await screen.findByRole("dialog", { name: `Share ${secondRoomSummary.name}` });
+    expect(within(second).getByRole("button", { name: "Create public link" })).toBeVisible();
+    expect(within(second).queryByText(new RegExp(SHARE_TOKEN))).toBeNull();
+    expect(within(second).queryByRole("button", { name: "Copy link" })).toBeNull();
+    expect(document.body.textContent).not.toContain(SHARE_TOKEN);
+
+    // A shared Room whose detail has not arrived says so, rather than showing
+    // whatever link was last in hand.
+    contextMocks.useSharedNet.mockReturnValue(
+      makeState({
+        rooms: [{ ...roomSummary, shared_since: EARLIER }, { ...secondRoomSummary, shared_since: NOW }],
+        selectedRoomId: SECOND_ROOM_ID,
+        selectedRoom: null,
+      }),
+    );
+    view.rerender(<ChatView />);
+    const waiting = await screen.findByRole("dialog", { name: `Share ${secondRoomSummary.name}` });
+    expect(within(waiting).getByText(/Its link is still loading/)).toBeVisible();
+    expect(document.body.textContent).not.toContain(SHARE_TOKEN);
   });
 
   it("lets the Rooms sidebar be resized from a divider that drives the workspace grid", () => {
@@ -641,7 +726,7 @@ describe("SharedNet Rooms", () => {
 
   it("still hands out a command without a claim when none can be minted, and says why", async () => {
     const { state } = renderChat({ createClaim: vi.fn(async () => { throw new Error("no claim"); }) });
-    fireEvent.click(screen.getByRole("button", { name: "Invite an Agent" }));
+    fireEvent.click(within(await openRoomMenu()).getByRole("menuitem", { name: "Invite an Agent" }));
     const dialog = await screen.findByRole("dialog", { name: `Invite an Agent to ${roomDetail.room.name}` });
     expect(state.createClaim).toHaveBeenCalled();
     const command = within(dialog).getByLabelText("Command for my Agent").textContent ?? "";
@@ -654,14 +739,14 @@ describe("SharedNet Rooms", () => {
     vi.stubGlobal("confirm", confirm);
     const { state } = renderChat();
 
-    fireEvent.click(screen.getByRole("button", { name: "Close Room" }));
+    fireEvent.click(within(await openRoomMenu()).getByRole("menuitem", { name: "Close Room…" }));
     expect(confirm).toHaveBeenCalledWith(
       "Close Launch readiness? Members' tokens stop working; the history stays readable here.",
     );
     expect(state.closeRoom).not.toHaveBeenCalled();
 
     confirm.mockReturnValue(true);
-    fireEvent.click(screen.getByRole("button", { name: "Close Room" }));
+    fireEvent.click(within(await openRoomMenu()).getByRole("menuitem", { name: "Close Room…" }));
     await waitFor(() => expect(state.closeRoom).toHaveBeenCalledWith(ROOM_ID));
     expect(screen.queryByRole("alert")).toBeNull();
   });
@@ -673,7 +758,7 @@ describe("SharedNet Rooms", () => {
     });
     renderChat({ closeRoom });
 
-    fireEvent.click(screen.getByRole("button", { name: "Close Room" }));
+    fireEvent.click(within(await openRoomMenu()).getByRole("menuitem", { name: "Close Room…" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Could not close the Room: Room not found",
@@ -690,25 +775,51 @@ describe("SharedNet Rooms", () => {
     await waitFor(() => expect(state.removeMember).toHaveBeenCalledWith(ROOM_ID, INSTANCE_ID));
   });
 
-  it("offers neither invite nor close on a Room another account owns, and says whose it is", () => {
+  it("offers nothing but an explanation on a Room another account owns", async () => {
     renderChat({
       principal: { created_at: EARLIER, diagnostic_label: "Me", kind: "account", principal_id: "p_SomeoneElse" as PrincipalId, summary: "" },
+      rooms: [{ ...roomSummary, owner_principal_id: "p_TheirAccou" as PrincipalId }, secondRoomSummary],
     });
-    expect(screen.queryByRole("button", { name: "Invite an Agent" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Close Room" })).toBeNull();
-    expect(screen.getByText(`Owned by ${PRINCIPAL_ID} · only the owner invites or closes`)).toBeVisible();
+
+    const menu = await openRoomMenu();
+    expect(within(menu).queryByRole("menuitem")).toBeNull();
+    expect(within(menu).getByText(/Owned by another account/)).toBeVisible();
+    expect(screen.getByText(`Owned by ${PRINCIPAL_ID} · only the owner invites, shares or closes`)).toBeVisible();
   });
 
-  it("offers neither invite, close, nor remove on a closed Room", () => {
+  it("offers neither invite nor close on a closed Room, and no longer offers to remove a member", async () => {
     renderChat({
+      rooms: [{ ...roomSummary, status: "closed" }, secondRoomSummary],
       selectedRoom: { ...roomDetail, room: { ...roomDetail.room, status: "closed" } },
     });
 
-    expect(screen.queryByRole("button", { name: "Invite an Agent" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Close Room" })).toBeNull();
+    const menu = await openRoomMenu();
+    expect(within(menu).getByRole("menuitem", { name: "Invite an Agent (Room is closed)" })).toBeDisabled();
+    expect(within(menu).getByRole("menuitem", { name: "Already closed" })).toBeDisabled();
+    // Sharing a finished conversation is exactly when it is worth showing.
+    expect(within(menu).getByRole("menuitem", { name: "Share…" })).toBeEnabled();
     expect(screen.getByText("Closed · history stays readable")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Room actions" }));
     expect(screen.queryByRole("button", { name: /^Remove / })).toBeNull();
+  });
+
+  it("opens the menu from the keyboard, walks it with the arrows, and gives focus back on Escape", async () => {
+    renderChat();
+    const row = screen.getByRole("button", { name: `Open room ${roomSummary.name}` });
+    row.focus();
+
+    fireEvent.keyDown(row, { key: "F10", shiftKey: true });
+    const menu = await screen.findByRole("menu", { name: `Actions for ${roomSummary.name}` });
+    const items = within(menu).getAllByRole("menuitem");
+    await waitFor(() => expect(items[0]).toHaveFocus());
+    fireEvent.keyDown(items[0]!, { key: "ArrowDown" });
+    expect(items[1]).toHaveFocus();
+    fireEvent.keyDown(items[1]!, { key: "ArrowUp" });
+    expect(items[0]).toHaveFocus();
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+    expect(row).toHaveFocus();
   });
 
   it("explains when an invite cannot be minted and opens no dialog", async () => {
@@ -717,7 +828,7 @@ describe("SharedNet Rooms", () => {
     });
     renderChat({ createInvite });
 
-    fireEvent.click(screen.getByRole("button", { name: "Invite an Agent" }));
+    fireEvent.click(within(await openRoomMenu()).getByRole("menuitem", { name: "Invite an Agent" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Could not create an invite: Room not found",
@@ -771,10 +882,10 @@ describe("SharedNet Rooms", () => {
     expect(invite).toContain(`TOKEN=${INVITE_TOKEN}`);
   });
 
-  it("invites another Agent from an open Room's header", async () => {
+  it("invites another Agent from the Rooms list, on the Room the hand is on rather than the one that is open", async () => {
     const { state } = renderChat();
 
-    fireEvent.click(screen.getByRole("button", { name: "Invite an Agent" }));
+    fireEvent.click(within(await openRoomMenu()).getByRole("menuitem", { name: "Invite an Agent" }));
 
     const dialog = await screen.findByRole("dialog", {
       name: `Invite an Agent to ${roomDetail.room.name}`,
@@ -786,6 +897,65 @@ describe("SharedNet Rooms", () => {
     expect(within(dialog).getByLabelText("Local Agent instructions").textContent).toContain(
       `Join SharedNet Room ${ROOM_ID}`,
     );
+  });
+
+  it("publishes a Room from the list's menu after saying what that means, and shows the link", async () => {
+    const { state } = renderChat({ principal: { ...networkProjection.principal, principal_id: PRINCIPAL_ID } });
+
+    fireEvent.click(within(await openRoomMenu()).getByRole("menuitem", { name: "Share…" }));
+    const dialog = await screen.findByRole("dialog", { name: `Share ${roomDetail.room.name}` });
+    expect(within(dialog).getByText(/every message so far and every message to come/)).toBeVisible();
+    expect(within(dialog).getByText(/Readers cannot join or speak/)).toBeVisible();
+    expect(state.shareRoom).not.toHaveBeenCalled();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Create public link" }));
+    await waitFor(() => expect(state.shareRoom).toHaveBeenCalledWith(ROOM_ID));
+    const link = await within(dialog).findByText(`http://localhost:3000/s/${SHARE_TOKEN}`);
+    expect(link).toBeVisible();
+    expect(within(dialog).getByRole("button", { name: "Stop sharing" })).toBeVisible();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Copy link" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(`http://localhost:3000/s/${SHARE_TOKEN}`));
+  });
+
+  it("shows a shared Room's link again, and stops sharing from the same dialog", async () => {
+    const { state } = renderChat({
+      principal: { ...networkProjection.principal, principal_id: PRINCIPAL_ID },
+      rooms: [{ ...roomSummary, shared_since: EARLIER }, secondRoomSummary],
+      selectedRoom: { ...roomDetail, room: { ...roomDetail.room, sharing: { since: EARLIER, token: SHARE_TOKEN } } },
+    });
+
+    fireEvent.click(within(await openRoomMenu()).getByRole("menuitem", { name: "Shared · manage link" }));
+    const dialog = await screen.findByRole("dialog", { name: `Share ${roomDetail.room.name}` });
+    expect(within(dialog).getByText(`http://localhost:3000/s/${SHARE_TOKEN}`)).toBeVisible();
+    expect(within(dialog).getByText("Public since 2026-09-03 04:45:00 UTC.")).toBeVisible();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Stop sharing" }));
+    await waitFor(() => expect(state.unshareRoom).toHaveBeenCalledWith(ROOM_ID));
+  });
+
+  it("says in the header what is true of the Room and keeps the doing in the list's menu", async () => {
+    // The owner: no action in the header, and the menu is where they live.
+    renderChat({ principal: { ...networkProjection.principal, principal_id: PRINCIPAL_ID } });
+    expect(screen.queryByRole("button", { name: "Invite an Agent" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Close Room" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Share" })).toBeNull();
+    expect(screen.getByText(/Right-click this Room in the list to share, invite or close/)).toBeVisible();
+    expect(screen.getByText("Right-click a Room for Share, Invite and Close.")).toBeVisible();
+    expect(within(await openRoomMenu()).getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
+      "Share…",
+      "Invite an Agent",
+      "Close Room…",
+    ]);
+    cleanup();
+
+    // A seat in someone else's Room is told the Room is public, and whose it is.
+    renderChat({
+      principal: { ...networkProjection.principal, principal_id: SECOND_PRINCIPAL_ID },
+      selectedRoom: { ...roomDetail, room: { ...roomDetail.room, sharing: { since: EARLIER, token: null } } },
+    });
+    expect(screen.getByText(/only the owner invites, shares or closes/)).toBeVisible();
+    expect(screen.getByText(/Public at a link/)).toBeVisible();
   });
 
   it("lists a guest member by the name it gave, with its own presence", () => {
@@ -861,9 +1031,9 @@ describe("SharedNet Rooms", () => {
 
   it("opens the invite as a native modal with focus contained over an inert background", async () => {
     renderChat();
-    const trigger = screen.getByRole("button", { name: "Invite an Agent" });
+    const trigger = screen.getByRole("button", { name: `Open room ${roomSummary.name}` });
     trigger.focus();
-    fireEvent.click(trigger);
+    fireEvent.click(within(await openRoomMenu()).getByRole("menuitem", { name: "Invite an Agent" }));
 
     const dialog = await screen.findByRole("dialog", { name: `Invite an Agent to ${roomDetail.room.name}` });
     const primaryAction = within(dialog).getByRole("button", { name: "Copy command" });
@@ -874,11 +1044,11 @@ describe("SharedNet Rooms", () => {
     expect(dialog.closest("[inert]")).toBeNull();
   });
 
-  it("closes the invite on Escape and restores focus to the button that opened it", async () => {
+  it("closes the invite on Escape and restores focus to the Room it was opened from", async () => {
     renderChat();
-    const trigger = screen.getByRole("button", { name: "Invite an Agent" });
+    const trigger = screen.getByRole("button", { name: `Open room ${roomSummary.name}` });
     trigger.focus();
-    fireEvent.click(trigger);
+    fireEvent.click(within(await openRoomMenu()).getByRole("menuitem", { name: "Invite an Agent" }));
     const dialog = await screen.findByRole("dialog", { name: `Invite an Agent to ${roomDetail.room.name}` });
     const primaryAction = within(dialog).getByRole("button", { name: "Copy command" });
     await waitFor(() => expect(primaryAction).toHaveFocus());
@@ -892,7 +1062,7 @@ describe("SharedNet Rooms", () => {
 
   it("copies the invite through Clipboard and reports success, or explains a failure", async () => {
     renderChat();
-    fireEvent.click(screen.getByRole("button", { name: "Invite an Agent" }));
+    fireEvent.click(within(await openRoomMenu()).getByRole("menuitem", { name: "Invite an Agent" }));
     const dialog = await screen.findByRole("dialog", { name: `Invite an Agent to ${roomDetail.room.name}` });
     // On "Invite my Agents" the clipboard gets the command with the claim, and a line of what comes next.
     fireEvent.click(within(dialog).getByRole("button", { name: "Copy command" }));
@@ -909,7 +1079,7 @@ describe("SharedNet Rooms", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 
     writeText.mockRejectedValueOnce(new Error("Clipboard denied"));
-    fireEvent.click(screen.getByRole("button", { name: "Invite an Agent" }));
+    fireEvent.click(within(await openRoomMenu()).getByRole("menuitem", { name: "Invite an Agent" }));
     const again = await screen.findByRole("dialog", { name: `Invite an Agent to ${roomDetail.room.name}` });
     fireEvent.click(within(again).getByRole("button", { name: "Copy command" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Clipboard access failed. Copy it manually.");
@@ -923,5 +1093,131 @@ describe("SharedNet Rooms", () => {
     expect(screen.queryByText(/Agent work/i)).toBeNull();
     expect(screen.queryByText(/tokens/i)).toBeNull();
     expect(screen.queryByText(/recruit/i)).toBeNull();
+  });
+});
+
+describe("naming a seat", () => {
+  /** The Room as it arrives with one seat already named by this account. */
+  function noted(note: string) {
+    return { ...roomDetail, notes: { [SECOND_INSTANCE_ID]: note } };
+  }
+
+  /** The renameable label for a seat: a button, not the id printed on the card. */
+  function seatName(label: string) {
+    return screen.getAllByRole("button", { name: `${label}. Double-click to note who this is, for you alone` })[0]!;
+  }
+
+  it("shows the tag until the seat is named, then the name, wherever that seat speaks", () => {
+    renderChat();
+    expect(seatName(SECOND_AGENT_ID)).toBeVisible();
+
+    cleanup();
+    renderChat({ selectedRoom: noted("Kai") });
+    expect(seatName("Kai")).toBeVisible();
+    expect(screen.queryByRole("button", { name: `${SECOND_AGENT_ID}. Double-click to note who this is, for you alone` })).toBeNull();
+    // The Instance id is still on the message's card; only the label changed.
+    expect(screen.getAllByText(SECOND_INSTANCE_ID).length).toBeGreaterThan(0);
+  });
+
+  it("names a seat on double-click, trimming what was typed", async () => {
+    const { state } = renderChat();
+
+    fireEvent.doubleClick(seatName(SECOND_AGENT_ID));
+    const field = screen.getByRole("textbox", { name: `Your note for ${SECOND_INSTANCE_ID}` });
+    // Nothing was named yet, so the box starts empty rather than with the tag.
+    expect(field).toHaveValue("");
+    fireEvent.change(field, { target: { value: "  Kai  " } });
+    fireEvent.keyDown(field, { key: "Enter" });
+
+    await waitFor(() => expect(state.nameSeat).toHaveBeenCalledWith(SECOND_INSTANCE_ID, "Kai"));
+  });
+
+  it("starts from the name a seat already has", () => {
+    renderChat({ selectedRoom: noted("Kai") });
+
+    fireEvent.doubleClick(seatName("Kai"));
+
+    expect(screen.getByRole("textbox", { name: `Your note for ${SECOND_INSTANCE_ID}` })).toHaveValue("Kai");
+  });
+
+  it("opens from the keyboard, cancels on Escape without saving, and takes the name off when emptied", async () => {
+    const { state } = renderChat({ selectedRoom: noted("Kai") });
+
+    fireEvent.keyDown(seatName("Kai"), { key: "F2" });
+    const field = screen.getByRole("textbox", { name: `Your note for ${SECOND_INSTANCE_ID}` });
+    fireEvent.change(field, { target: { value: "Something else" } });
+    fireEvent.keyDown(field, { key: "Escape" });
+    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(state.nameSeat).not.toHaveBeenCalled();
+
+    // Emptying it is how a name is taken back off.
+    fireEvent.keyDown(seatName("Kai"), { key: "Enter" });
+    const again = screen.getByRole("textbox", { name: `Your note for ${SECOND_INSTANCE_ID}` });
+    fireEvent.change(again, { target: { value: "   " } });
+    fireEvent.blur(again);
+    await waitFor(() => expect(state.nameSeat).toHaveBeenCalledWith(SECOND_INSTANCE_ID, null));
+  });
+
+  it("says so on the seat when a name could not be saved", async () => {
+    const nameSeat = vi.fn(async () => {
+      throw new Error("offline");
+    });
+    renderChat({ nameSeat, selectedRoom: noted("Kai") });
+
+    fireEvent.doubleClick(seatName("Kai"));
+    const field = screen.getByRole("textbox", { name: `Your note for ${SECOND_INSTANCE_ID}` });
+    fireEvent.change(field, { target: { value: "Kai 2" } });
+    fireEvent.keyDown(field, { key: "Enter" });
+
+    await waitFor(() =>
+      expect(screen.getAllByTitle("That name could not be saved. Try again.").length).toBeGreaterThan(0),
+    );
+  });
+
+  it("asks the server for nothing when the name is committed unchanged", async () => {
+    const { state } = renderChat({ selectedRoom: noted("Kai") });
+
+    fireEvent.doubleClick(seatName("Kai"));
+    fireEvent.keyDown(screen.getByRole("textbox", { name: `Your note for ${SECOND_INSTANCE_ID}` }), { key: "Enter" });
+
+    await waitFor(() => expect(screen.queryByRole("textbox")).toBeNull());
+    expect(state.nameSeat).not.toHaveBeenCalled();
+  });
+
+  it("renames my own seat as a nickname, which the Room sees, rather than as a note", async () => {
+    const mine = {
+      ...roomDetail,
+      memberships: roomDetail.memberships.map((member) =>
+        member.instance_id === INSTANCE_ID ? { ...member, name: "Xisen" } : member,
+      ),
+    };
+    const { state } = renderChat({ principal: { ...networkProjection.principal, principal_id: PRINCIPAL_ID }, selectedRoom: mine });
+
+    // My own seat already shows the nickname on its membership, not a note.
+    const own = screen.getAllByRole("button", { name: "Xisen. Double-click to rename yourself in this Room" })[0]!;
+    expect(own).toBeVisible();
+    expect(own).toHaveAttribute("title", expect.stringContaining("Everyone in the Room sees it"));
+
+    fireEvent.doubleClick(own);
+    const field = screen.getByRole("textbox", { name: "Your name in this Room" });
+    // It starts from the nickname it already has.
+    expect(field).toHaveValue("Xisen");
+    fireEvent.change(field, { target: { value: "Xisen W" } });
+    fireEvent.keyDown(field, { key: "Enter" });
+
+    await waitFor(() => expect(state.nameSeat).toHaveBeenCalledWith(INSTANCE_ID, "Xisen W"));
+  });
+
+  it("names a seat from the members panel too", async () => {
+    const { state } = renderChat({ network: networkProjection });
+
+    fireEvent.click(screen.getByRole("button", { name: "Room actions" }));
+    const members = screen.getByRole("list", { name: "Room members" });
+    fireEvent.doubleClick(within(members).getByRole("button", { name: "Reviewer. Double-click to note who this is, for you alone" }));
+    const field = screen.getByRole("textbox", { name: `Your note for ${SECOND_INSTANCE_ID}` });
+    fireEvent.change(field, { target: { value: "Kai" } });
+    fireEvent.keyDown(field, { key: "Enter" });
+
+    await waitFor(() => expect(state.nameSeat).toHaveBeenCalledWith(SECOND_INSTANCE_ID, "Kai"));
   });
 });

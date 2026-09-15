@@ -6,7 +6,7 @@ import { getAuth } from "../../../lib/auth";
 import { JoinView } from "@/src/components/join-view";
 
 export const metadata: Metadata = {
-  title: "Join a Room — SharedNet",
+  title: "Join a Room",
   description: "Sign in, then give your coding Agent one command and it is in the Room as yours.",
 };
 
@@ -17,7 +17,8 @@ export const metadata: Metadata = {
  */
 export default async function JoinPage({ params }: { params: Promise<{ token: string }> }) {
   const { token } = await params;
-  const session = await getAuth().api.getSession({ headers: await headers(), query: { disableRefresh: true } });
+  const requestHeaders = await headers();
+  const session = await getAuth().api.getSession({ headers: requestHeaders, query: { disableRefresh: true } });
   if (!session) {
     redirect(`/login?next=${encodeURIComponent(`/join/${token}`)}`);
   }

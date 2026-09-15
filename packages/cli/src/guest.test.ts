@@ -4,6 +4,8 @@ import { mkdtemp, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { createHash } from "node:crypto";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { handleRequest } from "../../server/src/handler.ts";
@@ -85,7 +87,7 @@ async function workspace() {
 async function run(
   argv: string[],
   space: Awaited<ReturnType<typeof workspace>>,
-  responses: Array<{ status?: number; body?: unknown }>,
+  responses: Array<{ status?: number; body?: unknown; error?: Error; raw?: Response }>,
   environment: Record<string, string> = {},
   overrides: { exec?: CommandRunner; now?: () => Date } = {},
 ) {
@@ -98,6 +100,9 @@ async function run(
     requests.push({ url: String(input), init });
     const next = responses.shift();
     if (!next) throw new Error("Unexpected fetch");
+    if (next.error) throw next.error;
+    // A byte route answers with its own Response, headers and all.
+    if (next.raw) return next.raw;
     return new Response(next.body === undefined ? null : JSON.stringify(next.body), {
       status: next.status ?? 200,
       headers: next.body === undefined ? undefined : { "content-type": "application/json" },
@@ -1234,5 +1239,342 @@ describe("the guest verbs against the real request handler", () => {
     expect(quiet.exitCode).toBe(0);
     expect(JSON.parse(quiet.stdout).items).toEqual([]);
     expect(await cursorOf(space)).toBe(3);
+  });
+});
+
+describe("sharednet credits", () => {
+  const PURSE = { principal_id: "p_AbCdEfGhIj", balance: 100, granted: 100, sent: 0, received: 0 };
+  const PAYEE = "i_PayeePayee";
+
+  /** A directory holding one seat, the way `join` leaves it. */
+  async function seated() {
+    const space = await workspace();
+    await run(["join", PASTED_INVITE], space, [joined()]);
+    return space;
+  }
+
+  it("reads the purse through the seat this directory holds", async () => {
+    const space = await seated();
+
+    const result = await run(["balance", "--json"], space, [{ body: { credits: PURSE } }]);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.requests[0]!.url).toBe("https://www.sharednet.ai/api/v1/credits");
+    expect(header(result.requests[0]!, "authorization")).toBe(`Bearer ${MEMBER_TOKEN}`);
+    expect(JSON.parse(result.stdout)).toMatchObject({ balance: 100, as: "seat", seat: { room_id: ROOM_ID, member_id: MEMBER_ID } });
+  });
+
+  it("redeems a code as typed, and reports a repeat as nothing granted rather than an error", async () => {
+    const space = await seated();
+
+    const result = await run(["redeem", "hack-2026", "--json"], space, [
+      { body: { credits: PURSE, granted: 100, transfer: { id: "txn_AbCdEfGhIj" } } },
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(String(result.requests[0]!.init.body))).toEqual({ code: "hack-2026" });
+    expect(JSON.parse(result.stdout).granted).toBe(100);
+
+    const repeat = await run(["redeem", "HACK-2026", "--json"], space, [{ body: { credits: PURSE, granted: 0, transfer: null } }]);
+    expect(repeat.exitCode).toBe(0);
+    expect(JSON.parse(repeat.stdout).granted).toBe(0);
+  });
+
+  it("pays with a fresh idempotency key, and posts a receipt into the Room only when asked", async () => {
+    const space = await seated();
+    const transfer = { id: "txn_AbCdEfGhIj", amount: 25, to_principal_id: "p_OtherOther" };
+
+    const quiet = await run(["pay", PAYEE, "25", "--memo", "map tiles", "--json"], space, [
+      { status: 201, body: { transfer, credits: { ...PURSE, balance: 75, sent: 25 } } },
+    ]);
+    expect([quiet.exitCode, quiet.stderr]).toEqual([0, ""]);
+    expect(quiet.requests).toHaveLength(1);
+    expect(quiet.requests[0]!.url).toBe("https://www.sharednet.ai/api/v1/credits/transfers");
+    expect(JSON.parse(String(quiet.requests[0]!.init.body))).toEqual({ to: PAYEE, amount: 25, memo: "map tiles" });
+    expect(header(quiet.requests[0]!, "idempotency-key")).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+    expect(JSON.parse(quiet.stdout).receipt).toBeNull();
+
+    const announced = await run(["pay", PAYEE, "25", "--room", "--json"], space, [
+      { status: 201, body: { transfer, credits: { ...PURSE, balance: 50, sent: 50 } } },
+      { status: 201, body: { message: { id: "msg_AbCdEfGhIj", sequence: 4 } } },
+    ]);
+    expect(announced.exitCode).toBe(0);
+    expect(JSON.parse(String(announced.requests[0]!.init.body))).toMatchObject({ room_id: ROOM_ID });
+    expect(announced.requests[1]!.url).toBe(`https://www.sharednet.ai/api/v1/rooms/${ROOM_ID}/messages`);
+    expect(JSON.parse(String(announced.requests[1]!.init.body)).content).toBe(`Paid 25 credits to ${PAYEE} (txn_AbCdEfGhIj)`);
+    // The two writes carry different keys: the payment and the receipt are separate acts.
+    expect(header(announced.requests[0]!, "idempotency-key")).not.toBe(header(announced.requests[1]!, "idempotency-key"));
+  });
+
+  it.each([
+    { failure: "a closed Room", response: { status: 409, body: { error: { code: "room_closed" } } } },
+    { failure: "a lost connection", response: { error: new Error("Network unavailable") } },
+  ])("keeps a completed payment successful when its receipt fails because of $failure", async ({ response }) => {
+    const space = await seated();
+    const transfer = {
+      id: "txn_AbCdEfGhIj",
+      from_principal_id: PURSE.principal_id,
+      to_principal_id: "p_OtherOther",
+      amount: 25,
+      memo: null,
+      room_id: ROOM_ID,
+      by_instance_id: MEMBER_ID,
+      addressed_to: PAYEE,
+      code: null,
+      created_at: "2026-09-12T10:00:00.000Z",
+    };
+    const result = await run(["pay", PAYEE, "25", "--room", "--json"], space, [
+      { status: 201, body: { transfer, credits: { ...PURSE, balance: 75, sent: 25 } } },
+      response,
+    ]);
+
+    expect([result.exitCode, result.stderr]).toEqual([0, ""]);
+    const paid = JSON.parse(result.stdout);
+    expect(paid.transfer.id).toBe("txn_AbCdEfGhIj");
+    expect(paid.credits).toMatchObject({ balance: 75, sent: 25 });
+    expect(paid.receipt).toBeNull();
+    expect(paid.warning.code).toBe("receipt_not_confirmed");
+    expect(paid.warning.message).toMatch(/payment succeeded/i);
+    expect(paid.warning.message).toMatch(/do not repeat/i);
+    expect(result.requests.map(({ url }) => new URL(url).pathname)).toEqual([
+      "/api/v1/credits/transfers",
+      `/api/v1/rooms/${ROOM_ID}/messages`,
+    ]);
+  });
+
+  it("reports a refused payment as a failure without trying to post a receipt", async () => {
+    const space = await seated();
+    const result = await run(["pay", PAYEE, "101", "--room", "--json"], space, [
+      { status: 409, body: { error: { code: "insufficient_credits" } } },
+    ]);
+
+    expect(result.exitCode).toBe(4);
+    expect(result.stdout).toBe("");
+    expect(JSON.parse(result.stderr).error.code).toBe("insufficient_credits");
+    expect(result.requests.map(({ url }) => new URL(url).pathname)).toEqual(["/api/v1/credits/transfers"]);
+  });
+
+  it("refuses a malformed payee, amount or cursor before any request leaves the machine", async () => {
+    const space = await seated();
+
+    for (const argv of [
+      ["pay", "rom_AbCdEfGhIj", "25"],
+      ["pay", PAYEE, "0"],
+      ["pay", PAYEE, "2.5"],
+      ["pay", PAYEE, "-5"],
+      ["pay", PAYEE],
+      ["ledger", "--last", "0"],
+      ["ledger", "--before", "msg_AbCdEfGhIj"],
+      ["redeem"],
+    ]) {
+      const result = await run(argv, space, []);
+      expect(result.exitCode).toBe(2);
+      expect(result.requests).toHaveLength(0);
+    }
+  });
+
+  it("pages the ledger newest first, and says so when the machine is neither seated nor logged in", async () => {
+    const space = await seated();
+
+    const result = await run(["ledger", "--last", "2", "--before", "txn_AbCdEfGhIj", "--json"], space, [
+      { body: { items: [], next_cursor: null, has_more: false } },
+    ]);
+    expect(result.requests[0]!.url).toBe("https://www.sharednet.ai/api/v1/credits/transfers?limit=2&before=txn_AbCdEfGhIj");
+
+    const bare = await workspace();
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(bare.project, { recursive: true });
+    const nowhere = await run(["balance"], bare, []);
+    expect(nowhere.exitCode).toBe(2);
+    expect(nowhere.stderr).toContain("not_logged_in");
+    expect(nowhere.requests).toHaveLength(0);
+  });
+});
+
+describe("sharednet files", () => {
+  const ARTIFACT_ID = "art_AbCdEfGhIj";
+  const LINK_KEY = `afk_${"k".repeat(43)}`;
+
+  async function seated() {
+    const space = await workspace();
+    await run(["join", PASTED_INVITE], space, [joined()]);
+    return space;
+  }
+
+  function artifact(overrides: Record<string, unknown> = {}) {
+    return {
+      id: ARTIFACT_ID,
+      principal_id: "p_AbCdEfGhIj",
+      uploaded_by_instance_id: MEMBER_ID,
+      room_id: ROOM_ID,
+      filename: "fix.patch",
+      content_type: "text/plain",
+      size_bytes: 4,
+      sha256: "a".repeat(64),
+      created_at: "2026-09-12T10:00:00.000Z",
+      ...overrides,
+    };
+  }
+
+  /** A response carrying bytes, the way the content route answers. */
+  function bytes(body: string, filename = "fix.patch") {
+    return {
+      status: 200,
+      raw: new Response(body, {
+        headers: {
+          "content-type": "text/plain",
+          "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`,
+          "x-sharednet-sha256": createHash("sha256").update(body).digest("hex"),
+        },
+      }),
+    };
+  }
+
+  it("uploads bytes with the name in a header, addressed to this directory's Room, and hands back the link", async () => {
+    const space = await seated();
+    const { writeFile } = await import("node:fs/promises");
+    await writeFile(join(space.project, "fix.patch"), "diff");
+
+    const result = await run(["upload", "fix.patch", "--json"], space, [
+      { status: 201, body: { artifact: artifact(), link_key: LINK_KEY, url: `https://www.sharednet.ai/f/${ARTIFACT_ID}?k=${LINK_KEY}` } },
+    ]);
+
+    expect([result.exitCode, result.stderr]).toEqual([0, ""]);
+    const request = result.requests[0]!;
+    expect(request.url).toBe("https://www.sharednet.ai/api/v1/artifacts");
+    expect(header(request, "x-sharednet-filename")).toBe("fix.patch");
+    expect(header(request, "x-sharednet-room")).toBe(ROOM_ID);
+    expect(header(request, "content-type")).toBe("text/plain");
+    expect(header(request, "idempotency-key")).toMatch(/^[0-9a-f-]{36}$/);
+    // The bytes go up as bytes, not as JSON or base64.
+    expect(Buffer.from(request.init.body as Uint8Array).toString()).toBe("diff");
+    // One kind of file: there is always a link to hand over.
+    expect(JSON.parse(result.stdout)).toMatchObject({ url: `https://www.sharednet.ai/f/${ARTIFACT_ID}?k=${LINK_KEY}` });
+  });
+
+  it("uploads from a directory that is in no Room: the file is addressed to nobody and still has a link", async () => {
+    const space = await workspace();
+    const { mkdir, writeFile } = await import("node:fs/promises");
+    await mkdir(space.project, { recursive: true });
+    await writeFile(join(space.project, "rows.csv"), "a,b\n");
+
+    const result = await run(
+      ["upload", "rows.csv", "--json"],
+      space,
+      [{ status: 201, body: { artifact: artifact({ room_id: null, filename: "rows.csv" }), link_key: LINK_KEY, url: `https://www.sharednet.ai/f/${ARTIFACT_ID}?k=${LINK_KEY}` } }],
+      { SHAREDNET_API_KEY: `snk_${"K".repeat(43)}` },
+    );
+
+    expect([result.exitCode, result.stderr]).toEqual([0, ""]);
+    expect(header(result.requests[0]!, "x-sharednet-room")).toBeUndefined();
+    expect(JSON.parse(result.stdout).url).toContain(`/f/${ARTIFACT_ID}?k=`);
+  });
+
+  it("encodes a Unicode filename into an ASCII HTTP header", async () => {
+    const space = await seated();
+    const { writeFile } = await import("node:fs/promises");
+    const filename = "研究报告.md";
+    await writeFile(join(space.project, filename), "diff");
+    const result = await run(["upload", filename], space, [{ status: 201, body: { artifact: artifact({ filename }) } }]);
+    expect(result.exitCode).toBe(0);
+    const request = result.requests[0]!;
+    expect(() => new Request(request.url, request.init)).not.toThrow();
+    expect(header(request, "x-sharednet-filename*")).toBe(`UTF-8''${encodeURIComponent(filename)}`);
+    expect(header(request, "x-sharednet-filename")).toBeUndefined();
+  });
+
+  it("refuses an existing dangling symlink without creating its target", async () => {
+    const space = await seated();
+    const { symlink, lstat } = await import("node:fs/promises");
+    const target = join(space.project, "absent-target.patch");
+    const destination = join(space.project, "fix.patch");
+    await symlink(target, destination);
+    const result = await run(["download", ARTIFACT_ID], space, [{ body: { artifact: artifact() } }, bytes("diff")]);
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain("file_exists");
+    expect((await lstat(destination)).isSymbolicLink()).toBe(true);
+    await expect(lstat(target)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("writes a downloaded file here, checks the digest, and refuses to overwrite without being told", async () => {
+    const space = await seated();
+    const { readFile } = await import("node:fs/promises");
+
+    const first = await run(["download", ARTIFACT_ID, "--json"], space, [
+      { body: { artifact: artifact() } },
+      bytes("diff"),
+    ]);
+    expect([first.exitCode, first.stderr]).toEqual([0, ""]);
+    expect(await readFile(join(space.project, "fix.patch"), "utf8")).toBe("diff");
+    const report = JSON.parse(first.stdout);
+    expect(report).toMatchObject({ artifact_id: ARTIFACT_ID, size_bytes: 4, verified: true });
+    expect(report.path).toBe(join(space.project, "fix.patch"));
+
+    // A second download would clobber it, so it stops and says how to proceed.
+    const again = await run(["download", ARTIFACT_ID], space, [{ body: { artifact: artifact() } }, bytes("diff")]);
+    expect(again.exitCode).toBe(2);
+    expect(again.stderr).toContain("file_exists");
+    const forced = await run(["download", ARTIFACT_ID, "--force", "--json"], space, [
+      { body: { artifact: artifact() } },
+      bytes("newer"),
+    ]);
+    expect(forced.exitCode).toBe(0);
+    expect(await readFile(join(space.project, "fix.patch"), "utf8")).toBe("newer");
+  });
+
+  it("opens a link with no credential of its own, and never writes outside the directory it was given", async () => {
+    const space = await seated();
+    const { readFile } = await import("node:fs/promises");
+
+    const result = await run(
+      ["download", `https://www.sharednet.ai/f/${ARTIFACT_ID}?k=${LINK_KEY}`, "--json"],
+      space,
+      [bytes("a,b\n", "rows.csv")],
+    );
+    expect([result.exitCode, result.stderr]).toEqual([0, ""]);
+    // One request, no metadata call, and no Authorization header at all.
+    expect(result.requests).toHaveLength(1);
+    expect(result.requests[0]!.url).toBe(`https://www.sharednet.ai/api/v1/artifacts/${ARTIFACT_ID}/content?k=${LINK_KEY}`);
+    expect(header(result.requests[0]!, "authorization")).toBeUndefined();
+    expect(await readFile(join(space.project, "rows.csv"), "utf8")).toBe("a,b\n");
+
+    // A server-supplied name that tries to escape is reduced to its last segment.
+    const hostile = await run(["download", `https://www.sharednet.ai/f/${ARTIFACT_ID}?k=${LINK_KEY}`, "--json"], space, [
+      bytes("owned", "../../../../tmp/escaped.txt"),
+    ]);
+    expect(hostile.exitCode).toBe(0);
+    expect(JSON.parse(hostile.stdout).path).toBe(join(space.project, "escaped.txt"));
+  });
+
+  it("refuses a malformed id, link or option before anything leaves the machine", async () => {
+    const space = await seated();
+
+    for (const argv of [
+      ["download", "rom_AbCdEfGhIj"],
+      ["download", "https://www.sharednet.ai/f/art_AbCdEfGhIj"],
+      ["download", "https://www.sharednet.ai/nope?k=afk_x"],
+      ["upload", "missing.txt"],
+      ["upload"],
+      ["files", "--last", "0"],
+      ["files", "--before", "msg_AbCdEfGhIj"],
+    ]) {
+      const result = await run(argv, space, []);
+      expect(result.exitCode).toBe(2);
+      expect(result.requests).toHaveLength(0);
+    }
+  });
+
+  it("lists this Room's files when asked, and the account's otherwise", async () => {
+    const space = await seated();
+
+    const room = await run(["files", "--room", "--last", "5", "--json"], space, [
+      { body: { items: [artifact()], next_cursor: null, has_more: false } },
+    ]);
+    expect(room.requests[0]!.url).toBe(`https://www.sharednet.ai/api/v1/artifacts?limit=5&room_id=${ROOM_ID}`);
+
+    const all = await run(["files", "--json"], space, [{ body: { items: [], next_cursor: null, has_more: false } }]);
+    expect(all.requests[0]!.url).toBe("https://www.sharednet.ai/api/v1/artifacts?limit=20");
   });
 });

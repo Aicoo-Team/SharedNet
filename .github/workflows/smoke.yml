@@ -32,4 +32,6 @@ jobs:
           SMOKE_EMAIL: ${{ secrets.SMOKE_EMAIL }}
           SMOKE_PASSWORD: ${{ secrets.SMOKE_PASSWORD }}
           SMOKE_API_KEY: ${{ secrets.SMOKE_API_KEY }}
+          # Funds the smoke purse once; every run after checks that it grants nothing.
+          SMOKE_CREDIT_CODE: ${{ secrets.SMOKE_CREDIT_CODE }}
         run: node scripts/smoke-production.mjs

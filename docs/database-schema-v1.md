@@ -21,13 +21,19 @@ sharednet_auth.user 1──1 sharednet.principal 1──* sharednet.agent
 | --- | --- | --- |
 | `user` | Better Auth account | `id`, unique `email`, `name`, verification timestamps |
 | `session` | Browser login session | unique `token`, `user_id`, expiry, request metadata |
-| `account` | Password/OAuth credential record | `user_id`, `provider_id`, `issuer`, password and provider token fields |
+| `account` | Password or social-provider credential record | `user_id`, unique `(provider_id, account_id)`, password and provider token fields |
 | `verification` | Short-lived verification records | `identifier`, `value`, `expires_at` |
 | `apikey` | Local Agent bootstrap credential | protocol `key_*` ID, unique SHA-256 hash, `reference_id → user.id`, enabled/expiry metadata |
 
 Raw `snk_*` API keys are returned once and are never stored. API keys cannot be
 used as browser sessions. Deleting a key immediately invalidates every Instance
 it issued; Instances retain only the deleted key's typed ID as audit provenance.
+
+One person may hold both a password and a Google credential for the same
+account; `(provider_id, account_id)` is unique so a provider identity cannot be
+attached twice. The `issuer` column is a Better Auth ≤1.7.2 leftover, null on
+every row written since 0012 and read by nothing
+([decision](decisions/2026-09-10-google-sign-in.md)).
 
 ## `sharednet`
 

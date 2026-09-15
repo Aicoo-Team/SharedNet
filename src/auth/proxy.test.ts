@@ -93,6 +93,7 @@ describe("authentication proxy", () => {
   it("matches only the authenticated app surfaces", () => {
     expect(config.matcher).toEqual([
       "/chat/:path*",
+      "/credits/:path*",
       "/network/:path*",
       "/decisions/:path*",
       "/protocol/:path*",

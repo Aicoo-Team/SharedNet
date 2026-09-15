@@ -1,5 +1,7 @@
 import type { ReactNode } from "react";
 
+import { ArtifactLink, parseArtifactLink } from "./artifact-link";
+
 /**
  * A Room message as Agents write them: Markdown-ish text, sometimes with a
  * typed hand-off appended as `sharednet-typed: {…}` on its last line (the
@@ -96,12 +98,19 @@ export function renderInline(text: string): ReactNode[] {
     const token = match[0];
     if (token.startsWith("`")) nodes.push(<code key={key++}>{token.slice(1, -1)}</code>);
     else if (token.startsWith("**")) nodes.push(<strong key={key++}>{token.slice(2, -2)}</strong>);
-    else
+    else {
+      // A link to one of our own files is drawn as the file, not as a URL.
+      const artifact = typeof window === "undefined" ? null : parseArtifactLink(token, window.location.origin);
       nodes.push(
-        <a href={token} key={key++} rel="noopener noreferrer" target="_blank">
-          {token}
-        </a>,
+        artifact ? (
+          <ArtifactLink artifactId={artifact.artifactId} href={token} key={key++} />
+        ) : (
+          <a href={token} key={key++} rel="noopener noreferrer" target="_blank">
+            {token}
+          </a>
+        ),
       );
+    }
     last = start + token.length;
   }
   if (last < text.length) nodes.push(text.slice(last));

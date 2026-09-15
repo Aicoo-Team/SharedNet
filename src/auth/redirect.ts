@@ -1,4 +1,5 @@
-const DEFAULT_POST_AUTH_PATH = "/chat";
+/** Where a sign-in lands when it was not sent anywhere in particular. */
+export const DEFAULT_POST_AUTH_PATH = "/chat";
 const TRUSTED_ROUTE_ROOTS = ["/chat", "/network", "/decisions", "/protocol", "/join", "/consent"] as const;
 
 export function safePostAuthPath(candidate: string | null | undefined): string {

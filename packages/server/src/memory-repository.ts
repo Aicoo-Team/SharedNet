@@ -20,7 +20,18 @@ import {
   type Agent,
   type AgentId,
   type ApiKeyId,
+  type AfkSecret,
+  type Artifact,
+  type ArtifactId,
+  type ArtifactQuery,
+  ARTIFACT_QUOTA_BYTES,
+  MAX_ARTIFACT_BYTES,
   type CreateAgentRequest,
+  type CreditBalance,
+  type CreditCode,
+  type CreditTransfer,
+  type CreditTransferRequest,
+  type TransferId,
   presenceFor,
   type Instance,
   type InstanceId,
@@ -37,9 +48,11 @@ import {
   type RoomId,
   type RoomInvite,
   type RoomMember,
+  SHR_SECRET_PATTERN,
+  type ShrSecret,
   type StartInstanceRequest,
 } from "../../protocol/src/index.ts";
-import { sharedRoomsEdges, type DecisionAnswer, type DecisionOverview, type McpClient, type McpSeat, type NetworkView, type RoomOverview, type SeatOverview } from "./repository.ts";
+import { sharedRoomsEdges, type SeatName, type ArtifactUsage, type CreditAuth, type CreditLedgerQuery, type CreditRedemption, type CreditsOverview, type DecisionAnswer, type DecisionOverview, type McpClient, type McpSeat, type NetworkView, type RoomOverview, type RoomView, type SeatOverview, type SharedRoomView, type UploadArtifactInput, type UploadedArtifact } from "./repository.ts";
 import type {
   AddRoomMembersRequest,
   Admission,
@@ -86,6 +99,8 @@ type InstanceRecord = Instance & {
 // tag is read from the Instance at projection time so regrouping follows.
 type RoomRecord = Omit<Room, "creator_agent_id"> & {
   nextSequence: number;
+  /** The public link's slug while the Room is published; set and cleared with `shared_at`. */
+  shareToken: ShrSecret | null;
 };
 type MembershipRecord = {
   room_id: RoomId;
@@ -143,6 +158,8 @@ export type MemoryRepositoryOptions = {
   devApiKeys?: string[];
   /** Accounts with a Principal each, the way the Dashboard sees them; a key per account when given. */
   accounts?: Array<{ authUserId: string; apiKey?: string; displayName?: string }>;
+  /** Grant codes minted before anything runs, the way an operator would. */
+  creditCodes?: Array<{ code: string; amount: number; max_redemptions?: number | null; expires_at?: string | null }>;
   now?: () => Date;
 };
 
@@ -197,8 +214,9 @@ function membershipKey(roomId: RoomId, instanceId: InstanceId): string {
 }
 
 function idempotencyKey(scope: IdempotencyScope): string {
+  // A guest claim changes the purse's owner, never the Instance's retry scope.
   return [
-    scope.principalId,
+    scope.credentialClass === "instance" ? "" : scope.principalId,
     scope.credentialClass,
     scope.actorId,
     scope.operationId,
@@ -228,6 +246,16 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     string,
     { fingerprint: string; result: Promise<IdempotencyResult> }
   >();
+  /** Credits: the running total per Principal, the ledger, the codes, and who redeemed what. */
+  private readonly creditBalances = new Map<PrincipalId, number>();
+  private readonly creditTransfers: CreditTransfer[] = [];
+  private readonly creditCodes = new Map<string, CreditCode>();
+  private readonly creditRedemptions = new Set<string>();
+  /** Artifacts: what each file is, its bytes, and the key of its link. */
+  private readonly artifacts = new Map<ArtifactId, Artifact & { linkKey: AfkSecret }>();
+  private readonly artifactBytes = new Map<ArtifactId, Uint8Array>();
+  /** `principal\0instance` → the name that account gave that seat. */
+  private readonly instanceAliases = new Map<string, string>();
 
   constructor(options: MemoryRepositoryOptions = {}) {
     this.now = options.now ?? (() => new Date());
@@ -268,6 +296,9 @@ export class MemorySharedNetRepository implements SharedNetRepository {
         const digest = digestSecret(account.apiKey);
         this.apiKeysByDigest.set(digest, { id: generatePublicId("key"), principalId: principal.id, digest, revokedAt: null });
       }
+    }
+    for (const code of options.creditCodes ?? []) {
+      void this.mintCreditCode(code);
     }
   }
 
@@ -364,17 +395,53 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     return { items };
   }
 
-  async getRoomForPrincipal(
-    principalId: PrincipalId,
-    roomId: RoomId,
-  ): Promise<{ room: Room; memberships: RoomMember[]; messages: Message[]; latest_sequence: number }> {
+  async getRoomForPrincipal(principalId: PrincipalId, roomId: RoomId): Promise<RoomView> {
     const room = this.roomVisibleTo(principalId, roomId);
-    const memberships = [...this.memberships.values()]
-      .filter((membership) => membership.room_id === room.id)
-      .sort((a, b) => a.joined_at.localeCompare(b.joined_at))
-      .map((membership) => this.projectMembership(membership));
-    const messages = (this.messages.get(room.id) ?? []).map((record) => this.projectMessage(record));
-    return { room: this.projectRoom(room), memberships, messages, latest_sequence: room.nextSequence - 1 };
+    const log = this.roomLog(room);
+    const seats = new Set([
+      ...log.memberships.map((member) => member.instance_id),
+      ...log.messages.map((message) => message.sender_instance_id),
+    ]);
+    const aliases: Record<InstanceId, string> = {};
+    for (const instanceId of seats) {
+      const alias = this.instanceAliases.get(`${principalId}\0${instanceId}`);
+      if (alias !== undefined) aliases[instanceId] = alias;
+    }
+    // The link is the owner's to hand out; a seated Principal sees only that one exists.
+    return { ...log, share_token: room.principal_id === principalId ? room.shareToken : null, aliases };
+  }
+
+  async nameSeat(principalId: PrincipalId, instanceId: InstanceId, name: string | null): Promise<SeatName> {
+    const instance = this.instances.get(instanceId);
+    // Your own seat's name is the name it goes by: everyone in its Rooms sees
+    // it, because it is your name for yourself.
+    if (instance !== undefined && instance.principal_id === principalId) {
+      instance.display_name = name;
+      // A note you once left on your own seat would now sit under its nickname.
+      this.instanceAliases.delete(`${principalId}\0${instanceId}`);
+      return { instance_id: instanceId, name, scope: "nickname" };
+    }
+    // A seat this account cannot see does not exist as far as it is concerned,
+    // so naming one cannot be used to discover that an id is real.
+    const visible =
+      instance !== undefined &&
+      ([...this.memberships.values()].some(
+          (membership) =>
+            membership.state === "active" &&
+            membership.instance_id === instanceId &&
+            [...this.memberships.values()].some(
+              (mine) =>
+                mine.room_id === membership.room_id &&
+                mine.state === "active" &&
+                this.instances.get(mine.instance_id)?.principal_id === principalId,
+            ),
+        ));
+    if (!visible) throw new RepositoryError(404, "instance_not_found", "Instance was not found.");
+    // Someone else's seat: a note, for this account's eyes only.
+    const key = `${principalId}\0${instanceId}`;
+    if (name === null) this.instanceAliases.delete(key);
+    else this.instanceAliases.set(key, name);
+    return { instance_id: instanceId, name, scope: "note" };
   }
 
   async scheduleRoom(
@@ -393,11 +460,58 @@ export class MemorySharedNetRepository implements SharedNetRepository {
       creator_instance_id: null,
       created_at: this.timestamp(),
       closed_at: null,
+      shared_at: null,
+      shareToken: null,
       nextSequence: 1,
     };
     this.rooms.set(room.id, room);
     this.messages.set(room.id, []);
     return { room: this.projectRoom(room) };
+  }
+
+  async shareRoom(principalId: PrincipalId, roomId: RoomId): Promise<{ room: Room; share_token: ShrSecret }> {
+    const room = this.ownedRoom(principalId, roomId);
+    if (room.shareToken === null) {
+      room.shareToken = generateSecret("shr");
+      room.shared_at = this.timestamp();
+    }
+    return { room: this.projectRoom(room), share_token: room.shareToken };
+  }
+
+  async unshareRoom(principalId: PrincipalId, roomId: RoomId): Promise<{ room: Room }> {
+    const room = this.ownedRoom(principalId, roomId);
+    room.shareToken = null;
+    room.shared_at = null;
+    return { room: this.projectRoom(room) };
+  }
+
+  async getSharedRoom(shareToken: string): Promise<SharedRoomView> {
+    const room = SHR_SECRET_PATTERN.test(shareToken)
+      ? [...this.rooms.values()].find((candidate) => candidate.shareToken === shareToken)
+      : undefined;
+    if (!room) throw new RepositoryError(404, "room_not_found", "Room was not found.");
+    const log = this.roomLog(room);
+    return { ...log, agent_handles: this.agentHandlesIn(log) };
+  }
+
+  /** Every seat and every message of a Room, in order: what both the owner's page and the public one read. */
+  private roomLog(room: RoomRecord): Omit<RoomView, "aliases" | "share_token"> {
+    const memberships = [...this.memberships.values()]
+      .filter((membership) => membership.room_id === room.id)
+      .sort((a, b) => a.joined_at.localeCompare(b.joined_at))
+      .map((membership) => this.projectMembership(membership));
+    const messages = (this.messages.get(room.id) ?? []).map((record) => this.projectMessage(record));
+    return { room: this.projectRoom(room), memberships, messages, latest_sequence: room.nextSequence - 1 };
+  }
+
+  private agentHandlesIn(log: Pick<RoomView, "memberships" | "messages">): Record<AgentId, string> {
+    const handles: Record<AgentId, string> = {};
+    for (const agentId of [...log.memberships.map((m) => m.agent_id), ...log.messages.map((m) => m.sender_agent_id)]) {
+      if (agentId === null || agentId in handles) continue;
+      const agent = this.agents.get(agentId);
+      if (agent) handles[agentId] = agent.handle;
+    }
+    return handles;
   }
 
   async closeRoom(principalId: PrincipalId, roomId: RoomId): Promise<{ room: Room }> {
@@ -744,6 +858,8 @@ export class MemorySharedNetRepository implements SharedNetRepository {
       creator_instance_id: auth.instanceId,
       created_at: createdAt,
       closed_at: null,
+      shared_at: null,
+      shareToken: null,
       nextSequence: 1,
     };
     const membership: MembershipRecord = {
@@ -1321,6 +1437,9 @@ export class MemorySharedNetRepository implements SharedNetRepository {
         }
       }
       this.mergedPrincipals.set(anonymousId, account.id);
+      // Credits follow the Instances: an anonymous seat may hold credits it was
+      // paid before its human logged in.
+      this.moveCreditPurse(anonymousId, account.id);
       bound.push(anonymousId);
     }
     record.state = "approved";
@@ -1545,7 +1664,311 @@ export class MemorySharedNetRepository implements SharedNetRepository {
   }
 
   private projectRoom(room: RoomRecord): Room {
-    const { nextSequence: _nextSequence, ...projected } = room;
+    const { nextSequence: _nextSequence, shareToken: _shareToken, ...projected } = room;
     return { ...projected, creator_agent_id: this.tagOf(room.creator_instance_id) };
+  }
+
+  // ---- Artifacts: files an Agent hands to a Room. ----
+
+  async uploadArtifact(auth: CreditAuth, input: UploadArtifactInput): Promise<UploadedArtifact> {
+    const principalId = this.artifactOwner(auth.principalId);
+    if (input.bytes.byteLength === 0) {
+      throw new RepositoryError(422, "validation_failed", "Request is invalid.");
+    }
+    if (input.bytes.byteLength > MAX_ARTIFACT_BYTES) {
+      throw new RepositoryError(413, "artifact_too_large", "File is larger than this service accepts.");
+    }
+    if (input.room_id !== null) {
+      // You hand a file to a Room you are in, not to one you know the id of.
+      const seated = [...this.memberships.values()].some(
+        (membership) =>
+          membership.room_id === input.room_id &&
+          membership.state === "active" &&
+          this.instances.get(membership.instance_id)?.principal_id === principalId,
+      );
+      if (!seated) throw new RepositoryError(404, "room_not_found", "Room was not found.");
+      const room = this.rooms.get(input.room_id);
+      if (room?.state === "closed") throw new RepositoryError(409, "room_closed", "Room is closed.");
+    }
+    const held = this.usageOf(principalId);
+    if (held.bytes + input.bytes.byteLength > ARTIFACT_QUOTA_BYTES) {
+      throw new RepositoryError(409, "artifact_quota_reached", "This account is holding as many bytes as it may.");
+    }
+    // Every file has a link: that is what makes handing one over work.
+    const linkKey = generateSecret("afk");
+    const artifact: Artifact & { linkKey: AfkSecret } = {
+      id: generatePublicId("art"),
+      principal_id: principalId,
+      uploaded_by_instance_id: auth.kind === "instance" ? auth.instanceId : null,
+      room_id: input.room_id,
+      filename: input.filename,
+      content_type: input.content_type,
+      size_bytes: input.bytes.byteLength,
+      sha256: createHash("sha256").update(input.bytes).digest("hex"),
+      created_at: this.timestamp(),
+      linkKey,
+    };
+    this.artifacts.set(artifact.id, artifact);
+    this.artifactBytes.set(artifact.id, new Uint8Array(input.bytes));
+    return { artifact: this.projectArtifact(artifact), link_key: linkKey };
+  }
+
+  async getArtifact(auth: CreditAuth, artifactId: ArtifactId): Promise<{ artifact: Artifact }> {
+    return { artifact: this.projectArtifact(this.artifactVisibleTo(auth.principalId, artifactId)) };
+  }
+
+  async readArtifact(auth: CreditAuth, artifactId: ArtifactId): Promise<{ artifact: Artifact; bytes: Uint8Array }> {
+    const record = this.artifactVisibleTo(auth.principalId, artifactId);
+    return { artifact: this.projectArtifact(record), bytes: this.artifactBytes.get(record.id) ?? new Uint8Array() };
+  }
+
+  async readArtifactByLink(artifactId: ArtifactId, key: string): Promise<{ artifact: Artifact; bytes: Uint8Array }> {
+    const record = this.artifacts.get(artifactId);
+    // A wrong key reads exactly like a missing file: the comparison is constant-time.
+    if (!record || !secureDigestEquals(digestSecret(record.linkKey), digestSecret(key))) {
+      throw new RepositoryError(404, "artifact_not_found", "File was not found.");
+    }
+    return { artifact: this.projectArtifact(record), bytes: this.artifactBytes.get(record.id) ?? new Uint8Array() };
+  }
+
+  async listArtifacts(auth: CreditAuth, input: ArtifactQuery): Promise<Page<Artifact>> {
+    const mine = [...this.artifacts.values()]
+      .filter((record) => this.canRead(auth.principalId, record))
+      .filter((record) => (input.room_id === null ? true : record.room_id === input.room_id))
+      .sort((left, right) => right.created_at.localeCompare(left.created_at) || right.id.localeCompare(left.id));
+    const start = input.before === null ? 0 : mine.findIndex((record) => record.id === input.before) + 1;
+    if (input.before !== null && start === 0) throw new RepositoryError(400, "invalid_cursor", "Cursor is invalid.");
+    const page = mine.slice(start, start + input.limit);
+    const hasMore = start + input.limit < mine.length;
+    return {
+      items: page.map((record) => this.projectArtifact(record)),
+      next_cursor: hasMore ? (page[page.length - 1]!.id as string) : null,
+      has_more: hasMore,
+    };
+  }
+
+  async artifactUsage(auth: CreditAuth): Promise<ArtifactUsage> {
+    return this.usageOf(auth.principalId);
+  }
+
+  async deleteArtifact(auth: CreditAuth, artifactId: ArtifactId): Promise<{ artifact: Artifact }> {
+    const record = this.artifacts.get(artifactId);
+    // Only the account that uploaded it; to anyone else it is not there at all.
+    if (!record || this.artifactOwner(record.principal_id) !== this.artifactOwner(auth.principalId)) {
+      throw new RepositoryError(404, "artifact_not_found", "File was not found.");
+    }
+    this.artifacts.delete(artifactId);
+    this.artifactBytes.delete(artifactId);
+    return { artifact: this.projectArtifact(record) };
+  }
+
+  private usageOf(principalId: PrincipalId): ArtifactUsage {
+    const owner = this.artifactOwner(principalId);
+    const mine = [...this.artifacts.values()].filter((record) => this.artifactOwner(record.principal_id) === owner);
+    return {
+      bytes: mine.reduce((sum, record) => sum + record.size_bytes, 0),
+      quota_bytes: ARTIFACT_QUOTA_BYTES,
+      count: mine.length,
+    };
+  }
+
+  private canRead(principalId: PrincipalId, record: Artifact): boolean {
+    principalId = this.artifactOwner(principalId);
+    if (this.artifactOwner(record.principal_id) === principalId) return true;
+    if (record.room_id === null) return false;
+    return [...this.memberships.values()].some(
+      (membership) =>
+        membership.room_id === record.room_id &&
+        membership.state === "active" &&
+        this.instances.get(membership.instance_id)?.principal_id === principalId,
+    );
+  }
+
+  private artifactVisibleTo(principalId: PrincipalId, artifactId: ArtifactId): Artifact & { linkKey: AfkSecret } {
+    const record = this.artifacts.get(artifactId);
+    if (!record || !this.canRead(principalId, record)) {
+      throw new RepositoryError(404, "artifact_not_found", "File was not found.");
+    }
+    return record;
+  }
+
+  /** The key never leaves through a read: it is handed out once, at upload. */
+  private projectArtifact(record: Artifact & { linkKey: AfkSecret }): Artifact {
+    const { linkKey: _linkKey, ...artifact } = record;
+    return { ...artifact, principal_id: this.artifactOwner(artifact.principal_id) };
+  }
+
+  /** Retired guest rows remain recoverable through the permanent claim mapping. */
+  private artifactOwner(principalId: PrincipalId): PrincipalId {
+    return this.mergedPrincipals.get(principalId) ?? principalId;
+  }
+
+  // ---- Credits: a purse per Principal, a ledger of every movement. ----
+
+  async getCredits(auth: CreditAuth): Promise<{ credits: CreditBalance }> {
+    return { credits: this.purseOf(auth.principalId) };
+  }
+
+  async redeemCredits(auth: CreditAuth, code: string): Promise<CreditRedemption> {
+    return this.redeem(auth.principalId, code);
+  }
+
+  async transferCredits(auth: CreditAuth, input: CreditTransferRequest): Promise<{ transfer: CreditTransfer; credits: CreditBalance }> {
+    const payer = auth.principalId;
+    const payee = this.purseBehind(input.to);
+    if (payee === null) throw new RepositoryError(404, "payee_not_found", "No Principal, Agent or Instance with that id.");
+    if (payee === payer) throw new RepositoryError(422, "transfer_to_self", "A transfer to your own Principal moves nothing.");
+    if (input.room_id !== undefined && input.room_id !== null && !this.rooms.has(input.room_id)) {
+      throw new RepositoryError(404, "room_not_found", "Room was not found.");
+    }
+    const balance = this.creditBalances.get(payer) ?? 0;
+    if (balance < input.amount) {
+      throw new RepositoryError(409, "insufficient_credits", "The purse does not hold that many credits.");
+    }
+    this.creditBalances.set(payer, balance - input.amount);
+    this.creditBalances.set(payee, (this.creditBalances.get(payee) ?? 0) + input.amount);
+    const transfer: CreditTransfer = {
+      id: generatePublicId("txn"),
+      from_principal_id: payer,
+      to_principal_id: payee,
+      amount: input.amount,
+      memo: input.memo ?? null,
+      room_id: input.room_id ?? null,
+      by_instance_id: auth.kind === "instance" ? auth.instanceId : null,
+      addressed_to: input.to,
+      code: null,
+      created_at: this.timestamp(),
+    };
+    this.creditTransfers.push(transfer);
+    return { transfer: { ...transfer }, credits: this.purseOf(payer) };
+  }
+
+  async listCreditTransfers(auth: CreditAuth, input: CreditLedgerQuery): Promise<Page<CreditTransfer>> {
+    return this.ledgerOf(auth.principalId, input);
+  }
+
+  async mintCreditCode(input: { code: string; amount: number; max_redemptions?: number | null; expires_at?: string | null }): Promise<{ code: CreditCode }> {
+    const code: CreditCode = {
+      code: input.code,
+      amount: input.amount,
+      max_redemptions: input.max_redemptions ?? null,
+      redeemed_count: 0,
+      expires_at: input.expires_at ?? null,
+      active: true,
+      created_at: this.timestamp(),
+    };
+    this.creditCodes.set(code.code, code);
+    return { code: { ...code } };
+  }
+
+  async creditsForPrincipal(principalId: PrincipalId): Promise<CreditsOverview> {
+    if (!this.principals.has(principalId)) throw new RepositoryError(404, "principal_not_found", "Principal was not found.");
+    return { credits: this.purseOf(principalId), transfers: (await this.ledgerOf(principalId, { limit: 100, before: null })).items };
+  }
+
+  async redeemCreditsForPrincipal(principalId: PrincipalId, code: string): Promise<CreditRedemption> {
+    if (!this.principals.has(principalId)) throw new RepositoryError(404, "principal_not_found", "Principal was not found.");
+    return this.redeem(principalId, code);
+  }
+
+  /**
+   * Moves one purse into another when an anonymous Principal is bound into an
+   * account. The move is a ledger row like any other, so the balance is still
+   * the sum of the ledger and the account can see where the credits came from.
+   */
+  private moveCreditPurse(fromPrincipalId: PrincipalId, toPrincipalId: PrincipalId): void {
+    const amount = this.creditBalances.get(fromPrincipalId) ?? 0;
+    if (amount <= 0) return;
+    this.creditBalances.set(fromPrincipalId, 0);
+    this.creditBalances.set(toPrincipalId, (this.creditBalances.get(toPrincipalId) ?? 0) + amount);
+    this.creditTransfers.push({
+      id: generatePublicId("txn"),
+      from_principal_id: fromPrincipalId,
+      to_principal_id: toPrincipalId,
+      amount,
+      memo: "Bound into this account by sharednet login",
+      room_id: null,
+      by_instance_id: null,
+      addressed_to: toPrincipalId,
+      code: null,
+      created_at: this.timestamp(),
+    });
+  }
+
+  /** The Principal whose purse an id names: a Principal's own, an Agent's owner, an Instance's owner. */
+  private purseBehind(id: string): PrincipalId | null {
+    if (id.startsWith("p_")) {
+      const principal = this.principals.get(id as PrincipalId);
+      return principal ? (this.mergedPrincipals.get(principal.id) ?? principal.id) : null;
+    }
+    // A claim repoints Instances but not Agent tags, so both are followed to
+    // whatever Principal they belong to now.
+    const agent = id.startsWith("a_") ? this.agents.get(id as AgentId) : undefined;
+    if (agent) return this.mergedPrincipals.get(agent.principal_id) ?? agent.principal_id;
+    const instance = id.startsWith("i_") ? this.instances.get(id as InstanceId) : undefined;
+    if (instance) return this.mergedPrincipals.get(instance.principal_id) ?? instance.principal_id;
+    return null;
+  }
+
+  private purseOf(principalId: PrincipalId): CreditBalance {
+    let granted = 0;
+    let sent = 0;
+    let received = 0;
+    for (const transfer of this.creditTransfers) {
+      if (transfer.to_principal_id === principalId) {
+        if (transfer.from_principal_id === null) granted += transfer.amount;
+        else received += transfer.amount;
+      }
+      if (transfer.from_principal_id === principalId) sent += transfer.amount;
+    }
+    return { principal_id: principalId, balance: this.creditBalances.get(principalId) ?? 0, granted, sent, received };
+  }
+
+  private async ledgerOf(principalId: PrincipalId, input: CreditLedgerQuery): Promise<Page<CreditTransfer>> {
+    const mine = this.creditTransfers
+      .filter((transfer) => transfer.from_principal_id === principalId || transfer.to_principal_id === principalId)
+      .reverse();
+    const start = input.before === null ? 0 : mine.findIndex((transfer) => transfer.id === input.before) + 1;
+    if (input.before !== null && start === 0) throw new RepositoryError(400, "invalid_cursor", "Cursor is invalid.");
+    const items = mine.slice(start, start + input.limit).map((transfer) => ({ ...transfer }));
+    const hasMore = start + input.limit < mine.length;
+    return { items, next_cursor: hasMore ? items[items.length - 1]!.id : null, has_more: hasMore };
+  }
+
+  private redeem(principalId: PrincipalId, code: string): CreditRedemption {
+    const grant = this.creditCodes.get(code);
+    if (!grant || !grant.active) throw new RepositoryError(404, "credit_code_not_found", "That code grants nothing.");
+    // What this Principal already redeemed is settled history: a retry answers
+    // the same way for good, even once the code itself has expired or filled up.
+    const key = `${code}\0${principalId}`;
+    if (this.creditRedemptions.has(key)) return { credits: this.purseOf(principalId), granted: 0, transfer: null };
+    if (grant.expires_at !== null && Date.parse(grant.expires_at) <= this.now().getTime()) {
+      throw new RepositoryError(410, "credit_code_expired", "That code has expired.");
+    }
+    // An anonymous Principal is free to create, so a code it could redeem would be an infinite purse.
+    const backed = [...this.principalsByAccount.values()].includes(principalId);
+    if (!backed) {
+      throw new RepositoryError(403, "credits_account_required", "Only a Principal with an account behind it can redeem a code; run sharednet login.");
+    }
+    if (grant.max_redemptions !== null && grant.redeemed_count >= grant.max_redemptions) {
+      throw new RepositoryError(410, "credit_code_exhausted", "That code has been redeemed as many times as it allows.");
+    }
+    grant.redeemed_count += 1;
+    this.creditRedemptions.add(key);
+    this.creditBalances.set(principalId, (this.creditBalances.get(principalId) ?? 0) + grant.amount);
+    const transfer: CreditTransfer = {
+      id: generatePublicId("txn"),
+      from_principal_id: null,
+      to_principal_id: principalId,
+      amount: grant.amount,
+      memo: null,
+      room_id: null,
+      by_instance_id: null,
+      addressed_to: principalId,
+      code,
+      created_at: this.timestamp(),
+    };
+    this.creditTransfers.push(transfer);
+    return { credits: this.purseOf(principalId), granted: grant.amount, transfer: { ...transfer } };
   }
 }

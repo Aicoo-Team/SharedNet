@@ -32,6 +32,21 @@ describe("resolveTrustedOrigins", () => {
     expect(origins).toContain("https://shared-net-abc123.vercel.app");
   });
 
+  it("trusts the branch alias a preview is actually opened at", () => {
+    const origins = resolveTrustedOrigins({
+      NODE_ENV: "production",
+      VERCEL_URL: "shared-net-abc123.vercel.app",
+      VERCEL_BRANCH_URL: "shared-net-git-feat-google.vercel.app",
+    });
+    expect(origins).toContain("https://shared-net-abc123.vercel.app");
+    expect(origins).toContain("https://shared-net-git-feat-google.vercel.app");
+  });
+
+  it("ignores a blank VERCEL_BRANCH_URL rather than trusting https://", () => {
+    const origins = resolveTrustedOrigins({ NODE_ENV: "production", VERCEL_BRANCH_URL: " " });
+    expect(origins).not.toContain("https://");
+  });
+
   it("ignores a blank VERCEL_URL rather than trusting https://", () => {
     const origins = resolveTrustedOrigins({ NODE_ENV: "production", VERCEL_URL: "  " });
     expect(origins).not.toContain("https://");
