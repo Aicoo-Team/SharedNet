@@ -27,6 +27,14 @@ export interface DetectedRuntime {
   version: string | null;
   entrypoint: string | null;
   source: RuntimeSource;
+  /**
+   * The parent process name when nothing matched at all. Detection can only
+   * recognise drivers someone wrote down, so the unrecognised ones used to
+   * vanish into `custom` and take the evidence with them. Reporting the name
+   * turns "which drivers are we missing?" from a guess into a query over
+   * `runtime_metadata`. Absent whenever detection succeeded.
+   */
+  unrecognisedParent?: string | null;
 }
 
 type Environment = Record<string, string | undefined>;
@@ -55,6 +63,11 @@ const PARENT_PROCESS_KINDS: Record<string, string> = {
   openhands: "openhands",
   gemini: "gemini-cli",
   cursor: "cursor",
+  // `openclaw` is the bin name in openclaw/openclaw's package.json; Hermes
+  // installs both `hermes` and `hermes-agent` as console scripts.
+  openclaw: "openclaw",
+  hermes: "hermes",
+  "hermes-agent": "hermes",
 };
 
 function processEntry(pid: number): { ppid: number; name: string } | null {
@@ -100,7 +113,16 @@ export function parentProcessName(ppid: number = process.ppid): string | null {
  * id is set per process. When two drivers both expose a session id, the
  * process tree decides; when it cannot, the first in DRIVER_ORDER wins.
  */
-const DRIVER_ORDER = ["codex", "claude-code", "opencode", "openhands", "gemini-cli", "cursor"] as const;
+const DRIVER_ORDER = [
+  "codex",
+  "claude-code",
+  "opencode",
+  "openhands",
+  "gemini-cli",
+  "cursor",
+  "hermes",
+  "openclaw",
+] as const;
 
 function candidates(env: Environment): DetectedRuntime[] {
   const found: DetectedRuntime[] = [];
@@ -162,6 +184,38 @@ function candidates(env: Environment): DetectedRuntime[] {
       source: "detected",
     });
   }
+  // Hermes re-exports two attribution markers into the environment of every
+  // shell command it runs, alongside a per-command session id — see
+  // `tools/environments/base_session_env.py` in NousResearch/hermes-agent,
+  // which calls them exactly that. `AI_AGENT` is a cross-harness name, so only
+  // its Hermes value counts; presence alone would claim other harnesses.
+  const hermesAnchor = nonEmpty(env.HERMES_SESSION_ID);
+  if (
+    hermesAnchor !== null ||
+    nonEmpty(env.HERMES_AGENT) !== null ||
+    nonEmpty(env.AI_AGENT) === "hermes-agent"
+  ) {
+    found.push({
+      kind: "hermes",
+      anchor: hermesAnchor,
+      version: clean(nonEmpty(env.HERMES_VERSION)),
+      entrypoint: null,
+      source: "detected",
+    });
+  }
+  // OpenClaw publishes no attribution marker. Its per-session variable is the
+  // key it hands an MCP server it spawns, and its operator-facing OPENCLAW_*
+  // variables are inherited by anything it runs — the same weak-marker shape
+  // as OPENCODE and OPENHANDS above, and the process tree breaks the tie.
+  if (hasPrefix(env, "OPENCLAW")) {
+    found.push({
+      kind: "openclaw",
+      anchor: nonEmpty(env.OPENCLAW_TOOLS_MCP_AGENT_SESSION_KEY),
+      version: clean(nonEmpty(env.OPENCLAW_VERSION)),
+      entrypoint: null,
+      source: "detected",
+    });
+  }
   return found.sort((a, b) => DRIVER_ORDER.indexOf(a.kind as never) - DRIVER_ORDER.indexOf(b.kind as never));
 }
 
@@ -186,7 +240,14 @@ export function detectRuntime(
   if (byParent) {
     return { kind: byParent, anchor: null, version: null, entrypoint: null, source: "detected" };
   }
-  return { kind: "custom", anchor: null, version: null, entrypoint: null, source: "declared" };
+  return {
+    kind: "custom",
+    anchor: null,
+    version: null,
+    entrypoint: null,
+    source: "declared",
+    unrecognisedParent: clean(parent),
+  };
 }
 
 export function isRuntimeKind(value: string): boolean {
@@ -198,5 +259,6 @@ export function runtimeMetadataOf(runtime: DetectedRuntime): Record<string, stri
   const metadata: Record<string, string> = { runtime_source: runtime.source };
   if (runtime.version) metadata.driver_version = runtime.version;
   if (runtime.entrypoint) metadata.entrypoint = runtime.entrypoint;
+  if (runtime.unrecognisedParent) metadata.parent_process = runtime.unrecognisedParent;
   return metadata;
 }
