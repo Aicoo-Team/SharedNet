@@ -121,6 +121,7 @@ type MessageRecord = {
   sequence: number;
   sender_principal_id: PrincipalId;
   sender_instance_id: InstanceId;
+  to: InstanceId[] | null;
   content: string;
   reply_to_message_id: MessageId | null;
   created_at: string;
@@ -1223,7 +1224,7 @@ export class MemorySharedNetRepository implements SharedNetRepository {
   async postMessage(
     auth: RoomAuth,
     roomId: RoomId,
-    input: { content: string; reply_to_message_id?: MessageId | null },
+    input: { content: string; reply_to_message_id?: MessageId | null; to?: InstanceId[] },
   ): Promise<{ message: Message }> {
     this.requireOnline(auth);
     const room = this.roomById(roomId);
@@ -1242,12 +1243,27 @@ export class MemorySharedNetRepository implements SharedNetRepository {
       );
     }
 
+    const addressees = input.to ?? null;
+    for (const instanceId of addressees ?? []) {
+      // Addressing names a seat in this Room, so a seat that never joined —
+      // including a sibling Instance of the sender's own Principal — is not
+      // addressable. The refusal is about the payload, not the caller.
+      if (this.memberships.get(membershipKey(room.id, instanceId))?.state !== "active") {
+        throw new RepositoryError(
+          422,
+          "addressee_not_a_member",
+          "An addressee is not a member of this Room.",
+        );
+      }
+    }
+
     const message: MessageRecord = {
       id: generatePublicId("msg"),
       room_id: room.id,
       sequence: room.nextSequence,
       sender_principal_id: auth.principalId,
       sender_instance_id: auth.instanceId,
+      to: addressees,
       content: input.content,
       reply_to_message_id: replyId,
       created_at: this.timestamp(),

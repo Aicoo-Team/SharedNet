@@ -1,0 +1,21 @@
+-- 0020: a message can name whom it is addressed to (V1.5 addressed delivery).
+--
+-- Addressing, not privacy. Membership still decides who may read a Room's log,
+-- and every member still reads every message. What this column adds is whose
+-- turn it is, so a participant can ask what is addressed to it instead of
+-- re-reading everything — the per-actor view that the room's own transcript
+-- cannot provide once it is long.
+--
+-- NULL means the message is for the Room, which is every message written
+-- before this migration, so no backfill is needed and no existing row changes.
+-- Expand-only: one nullable column and one CHECK.
+--
+-- The CHECK matches the array joined into one string rather than each element,
+-- because a CHECK constraint may not contain a subquery and therefore cannot
+-- unnest. An Instance id is `i_` and ten Base62 characters, so it can never
+-- contain the comma the join uses, and the pattern is exact. Uniqueness within
+-- the array is enforced by the protocol parser instead, for the same reason.
+-- The bound is MAX_ADMISSIONS: naming Instances to address is the same question
+-- as naming them to seat, so it takes the same limit rather than a second one.
+ALTER TABLE "sharednet"."message" ADD COLUMN "addressed_to" text[];--> statement-breakpoint
+ALTER TABLE "sharednet"."message" ADD CONSTRAINT "message_addressed_to_valid" CHECK ("sharednet"."message"."addressed_to" IS NULL OR (array_length("sharednet"."message"."addressed_to", 1) BETWEEN 1 AND 50 AND array_to_string("sharednet"."message"."addressed_to", ',') ~ '^i_[0-9A-Za-z]{10}(,i_[0-9A-Za-z]{10})*$'));

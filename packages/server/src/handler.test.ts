@@ -653,6 +653,85 @@ describe("Rooms across Principals", () => {
 
 });
 
+describe("Addressed messages", () => {
+  const UUID_A = "3f1a0a4e-1f2b-4c3d-8e5f-6a7b8c9d0e1f";
+  const UUID_B = "4f1a0a4e-1f2b-4c3d-8e5f-6a7b8c9d0e2f";
+
+  async function roomWithTwo(store: MemorySharedNetRepository) {
+    const host = await startInstance(store);
+    const created = await request(store, "/api/v1/rooms", {
+      method: "POST",
+      headers: instanceHeaders(host.token, {
+        "content-type": "application/json",
+        "idempotency-key": UUID_A,
+      }),
+      body: JSON.stringify({ name: "Delegation" }),
+    });
+    expect(created.status).toBe(201);
+    const { room } = await json(created);
+
+    const other = await startWithKey(store, OTHER_KEY);
+    const joined = await request(store, `/api/v1/rooms/${room.id}/join`, {
+      method: "POST",
+      headers: instanceHeaders(other.token, { "idempotency-key": UUID_B }),
+    });
+    expect(joined.status).toBe(200);
+    return { host, other, room };
+  }
+
+  function post(
+    store: MemorySharedNetRepository,
+    roomId: string,
+    token: string,
+    body: Record<string, unknown>,
+  ) {
+    return request(store, `/api/v1/rooms/${roomId}/messages`, {
+      method: "POST",
+      headers: instanceHeaders(token, {
+        "content-type": "application/json",
+        "idempotency-key": crypto.randomUUID(),
+      }),
+      body: JSON.stringify(body),
+    });
+  }
+
+  it("records who a message is addressed to, and leaves a Room message addressed to nobody", async () => {
+    const store = new MemorySharedNetRepository({ devApiKeys: [DEV_KEY, OTHER_KEY] });
+    const { host, other, room } = await roomWithTwo(store);
+
+    const addressed = await post(store, room.id, host.token, {
+      content: "your turn",
+      to: [other.instance.id],
+    });
+    expect(addressed.status).toBe(201);
+    expect((await json(addressed)).message.to).toEqual([other.instance.id]);
+
+    const broadcast = await post(store, room.id, host.token, { content: "for the Room" });
+    expect(broadcast.status).toBe(201);
+    expect((await json(broadcast)).message.to).toBeNull();
+  });
+
+  it("refuses an addressee that is not a member, including the sender's own sibling seat", async () => {
+    const store = new MemorySharedNetRepository({ devApiKeys: [DEV_KEY, OTHER_KEY] });
+    const { host, room } = await roomWithTwo(store);
+
+    // A second Instance of the sender's own Principal, which never joined.
+    const sibling = await startWithKey(store, DEV_KEY, { local_instance_key: OTHER_SESSION_KEY });
+    const refused = await post(store, room.id, host.token, {
+      content: "you are not here",
+      to: [sibling.instance.id],
+    });
+    expect(refused.status).toBe(422);
+    expect((await json(refused)).error.code).toBe("addressee_not_a_member");
+
+    // Nothing was written: the Room's log is unchanged.
+    const page = await request(store, `/api/v1/rooms/${room.id}/messages`, {
+      headers: instanceHeaders(host.token),
+    });
+    expect((await json(page)).items).toHaveLength(0);
+  });
+});
+
 describe("Room invites, guests, and wait", () => {
   const UUID = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
 

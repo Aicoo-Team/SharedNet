@@ -79,6 +79,16 @@ describe("hosted Postgres schema", () => {
     expect(messageColumns.senderGuestId.notNull).toBe(false);
   });
 
+  it("lets a message name its addressees, and a Room message name none", () => {
+    const messageColumns = getTableColumns(messages);
+    // Nullable is the Room: every message written before addressing existed
+    // is for the Room, so the column carries no default and needs no backfill.
+    expect(messageColumns.addressedTo.notNull).toBe(false);
+    expect(messageColumns.addressedTo.hasDefault).toBe(false);
+    // Addressing is not access control: nothing here narrows who may read.
+    expect(messageColumns).not.toHaveProperty("visibleTo");
+  });
+
   it("stores only an Instance token digest", () => {
     const columns = getTableColumns(instances);
     expect(columns).toHaveProperty("tokenDigest");
@@ -155,6 +165,7 @@ describe("hosted Postgres schema", () => {
     expect(migration).toContain('CONSTRAINT "apikey_reference_id_user_id_fk"');
     expect(migration).toContain('CREATE UNIQUE INDEX "agent_one_default_per_principal"');
     expect(migration).toContain('CONSTRAINT "message_same_room_reply_fk"');
+    expect(migration).toContain('CONSTRAINT "message_addressed_to_valid"');
     expect(migration).toContain('CONSTRAINT "decision_state_consistent"');
     expect(migration).toContain('CONSTRAINT "room_share_consistent"');
     expect(migration).toContain('CONSTRAINT "credit_account_balance_nonnegative"');

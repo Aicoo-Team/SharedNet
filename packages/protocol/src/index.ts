@@ -462,6 +462,17 @@ export interface Message {
   sender: MemberRef;
   /** Reserved for typed events; every V1 message is `message`. */
   type: "message";
+  /**
+   * Whom this message is addressed to, or null for the Room.
+   *
+   * **Addressing, not privacy.** Every member still reads every message in a
+   * Room it belongs to; `to` does not hide anything from anyone. What it adds
+   * is whose turn it is, so a participant can ask what is addressed to it
+   * instead of re-reading the log. If this ever came to mean "only these
+   * members may read this", it would become an access-control mechanism and
+   * every later feature would inherit that.
+   */
+  to: InstanceId[] | null;
   content: string;
   reply_to_message_id: MessageId | null;
   created_at: Timestamp;
@@ -608,6 +619,7 @@ export type ErrorCode =
   | "validation_failed"
   | "reserved_agent_handle"
   | "reply_target_invalid"
+  | "addressee_not_a_member"
   | "decision_resolution_invalid"
   | "insufficient_credits"
   | "payee_not_found"
@@ -663,6 +675,7 @@ export const SAFE_ERROR_MESSAGES: Readonly<Record<ErrorCode, string>> = {
   validation_failed: "Request validation failed.",
   reserved_agent_handle: "The default Agent handle is reserved.",
   reply_target_invalid: "Reply target is invalid.",
+  addressee_not_a_member: "An addressee is not a member of this Room.",
   decision_resolution_invalid: "Decision resolution is invalid.",
   insufficient_credits: "The purse does not hold that many credits.",
   payee_not_found: "No Principal, Agent or Instance with that id.",
@@ -719,6 +732,7 @@ export const ERROR_STATUS: Readonly<Record<ErrorCode, number>> = {
   validation_failed: 422,
   reserved_agent_handle: 422,
   reply_target_invalid: 422,
+  addressee_not_a_member: 422,
   decision_resolution_invalid: 422,
   insufficient_credits: 409,
   payee_not_found: 404,
@@ -1246,11 +1260,13 @@ export const DEFAULT_ARTIFACT_QUERY: ArtifactQuery = { room_id: null, before: nu
 export interface PostMessageRequest {
   content: string;
   reply_to_message_id?: MessageId | null;
+  /** Addressees. Absent is the Room; an empty list is a mistake, not a Room. */
+  to?: InstanceId[];
 }
 
 export function parsePostMessageRequest(value: unknown): PostMessageRequest {
-  requireExactKeys(value, ["content"], ["reply_to_message_id"]);
-  const { content, reply_to_message_id: replyToMessageId } = value;
+  requireExactKeys(value, ["content"], ["reply_to_message_id", "to"]);
+  const { content, reply_to_message_id: replyToMessageId, to } = value;
   if (
     typeof content !== "string" ||
     !hasNonWhitespaceScalar(content) ||
@@ -1267,9 +1283,16 @@ export function parsePostMessageRequest(value: unknown): PostMessageRequest {
     throw new ProtocolValidationError();
   }
 
-  return replyToMessageId === undefined
-    ? { content }
-    : { content, reply_to_message_id: replyToMessageId as MessageId | null };
+  // The same question `with` asks when seating: which Instances does one
+  // request name. Reusing it keeps one rule — non-empty, capped, no repeats —
+  // rather than a second that drifts from it.
+  const addressees = to === undefined || to === null ? undefined : parseInstanceIdList(to);
+  const parsed: PostMessageRequest = { content };
+  if (replyToMessageId !== undefined) {
+    parsed.reply_to_message_id = replyToMessageId as MessageId | null;
+  }
+  if (addressees !== undefined) parsed.to = addressees;
+  return parsed;
 }
 
 export const MAX_MEMBER_NAME_SCALARS = 64;

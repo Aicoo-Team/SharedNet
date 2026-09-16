@@ -88,6 +88,38 @@ describe("strict request parsing", () => {
     );
   });
 
+  it("addresses a Message to members, and refuses a list that says nobody", () => {
+    const one = "i_XHEYHw3zh8" as const;
+    const two = "i_7CPHtWFsFn" as const;
+
+    expect(parsePostMessageRequest({ content: "hi", to: [one, two] })).toEqual({
+      content: "hi",
+      to: [one, two],
+    });
+    // Absent stays absent: a Room message carries no addressees key at all.
+    expect(parsePostMessageRequest({ content: "hi" })).toEqual({ content: "hi" });
+
+    // An empty list is a caller that computed its recipients and got none.
+    expect(() => parsePostMessageRequest({ content: "hi", to: [] })).toThrow(
+      ProtocolValidationError,
+    );
+    expect(() => parsePostMessageRequest({ content: "hi", to: [one, one] })).toThrow(
+      ProtocolValidationError,
+    );
+    expect(() => parsePostMessageRequest({ content: "hi", to: ["p_XHEYHw3zh8"] })).toThrow(
+      ProtocolValidationError,
+    );
+    expect(() => parsePostMessageRequest({ content: "hi", to: "i_XHEYHw3zh8" })).toThrow(
+      ProtocolValidationError,
+    );
+    expect(() =>
+      parsePostMessageRequest({
+        content: "hi",
+        to: Array.from({ length: 51 }, (_, index) => `i_${String(index).padStart(10, "0")}`),
+      }),
+    ).toThrow(ProtocolValidationError);
+  });
+
   it("preserves Message content while enforcing whitespace and UTF-8 byte limits", () => {
     const content = "  hello, agents  \n";
     expect(parsePostMessageRequest({ content })).toEqual({ content });

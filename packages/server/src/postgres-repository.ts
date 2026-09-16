@@ -306,6 +306,7 @@ function projectMessage(
       name: sender?.displayName ?? null,
     },
     type: "message",
+    to: row.addressedTo ?? null,
     content: row.content,
     reply_to_message_id: row.replyToMessageId,
     created_at: timestamp(row.createdAt),
@@ -1759,7 +1760,7 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
   async postMessage(
     auth: RoomAuth,
     roomId: RoomId,
-    input: { content: string; reply_to_message_id?: MessageId | null },
+    input: { content: string; reply_to_message_id?: MessageId | null; to?: InstanceId[] },
   ): Promise<{ message: Message }> {
     return this.inTransaction(async () => {
       const sender = await this.requireOnline(auth);
@@ -1789,6 +1790,29 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
         }
       }
 
+      const addressees = input.to ?? null;
+      if (addressees) {
+        // One query, not one per addressee: every named seat must come back
+        // active, or some id names a seat that is not in this Room.
+        const seated = await this.executor()
+          .select({ instanceId: roomMembers.instanceId })
+          .from(roomMembers)
+          .where(
+            and(
+              eq(roomMembers.roomId, room.id),
+              eq(roomMembers.state, "active"),
+              inArray(roomMembers.instanceId, addressees),
+            ),
+          );
+        if (seated.length !== addressees.length) {
+          throw new RepositoryError(
+            422,
+            "addressee_not_a_member",
+            "An addressee is not a member of this Room.",
+          );
+        }
+      }
+
       const createdAt = this.now();
       const [message] = await this.executor()
         .insert(messages)
@@ -1799,6 +1823,7 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
           senderPrincipalId: auth.principalId,
           senderInstanceId: auth.instanceId,
           senderGuestId: null,
+          addressedTo: addressees,
           content: input.content,
           replyToMessageId: replyId,
           createdAt,

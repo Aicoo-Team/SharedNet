@@ -448,7 +448,7 @@ export interface SharedNetRepository extends PrincipalRepository {
   postMessage(
     auth: RoomAuth,
     roomId: RoomId,
-    input: { content: string; reply_to_message_id?: MessageId | null },
+    input: { content: string; reply_to_message_id?: MessageId | null; to?: InstanceId[] },
   ): Promise<{ message: Message }>;
   /** A window of a Room's log: filtered, ordered, cursored. See MessageQuery. */
   listMessages(auth: RoomAuth, roomId: RoomId, input: MessageQuery): Promise<Page<Message>>;

@@ -141,6 +141,13 @@
       "when": 1789173060937,
       "tag": "0019_user_avatar",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1789560000000,
+      "tag": "0020_addressed_messages",
+      "breakpoints": true
     }
   ]
 }
