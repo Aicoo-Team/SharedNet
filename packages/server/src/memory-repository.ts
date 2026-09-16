@@ -51,6 +51,7 @@ import {
   SHR_SECRET_PATTERN,
   type ShrSecret,
   type StartInstanceRequest,
+  renderTransferReceipt,
 } from "../../protocol/src/index.ts";
 import { sharedRoomsEdges, type SeatName, type ArtifactUsage, type CreditAuth, type CreditLedgerQuery, type CreditRedemption, type CreditsOverview, type DecisionAnswer, type DecisionOverview, type McpClient, type McpSeat, type NetworkView, type RoomOverview, type RoomView, type SeatOverview, type SharedRoomView, type UploadArtifactInput, type UploadedArtifact } from "./repository.ts";
 import type {
@@ -64,6 +65,7 @@ import type {
   ResolveDecisionRequest,
   UpdateInstanceRequest,
   MessageQuery,
+  MessageType,
 } from "../../protocol/src/index.ts";
 import {
   MAX_AGENTS_PER_PRINCIPAL,
@@ -121,6 +123,7 @@ type MessageRecord = {
   sequence: number;
   sender_principal_id: PrincipalId;
   sender_instance_id: InstanceId;
+  type: MessageType;
   content: string;
   reply_to_message_id: MessageId | null;
   created_at: string;
@@ -1248,6 +1251,7 @@ export class MemorySharedNetRepository implements SharedNetRepository {
       sequence: room.nextSequence,
       sender_principal_id: auth.principalId,
       sender_instance_id: auth.instanceId,
+      type: "message",
       content: input.content,
       reply_to_message_id: replyId,
       created_at: this.timestamp(),
@@ -1307,6 +1311,7 @@ export class MemorySharedNetRepository implements SharedNetRepository {
         return input.sender_agent_id === "default" ? tag === null : tag === input.sender_agent_id;
       })
       .filter((message) => needle === null || message.content.toLowerCase().includes(needle))
+      .filter((message) => input.type === null || message.type === input.type)
       .sort((left, right) => (input.order === "asc" ? left.sequence - right.sequence : right.sequence - left.sequence));
     const items = matching.slice(0, input.limit).map((message) => this.projectMessage(message));
     const resumeFrom = input.before ?? (input.after > 0 ? input.after : null);
@@ -1631,7 +1636,6 @@ export class MemorySharedNetRepository implements SharedNetRepository {
       ...record,
       sender_agent_id: this.tagOf(record.sender_instance_id),
       sender: this.memberRef(record.sender_instance_id),
-      type: "message",
     };
   }
 
@@ -1650,6 +1654,38 @@ export class MemorySharedNetRepository implements SharedNetRepository {
       throw new RepositoryError(404, "room_not_found", "Room was not found.");
     }
     return room;
+  }
+
+  /**
+   * The Room's own record that this transfer settled, written with the money
+   * rather than after it. A member cannot author one: `type` is not a field
+   * the post parser accepts. Only a seat of the Room gets one — an account key
+   * has no seat, and a payer may name a Room it never joined.
+   */
+  private attestTransfer(auth: CreditAuth, transfer: CreditTransfer): Message | null {
+    if (transfer.room_id === null || auth.kind !== "instance") return null;
+    const room = this.rooms.get(transfer.room_id);
+    if (!room || room.state === "closed") return null;
+    if (this.memberships.get(membershipKey(room.id, auth.instanceId))?.state !== "active") return null;
+    const record: MessageRecord = {
+      id: generatePublicId("msg"),
+      room_id: room.id,
+      sequence: room.nextSequence,
+      sender_principal_id: auth.principalId,
+      sender_instance_id: auth.instanceId,
+      type: "transfer",
+      content: renderTransferReceipt({
+        amount: transfer.amount,
+        addressed_to: transfer.addressed_to,
+        memo: transfer.memo,
+        transfer_id: transfer.id,
+      }),
+      reply_to_message_id: null,
+      created_at: this.timestamp(),
+    };
+    room.nextSequence += 1;
+    this.messages.get(room.id)!.push(record);
+    return this.projectMessage(record);
   }
 
   private requireMembership(auth: RoomAuth, roomId: RoomId): void {
@@ -1813,7 +1849,10 @@ export class MemorySharedNetRepository implements SharedNetRepository {
     return this.redeem(auth.principalId, code);
   }
 
-  async transferCredits(auth: CreditAuth, input: CreditTransferRequest): Promise<{ transfer: CreditTransfer; credits: CreditBalance }> {
+  async transferCredits(
+    auth: CreditAuth,
+    input: CreditTransferRequest,
+  ): Promise<{ transfer: CreditTransfer; credits: CreditBalance; receipt: Message | null }> {
     const payer = auth.principalId;
     const payee = this.purseBehind(input.to);
     if (payee === null) throw new RepositoryError(404, "payee_not_found", "No Principal, Agent or Instance with that id.");
@@ -1840,7 +1879,7 @@ export class MemorySharedNetRepository implements SharedNetRepository {
       created_at: this.timestamp(),
     };
     this.creditTransfers.push(transfer);
-    return { transfer: { ...transfer }, credits: this.purseOf(payer) };
+    return { transfer: { ...transfer }, credits: this.purseOf(payer), receipt: this.attestTransfer(auth, transfer) };
   }
 
   async listCreditTransfers(auth: CreditAuth, input: CreditLedgerQuery): Promise<Page<CreditTransfer>> {

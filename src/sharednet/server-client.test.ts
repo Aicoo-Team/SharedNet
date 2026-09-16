@@ -641,7 +641,7 @@ describe("SharedNetServerClient is one door onto the domain", () => {
     const { repository, client, auth, roomId, room, instance } = await seededRoom({ agent: true });
     const guest = await guestIn(client, repository, roomId);
     const invite = await client.createRoomInvite(ACCOUNT, roomId);
-    const [first] = (await repository.listMessages(auth, room.id, { after: 0, before: null, limit: 1, order: "asc", sender_instance_id: null, sender_agent_id: null, q: null })).items;
+    const [first] = (await repository.listMessages(auth, room.id, { after: 0, before: null, limit: 1, order: "asc", sender_instance_id: null, sender_agent_id: null, q: null, type: null })).items;
     await repository.postMessage(auth, room.id, {
       content: `join with ROOM=${room.id} TOKEN=${invite.token} BASE=https://www.sharednet.ai --claim clp_${"c".repeat(43)}`,
       reply_to_message_id: first!.id,

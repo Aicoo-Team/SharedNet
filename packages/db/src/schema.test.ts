@@ -79,6 +79,15 @@ describe("hosted Postgres schema", () => {
     expect(messageColumns.senderGuestId.notNull).toBe(false);
   });
 
+  it("defaults a message to the kind a member writes, so every row that predates the column keeps its meaning", () => {
+    // A row written before 0020 was a member's own post and still is: the
+    // column is NOT NULL with 'message' as its default, so the backfill is the
+    // default itself and no existing row had to be rewritten or guessed at.
+    const { type } = getTableColumns(messages);
+    expect(type.notNull).toBe(true);
+    expect(type.default).toBe("message");
+  });
+
   it("stores only an Instance token digest", () => {
     const columns = getTableColumns(instances);
     expect(columns).toHaveProperty("tokenDigest");

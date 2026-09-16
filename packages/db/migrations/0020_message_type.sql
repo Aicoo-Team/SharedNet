@@ -1,0 +1,13 @@
+-- 0020: a message records who authored it, not only what it says.
+--
+-- `type` defaults to 'message' so every row written before this column keeps
+-- exactly the meaning it already had: a member posted it. Only the server
+-- writes any other value, and only inside the transaction that did the thing
+-- being recorded — so a member can still type a sentence claiming a payment,
+-- but cannot make that sentence be one.
+--
+-- Hand-trimmed from `drizzle-kit generate`, which emitted a full re-creation of
+-- both schemas. meta/*_snapshot.json is only tracked through 0006, so the tool
+-- diffs against a 2026-09-04 baseline and re-proposes every table added since.
+-- This one statement is the whole intended delta.
+ALTER TABLE "sharednet"."message" ADD COLUMN "type" text DEFAULT 'message' NOT NULL;
