@@ -27,6 +27,23 @@
   --sn-radius-md: 10px;
   --sn-radius-lg: 16px;
   --sn-radius-pill: 999px;
+
+  /*
+   * The two stacks, with Chinese in them. Albert Sans is Latin-only, so before
+   * this every Han character fell through to whatever the platform happened to
+   * offer, and a mixed sentence rendered in two fonts with two baselines. The
+   * CJK families sit ahead of the generic keywords so the fallback is the same
+   * font on every platform rather than whatever `system-ui` resolves to.
+   *
+   * The mono stack's Chinese is proportional: macOS and Windows ship no CJK
+   * monospace, and a webfont that does is megabytes. Proportional Han in a
+   * monospace run is the lesser of the two — the alternative is a per-glyph
+   * fallback nobody chose. Columns of ids stay Latin, and stay aligned.
+   */
+  --sn-font-sans: "Albert Sans Variable", "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", "Noto Sans SC", ui-sans-serif, system-ui, sans-serif;
+  --sn-font-mono: ui-monospace, SFMono-Regular, Menlo, "PingFang SC",
+    "Microsoft YaHei", "Noto Sans SC", monospace;
 }
 
 /* The product's palette, shared with the one public surface that shows a Room: a shared Room's page. */
@@ -56,7 +73,7 @@
   box-shadow: 0 18px 50px rgba(0, 33, 71, 0.16);
   color: var(--sn-ink);
   display: grid;
-  font-family: "Albert Sans Variable", ui-sans-serif, system-ui, sans-serif;
+  font-family: var(--sn-font-sans);
   grid-template-columns: 42px minmax(0, 1fr);
   inset: 16px;
   overflow: hidden;
@@ -299,7 +316,7 @@ body:has(.product-window) {
 .rail-account-panel > p {
   border-bottom: 1px solid var(--sn-line);
   border-top: 1px solid var(--sn-line);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--sn-font-mono);
   padding: 10px 0;
 }
 
@@ -719,7 +736,7 @@ body:has(.product-window) {
   align-items: center;
   color: var(--sn-muted);
   display: flex;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--sn-font-mono);
   font-size: var(--sn-text-xs);
   gap: 8px;
   justify-content: space-between;
@@ -732,7 +749,7 @@ body:has(.product-window) {
 
 .rooms-sidebar nav button time {
   color: var(--sn-muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--sn-font-mono);
   font-size: var(--sn-text-2xs);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -791,7 +808,7 @@ body:has(.product-window) {
 
 .room-heading > div > p {
   color: var(--sn-gold-ink);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--sn-font-mono);
   font-size: var(--sn-text-xs);
   letter-spacing: 0.08em;
   margin-bottom: 4px;
@@ -823,7 +840,7 @@ body:has(.product-window) {
   align-items: flex-end;
   color: var(--sn-muted);
   display: grid;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--sn-font-mono);
   font-size: var(--sn-text-xs);
   gap: 3px;
   text-align: right;
@@ -875,7 +892,7 @@ body:has(.product-window) {
 
 .room-members > header span {
   color: var(--sn-muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--sn-font-mono);
   font-size: var(--sn-text-xs);
 }
 
@@ -930,7 +947,7 @@ body:has(.product-window) {
 
 .room-member-driver {
   color: var(--sn-oxford);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--sn-font-mono);
   font-size: var(--sn-text-2xs);
 }
 
@@ -948,7 +965,7 @@ body:has(.product-window) {
 
 .room-member-list dt,
 .room-member-list dd {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--sn-font-mono);
   font-size: var(--sn-text-2xs);
   margin: 0;
 }
@@ -978,7 +995,7 @@ body:has(.product-window) {
 .room-runtime-list code,
 .room-instance-list span,
 .room-instance-list code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--sn-font-mono);
   font-size: var(--sn-text-2xs);
 }
 
@@ -1032,7 +1049,7 @@ body:has(.product-window) {
 }
 
 .driver-mark-initials {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--sn-font-mono);
   font-size: var(--sn-text-sm);
   font-weight: 700;
   letter-spacing: 0.02em;
@@ -1046,7 +1063,7 @@ body:has(.product-window) {
   color: var(--sn-oxford);
   cursor: pointer;
   display: flex;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--sn-font-mono);
   font-size: var(--sn-text-sm);
   font-weight: 700;
   height: 38px;
@@ -1095,7 +1112,7 @@ body:has(.product-window) {
 
 .room-message-provenance dt,
 .room-message-provenance dd {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--sn-font-mono);
   font-size: var(--sn-text-xs);
   margin: 0;
 }
@@ -1124,7 +1141,7 @@ body:has(.product-window) {
   color: var(--sn-muted);
   display: flex;
   flex-wrap: wrap;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--sn-font-mono);
   font-size: var(--sn-text-xs);
   gap: 5px 12px;
 }
@@ -1135,7 +1152,9 @@ body:has(.product-window) {
 
 .room-message-body > header .room-message-sender {
   color: var(--sn-ink);
-  font-family: inherit;
+  /* Not `inherit`: the header around it is a monospace run for ids, and a
+     seat name is prose that can be written in any script. */
+  font-family: var(--sn-font-sans);
   font-size: var(--sn-text-md);
   font-weight: 650;
 }
@@ -1158,7 +1177,7 @@ body:has(.product-window) {
 
 .room-message-reply {
   color: var(--sn-muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--sn-font-mono);
   font-size: var(--sn-text-xs);
   margin: 10px 0 0;
 }
@@ -1169,7 +1188,8 @@ body:has(.product-window) {
 
 .room-message-content {
   font-size: var(--sn-text-lg);
-  line-height: 1.55;
+  /* 1.55 is comfortable for Latin and tight for Han, which fills its em box. */
+  line-height: 1.7;
   margin: 11px 0 12px;
   min-width: 0;
   overflow-wrap: anywhere;
@@ -1241,7 +1261,7 @@ body:has(.product-window) {
 
 .room-message-content code,
 .room-message-typed code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--sn-font-mono);
 }
 
 .room-message-content p code,
@@ -1260,7 +1280,7 @@ body:has(.product-window) {
 .room-message-typed summary {
   color: var(--sn-atlantic);
   cursor: pointer;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--sn-font-mono);
   font-size: var(--sn-text-sm);
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -1399,7 +1419,7 @@ body:has(.product-window) {
   background: var(--sn-paper-deep);
   border: 1px solid var(--sn-line);
   color: var(--sn-oxford);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--sn-font-mono);
   font-size: var(--sn-text-sm);
   line-height: 1.55;
   margin: 0;
@@ -1494,7 +1514,7 @@ body:has(.product-window) {
   align-items: center;
   color: var(--sn-muted);
   display: flex;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--sn-font-mono);
   font-size: var(--sn-text-base);
   height: 100%;
   justify-content: center;
@@ -1586,7 +1606,7 @@ body:has(.product-window) {
 }
 
 .agent-card dd {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--sn-font-mono);
   font-size: var(--sn-text-xs);
   line-height: 1.35;
   margin: 0;
@@ -1598,7 +1618,7 @@ body:has(.product-window) {
   border-radius: var(--sn-radius-pill);
   color: var(--sn-atlantic);
   display: inline-block;
-  font-family: "Albert Sans Variable", ui-sans-serif, system-ui, sans-serif;
+  font-family: var(--sn-font-sans);
   font-size: var(--sn-text-2xs);
   margin-left: 6px;
   padding: 1px 5px;
@@ -1726,7 +1746,7 @@ body:has(.product-window) {
 
 .graph-toolbar > p {
   color: var(--sn-muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--sn-font-mono);
   font-size: var(--sn-text-sm);
   margin: 0;
   white-space: nowrap;
@@ -1741,7 +1761,7 @@ body:has(.product-window) {
   background: var(--sn-paper);
   border: 1px solid var(--sn-line);
   color: var(--sn-ink);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--sn-font-mono);
   font-size: var(--sn-text-base);
   min-width: 220px;
   padding: 5px 8px;
@@ -1789,7 +1809,7 @@ body:has(.product-window) {
   align-items: center;
   color: var(--sn-muted);
   display: flex;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--sn-font-mono);
   font-size: var(--sn-text-sm);
   gap: 8px;
   padding: 0 0 6px 16px;
@@ -1807,7 +1827,7 @@ body:has(.product-window) {
 
 .relationship-principal .relationship-node-mark {
   color: var(--sn-oxford);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--sn-font-mono);
   font-size: var(--sn-text-xl);
   font-weight: 700;
 }
@@ -2175,7 +2195,7 @@ body:has(.product-window) {
 
 .decision-queue span {
   color: var(--sn-muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--sn-font-mono);
   font-size: var(--sn-text-xs);
 }
 
@@ -2202,7 +2222,7 @@ body:has(.product-window) {
 
 .decision-kicker p {
   color: var(--sn-oxford);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--sn-font-mono);
   font-size: var(--sn-text-xs);
   margin: 0;
   text-transform: uppercase;
@@ -2258,7 +2278,7 @@ body:has(.product-window) {
 }
 
 .decision-facts dd {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--sn-font-mono);
   font-size: var(--sn-text-xs);
   line-height: 1.4;
   margin: 0;
@@ -2654,7 +2674,7 @@ body:has(.product-window) {
 .cli-authorize-code input {
   border: 1px solid var(--sn-line);
   border-radius: var(--sn-radius-md);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--sn-font-mono);
   font-size: var(--sn-text-xl);
   letter-spacing: 0.12em;
   padding: 10px 12px;
@@ -2748,7 +2768,7 @@ body:has(.product-window) {
   box-shadow: 0 18px 50px rgba(0, 33, 71, 0.16);
   color: var(--sn-ink);
   display: grid;
-  font-family: "Albert Sans Variable", ui-sans-serif, system-ui, sans-serif;
+  font-family: var(--sn-font-sans);
   grid-template-rows: auto auto minmax(0, 1fr);
   min-height: min(78vh, 900px);
   overflow: hidden;
@@ -2764,7 +2784,7 @@ body:has(.product-window) {
   color: var(--sn-muted);
   display: flex;
   flex-wrap: wrap;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--sn-font-mono);
   font-size: var(--sn-text-sm);
   gap: 6px 14px;
   margin: 0;
@@ -2782,7 +2802,7 @@ body:has(.product-window) {
   color: var(--sn-muted);
   display: flex;
   flex-wrap: wrap;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--sn-font-mono);
   font-size: var(--sn-text-sm);
   gap: 6px 14px;
   list-style: none;
@@ -2884,7 +2904,7 @@ body:has(.product-window) {
 .credits-balance span,
 .credits-totals dt {
   color: var(--sn-gold-ink);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--sn-font-mono);
   font-size: var(--sn-text-xs);
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -2930,7 +2950,7 @@ body:has(.product-window) {
 .credits-redeem input {
   border: 1px solid var(--sn-line);
   border-radius: var(--sn-radius-sm);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--sn-font-mono);
   font-size: var(--sn-text-md);
   padding: 7px 9px;
 }
@@ -2996,7 +3016,7 @@ body:has(.product-window) {
 
 .credits-ledger th {
   color: var(--sn-muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--sn-font-mono);
   font-size: var(--sn-text-xs);
   font-weight: 600;
   letter-spacing: 0.06em;
@@ -3005,13 +3025,13 @@ body:has(.product-window) {
 
 .credits-ledger td time {
   color: var(--sn-muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--sn-font-mono);
   font-size: var(--sn-text-sm);
   white-space: nowrap;
 }
 
 .credits-amount {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--sn-font-mono);
   text-align: right !important;
   white-space: nowrap;
 }
@@ -3078,7 +3098,7 @@ body:has(.product-window) {
 
 .room-menu-title {
   color: var(--sn-gold-ink);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--sn-font-mono);
   font-size: var(--sn-text-xs);
   letter-spacing: 0.06em;
   margin: 0;
@@ -3215,7 +3235,7 @@ body:has(.product-window) {
 }
 
 .artifact-link:not([data-named]) .artifact-link-name strong {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--sn-font-mono);
   font-size: 0.92em;
 }
 
@@ -3225,7 +3245,7 @@ body:has(.product-window) {
 
 .artifact-link-size {
   color: var(--sn-muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--sn-font-mono);
   font-size: 0.82em;
   white-space: nowrap;
 }
