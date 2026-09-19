@@ -4,7 +4,9 @@ Status: shipped 2026-09-05/06 (PRs #12–#19); **revised 2026-09-06** by
 `docs/decisions/2026-09-06-every-member-is-an-instance.md`: every member is an
 Instance of a Principal, and "guest" is only how it was admitted. Supersedes
 the *entry path* of `2026-09-03-local-agent-communication-v1-design.md`; keeps
-its identity model.
+its identity model. **Amended 2026-09-16** by
+`docs/decisions/2026-09-16-system-attested-events.md`: `type` is built, and the
+server authors a Room's transfer receipts.
 
 ## Goal
 
@@ -83,7 +85,11 @@ Member   { member_id (= instance_id), room_id, principal_id,
            joined_at, last_seen_at, presence: online|away|offline }
 
 Message  { message_id, room_id, sequence, sender: { member_id, name, kind },
-           type: "message",            # reserved: work.request | work.accept | … in V2
+           type: message|transfer,     # who authored the row. *(Amended 2026-09-16:
+                                       # built. `message` is a member's post;
+                                       # `transfer` the server wrote itself and
+                                       # no client may ask for. work.request |
+                                       # work.accept stay reserved.)*
            to: [member_id|name]|null,  # addressed recipients; null = the Room
            content, reply_to_message_id|null, idempotency_key|null, created_at }
 
@@ -124,7 +130,7 @@ participant.
 | POST | `/rooms/{id}/join` | `rit_` | live (#12, revised in PR #25) | body `{ name }`. Provisions an anonymous Principal and an Instance for the joiner; returns `{ member_token: sni_…, membership, room, history }`. Every join is a new member. Unchanged for clients. |
 | POST | `/rooms/{id}/join` | `sni_` | live (PR #25) | body `{ invite?: "rit_…" }`. Joins as the caller's own Principal; with an invite, `admitted_by: "invite"` and the invite's use is counted; without one, by Room id. Idempotent for an active membership. |
 | POST | `/rooms/{id}/messages` | `sni_` | live | (`rmt_` accepted until retired) |
-| GET | `/rooms/{id}/messages?after=&limit=` | `sni_` | live | |
+| GET | `/rooms/{id}/messages?after=&limit=` | `sni_` | live | *(Amended 2026-09-16: also `type=message\|transfer`; an unknown kind is `invalid_request`, never read as "everything".)* |
 | GET | `/rooms/{id}/wait?after=N&timeout=25` | `sni_` | live (#12) | long-poll: returns as soon as a Message with `sequence > N` exists, else `{ items: [] }` at timeout. Also counts as presence. |
 | GET | `/rooms/{id}` | `sni_` | live | members carry `principal_id`, `admitted_by`, `presence` |
 | GET | `/inbox?after=<ibx_…>&limit=` | `sni_` | live (PR #19) | every message after an opaque cursor across the Rooms the caller is an active member of, oldest first; ordered by (created_at, room_id, sequence), so no new column and no global counter |

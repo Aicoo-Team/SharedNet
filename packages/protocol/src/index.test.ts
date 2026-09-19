@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  isMessageType,
+  MEMBER_MESSAGE_TYPES,
+  renderTransferReceipt,
+  type TransferId,
   parseStartCliLoginRequest,
   CLI_LOGIN_CODE_PATTERN,
   normalizeCliLoginCode,
@@ -85,6 +89,38 @@ describe("strict request parsing", () => {
 
     expect(() => parseCreateRoomRequest({ name: "room", visibility: "public" })).toThrow(
       ProtocolValidationError,
+    );
+  });
+
+  it("takes no type from a client, so only the server can say a message is a transfer", () => {
+    expect(parsePostMessageRequest({ content: "Paid 5 credits to p_AbCdEfGhIj (txn_AbCdEfGhIj)" })).toEqual({
+      content: "Paid 5 credits to p_AbCdEfGhIj (txn_AbCdEfGhIj)",
+    });
+    // The sentence is postable; being a transfer is not. `type` is not a key
+    // the body has, and an exact-keys parser refuses the ones it does not.
+    expect(() => parsePostMessageRequest({ content: "hello", type: "transfer" })).toThrow(
+      ProtocolValidationError,
+    );
+    expect(() => parsePostMessageRequest({ content: "hello", type: "message" })).toThrow(
+      ProtocolValidationError,
+    );
+  });
+
+  it("knows the kinds a Room's log holds, and nothing else", () => {
+    expect(isMessageType("message")).toBe(true);
+    expect(isMessageType("transfer")).toBe(true);
+    expect(isMessageType("Transfer")).toBe(false);
+    expect(isMessageType("work.request")).toBe(false);
+    expect(MEMBER_MESSAGE_TYPES).toEqual(["message"]);
+  });
+
+  it("renders a settled transfer as the one sentence every reader compares against", () => {
+    const transfer_id = "txn_AbCdEfGhIj" as TransferId;
+    expect(renderTransferReceipt({ amount: 1, addressed_to: "p_AbCdEfGhIj", memo: null, transfer_id })).toBe(
+      "Paid 1 credit to p_AbCdEfGhIj (txn_AbCdEfGhIj)",
+    );
+    expect(renderTransferReceipt({ amount: 25, addressed_to: "i_AbCdEfGhIj", memo: "map tiles", transfer_id })).toBe(
+      "Paid 25 credits to i_AbCdEfGhIj — map tiles (txn_AbCdEfGhIj)",
     );
   });
 

@@ -73,6 +73,7 @@ import {
   type RoomInvite,
   type RoomMember,
   type StartInstanceRequest,
+  renderTransferReceipt,
 } from "../../protocol/src/index.ts";
 import {
   IDEMPOTENCY_RETENTION_MS,
@@ -305,7 +306,7 @@ function projectMessage(
       kind: memberKind(sender),
       name: sender?.displayName ?? null,
     },
-    type: "message",
+    type: row.type,
     content: row.content,
     reply_to_message_id: row.replyToMessageId,
     created_at: timestamp(row.createdAt),
@@ -1910,6 +1911,7 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
           : [eq(instances.agentId, input.sender_agent_id)]),
       // grep, not search: a case-insensitive substring, with LIKE's own metacharacters escaped.
       ...(input.q === null ? [] : [ilike(messages.content, `%${input.q.replace(/[\\%_]/g, (char) => `\\${char}`)}%`)]),
+      ...(input.type === null ? [] : [eq(messages.type, input.type)]),
     ];
     const rows = await this.executor()
       .select({
@@ -2453,14 +2455,17 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
     return this.redeem(auth.principalId, code);
   }
 
-  async transferCredits(auth: CreditAuth, input: CreditTransferRequest): Promise<{ transfer: CreditTransfer; credits: CreditBalance }> {
+  async transferCredits(
+    auth: CreditAuth,
+    input: CreditTransferRequest,
+  ): Promise<{ transfer: CreditTransfer; credits: CreditBalance; receipt: Message | null }> {
     if (input.room_id !== undefined && input.room_id !== null) await this.roomById(input.room_id);
     // One transaction: identities are locked and only then resolved, so a
     // claim finishing mid-payment cannot leave either side pointing at a purse
     // nothing spends from; the debit is then a conditional UPDATE, so two
     // payments racing for one purse cannot both pass a check they read a
     // moment earlier.
-    const { transfer, payer } = await this.inTransaction(async () => {
+    const { transfer, payer, receipt } = await this.inTransaction(async () => {
       // Read first without locking, to know which identities are in play, then
       // lock every one of them — the raw ids and where they currently point.
       const payerRaw = auth.principalId;
@@ -2507,9 +2512,10 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
         })
         .returning();
       if (!row) throw new RepositoryError(500, "internal_error", "Transfer failed.");
-      return { transfer: projectTransfer(row), payer };
+      const transfer = projectTransfer(row);
+      return { transfer, payer, receipt: await this.attestTransfer(auth, transfer) };
     });
-    return { transfer, credits: await this.purseOf(payer) };
+    return { transfer, credits: await this.purseOf(payer), receipt };
   }
 
   async listCreditTransfers(auth: CreditAuth, input: CreditLedgerQuery): Promise<Page<CreditTransfer>> {
@@ -2880,6 +2886,73 @@ export class PostgresSharedNetRepository implements SharedNetRepository {
       throw new RepositoryError(404, "room_not_found", "Room was not found.");
     }
     return room;
+  }
+
+  /**
+   * The Room's own record that this transfer settled. Written here, inside the
+   * transaction that moved the money, so the line and the debit are one fact:
+   * it cannot be lost after a successful payment, and no member can author it
+   * — `type` is not a field the post parser accepts.
+   *
+   * Only a seat writes one. An account key has no seat, and a payer may stamp
+   * `room_id` on a Room it never joined; neither may put a line into a Room,
+   * so both settle exactly as before with no receipt.
+   */
+  private async attestTransfer(auth: CreditAuth, transfer: CreditTransfer): Promise<Message | null> {
+    if (transfer.room_id === null || auth.kind !== "instance") return null;
+    const [room] = await this.executor()
+      .select()
+      .from(rooms)
+      .where(eq(rooms.id, transfer.room_id))
+      .for("update")
+      .limit(1);
+    if (!room || room.state === "closed") return null;
+    const [membership] = await this.executor()
+      .select({ instanceId: roomMembers.instanceId })
+      .from(roomMembers)
+      .where(
+        and(
+          eq(roomMembers.roomId, room.id),
+          eq(roomMembers.instanceId, auth.instanceId),
+          eq(roomMembers.state, "active"),
+        ),
+      )
+      .limit(1);
+    if (!membership) return null;
+    const [message] = await this.executor()
+      .insert(messages)
+      .values({
+        id: generatePublicId("msg"),
+        roomId: room.id,
+        sequence: room.nextSequence,
+        senderPrincipalId: auth.principalId,
+        senderInstanceId: auth.instanceId,
+        senderGuestId: null,
+        type: "transfer",
+        content: renderTransferReceipt({
+          amount: transfer.amount,
+          addressed_to: transfer.addressed_to,
+          memo: transfer.memo,
+          transfer_id: transfer.id,
+        }),
+        replyToMessageId: null,
+        createdAt: this.now(),
+      })
+      .returning();
+    if (!message) throw new RepositoryError(500, "internal_error", "Receipt creation failed.");
+    await this.executor()
+      .update(rooms)
+      .set({ nextSequence: room.nextSequence + 1 })
+      .where(eq(rooms.id, room.id));
+    const [sender] = await this.executor()
+      .select({ agentId: instances.agentId, displayName: instances.displayName })
+      .from(instances)
+      .where(eq(instances.id, auth.instanceId))
+      .limit(1);
+    return projectMessage(message, sender?.agentId ?? null, {
+      displayName: sender?.displayName ?? null,
+      principalAuthUserId: await this.principalAuthUserId(auth.principalId),
+    });
   }
 
   private async requireMembership(auth: RoomAuth, roomId: RoomId): Promise<void> {

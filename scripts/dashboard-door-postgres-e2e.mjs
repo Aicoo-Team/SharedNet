@@ -13,6 +13,7 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import pg from "pg";
 import { defaultKeyHasher } from "@better-auth/api-key";
+import { DEFAULT_MESSAGE_QUERY } from "../packages/protocol/src/index.ts";
 
 const url = process.env.TEST_DATABASE_URL;
 assert.ok(url && /e2e|test/.test(url), "TEST_DATABASE_URL must name a disposable database");
@@ -285,6 +286,35 @@ const swap = await Promise.allSettled([
   repository.transferCredits(payerTwo.auth, { to: payerOne.principalId, amount: 1, memo: "swap b" }),
 ]);
 assert.deepEqual(swap.map((r) => r.status), ["fulfilled", "fulfilled"], `cross payments must not deadlock: ${swap.map((r) => r.reason?.message ?? "ok")}`);
+
+// The Room's own record of a payment, written by the server in the same
+// transaction as the debit. On SQL, not only in memory: the handler tests run
+// against the in-memory repository, so this is where the real insert is proven.
+// `room` above is closed by now, which is itself a case worth pinning.
+const settled = (await repository.createRoom(owner.auth, { name: "Settlement rehearsal" })).room;
+await repository.joinRoom(visitor.auth, settled.id);
+const inRoom = await repository.transferCredits(owner.auth, { to: visitor.instance.id, amount: 4, memo: "tiles", room_id: settled.id });
+assert.equal(inRoom.receipt.type, "transfer", "a seated payer's Room gets a receipt the server wrote");
+assert.equal(inRoom.receipt.sender_instance_id, owner.instance.id);
+assert.equal(inRoom.receipt.content, `Paid 4 credits to ${visitor.instance.id} — tiles (${inRoom.transfer.id})`);
+const attested = async () =>
+  (await repository.listMessages(owner.auth, settled.id, { ...DEFAULT_MESSAGE_QUERY, type: "transfer" })).items;
+assert.deepEqual((await attested()).map((message) => message.id), [inRoom.receipt.id]);
+// A member may type the same sentence. It is an ordinary message, not a transfer.
+await repository.postMessage(visitor.auth, settled.id, { content: inRoom.receipt.content });
+assert.equal((await attested()).length, 1, "typing a receipt does not make one");
+// A seat of the same account that never joined this Room may still stamp it on
+// a transfer, as any payer always could; it puts no line into it.
+const outsiderAuth = await repository.authenticateInstance(seatOfOwner2.token);
+const unseated = await repository.transferCredits(outsiderAuth, { to: visitor.instance.id, amount: 3, room_id: settled.id });
+assert.deepEqual([unseated.transfer.room_id, unseated.receipt], [settled.id, null], "a payer with no seat writes no line");
+// An account key has no seat at all, so there is nobody for a line to be from.
+const byKey = await repository.transferCredits(ownerKeyAuth, { to: visitor.instance.id, amount: 2, room_id: settled.id });
+assert.equal(byKey.receipt, null, "an account-key payment writes no line");
+// A closed Room takes no new lines, so a payment naming one settles without a receipt.
+await repository.closeRoom(owner.principalId, settled.id);
+const afterClose = await repository.transferCredits(owner.auth, { to: visitor.instance.id, amount: 2, room_id: settled.id });
+assert.deepEqual([afterClose.transfer.room_id, afterClose.receipt], [settled.id, null], "a closed Room gets no receipt");
 
 // One key, two requests, the whole purse: the loser replays the winner's
 // response rather than being told the money it already moved is missing.

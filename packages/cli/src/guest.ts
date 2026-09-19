@@ -1199,6 +1199,8 @@ async function creditCredential(dependencies: GuestDependencies, explicitSeat?: 
 
 type CreditsShape = { credits: { principal_id: string; balance: number; granted: number; sent: number; received: number } };
 type TransferShape = { id: string; amount: number; to_principal_id: string; [key: string]: unknown };
+/** The Room line the server wrote with the money; null when no Room was named. */
+type ReceiptShape = { id: string; sequence: number; type: "transfer"; content: string; [key: string]: unknown };
 
 async function balance(args: string[], dependencies: GuestDependencies): Promise<unknown> {
   const parsed = parseGuestArguments(args);
@@ -1220,9 +1222,12 @@ async function redeem(args: string[], dependencies: GuestDependencies): Promise<
 
 /**
  * `pay <target> <amount>`: the target is a Principal, Agent or Instance id;
- * the amount a whole number. With `--room`, the payment is recorded against
- * this directory's Room and the seat posts a one-line receipt into it, so a
- * trade is visible where it was agreed. Every payment carries its own key.
+ * the amount a whole number. With `--room`, the payment names this directory's
+ * Room and the server writes the receipt into it in the same transaction as
+ * the money, so it comes back in this one reply. The CLI posts no line of its
+ * own: a line it posted would be an ordinary member message that anyone in the
+ * Room could type word for word, and it could fail after the debit was final.
+ * Every payment carries its own key.
  */
 async function pay(args: string[], dependencies: GuestDependencies): Promise<unknown> {
   const parsed = parseGuestArguments(args);
@@ -1244,34 +1249,13 @@ async function pay(args: string[], dependencies: GuestDependencies): Promise<unk
   if (announce && seat === null) {
     throw localError("not_in_a_room", "--room records the payment against this directory's Room; join one first.");
   }
-  const paid = await client.request<{ transfer: TransferShape; credits: CreditsShape["credits"] }>(
+  return client.request<{ transfer: TransferShape; credits: CreditsShape["credits"]; receipt: ReceiptShape | null }>(
     "POST",
     "/credits/transfers",
     token,
     { to: target, amount, ...(memo === undefined ? {} : { memo }), ...(announce && seat ? { room_id: seat.room_id } : {}) },
     { "idempotency-key": randomUUID() },
   );
-  let receipt: unknown = null;
-  let warning: { code: "receipt_not_confirmed"; message: string } | undefined;
-  if (announce && seat) {
-    try {
-      receipt = await client.request(
-        "POST",
-        `/rooms/${encodeURIComponent(seat.room_id)}/messages`,
-        token,
-        { content: `Paid ${amount} credit${amount === 1 ? "" : "s"} to ${target}${memo ? ` — ${memo}` : ""} (${paid.transfer.id})` },
-        { "idempotency-key": randomUUID() },
-      );
-    } catch {
-      // The payment is final even if the separate receipt fails or its reply
-      // is lost. Reporting the payment as failed invites a second debit.
-      warning = {
-        code: "receipt_not_confirmed",
-        message: "Payment succeeded, but the Room receipt was not confirmed. Do not repeat this payment.",
-      };
-    }
-  }
-  return { ...paid, receipt, ...(warning ? { warning } : {}) };
 }
 
 async function ledger(args: string[], dependencies: GuestDependencies): Promise<unknown> {

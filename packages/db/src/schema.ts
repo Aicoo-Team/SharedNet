@@ -26,6 +26,7 @@ import type {
   InviteId,
   MemberId,
   MessageId,
+  MessageType,
   ArtifactId,
   PrincipalId,
   RoomId,
@@ -502,6 +503,12 @@ export const messages = sharednetSchema.table(
     senderInstanceId: text("sender_instance_id").$type<InstanceId>(),
     /** Retired with the guest model (migration 0007); always null now. */
     senderGuestId: text("sender_guest_id").$type<MemberId>(),
+    /**
+     * Who authored the row, not what it says. `message` is a member's own
+     * post; anything else is an event the server wrote itself. Defaulted so
+     * every row that existed before this column is what it always was.
+     */
+    type: text("type").$type<MessageType>().default("message").notNull(),
     content: text("content").notNull(),
     replyToMessageId: text("reply_to_message_id").$type<MessageId>(),
     createdAt: domainTimestamp("created_at").defaultNow().notNull(),

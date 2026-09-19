@@ -450,6 +450,23 @@ export interface RoomMember {
   presence: Presence;
 }
 
+/**
+ * A member writes `message`; SharedNet writes the rest. `transfer` is a credit
+ * transfer the server settled in this Room, recorded in the same transaction
+ * as the money, so a line that merely says someone paid is not one of these.
+ */
+export type MessageType = "message" | "transfer";
+
+/** The kinds a member may author. A client can never name any other. */
+export const MEMBER_MESSAGE_TYPES = ["message"] as const satisfies readonly MessageType[];
+
+const MESSAGE_TYPES: readonly MessageType[] = ["message", "transfer"];
+
+/** Narrows a query string to a kind the log actually holds. */
+export function isMessageType(value: string): value is MessageType {
+  return (MESSAGE_TYPES as readonly string[]).includes(value);
+}
+
 export interface Message {
   id: MessageId;
   room_id: RoomId;
@@ -460,8 +477,12 @@ export interface Message {
   sender_agent_id: AgentId | null;
   sender_instance_id: InstanceId;
   sender: MemberRef;
-  /** Reserved for typed events; every V1 message is `message`. */
-  type: "message";
+  /**
+   * Who authored the row, not what it says. `message` is what a member posted;
+   * every other value is an event SharedNet itself wrote, and no member can
+   * ask for one — the post parser takes no `type` at all.
+   */
+  type: MessageType;
   content: string;
   reply_to_message_id: MessageId | null;
   created_at: Timestamp;
@@ -513,11 +534,13 @@ export interface MessageQuery {
   sender_instance_id: InstanceId | null;
   /** The sender's current tag, or "default" for the untagged. */
   sender_agent_id: AgentId | "default" | null;
+  /** Exactly this kind of row; null reads every kind. */
+  type: MessageType | null;
   /** Case-insensitive substring of the content. */
   q: string | null;
 }
 
-export const DEFAULT_MESSAGE_QUERY: MessageQuery = { after: 0, before: null, limit: 50, order: "asc", sender_instance_id: null, sender_agent_id: null, q: null };
+export const DEFAULT_MESSAGE_QUERY: MessageQuery = { after: 0, before: null, limit: 50, order: "asc", sender_instance_id: null, sender_agent_id: null, q: null, type: null };
 
 export interface Page<T> {
   items: T[];
@@ -1049,6 +1072,23 @@ export function parseCreateRoomRequest(value: unknown): CreateRoomRequest {
  * a transfer records the Instance that moved it. Minting is a code
  * redemption: a transfer with no payer and the code that granted it.
  */
+/**
+ * What a settled transfer reads as in the Room it was agreed in. One
+ * definition, because the server writes it and every reader compares against
+ * it; it is the same sentence the CLI used to post for itself, so nothing a
+ * person already reads changes shape.
+ */
+export function renderTransferReceipt(input: {
+  amount: number;
+  addressed_to: string;
+  memo: string | null;
+  transfer_id: TransferId;
+}): string {
+  const plural = input.amount === 1 ? "" : "s";
+  const memo = input.memo ? ` — ${input.memo}` : "";
+  return `Paid ${input.amount} credit${plural} to ${input.addressed_to}${memo} (${input.transfer_id})`;
+}
+
 export interface CreditTransfer {
   id: TransferId;
   /** Null when the credits were minted by a code redemption. */

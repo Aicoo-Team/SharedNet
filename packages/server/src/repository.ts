@@ -539,7 +539,10 @@ export interface SharedNetRepository extends PrincipalRepository {
    * 409 `insufficient_credits` when the purse cannot cover it, 404
    * `payee_not_found` for an id nobody holds, 422 `transfer_to_self`.
    */
-  transferCredits(auth: CreditAuth, input: CreditTransferRequest): Promise<{ transfer: CreditTransfer; credits: CreditBalance }>;
+  transferCredits(
+    auth: CreditAuth,
+    input: CreditTransferRequest,
+  ): Promise<{ transfer: CreditTransfer; credits: CreditBalance; receipt: Message | null }>;
   /** The ledger as it concerns the caller: transfers it sent or received, newest first. */
   listCreditTransfers(auth: CreditAuth, input: CreditLedgerQuery): Promise<Page<CreditTransfer>>;
   /**

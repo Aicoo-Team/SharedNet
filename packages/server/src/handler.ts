@@ -41,6 +41,7 @@ import {
   parsePublicId,
   parseStartInstanceRequest,
   type ErrorCode,
+  isMessageType,
 } from "../../protocol/src/index.ts";
 import {
   RepositoryError,
@@ -267,7 +268,7 @@ function routeMethodNotAllowed(allow: string): Response {
   return errorResponse("method_not_allowed", { allow });
 }
 
-const MESSAGE_QUERY_KEYS = ["after", "before", "limit", "order", "sender_instance_id", "sender_agent_id", "q"] as const;
+const MESSAGE_QUERY_KEYS = ["after", "before", "limit", "order", "sender_instance_id", "sender_agent_id", "q", "type"] as const;
 
 /** Filter, order, window. Unknown keys are refused; filters compose with AND. */
 function parseMessageQuery(url: URL, allowed: readonly string[] = MESSAGE_QUERY_KEYS): MessageQuery {
@@ -306,6 +307,12 @@ function parseMessageQuery(url: URL, allowed: readonly string[] = MESSAGE_QUERY_
   if (q !== null && (q.length === 0 || [...q].length > 256 || /[\p{Cc}]/u.test(q))) {
     throw new ProtocolRequestError("invalid_request");
   }
+  // Who authored the row. A name outside the set is refused rather than read
+  // as "everything", so a typo never silently widens the window.
+  const typeValue = url.searchParams.get("type");
+  if (typeValue !== null && !isMessageType(typeValue)) {
+    throw new ProtocolRequestError("invalid_request");
+  }
   return {
     after,
     before,
@@ -314,6 +321,7 @@ function parseMessageQuery(url: URL, allowed: readonly string[] = MESSAGE_QUERY_
     sender_instance_id: senderInstance === null ? null : parsePublicId(senderInstance, "i"),
     sender_agent_id: senderAgent === null ? null : senderAgent === "default" ? "default" : parsePublicId(senderAgent, "a"),
     q,
+    type: typeValue,
   };
 }
 

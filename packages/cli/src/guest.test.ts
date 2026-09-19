@@ -1280,12 +1280,12 @@ describe("sharednet credits", () => {
     expect(JSON.parse(repeat.stdout).granted).toBe(0);
   });
 
-  it("pays with a fresh idempotency key, and posts a receipt into the Room only when asked", async () => {
+  it("makes one request for a payment, and reports the receipt the server wrote with it", async () => {
     const space = await seated();
     const transfer = { id: "txn_AbCdEfGhIj", amount: 25, to_principal_id: "p_OtherOther" };
 
     const quiet = await run(["pay", PAYEE, "25", "--memo", "map tiles", "--json"], space, [
-      { status: 201, body: { transfer, credits: { ...PURSE, balance: 75, sent: 25 } } },
+      { status: 201, body: { transfer, credits: { ...PURSE, balance: 75, sent: 25 }, receipt: null } },
     ]);
     expect([quiet.exitCode, quiet.stderr]).toEqual([0, ""]);
     expect(quiet.requests).toHaveLength(1);
@@ -1296,22 +1296,25 @@ describe("sharednet credits", () => {
     );
     expect(JSON.parse(quiet.stdout).receipt).toBeNull();
 
+    // With --room the CLI still sends one request: the Room line comes back
+    // from the server, which wrote it in the transaction that moved the money.
+    const receipt = {
+      id: "msg_AbCdEfGhIj",
+      sequence: 4,
+      type: "transfer",
+      content: `Paid 25 credits to ${PAYEE} (txn_AbCdEfGhIj)`,
+    };
     const announced = await run(["pay", PAYEE, "25", "--room", "--json"], space, [
-      { status: 201, body: { transfer, credits: { ...PURSE, balance: 50, sent: 50 } } },
-      { status: 201, body: { message: { id: "msg_AbCdEfGhIj", sequence: 4 } } },
+      { status: 201, body: { transfer, credits: { ...PURSE, balance: 50, sent: 50 }, receipt } },
     ]);
     expect(announced.exitCode).toBe(0);
+    expect(announced.requests).toHaveLength(1);
+    expect(announced.requests.map(({ url }) => new URL(url).pathname)).toEqual(["/api/v1/credits/transfers"]);
     expect(JSON.parse(String(announced.requests[0]!.init.body))).toMatchObject({ room_id: ROOM_ID });
-    expect(announced.requests[1]!.url).toBe(`https://www.sharednet.ai/api/v1/rooms/${ROOM_ID}/messages`);
-    expect(JSON.parse(String(announced.requests[1]!.init.body)).content).toBe(`Paid 25 credits to ${PAYEE} (txn_AbCdEfGhIj)`);
-    // The two writes carry different keys: the payment and the receipt are separate acts.
-    expect(header(announced.requests[0]!, "idempotency-key")).not.toBe(header(announced.requests[1]!, "idempotency-key"));
+    expect(JSON.parse(announced.stdout).receipt).toMatchObject({ type: "transfer", sequence: 4 });
   });
 
-  it.each([
-    { failure: "a closed Room", response: { status: 409, body: { error: { code: "room_closed" } } } },
-    { failure: "a lost connection", response: { error: new Error("Network unavailable") } },
-  ])("keeps a completed payment successful when its receipt fails because of $failure", async ({ response }) => {
+  it("never posts a Room line of its own, so a receipt cannot be lost after the debit is final", async () => {
     const space = await seated();
     const transfer = {
       id: "txn_AbCdEfGhIj",
@@ -1325,9 +1328,10 @@ describe("sharednet credits", () => {
       code: null,
       created_at: "2026-09-12T10:00:00.000Z",
     };
+    // One reply, and no second exchange for the CLI to lose: the failure mode
+    // the old `receipt_not_confirmed` warning existed for cannot arise.
     const result = await run(["pay", PAYEE, "25", "--room", "--json"], space, [
-      { status: 201, body: { transfer, credits: { ...PURSE, balance: 75, sent: 25 } } },
-      response,
+      { status: 201, body: { transfer, credits: { ...PURSE, balance: 75, sent: 25 }, receipt: null } },
     ]);
 
     expect([result.exitCode, result.stderr]).toEqual([0, ""]);
@@ -1335,13 +1339,8 @@ describe("sharednet credits", () => {
     expect(paid.transfer.id).toBe("txn_AbCdEfGhIj");
     expect(paid.credits).toMatchObject({ balance: 75, sent: 25 });
     expect(paid.receipt).toBeNull();
-    expect(paid.warning.code).toBe("receipt_not_confirmed");
-    expect(paid.warning.message).toMatch(/payment succeeded/i);
-    expect(paid.warning.message).toMatch(/do not repeat/i);
-    expect(result.requests.map(({ url }) => new URL(url).pathname)).toEqual([
-      "/api/v1/credits/transfers",
-      `/api/v1/rooms/${ROOM_ID}/messages`,
-    ]);
+    expect(paid.warning).toBeUndefined();
+    expect(result.requests.map(({ url }) => new URL(url).pathname)).toEqual(["/api/v1/credits/transfers"]);
   });
 
   it("reports a refused payment as a failure without trying to post a receipt", async () => {

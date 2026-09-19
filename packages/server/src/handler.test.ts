@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { DISCOVERY_DOCUMENT, digestSecret } from "../../protocol/src/index";
+import { DISCOVERY_DOCUMENT, digestSecret, type PrincipalId } from "../../protocol/src/index";
 import { handleRequest } from "./handler";
 import { MemorySharedNetRepository } from "./memory-repository";
 
@@ -1788,6 +1788,130 @@ describe("credits: a purse per Principal, a ledger of every movement", () => {
     const second = await store.executeIdempotent({ ...scope, principalId: bob.principalId }, "same-body", async () => ({ status: 201, body: "second Principal" }));
     expect(first).toMatchObject({ replayed: false, body: "first Principal" });
     expect(second).toMatchObject({ replayed: false, body: "second Principal" });
+  });
+
+  /** A Room alice opened and bob joined, so both hold a seat that may be paid from. */
+  async function tradingRoom(store: MemorySharedNetRepository, alice: { token: string }, bob: { token: string }) {
+    const created = await request(store, "/api/v1/rooms", {
+      method: "POST",
+      headers: instanceHeaders(alice.token, { "content-type": "application/json", "idempotency-key": crypto.randomUUID() }),
+      body: JSON.stringify({ name: "trades" }),
+    });
+    expect(created.status).toBe(201);
+    const room = (await json(created)).room;
+    const joined = await request(store, `/api/v1/rooms/${room.id}/join`, {
+      method: "POST",
+      headers: instanceHeaders(bob.token, { "idempotency-key": crypto.randomUUID() }),
+    });
+    expect(joined.status).toBe(200);
+    return room;
+  }
+
+  async function log(store: MemorySharedNetRepository, roomId: string, token: string, query = "") {
+    const response = await request(store, `/api/v1/rooms/${roomId}/messages${query}`, {
+      headers: instanceHeaders(token),
+    });
+    return { status: response.status, body: await json(response) };
+  }
+
+  it("writes the Room's transfer receipt itself, so a member typing the same sentence does not produce one", async () => {
+    const store = creditStore();
+    await post(store, "/api/v1/credits/redeem", ALICE, { code: "HACK-2026" });
+    const alice = await seat(store, ALICE);
+    const bob = await seat(store, BOB);
+    const room = await tradingRoom(store, alice, bob);
+
+    const paid = await post(
+      store,
+      "/api/v1/credits/transfers",
+      alice.token,
+      { to: bob.instanceId, amount: 25, memo: "map tiles", room_id: room.id },
+      { "idempotency-key": crypto.randomUUID() },
+    );
+    expect(paid.status).toBe(201);
+    const body = await json(paid);
+    const line = `Paid 25 credits to ${bob.instanceId} — map tiles (${body.transfer.id})`;
+    expect(body.receipt).toMatchObject({ type: "transfer", sequence: 1, content: line, sender_instance_id: alice.instanceId });
+
+    // bob types the receipt word for word. It is postable, and it is not a transfer.
+    const forged = await post(store, `/api/v1/rooms/${room.id}/messages`, bob.token, { content: line }, {
+      "idempotency-key": crypto.randomUUID(),
+    });
+    expect(forged.status).toBe(201);
+    expect((await json(forged)).message).toMatchObject({ type: "message", content: line });
+
+    // Same sentence twice in the log; only one of them is what it says it is.
+    const all = await log(store, room.id, bob.token);
+    expect(all.body.items.map((message: { type: string; content: string }) => [message.type, message.content])).toEqual([
+      ["transfer", line],
+      ["message", line],
+    ]);
+    const attested = await log(store, room.id, bob.token, "?type=transfer");
+    expect(attested.body.items.map((message: { sequence: number }) => message.sequence)).toEqual([1]);
+    const said = await log(store, room.id, bob.token, "?type=message");
+    expect(said.body.items.map((message: { sequence: number }) => message.sequence)).toEqual([2]);
+    // A kind the log cannot hold is refused rather than read as "everything".
+    expect((await log(store, room.id, bob.token, "?type=work.request")).status).toBe(400);
+  });
+
+  it("settles with no receipt when the payer holds no seat in the Room it named, and writes none twice on a replay", async () => {
+    const store = creditStore();
+    await post(store, "/api/v1/credits/redeem", ALICE, { code: "HACK-2026" });
+    await post(store, "/api/v1/credits/redeem", CAROL, { code: "HACK-2026" });
+    const alice = await seat(store, ALICE);
+    const bob = await seat(store, BOB);
+    const carol = await seat(store, CAROL);
+    const room = await tradingRoom(store, alice, bob);
+
+    // carol may stamp the Room on her transfer, as she always could; she may
+    // not put a line into a Room she never joined.
+    const outsider = await post(
+      store,
+      "/api/v1/credits/transfers",
+      carol.token,
+      { to: bob.instanceId, amount: 5, room_id: room.id },
+      { "idempotency-key": crypto.randomUUID() },
+    );
+    expect(outsider.status).toBe(201);
+    const outsiderBody = await json(outsider);
+    expect(outsiderBody.transfer.room_id).toBe(room.id);
+    expect(outsiderBody.receipt).toBeNull();
+
+    // An account key has no seat at all, so there is nobody for the line to be from.
+    const byKey = await post(
+      store,
+      "/api/v1/credits/transfers",
+      ALICE,
+      { to: bob.instanceId, amount: 5, room_id: room.id },
+      { "idempotency-key": crypto.randomUUID() },
+    );
+    expect(byKey.status).toBe(201);
+    expect((await json(byKey)).receipt).toBeNull();
+
+    // The receipt is written in the transaction that moved the money, so a
+    // replayed key returns the same line rather than adding a second.
+    const key = crypto.randomUUID();
+    const seatBody = { to: bob.instanceId, amount: 7, room_id: room.id };
+    const first = await json(await post(store, "/api/v1/credits/transfers", alice.token, seatBody, { "idempotency-key": key }));
+    const replay = await post(store, "/api/v1/credits/transfers", alice.token, seatBody, { "idempotency-key": key });
+    expect(replay.headers.get("idempotency-replayed")).toBe("true");
+    expect(await json(replay)).toEqual(first);
+
+    const attested = await log(store, room.id, alice.token, "?type=transfer");
+    expect(attested.body.items.map((message: { id: string }) => message.id)).toEqual([first.receipt.id]);
+
+    // A closed Room takes no new lines at all, so a payment naming one settles
+    // without a receipt rather than failing after the credits have moved.
+    await store.closeRoom(alice.principalId as PrincipalId, room.id);
+    const afterClose = await post(
+      store,
+      "/api/v1/credits/transfers",
+      alice.token,
+      { to: bob.instanceId, amount: 1, room_id: room.id },
+      { "idempotency-key": crypto.randomUUID() },
+    );
+    expect(afterClose.status).toBe(201);
+    expect((await json(afterClose)).receipt).toBeNull();
   });
 
   it("pays by Principal, Agent or Instance id, exactly once per key, never more than the purse holds, never to itself", async () => {

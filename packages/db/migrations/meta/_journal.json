@@ -141,6 +141,13 @@
       "when": 1789173060937,
       "tag": "0019_user_avatar",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1789536884713,
+      "tag": "0020_message_type",
+      "breakpoints": true
     }
   ]
 }
