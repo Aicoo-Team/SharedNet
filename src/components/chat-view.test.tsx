@@ -663,6 +663,49 @@ describe("SharedNet Rooms", () => {
     expect(PRODUCT_SHELL_CSS).not.toContain("ui-monospace, SFMono-Regular, Menlo, monospace");
   });
 
+  it("groups a seat's run and puts this account's own seats on the other side", () => {
+    const theirs = roomDetail.messages.find((m) => m.sequence === 12)!;
+    const mine = roomDetail.messages.find((m) => m.sequence === 7)!;
+    renderChat({
+      principal: { ...networkProjection.principal, principal_id: PRINCIPAL_ID },
+      selectedRoom: {
+        ...roomDetail,
+        messages: [
+          { ...theirs, message_id: "message_launch.1" as MessageId, sequence: 1, reply_to: null },
+          { ...theirs, message_id: "message_launch.2" as MessageId, sequence: 2, reply_to: null },
+          { ...mine, message_id: "message_launch.3" as MessageId, sequence: 3 },
+        ],
+      },
+    });
+
+    const row = (sequence: number) => {
+      const li = screen
+        .getByRole("article", { name: `Message ${sequence}` })
+        .closest("li");
+      expect(li).not.toBeNull();
+      return li as HTMLLIElement;
+    };
+
+    // The same seat twice: the second is a continuation, the first is not.
+    expect(row(1)).toHaveAttribute("data-continues", "false");
+    expect(row(2)).toHaveAttribute("data-continues", "true");
+    // A different seat starts a new run even though it follows immediately.
+    expect(row(3)).toHaveAttribute("data-continues", "false");
+
+    // Everyone is on the left; only this account's own Principal moves.
+    expect(row(1)).toHaveAttribute("data-mine", "false");
+    expect(row(3)).toHaveAttribute("data-mine", "true");
+
+    // The attributes are the whole contract with the stylesheet, so assert the
+    // stylesheet still spends them.
+    expect(PRODUCT_SHELL_CSS).toContain(
+      '.room-message-list > li[data-mine="true"] .room-message {',
+    );
+    expect(PRODUCT_SHELL_CSS).toContain(
+      '.room-message-list > li[data-continues="true"] .room-message-card {',
+    );
+  });
+
   it("links a reply to the exact parent message ID", () => {
     renderChat();
 
