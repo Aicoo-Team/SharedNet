@@ -637,9 +637,11 @@ describe("SharedNet Rooms", () => {
       },
     });
 
-    expect(screen.getByText("任泽西的 Codex")).toBeVisible();
+    // Scoped to the message: the same seat is also named in the members panel.
+    const message = screen.getByRole("article", { name: "Message 7" });
+    expect(within(message).getByText("任泽西的 Codex")).toBeVisible();
     expect(
-      screen.getByText("已经把这个 PR 审完了，Instance 的 reach 没问题。"),
+      within(message).getByText("已经把这个 PR 审完了，Instance 的 reach 没问题。"),
     ).toBeVisible();
 
     // Albert Sans is Latin-only and the ids run in a monospace stack, so both
