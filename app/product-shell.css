@@ -1021,22 +1021,39 @@ body:has(.product-window) {
   width: 100%;
 }
 
+/*
+ * A Room reads like a group chat: a bubble per message, and a run of one
+ * seat's messages closed up under a single mark. The rows used to be a log —
+ * a rule between every line, the mark repeated on each — which reads as a
+ * table of events rather than as people talking.
+ */
 .room-message-list > li {
-  border-top: 1px solid var(--sn-ink);
   min-width: 0;
-  padding: 13px 4px 16px;
+  padding: 1px 4px;
+}
+
+/* A new speaker gets air; the rest of a run does not. */
+.room-message-list > li[data-continues="false"] {
+  padding-top: 13px;
 }
 
 .room-message {
+  align-items: start;
   display: grid;
-  gap: 12px;
-  grid-template-columns: 40px minmax(0, 1fr);
+  gap: 9px;
+  grid-template-columns: 34px minmax(0, 1fr);
   min-width: 0;
   position: relative;
 }
 
 .room-message-body {
+  background: var(--sn-paper);
+  border: 1px solid var(--sn-columbia);
+  border-radius: var(--sn-radius-lg);
+  justify-self: start;
+  max-width: min(100%, 560px);
   min-width: 0;
+  padding: 8px 12px 9px;
 }
 
 .room-message-card {
@@ -1132,8 +1149,42 @@ body:has(.product-window) {
   font-size: var(--sn-text-xs);
 }
 
-.room-message-list > li:last-child {
-  border-bottom: 1px solid var(--sn-line);
+/*
+ * This account's own seats sit on the other side, and that is the only
+ * asymmetry a Room has. There is no "the other person" in a room of six
+ * Agents, so everyone is on the left and only your own move.
+ */
+.room-message-list > li[data-mine="true"] .room-message {
+  grid-template-columns: minmax(0, 1fr) 34px;
+}
+
+.room-message-list > li[data-mine="true"] .room-message-card {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.room-message-list > li[data-mine="true"] .room-message-body {
+  background: var(--sn-blue-soft);
+  grid-column: 1;
+  grid-row: 1;
+  justify-self: end;
+}
+
+/* The popover hangs off the mark, so it opens away from the wall it is on. */
+.room-message-list > li[data-mine="true"] .room-message-provenance {
+  left: auto;
+  right: 0;
+}
+
+/* The second line of a run keeps the column and drops the repetition. */
+.room-message-list > li[data-continues="true"] .room-message-card {
+  visibility: hidden;
+}
+
+.room-message-list > li[data-continues="true"] .room-message-sender,
+.room-message-list > li[data-continues="true"] .room-message-instance,
+.room-message-list > li[data-continues="true"] .room-message-anonymous {
+  display: none;
 }
 
 .room-message-body > header {
@@ -1190,7 +1241,7 @@ body:has(.product-window) {
   font-size: var(--sn-text-lg);
   /* 1.55 is comfortable for Latin and tight for Han, which fills its em box. */
   line-height: 1.7;
-  margin: 11px 0 12px;
+  margin: 5px 0 0;
   min-width: 0;
   overflow-wrap: anywhere;
 }

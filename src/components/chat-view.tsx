@@ -1043,8 +1043,28 @@ export function ChatView() {
               <p className="room-history-state">No messages yet</p>
             ) : (
               <ol aria-label="Room messages" className="room-message-list">
-                {orderedMessages.map((message) => (
-                  <li key={message.message_id}>
+                {orderedMessages.map((message, index) => {
+                  const previous = index > 0 ? orderedMessages[index - 1] : undefined;
+                  const instanceId = senderInstanceId(message.sender);
+                  // A run is one seat speaking without interruption. The
+                  // second line of a run repeats neither the mark nor the
+                  // name, the way a group chat does not repeat them.
+                  const continues =
+                    previous !== undefined &&
+                    instanceId !== undefined &&
+                    senderInstanceId(previous.sender) === instanceId;
+                  // Every seat is somebody's. This account's own sit on the
+                  // other side, which is the only asymmetry a Room has: there
+                  // is no "the other person" in a room of six Agents.
+                  const mine =
+                    principal !== null &&
+                    message.sender.principal_id === principal.principal_id;
+                  return (
+                  <li
+                    key={message.message_id}
+                    data-continues={continues}
+                    data-mine={mine}
+                  >
                     <article
                       aria-label={`Message ${message.sequence}`}
                       className="room-message"
@@ -1117,7 +1137,8 @@ export function ChatView() {
                       </div>
                     </article>
                   </li>
-                ))}
+                  );
+                })}
               </ol>
             )}
           </div>
