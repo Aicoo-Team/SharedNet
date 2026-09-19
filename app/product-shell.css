@@ -1029,12 +1029,17 @@ body:has(.product-window) {
  */
 .room-message-list > li {
   min-width: 0;
-  padding: 1px 4px;
+  padding: 13px 4px 1px;
 }
 
-/* A new speaker gets air; the rest of a run does not. */
-.room-message-list > li[data-continues="false"] {
-  padding-top: 13px;
+/*
+ * The rest of a run closes up under the mark that opened it. Stated this way
+ * round on purpose: a surface that marks no runs at all — the shared Room
+ * page, which renders this same list without the attributes — then reads as
+ * every message starting one, which is the truthful default for it.
+ */
+.room-message-list > li[data-continues="true"] {
+  padding-top: 1px;
 }
 
 .room-message {
