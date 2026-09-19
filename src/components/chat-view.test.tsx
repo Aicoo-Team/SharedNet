@@ -623,6 +623,46 @@ describe("SharedNet Rooms", () => {
     expect(canonicalIdRule).not.toContain("text-overflow: ellipsis;");
   });
 
+  it("renders Chinese, in fonts that have Chinese in them", () => {
+    renderChat({
+      selectedRoom: {
+        ...roomDetail,
+        notes: { [INSTANCE_ID]: "任泽西的 Codex" },
+        messages: [
+          {
+            ...roomDetail.messages[1]!,
+            content: "已经把这个 PR 审完了，Instance 的 reach 没问题。",
+          },
+        ],
+      },
+    });
+
+    // Scoped to the message: the same seat is also named in the members panel.
+    const message = screen.getByRole("article", { name: "Message 7" });
+    expect(within(message).getByText("任泽西的 Codex")).toBeVisible();
+    expect(
+      within(message).getByText("已经把这个 PR 审完了，Instance 的 reach 没问题。"),
+    ).toBeVisible();
+
+    // Albert Sans is Latin-only and the ids run in a monospace stack, so both
+    // stacks have to name a Han family or every Chinese glyph picks its own.
+    const root = PRODUCT_SHELL_CSS.match(/:root\s*\{([\s\S]*?)\n\}/)?.[1] ?? "";
+    expect(root).toMatch(/--sn-font-sans:[^;]*"PingFang SC"/);
+    expect(root).toMatch(/--sn-font-mono:[^;]*"PingFang SC"/);
+
+    // A seat name is prose and may be written in any script, so it must not
+    // inherit the monospace run of ids around it.
+    const senderRule = PRODUCT_SHELL_CSS.match(
+      /\.room-message-body > header \.room-message-sender\s*\{([^}]*)\}/,
+    )?.[1];
+    expect(senderRule).toContain("font-family: var(--sn-font-sans);");
+    expect(senderRule).not.toContain("font-family: inherit;");
+
+    // And no rule may reach past the tokens for a Latin-only stack again.
+    expect(PRODUCT_SHELL_CSS).not.toContain('"Albert Sans Variable", ui-sans-serif');
+    expect(PRODUCT_SHELL_CSS).not.toContain("ui-monospace, SFMono-Regular, Menlo, monospace");
+  });
+
   it("links a reply to the exact parent message ID", () => {
     renderChat();
 

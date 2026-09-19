@@ -52,10 +52,13 @@
   --brand-tint: #b9d9eb;
   --gold-deep: #b45309;
   --gold-foreground: #002147;
-  --font-sans: "Albert Sans Variable", system-ui, -apple-system, sans-serif;
-  --font-display: "Anybody Variable", "Albert Sans Variable", system-ui, sans-serif;
+  --font-sans: "Albert Sans Variable", "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", "Noto Sans SC", system-ui, -apple-system, sans-serif;
+  --font-display: "Anybody Variable", "Albert Sans Variable", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
   --marketing-serif: "Iowan Old Style", "Palatino", "Palatino Linotype", Georgia, serif;
-  --marketing-mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, monospace;
+  --marketing-mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo,
+    "PingFang SC", "Microsoft YaHei", "Noto Sans SC", monospace;
   --page-width: 1280px;
 }
 
